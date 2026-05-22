@@ -29,9 +29,25 @@ Damien Adams' Claude Code plugin — 8 portable workflow skills shared across mu
 
 After install, the 8 skills are available globally under the `claude-workflow-core:` namespace.
 
-## Roadmap (v0.2+)
+## v0.2.0 — session-resilience hooks bundled
 
-Plans to bundle the 3 cwd-aware session-resilience hooks (`pre-compact-flush`, `persist-session-state`, `restore-session-state`) into this plugin so compaction safety works everywhere the plugin is installed, without depending on media-server's hook directory.
+The 3 cwd-aware session hooks now ship in `hooks/`:
+
+| Hook | Event | Purpose |
+| --- | --- | --- |
+| `pre-compact-flush.sh` | `PreCompact` | Snapshot session log + state before /compact summarization |
+| `persist-session-state.sh` | `PostToolUse` | Write current PR/branch/cmd to `.claude/.session-state/` |
+| `restore-session-state.sh` | `SessionStart` | Surface `additionalContext` from .session-state on resume |
+
+All 3 use `git rev-parse --show-toplevel` so they write to the CURRENT repo's `.claude/` dir, NOT a hardcoded media-server path. Compaction safety works in any cwd.
+
+**Registration:** `~/.claude/settings.json` references each hook script's absolute path. After plugin install (or update), update settings.json to point at the plugin cache:
+
+```
+~/.claude/plugins/cache/claude-workflow-core/claude-workflow-core/0.2.0/hooks/<name>.sh
+```
+
+(Damien can also keep references to media-server hook paths during a transition — both work since the hook content is identical.)
 
 ## Versioning + rollback
 
