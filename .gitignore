@@ -1,0 +1,15 @@
+.DS_Store
+**/.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+node_modules/
+
+# Claude Code runtime — never commit
+**/.claude/.session-state/
+**/.claude/hook-runs.jsonl
+**/.claude/review-log/*.jsonl
+.mcp.json
+.env
+.secrets
