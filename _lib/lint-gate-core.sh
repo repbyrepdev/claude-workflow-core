@@ -15,7 +15,7 @@ set -u
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # shellcheck source=lint-log.sh
-source "$REPO_ROOT/.claude/_lib/lint-log.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lint-log.sh"
 
 # Which linters apply to a given file path? Echoes space-separated list.
 # Empty output = no applicable linters → file is not gated.

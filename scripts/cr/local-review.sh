@@ -296,7 +296,7 @@ fi
 # yourself audit can query "did CR find anything in this file at this
 # blob-sha?" via the same primitives Phase 1 + bats use. Cache is best-
 # effort; failures don't fail the review.
-CACHE_LIB="$REPO_ROOT/.claude/_lib/content-hash-cache.sh"
+CACHE_LIB="$(dirname "${BASH_SOURCE[0]}")/../../_lib/content-hash-cache.sh"
 if [ "$findings" = "0" ] && [ "$rc" = "0" ] && [ -f "$CACHE_LIB" ]; then
 	# shellcheck source=/dev/null
 	source "$CACHE_LIB"
