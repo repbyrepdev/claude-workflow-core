@@ -1,7 +1,7 @@
 {
   "name": "claude-workflow-core",
-  "description": "Portable Claude Code workflow plugin — 15 skills + 20 pre-commit-hooks + 18 _lib helpers + 3 session-resilience hooks. Dual-purpose: Claude Code plugin AND pre-commit hooks repo (.pre-commit-hooks.yaml). Consumers wire via 'repo: github.com/repbyrepdev/claude-workflow-core rev: vX.Y.Z' in .pre-commit-config.yaml.",
-  "version": "0.4.0",
+  "description": "Portable Claude Code workflow plugin — 15 skills + 20 pre-commit-hooks + 18 _lib helpers + 69 generic .claude/hooks. Dual-purpose: Claude Code plugin AND pre-commit hooks repo (.pre-commit-hooks.yaml). Consumers wire via 'repo: github.com/repbyrepdev/claude-workflow-core rev: vX.Y.Z' in .pre-commit-config.yaml.",
+  "version": "0.5.0",
   "author": {
     "name": "Damien Adams",
     "url": "https://github.com/repbyrepdev"
