@@ -81,8 +81,27 @@ for mem in "${mem_files[@]}"; do
 		elif git -C "$REPO_ROOT" check-ignore -q "$path" 2>/dev/null && [ -e "$REPO_ROOT/$path" ]; then
 			: # gitignored but worktree-present (logs/generated files) — pass
 		else
-			drift_found=$((drift_found + 1))
-			drift_lines="${drift_lines}  - ${path} (referenced in $(basename "$mem"))"$'\n'
+			# v0.6.2 (#35): cross-repo awareness. Memory files reference paths
+			# in multiple consumer repos + the plugin. From any one repo's
+			# cwd, paths in the OTHER repos look "stale". Honor
+			# MEMORY_DRIFT_EXTERNAL_ROOTS (colon-separated list of absolute
+			# paths) — if the path resolves under any external root, treat
+			# as live (no drift).
+			external_hit=0
+			if [ -n "${MEMORY_DRIFT_EXTERNAL_ROOTS:-}" ]; then
+				IFS=':' read -ra _ext_roots <<<"$MEMORY_DRIFT_EXTERNAL_ROOTS"
+				for _root in "${_ext_roots[@]}"; do
+					[ -n "$_root" ] || continue
+					if [ -e "$_root/$path" ]; then
+						external_hit=1
+						break
+					fi
+				done
+			fi
+			if [ "$external_hit" = "0" ]; then
+				drift_found=$((drift_found + 1))
+				drift_lines="${drift_lines}  - ${path} (referenced in $(basename "$mem"))"$'\n'
+			fi
 		fi
 		# CR #634 finding 68: anchor matches to start-of-line / whitespace /
 		# backtick / paren so URL fragments like `https://github.com/.claude/...`
