@@ -14,10 +14,11 @@ set -euo pipefail
 #
 # Defaults: owner=current `gh` user, number=2 (Homelab).
 
+# shellcheck disable=SC2034  # REPO_ROOT kept for ABI; libs source via plugin-relative paths now
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../../_lib/board-paginate.sh
-source "$REPO_ROOT/.claude/_lib/board-paginate.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_lib/board-paginate.sh"
 
 OWNER=""
 NUMBER=2
