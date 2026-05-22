@@ -1,7 +1,7 @@
 {
   "name": "claude-workflow-core",
   "description": "Portable Claude Code workflow skills — shared across Damien's repos. Domain-agnostic skills for batch ack, brainstorm mode, deep audits, memory consolidation, retro, prove-yourself audits, and CR plan parsing.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Damien Adams",
     "url": "https://github.com/repbyrepdev"
