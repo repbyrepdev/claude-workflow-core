@@ -24,6 +24,17 @@ set -euo pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$REPO_ROOT" || exit 2
 
+# v0.6.2 (#35): graceful no-op for consumers without bats infra.
+# Detect by presence of .claude/tests/ OR scripts/test.sh. If neither
+# exists, the gate doesn't apply — consumer hasn't adopted bats yet.
+# Honor BATS_GATE_OPTIONAL=0 to force the gate even without infra (for
+# operators who want the gate as a forcing function to set up bats).
+if [ "${BATS_GATE_OPTIONAL:-1}" = "1" ]; then
+	if [ ! -d "$REPO_ROOT/.claude/tests" ] && [ ! -x "$REPO_ROOT/scripts/test.sh" ]; then
+		exit 0
+	fi
+fi
+
 # v4.28-W3-C r5 (#676 expansion): every gate appends to the universal
 # acknowledgment sentinel on FAIL so a single `cat hook-output-pending.txt`
 # surfaces all blockers (bats + dogfood + lint + prove-yourself) in one
