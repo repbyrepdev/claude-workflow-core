@@ -1,12 +1,12 @@
 {
   "name": "claude-workflow-core",
-  "description": "Portable Claude Code workflow plugin — 15 shared workflow skills + 3 session-resilience hooks. Bundles git-commit, github-{epic,issue,pr-*}-creation/review/merge, session-start, plus the v0.2.0 set (ack, brainstorm, cr-plan, creating-skills, deep-audit, memory-consolidate, retro, prove-yourself-audit). Domain-agnostic — works in any Claude Code repo.",
-  "version": "0.3.0",
+  "description": "Portable Claude Code workflow plugin — 15 skills + 20 pre-commit-hooks + 18 _lib helpers + 3 session-resilience hooks. Dual-purpose: Claude Code plugin AND pre-commit hooks repo (.pre-commit-hooks.yaml). Consumers wire via 'repo: github.com/repbyrepdev/claude-workflow-core rev: vX.Y.Z' in .pre-commit-config.yaml.",
+  "version": "0.4.0",
   "author": {
     "name": "Damien Adams",
     "url": "https://github.com/repbyrepdev"
   },
   "repository": "https://github.com/repbyrepdev/claude-workflow-core",
   "license": "MIT",
-  "keywords": ["workflow", "skills", "claude-code", "shared", "portable", "github", "pr-review", "ship-pr"]
+  "keywords": ["workflow", "skills", "claude-code", "shared", "portable", "github", "pr-review", "ship-pr", "pre-commit", "hooks"]
 }
