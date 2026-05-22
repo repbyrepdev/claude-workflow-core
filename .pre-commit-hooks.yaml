@@ -14,6 +14,8 @@
 # lookup ($(dirname "$0")/../_lib/), which also works when the script is
 # placed at .claude/pre-commit-hooks/<X>.sh in a consumer repo.
 
+---
+
 - id: actions-permissions
   name: Workflows require `permissions:` block
   entry: pre-commit-hooks/actions-permissions.sh
@@ -43,7 +45,7 @@
   stages: [pre-commit]
 
 - id: check-review-accept-reason
-  name: Require Review-accept-reason trailer when Phase 1 accept-with-reason fired
+  name: Require Review-accept-reason trailer when Phase 1 reason fired
   entry: pre-commit-hooks/check-review-accept-reason.sh
   language: script
   stages: [commit-msg]
@@ -56,7 +58,7 @@
   stages: [pre-commit]
 
 - id: commit-scope-to-issue
-  name: Require `#NNN` issue ref or `[no-issue: <reason>]` marker
+  name: "Require `#NNN` issue ref or `[no-issue: <reason>]` marker"
   entry: pre-commit-hooks/commit-scope-to-issue.sh
   language: script
   stages: [commit-msg]
@@ -76,7 +78,7 @@
   stages: [pre-commit]
 
 - id: edit-corruption-guard
-  name: edit-corruption — detect heredoc/whitespace corruption from bad Edit invocations
+  name: "edit-corruption — detect heredoc/whitespace corruption from bad Edit"
   entry: pre-commit-hooks/edit-corruption-guard.sh
   language: script
   pass_filenames: false
@@ -90,7 +92,7 @@
   stages: [pre-commit]
 
 - id: event-frontmatter-check
-  name: event-frontmatter — hooks must declare `# event:` for installer discovery
+  name: "event-frontmatter — hooks must declare `# event:` for discovery"
   entry: pre-commit-hooks/event-frontmatter-check.sh
   language: script
   files: '^\.claude/hooks/.*\.sh$'
