@@ -1,0 +1,418 @@
+#!/bin/bash
+set -euo pipefail
+# v4.20 (#519): github-pr-creation skill wrapper.
+# Creates a PR with auto-resolved template body + labels + milestone.
+# Sets SKILL_WRAPPER=1 so skill-bypass-guard allows gh pr create.
+#
+# v4.28-W3-CD (#745): when no --body-file supplied, the wrapper auto-drafts
+# the PR body via Copilot free-tier (gpt-4.1 / gpt-5-mini / gpt-4o, 0×
+# premium multiplier on Enterprise seats). Mirrors the pattern from #743
+# (git-commit Copilot-default). Drafts go through pr-lint-check.sh as
+# preflight; fail-closed rc=4 when the SSOT schema isn't satisfied.
+#
+# Opt-out:
+#   --no-copilot               (per-invocation flag)
+#   COPILOT_DRAFT_OFF=1        (env var, useful for trusted-edit flows)
+#   --body-file <path>         (explicit body takes precedence over draft)
+#
+# Usage:
+#   .claude/skills/github-pr-creation/run.sh --title "<title>" \
+#     --body-file <path> [--label "<label>"]... [--milestone <title>] \
+#     [--base <branch>] [--draft]
+#   .claude/skills/github-pr-creation/run.sh --title "<title>"     # auto-draft
+#   .claude/skills/github-pr-creation/run.sh --no-copilot --body-file ...
+#
+# Exit codes:
+#   0 — PR created
+#   2 — arg / validation error
+#   3 — Copilot-default attempted but unavailable + no fallback body
+#       (use --body-file or set COPILOT_DRAFT_OFF=1 + provide one)
+#   4 — Copilot-drafted body failed pr-lint preflight (.github/pull_request_template.md
+#       SSOT). Operator-supplied bodies stay warn-only.
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../_lib/skill-common.sh
+# Source library from SCRIPT_DIR (always relative to script — bundled with
+# the skill itself, never relocates).
+source "$SCRIPT_DIR/../_lib/skill-common.sh"
+# Capture caller's cwd before cd-to-repo-root so relative --body-file
+# paths resolve against the operator's invocation dir (not REPO_ROOT).
+ORIG_CWD=$(pwd)
+# Resolve REPO_ROOT from caller's repo (not script's) so fixtures can
+# override .github/.claude paths during tests, and so the wrapper
+# operates on whatever repo the operator invoked it from.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+	echo "error: not in a git repo" >&2
+	exit 2
+}
+cd "$REPO_ROOT" || {
+	echo "error: cannot cd to repo root '$REPO_ROOT'" >&2
+	exit 2
+}
+
+TITLE=""
+BODY_FILE=""
+MILESTONE=""
+BASE="main"
+DRAFT=0
+LABELS=()
+NO_COPILOT=0
+BODY_FROM_COPILOT=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--title)
+		[ $# -ge 2 ] || {
+			echo "error: --title requires a value" >&2
+			exit 2
+		}
+		TITLE="$2"
+		shift 2
+		;;
+	--body-file)
+		[ $# -ge 2 ] || {
+			echo "error: --body-file requires a value" >&2
+			exit 2
+		}
+		# Absolutize relative paths against caller's ORIG_CWD (we
+		# already cd'd to REPO_ROOT above).
+		case "$2" in
+		/*) BODY_FILE="$2" ;;
+		*) BODY_FILE="$ORIG_CWD/$2" ;;
+		esac
+		shift 2
+		;;
+	--milestone)
+		[ $# -ge 2 ] || {
+			echo "error: --milestone requires a value" >&2
+			exit 2
+		}
+		MILESTONE="$2"
+		shift 2
+		;;
+	--base)
+		[ $# -ge 2 ] || {
+			echo "error: --base requires a value" >&2
+			exit 2
+		}
+		BASE="$2"
+		shift 2
+		;;
+	--draft)
+		DRAFT=1
+		shift
+		;;
+	--no-copilot)
+		NO_COPILOT=1
+		shift
+		;;
+	--label)
+		[ $# -ge 2 ] || {
+			echo "error: --label requires a value" >&2
+			exit 2
+		}
+		LABELS+=("$2")
+		shift 2
+		;;
+	-h | --help)
+		grep '^#' "$0" | sed 's/^# \?//'
+		exit 0
+		;;
+	*)
+		echo "unknown arg: $1" >&2
+		exit 2
+		;;
+	esac
+done
+
+# v4.28-W3-C (#662): no-arg auto-fill for title (derive from latest
+# commit subject) so `run.sh` matches SKILL.md's auto-flow promise.
+if [ -z "$TITLE" ]; then
+	commit_subject=$(git log -1 --format=%s 2>/dev/null || echo "")
+	if [ -n "$commit_subject" ]; then
+		TITLE="$commit_subject"
+		echo "auto-filled --title from HEAD commit: $TITLE" >&2
+	fi
+fi
+
+if [ -z "$TITLE" ]; then
+	echo "Usage: $0 [--title <title>] [--body-file <path>] [--no-copilot] [--label ...] [--milestone ...] [--base main] [--draft]" >&2
+	echo "  --title is auto-derived from HEAD commit subject when omitted." >&2
+	echo "  --body-file is optional — Copilot-default auto-drafts when omitted (v4.28-W3-CD #745)." >&2
+	exit 2
+fi
+
+if [ "${COPILOT_DRAFT_OFF:-0}" = "1" ]; then
+	NO_COPILOT=1
+fi
+
+# Body resolution precedence:
+#   1. --body-file (explicit override)
+#   2. Copilot-draft DEFAULT (when no body-file + not opted out)
+#   3. Refuse with rc=2 when Copilot opt-out + no fallback
+#   4. Refuse with rc=3 when Copilot unavailable + not opted out
+if [ -n "$BODY_FILE" ]; then
+	if [ ! -f "$BODY_FILE" ]; then
+		echo "--body-file not found: $BODY_FILE" >&2
+		exit 2
+	fi
+elif [ "$NO_COPILOT" = "1" ]; then
+	echo "error: no --body-file provided + --no-copilot/COPILOT_DRAFT_OFF=1 set" >&2
+	echo "  hint: pass --body-file <path>, or remove --no-copilot to use Copilot-default" >&2
+	exit 2
+else
+	# Copilot-draft path. Refuse on unavailability or empty output.
+	COPILOT_HELPER="$REPO_ROOT/.claude/scripts/copilot/try-free.sh"
+	if [ ! -x "$COPILOT_HELPER" ]; then
+		echo "error: Copilot-draft default unavailable — $COPILOT_HELPER missing/non-executable" >&2
+		echo "  hint: pass --body-file, or set COPILOT_DRAFT_OFF=1 + provide one" >&2
+		exit 3
+	fi
+	# Validate BASE exists + isn't ambiguous. Use refs/heads/ prefix to
+	# disambiguate when both branch + tag share the name. Quiet output
+	# so the warning suppression lands cleanly.
+	if ! git rev-parse --verify --quiet "refs/heads/$BASE" >/dev/null 2>&1 &&
+		! git rev-parse --verify --quiet "$BASE" >/dev/null 2>&1; then
+		echo "error: base ref '$BASE' not found locally — run: git fetch origin $BASE" >&2
+		echo "  hint: or pass a different --base, or pass --body-file directly" >&2
+		exit 2
+	fi
+	PR_TEMPLATE="$REPO_ROOT/.github/pull_request_template.md"
+	# Distinguish "template missing" (acceptable, fall back to
+	# placeholder) from "template exists but unreadable" (loud-fail —
+	# repo state corrupted). Without this split, EACCES/EIO get masked
+	# and Copilot drafts against the literal "(unavailable)" string.
+	if [ -f "$PR_TEMPLATE" ]; then
+		TEMPLATE_TEXT=$(cat "$PR_TEMPLATE") || {
+			echo "error: cannot read $PR_TEMPLATE (rc=$?)" >&2
+			exit 2
+		}
+	else
+		TEMPLATE_TEXT="(pull_request_template.md unavailable)"
+	fi
+	echo "drafting PR body via Copilot free-tier…" >&2
+	# Single mktemp -d for body + stderr; one trap, one cleanup. Closes
+	# the trap-window between successive mktemps + drops the manual
+	# rm-on-second-failure dance.
+	DRAFT_DIR=$(mktemp -d -t pr-body.XXXXXX) || {
+		echo "error: mktemp -d failed (disk full? /tmp permissions?)" >&2
+		exit 3
+	}
+	trap 'rm -rf "${DRAFT_DIR:-}"' EXIT
+	BODY_TMP="$DRAFT_DIR/body"
+	ERR_TMP="$DRAFT_DIR/err"
+	# Capture diff to a file FIRST (separate from the helper pipeline)
+	# so a diff failure is attributed to the BASE...HEAD spec, not to
+	# the Copilot helper.
+	DIFF_TMP="$DRAFT_DIR/diff"
+	if ! git diff "$BASE...HEAD" >"$DIFF_TMP" 2>"$DRAFT_DIR/diff-err"; then
+		diff_rc=$?
+		echo "error: git diff '$BASE...HEAD' failed (rc=$diff_rc)" >&2
+		if [ -s "$DRAFT_DIR/diff-err" ]; then
+			echo "  git diff stderr:" >&2
+			while IFS= read -r line; do echo "    $line" >&2; done <"$DRAFT_DIR/diff-err"
+		fi
+		echo "  hint: ensure --base is a valid ref relative to HEAD" >&2
+		exit 2
+	fi
+	# SKILL_WRAPPER export so nested gh/git in try-free.sh satisfies
+	# skill-bypass-guard.
+	export SKILL_WRAPPER=1
+	COPILOT_RC=0
+	"$COPILOT_HELPER" "Draft a GitHub PR body for this diff: $(cat "$DIFF_TMP"). Mirror this template's section structure exactly: $TEMPLATE_TEXT. Output the full body only (no preamble, no trailing notes). Include 'Closes #<issue>' line at the bottom referencing the issue from the branch name (feat/vX.Y-Z/NNN-...). Required area label must match the change scope (monitoring|infrastructure|security|performance) — must stay in sync with .github/labels.yml SSOT." \
+		>"$BODY_TMP" 2>"$ERR_TMP" || COPILOT_RC=$?
+	# Distinguish grep rc=1 (legitimate empty/whitespace) from rc>1
+	# (read error / IO fault) — without the explicit case the operator
+	# loops on a misdiagnosed Copilot failure when the real cause is
+	# disk fault.
+	grep_rc=0
+	grep -q '[^[:space:]]' "$BODY_TMP" || grep_rc=$?
+	if [ "$grep_rc" -gt 1 ]; then
+		echo "error: cannot read draft body (grep rc=$grep_rc) — disk fault?" >&2
+		exit 3
+	fi
+	if [ "$COPILOT_RC" -ne 0 ] || [ "$grep_rc" -eq 1 ]; then
+		echo "error: Copilot draft returned empty/whitespace (rc=$COPILOT_RC) — auth/network/quota issue?" >&2
+		if [ -s "$ERR_TMP" ]; then
+			echo "  helper stderr:" >&2
+			while IFS= read -r line; do echo "    $line" >&2; done <"$ERR_TMP"
+		fi
+		echo "  hint: pass --body-file, or set COPILOT_DRAFT_OFF=1 + provide one" >&2
+		exit 3
+	fi
+	BODY_FILE="$BODY_TMP"
+	BODY_FROM_COPILOT=1
+fi
+
+# Auto-resolve milestone from current branch's version prefix. Loud-fail
+# on resolution errors (ambiguity, gh failure) — silent-swallow of these
+# is the bug that creates issues/PRs with no milestone attached.
+if [ -z "$MILESTONE" ]; then
+	ver=$(skc_extract_version_prefix)
+	if [ -n "$ver" ]; then
+		if ! MILESTONE=$(skc_match_milestone "$ver" 2>&1); then
+			echo "milestone auto-resolve failed for prefix '$ver':" >&2
+			echo "$MILESTONE" >&2
+			echo "Re-run with explicit --milestone <title>." >&2
+			exit 2
+		fi
+	fi
+fi
+
+# Labels: if none passed, pr-labeler.yml will apply area:* server-side on
+# PR open. No client-side resolution — see skill-common.sh for why.
+
+# Pre-create pr-lint-check validates body has required template section
+# headings before we post the PR. Runs BEFORE skc_approve_or_exit so a
+# broken body refuses upfront — don't bother the operator with an
+# approval prompt for a PR that would fail validation immediately.
+LINT="$REPO_ROOT/.claude/hooks/pr-lint-check.sh"
+# When body came from Copilot, the SSOT validator is required (rc=4
+# fail-closed depends on it firing). Missing/non-exec lint = refuse —
+# Copilot-drafted body cannot bypass preflight via silent skip.
+if [ "$BODY_FROM_COPILOT" = "1" ] && [ ! -x "$LINT" ]; then
+	echo "error: pr-lint-check.sh missing/non-exec — Copilot-drafted body cannot skip SSOT validation" >&2
+	echo "  hint: ensure $LINT is present + executable, or pass --body-file directly" >&2
+	exit 4
+fi
+if [ -x "$LINT" ]; then
+	# Build labels JSON for the pre-create lint mode.
+	labels_json='[]'
+	if [ "${#LABELS[@]}" -gt 0 ]; then
+		labels_json=$(printf '%s\n' "${LABELS[@]}" | jq -R . | jq -s .)
+	fi
+	# --skip-label-check: pr-labeler runs AFTER create (below), so the
+	# pre-create PR has no area:* label yet. Without this flag, the
+	# area-label gate would hard-fail every invocation, defeating the
+	# labeler integration. Post-create we call LINT again (full gate,
+	# no skip) once labels are applied.
+	# Capture LINT stderr separately so a corrupt/segfaulted lint
+	# script (rc=126/127/139) gets a distinct diagnostic instead of
+	# being misreported as "Copilot drafted a bad body".
+	lint_err=$(mktemp -t pr-lint-err.XXXXXX) || {
+		echo "error: mktemp failed for lint stderr capture" >&2
+		exit 3
+	}
+	# shellcheck disable=SC2064
+	trap "rm -f '$lint_err'" RETURN 2>/dev/null || true
+	lint_rc=0
+	"$LINT" --body "$BODY_FILE" --labels "$labels_json" --skip-label-check 2>"$lint_err" || lint_rc=$?
+	if [ "$lint_rc" -ne 0 ]; then
+		# rc=126/127/139 indicate corruption (not-executable / not-found /
+		# segfault) — surface separately. rc=1 is the normal "lint reported
+		# violations" path.
+		if [ "$lint_rc" -ge 126 ] || [ "$lint_rc" = "0" ]; then
+			echo "error: pr-lint-check.sh execution failure (rc=$lint_rc) — script corrupted?" >&2
+			[ -s "$lint_err" ] && {
+				echo "  lint stderr:" >&2
+				while IFS= read -r line; do echo "    $line" >&2; done <"$lint_err"
+			}
+			rm -f "$lint_err"
+			exit 4
+		fi
+		# Surface lint's own stderr for the operator (it names the missing
+		# section / failed check).
+		if [ -s "$lint_err" ]; then
+			cat "$lint_err" >&2
+		fi
+		rm -f "$lint_err"
+		# When body came from Copilot draft (not from operator), pr-lint
+		# failure is fail-closed at rc=4 — don't create a PR with a
+		# broken body. Operator-supplied bodies stay rc=2.
+		if [ "$BODY_FROM_COPILOT" = "1" ]; then
+			echo "error: Copilot-drafted PR body failed pr-lint preflight — refusing to create." >&2
+			echo "  hint: re-run + Copilot will redraft, or pass --body-file with a fixed body." >&2
+			exit 4
+		fi
+		echo "pr-lint-check (pre-create, body+issue-link) failed — fix PR body before creating (re-run wrapper after)." >&2
+		exit 2
+	fi
+fi
+
+echo "=== Creating PR ==="
+echo "  Title:    $TITLE"
+echo "  Body:     $BODY_FILE"
+echo "  Base:     $BASE"
+echo "  Labels:   ${LABELS[*]:-(none)}"
+echo "  Milestone: ${MILESTONE:-(none)}"
+echo "  Draft:    $DRAFT"
+echo ""
+skc_approve_or_exit "Create this PR?"
+
+GH_ARGS=(pr create --title "$TITLE" --body-file "$BODY_FILE" --base "$BASE")
+for l in "${LABELS[@]+"${LABELS[@]}"}"; do GH_ARGS+=(--label "$l"); done
+[ -n "$MILESTONE" ] && GH_ARGS+=(--milestone "$MILESTONE")
+[ "$DRAFT" = "1" ] && GH_ARGS+=(--draft)
+
+URL=$(SKILL_WRAPPER=1 gh "${GH_ARGS[@]}")
+# `|| true` for pipefail safety: if $URL lacks `pull/N` (gh output format
+# change, auth warning prefixing URL, network redraw), the first grep
+# exits 1 and pipefail would propagate non-zero from the command
+# substitution — aborting the wrapper BEFORE the explicit `[ -z "$PR_NUM" ]`
+# guard below can surface the failure. The PR is already created on
+# GitHub at this point, so silent-abort is the worst outcome.
+PR_NUM=$(printf '%s' "$URL" | grep -oE 'pull/[0-9]+' | tail -1 | grep -oE '[0-9]+' || true)
+echo "✓ Created PR: $URL"
+
+# Surface PR_NUM extraction failure explicitly — without this, both the
+# labeler and the post-labeler lint silently no-op on empty PR_NUM,
+# leaving the PR on GitHub but bypassing both follow-up gates with no
+# operator-visible signal.
+if [ -z "$PR_NUM" ]; then
+	echo "⚠ could not extract PR number from URL '$URL' — skipping pr-labeler and post-labeler pr-lint." >&2
+	echo "  If this repeats, check whether gh pr create's output format changed." >&2
+fi
+
+# v4.21 wire-in: post-create pr-labeler. Applies area:* labels from
+# .github/labeler.yml glob matches on the PR's changed files. Replaces
+# the disabled pr-labeler.yml workflow during Actions cap.
+LABELER="$REPO_ROOT/.claude/hooks/pr-labeler.sh"
+LABELER_OK=0
+if [ -x "$LABELER" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+	echo "=== Applying area labels via pr-labeler ==="
+	# Capture exit code immediately via `|| labeler_rc=$?`. The previous
+	# `if cmd; then ... else echo "... $?"` form happened to work today
+	# because $? in the else-branch IS the tested command's exit — but
+	# any future edit inserting a statement before the echo would clobber
+	# it to 0. Same set-e-safe pattern used for trivy + auto-close below.
+	labeler_rc=0
+	"$LABELER" "$PR_NUM" 2>&1 || labeler_rc=$?
+	if [ "$labeler_rc" -eq 0 ]; then
+		LABELER_OK=1
+	else
+		echo "⚠ pr-labeler failed on #$PR_NUM (exit $labeler_rc) — area labels may be missing. Re-run: $LABELER $PR_NUM" >&2
+	fi
+fi
+
+# v4.21 wire-in: post-labeler full pr-lint against the now-labeled PR.
+# Pre-create used --skip-label-check (labels not yet applied); this run
+# closes the loop by verifying the full gate (body + issue link + area
+# label) that the remote pr-lint.yml would enforce. Warn-only — the PR
+# is already on GitHub; if it fails, a fix-up commit is the remedy.
+# Skip if pr-labeler failed: the area-label gate would fail for reasons
+# unrelated to body content, making the message misleading for the
+# operator debugging the failure.
+if [ -x "$LINT" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "1" ]; then
+	echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
+	if ! "$LINT" "$PR_NUM"; then
+		echo "⚠ pr-lint full gate failed on #$PR_NUM post-labeler — push a fix-up commit to satisfy the remote gate." >&2
+	fi
+elif [ -x "$LINT" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "0" ]; then
+	echo "⚠ skipping post-labeler pr-lint — labeler did not succeed, label check would fail for the wrong reason." >&2
+fi
+
+# v4.24-A (#566) wire-in: fire project-board-sync.sh --on-pr-open so the
+# PR's linked issues cascade to Status=Review and parent epics to In
+# Progress. Shipped v4.5.D #388 but the wrapper integration silently
+# broke — this closes the loop. Idempotent + state-aware (refuses if PR
+# is already merged/closed).
+BOARD_SYNC="$REPO_ROOT/.claude/local-backups/project-board-sync.sh"
+if [ -x "$BOARD_SYNC" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+	echo "=== Firing project-board-sync --on-pr-open #$PR_NUM ==="
+	if ! "$BOARD_SYNC" --on-pr-open "$PR_NUM" 2>&1; then
+		echo "⚠ project-board-sync --on-pr-open #$PR_NUM failed — board Status may not reflect the PR." >&2
+		echo "  Re-run manually: $BOARD_SYNC --on-pr-open $PR_NUM" >&2
+	fi
+fi
+
+printf '%s\n' "$URL"

@@ -13,3 +13,6 @@ node_modules/
 .mcp.json
 .env
 .secrets
+
+# v0.3: plugin repo itself uses .claude/ only for session logs — ignore entirely
+.claude/

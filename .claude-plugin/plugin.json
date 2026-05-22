@@ -1,12 +1,12 @@
 {
   "name": "claude-workflow-core",
-  "description": "Portable Claude Code workflow skills — shared across Damien's repos. Domain-agnostic skills for batch ack, brainstorm mode, deep audits, memory consolidation, retro, prove-yourself audits, and CR plan parsing.",
-  "version": "0.2.0",
+  "description": "Portable Claude Code workflow plugin — 15 shared workflow skills + 3 session-resilience hooks. Bundles git-commit, github-{epic,issue,pr-*}-creation/review/merge, session-start, plus the v0.2.0 set (ack, brainstorm, cr-plan, creating-skills, deep-audit, memory-consolidate, retro, prove-yourself-audit). Domain-agnostic — works in any Claude Code repo.",
+  "version": "0.3.0",
   "author": {
     "name": "Damien Adams",
     "url": "https://github.com/repbyrepdev"
   },
   "repository": "https://github.com/repbyrepdev/claude-workflow-core",
   "license": "MIT",
-  "keywords": ["workflow", "skills", "claude-code", "shared", "portable"]
+  "keywords": ["workflow", "skills", "claude-code", "shared", "portable", "github", "pr-review", "ship-pr"]
 }

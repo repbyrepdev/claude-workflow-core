@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "claude-workflow-core",
-      "description": "8 portable workflow skills + 3 session-resilience hooks (pre-compact-flush, persist-session-state, restore-session-state). v0.2.0+",
+      "description": "v0.3.0 — 15 portable workflow skills (git-commit, github-* CRUD, session-start, ack, brainstorm, cr-plan, creating-skills, deep-audit, memory-consolidate, retro, prove-yourself-audit) + 3 session-resilience hooks (pre-compact-flush, persist-session-state, restore-session-state).",
       "source": "./"
     }
   ]
