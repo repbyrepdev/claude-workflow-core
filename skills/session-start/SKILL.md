@@ -97,15 +97,15 @@ jq -r '.enabledPlugins["context7@claude-plugins-official"]' ~/.claude/settings.j
 
 # Repo-level auto-merge must be enabled (Renovate patch/minor auto-merge depends on it)
 # Distinguish API failure from config drift — gh exit code tells us which
-if AM=$(gh api repos/repbyrepdev/plex_arr_media_stack --jq '.allow_auto_merge' 2>/dev/null); then
-  [ "$AM" = "true" ] || echo "⚠ allow_auto_merge=false on repo. Renovate patch/minor won't auto-merge. Fix: gh api -X PATCH repos/repbyrepdev/plex_arr_media_stack -f allow_auto_merge=true"
+if AM=$(gh api repos/{owner}/{repo} --jq '.allow_auto_merge' 2>/dev/null); then
+  [ "$AM" = "true" ] || echo "⚠ allow_auto_merge=false on repo. Renovate patch/minor won't auto-merge. Fix: gh api -X PATCH repos/{owner}/{repo} -f allow_auto_merge=true"
 else
   echo "ℹ unable to verify repo allow_auto_merge (auth/network/API). Skipping drift check."
 fi
 
 # Branch protection on main must require 'validate' — handle both GitHub API representations:
 # .required_status_checks.contexts (legacy) AND .required_status_checks.checks[].context (newer)
-if BP=$(gh api repos/repbyrepdev/plex_arr_media_stack/branches/main/protection \
+if BP=$(gh api repos/{owner}/{repo}/branches/main/protection \
     --jq '((.required_status_checks.contexts // []) + ((.required_status_checks.checks // []) | map(.context))) | any(. == "validate")' 2>/dev/null); then
   [ "$BP" = "true" ] || echo "⚠ main branch protection missing required 'validate' check. Fix via repo Settings → Branches → main → Require status checks → validate"
 else
