@@ -96,6 +96,19 @@ for mem in "${mem_files[@]}"; do
 						external_hit=1
 						break
 					fi
+					# v0.6.4 (#35): plugin-cache layout has NO `.claude/` prefix.
+					# Memory says `.claude/skills/X/run.sh` but plugin has it
+					# at `<cache>/skills/X/run.sh`. Strip prefix + retry so
+					# plugin paths resolve from external roots.
+					case "$path" in
+					.claude/*)
+						alt_path="${path#.claude/}"
+						if [ -e "$_root/$alt_path" ]; then
+							external_hit=1
+							break
+						fi
+						;;
+					esac
 				done
 			fi
 			if [ "$external_hit" = "0" ]; then
