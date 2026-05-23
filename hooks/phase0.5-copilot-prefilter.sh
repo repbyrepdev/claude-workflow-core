@@ -74,18 +74,25 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-CONFIG="$REPO_ROOT/.claude/review-config.yml"
-COPILOT_HELPER="$REPO_ROOT/.claude/scripts/copilot/try-free.sh"
+# v0.6.5 (#39): plugin-cache fallback for shared helpers. Lets consumer
+# repos that don't ship their own .claude/scripts/ pull these from the
+# plugin cache. Same pattern as v0.6.4 memory-drift-check alt_path.
+PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
+# shellcheck source=../_lib/resolve-plugin-helper.sh
+. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+
+CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
+COPILOT_HELPER="$(resolve_plugin_helper "scripts/copilot/try-free.sh" 2>/dev/null || echo "")"
 DEDUP_HOOK="$(dirname "$0")/phase1-dedup.sh"
 LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 
-[ -f "$CONFIG" ] || {
-	echo "phase0.5: review-config.yml missing at $CONFIG" >&2
+[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
+	echo "phase0.5: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 }
-[ -x "$COPILOT_HELPER" ] || {
-	echo "phase0.5: try-free.sh helper missing at $COPILOT_HELPER — install Copilot CLI first" >&2
+[ -n "$COPILOT_HELPER" ] && [ -x "$COPILOT_HELPER" ] || {
+	echo "phase0.5: try-free.sh helper missing (checked \$REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — install Copilot CLI first" >&2
 	exit 1
 }
 [ -x "$DEDUP_HOOK" ] || {

@@ -32,9 +32,15 @@ if [ -z "$SHA" ]; then
 	exit 2
 fi
 
-LIST_SCRIPT=".claude/hooks/list-phase1-agents.sh"
-if [ ! -x "$LIST_SCRIPT" ]; then
-	echo "ERROR: $LIST_SCRIPT missing" >&2
+# v0.6.5 (#39): plugin-cache fallback so consumer repos without a local
+# .claude/hooks/list-phase1-agents.sh can still launch Phase 1.
+PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
+# shellcheck source=../_lib/resolve-plugin-helper.sh
+. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+
+LIST_SCRIPT="$(resolve_plugin_helper "hooks/list-phase1-agents.sh" 2>/dev/null || echo "")"
+if [ -z "$LIST_SCRIPT" ] || [ ! -x "$LIST_SCRIPT" ]; then
+	echo "ERROR: list-phase1-agents.sh missing (checked \$REPO_ROOT/.claude/hooks/ + plugin cache)" >&2
 	exit 2
 fi
 
@@ -480,9 +486,10 @@ EOF
 # v4.24-O (#601): canonical briefs from SSOT. If review-config.yml defines
 # a `canonical_brief` for the agent, emit it (placeholders resolved); else
 # fall back to the pre-v4.24-O generic brief line.
-CONFIG="$REPO_ROOT/.claude/review-config.yml"
+# v0.6.5 (#39): try REPO_ROOT first, then plugin-cache fallback.
+CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
 HAS_CONFIG=0
-if [ -f "$CONFIG" ] && command -v yq >/dev/null 2>&1; then
+if [ -n "$CONFIG" ] && [ -f "$CONFIG" ] && command -v yq >/dev/null 2>&1; then
 	HAS_CONFIG=1
 fi
 
@@ -698,8 +705,9 @@ EOF
 # and consumes the same slot, so running local Phase 2 doubles cost.
 # Cap is 10/hr on CR Pro Plus (refill 6min/token); rate-budget.sh's
 # default LIMIT was bumped to 10 in 2026-05-04 (post-PR #683 merge).
-BUDGET_SCRIPT="$REPO_ROOT/.claude/scripts/cr/rate-budget.sh"
-if [ -x "$BUDGET_SCRIPT" ]; then
+# v0.6.5 (#39): plugin-cache fallback.
+BUDGET_SCRIPT="$(resolve_plugin_helper "scripts/cr/rate-budget.sh" 2>/dev/null || echo "")"
+if [ -n "$BUDGET_SCRIPT" ] && [ -x "$BUDGET_SCRIPT" ]; then
 	cat <<EOF
 v4.23-F (#552): before invoking Phase 2 CR CLI after convergence, run:
   scripts/cr/rate-budget.sh --check
