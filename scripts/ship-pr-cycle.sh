@@ -1146,17 +1146,36 @@ cmd_next() {
 			# surface it to Claude on next prompt — covers the case
 			# where post-commit-ship-cycle fired `resume` detached and
 			# the stdout heredoc landed in a log Claude doesn't read.
+			# v0.7.2 (#26): emit per-agent prompt from canonical lib so the
+			# READ-ONLY + treadmill-proof boilerplate is in EVERY agent
+			# invocation, not just operator-memory. Per feedback memory
+			# `phase1-agents-readonly`, agents have full Edit/Write tool
+			# access — without explicit READ-ONLY directive they auto-
+			# apply suggestions + get stuck 7-min in tool-rejection loops.
+			local prompt_lib
+			prompt_lib="$SCRIPT_DIR/../_lib/phase1-agent-prompt.sh"
 			local directive_text
 			directive_text="ship-pr-cycle: phase1 — cap from scaler = $cap rounds; current clean-streak = $clean_streak
   DIRECTIVE FOR OPERATOR (Claude):
     Per memory:feedback_phase1_security_review_separate.md — the security-
     review Skill MUST fire SEPARATELY from the parallel Agent block, else
-    the pending-file gate kills it. Order:
-    1. Block A: 5 parallel Agent calls (code-reviewer, code-simplifier,
-       comment-analyzer, pr-test-analyzer, silent-failure-hunter)
+    the pending-file gate kills it. Per memory:phase1-agents-readonly,
+    every agent prompt MUST include the READ-ONLY directive (templated
+    via _lib/phase1-agent-prompt.sh).
+
+    Order:
+    1. Block A: 5 parallel Agent calls — use the templated prompt for
+       each (READ-ONLY + treadmill-proof + scope-bounded):
+         $prompt_lib code-reviewer \"$REPO_ROOT\" \"$sha\" <round>
+         $prompt_lib code-simplifier \"$REPO_ROOT\" \"$sha\" <round>
+         $prompt_lib comment-analyzer \"$REPO_ROOT\" \"$sha\" <round>
+         $prompt_lib pr-test-analyzer \"$REPO_ROOT\" \"$sha\" <round>
+         $prompt_lib silent-failure-hunter \"$REPO_ROOT\" \"$sha\" <round>
     2. Barrier: log all 5 via review-log.sh phase1 N <agent> <count> ok
     3. Run semgrep, then review-log.sh phase1 N semgrep <count> ok
-    4. Fire Skill(security-review) SEPARATELY (not in same parallel block)
+    4. Fire security-review via Agent subagent_type=general-purpose with
+       the same templated prompt: $prompt_lib security-review ...
+       (firing as Skill ends Claude's turn; Agent keeps it going)
     5. Log it: review-log.sh phase1 N security-review <count> ok
     6. Re-run 'ship-pr-cycle.sh next' (or rely on post-commit-ship-cycle
        firing \`resume\` on next commit — \`resume\` loops until it hits
