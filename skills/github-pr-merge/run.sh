@@ -14,9 +14,17 @@ set -euo pipefail
 # ACTIONS_MODE guard via auto-release.sh's own check).
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+# v0.6.7 (#15): REPO_ROOT via git rev-parse (works whether the wrapper
+# lives in consumer .claude/skills/<name>/ or in plugin-cache
+# <cache>/skills/<name>/). Fallback to SCRIPT_DIR ancestor for the
+# legacy in-repo invocation path. `{ ... ; }` grouping avoids the
+# v0.6.5 precedence bug (newline-corrupted REPO_ROOT).
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
+# skill-common.sh sits next to this wrapper in BOTH the consumer
+# (.claude/skills/_lib/) and the plugin cache (<cache>/skills/_lib/) —
+# relative-to-SCRIPT_DIR resolves either way.
 # shellcheck source=../_lib/skill-common.sh
-source "$REPO_ROOT/.claude/skills/_lib/skill-common.sh"
+source "$SCRIPT_DIR/../_lib/skill-common.sh"
 
 PR=""
 METHOD="--squash"
