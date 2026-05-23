@@ -49,7 +49,7 @@ set -euo pipefail
 # `dirname "${BASH_SOURCE[0]}"/../../..` is the deterministic, error-surfacing
 # path (no git error suppression, works in worktrees + subdirs).
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../.." && pwd; })
 if [ ! -d "$REPO_ROOT/.claude" ]; then
 	echo "dedupe-against-audit: cannot resolve repo root (\$SCRIPT_DIR/../.. missing .claude/): $REPO_ROOT" >&2
 	exit 2

@@ -28,7 +28,7 @@ set -euo pipefail
 # hooks re-fire blindly, restarting the clean-streak counter every time.
 # This helper is the routing decision: carry-forward when irrelevant.
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd; })
 CONFIG="$REPO_ROOT/.claude/review-config.yml"
 BASE="${1:-}"
 HEAD_REF="${2:-HEAD}"

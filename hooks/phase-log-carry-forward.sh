@@ -62,7 +62,7 @@ command -v jq >/dev/null || {
 	exit 2
 }
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd; })
 LOG_DIR="$REPO_ROOT/.claude/review-log"
 PREV_LOG="$LOG_DIR/${PREV_SHA}.jsonl"
 HEAD_LOG="$LOG_DIR/${HEAD_SHA}.jsonl"

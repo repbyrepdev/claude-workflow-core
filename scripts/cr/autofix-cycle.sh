@@ -81,7 +81,7 @@ done
 }
 
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd; })
 
 _exec_bit_restore_local() {
 	# v4.28-W3-C (#672): restore exec bits + commit LOCALLY ONLY. Push
