@@ -623,7 +623,8 @@ _phase2_run_cr_cli() {
 	# Counting: prefer the canonical `{"type":"complete",...,"findings":N}`
 	# event over grep'ing finding lines (a future stderr line containing
 	# the substring `"type":"finding"` would inflate a grep count).
-	local cr_script="$(_shipcycle_resolve scripts/cr/local-review.sh)"
+	local cr_script
+	cr_script="$(_shipcycle_resolve scripts/cr/local-review.sh)"
 	if [ ! -x "$cr_script" ]; then
 		echo "ship-pr-cycle: ERROR: $cr_script missing/non-exec" >&2
 		return 2
@@ -1469,7 +1470,8 @@ EOF
 			# "wait" but rc=2 as "stop and surface".
 			return 2
 		fi
-		local triage_helper="$(_shipcycle_resolve scripts/cr/auto-triage.sh)"
+		local triage_helper
+		triage_helper="$(_shipcycle_resolve scripts/cr/auto-triage.sh)"
 		if [ ! -x "$triage_helper" ]; then
 			echo "ship-pr-cycle: auto-triage — helper missing at $triage_helper" >&2
 			return 2
@@ -1573,7 +1575,8 @@ EOF
 				echo "ship-pr-cycle: cr-autofix — already dispatched server-side autofix on $current_sha; waiting for bot commit (re-run after CR pushes)."
 				return 0
 			fi
-			local cycle_helper="$(_shipcycle_resolve scripts/cr/autofix-cycle.sh)"
+			local cycle_helper
+			cycle_helper="$(_shipcycle_resolve scripts/cr/autofix-cycle.sh)"
 			if [ ! -x "$cycle_helper" ]; then
 				echo "ship-pr-cycle: cr-autofix — server-side helper missing at $cycle_helper" >&2
 				return 2
