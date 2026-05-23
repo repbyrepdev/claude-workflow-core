@@ -109,7 +109,60 @@ PR is out of scope.
 EOF
 }
 
+# v0.7.3 (#28): Phase 0.5 prefilter prompt (Copilot/Gemini/Codex). Same
+# READ-ONLY + treadmill-proof structure as Phase 1. External CLIs return
+# text — no local Edit access — but prompt-structure parity prevents
+# scope creep + ensures same finding shape.
+phase05_agent_prompt() {
+	local agent="$1"
+	local repo_root="${2:-}"
+	local sha="${3:-}"
+	local provider="${4:-copilot}"
+
+	if [ -z "$agent" ]; then
+		echo "phase05_agent_prompt: usage: <agent-name> [repo-root] [sha] [provider]" >&2
+		return 2
+	fi
+
+	local focus
+	focus=$(_phase1_agent_focus "$agent") || return $?
+
+	cat <<EOF
+Phase 0.5 prefilter (${provider}) — pre-Claude pass on the diff.
+
+Review the diff \`git diff main..HEAD\` for the current branch (HEAD ${sha:-<resolve>}).
+
+$focus
+
+Return findings as a JSON array of {severity: high|medium|low, file: path,
+line: number, category: string, description: 1-2 sentences (include suggestion
+text here if any), confidence: 0-10}. Empty array \`[]\` if clean.
+
+Output ONLY the JSON array — no prose, no markdown, no commentary. The
+prefilter parses your output programmatically.
+
+Treadmill-proof guards (same as Phase 1):
+- Skip findings already logged in prior round (check
+  ${repo_root:-\$REPO_ROOT}/.claude/review-log/${sha:-<sha>}.jsonl)
+- Skip findings with prove-yourself coverage
+- Confidence floor: 7
+- One-shot: return JSON once
+
+Scope: ONLY changes in this PR's diff.
+EOF
+}
+
 # CLI invocation
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-	phase1_agent_prompt "$@"
+	# Default to phase1; --phase 0.5 overrides
+	mode="phase1"
+	if [ "${1:-}" = "--phase" ] && [ "${2:-}" = "0.5" ]; then
+		mode="phase0.5"
+		shift 2
+	fi
+	if [ "$mode" = "phase0.5" ]; then
+		phase05_agent_prompt "$@"
+	else
+		phase1_agent_prompt "$@"
+	fi
 fi

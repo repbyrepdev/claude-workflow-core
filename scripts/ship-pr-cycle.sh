@@ -1634,6 +1634,31 @@ EOF
 		return 0
 		;;
 	merge-gate)
+		# v0.7.3 (#28): no-orphan-deferrals enforcement. Before showing the
+		# operator-approval message, verify any epics this PR closes don't
+		# have unaddressed prove-yourself rejections. Per-finding enforcement
+		# happens at record-rejection time (prove-yourself-audit/run.sh
+		# already requires --follow-up-issue when confidence ≥ 7); this
+		# stage cross-checks at merge-gate time that those followup issues
+		# still exist + are open. Bypass: NO_ORPHAN_DEFERRALS_SKIP=1.
+		if [ "${NO_ORPHAN_DEFERRALS_SKIP:-0}" = "1" ]; then
+			scm_warn "merge-gate: NO_ORPHAN_DEFERRALS_SKIP=1 — bypassing epic-completeness check"
+		else
+			local ec_lib="$SCRIPT_DIR/../_lib/epic-completeness-check.sh"
+			if [ -f "$ec_lib" ]; then
+				# shellcheck source=../_lib/epic-completeness-check.sh
+				source "$ec_lib"
+				local pr_num ec_rc=0
+				pr_num=$(gh pr view --json number --jq .number 2>/dev/null)
+				if [ -n "$pr_num" ]; then
+					epic_completeness_check "$pr_num" || ec_rc=$?
+					if [ "$ec_rc" -ne 0 ]; then
+						scm_warn "merge-gate: epic-completeness check refused — fix orphan deferrals before approving"
+						return "$ec_rc"
+					fi
+				fi
+			fi
+		fi
 		echo "ship-pr-cycle: merge-gate — operator approves here"
 		return 0
 		;;
