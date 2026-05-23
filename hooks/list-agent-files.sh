@@ -35,15 +35,26 @@ if [ -z "$AGENT" ]; then
 	exit 2
 fi
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-CONFIG="$REPO_ROOT/.claude/review-config.yml"
+# v0.6.6 (#13): resolve from git + plugin-helper (same pattern as
+# list-phase1-agents.sh). Previously `../../` from <cache>/hooks/ landed
+# in plugin-cache parent dir, not a real repo.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd; })
+PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
+if [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
+	# shellcheck source=../_lib/resolve-plugin-helper.sh
+	. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+	CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
+	[ -n "$CONFIG" ] || CONFIG="$REPO_ROOT/.claude/review-config.yml"
+else
+	CONFIG="$REPO_ROOT/.claude/review-config.yml"
+fi
 
 command -v yq >/dev/null || {
 	echo "ERROR: yq not installed" >&2
 	exit 2
 }
 [ -f "$CONFIG" ] || {
-	echo "ERROR: $CONFIG missing" >&2
+	echo "ERROR: $CONFIG missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 2
 }
 

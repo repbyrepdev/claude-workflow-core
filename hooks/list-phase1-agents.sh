@@ -43,7 +43,10 @@ set -euo pipefail
 # from plugin-cache where ../../ resolves into the cache layout, not a repo).
 # Then resolve config via the plugin-helper resolver — consumer copy wins,
 # plugin cache fallback otherwise.
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# v0.6.6 (#13): fix precedence bug — `A || B && C` is `(A||B)&&C`, so
+# `git rev-parse || cd && pwd` ran `pwd` after git-success too, concatenating
+# both paths with a newline into REPO_ROOT. Use `{ ... ; }` grouping.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd; })
 PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
 if [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 	# shellcheck source=../_lib/resolve-plugin-helper.sh
