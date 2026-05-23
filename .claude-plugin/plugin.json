@@ -1,7 +1,7 @@
 {
   "name": "claude-workflow-core",
   "description": "Portable Claude Code workflow plugin — 15 skills + 20 pre-commit-hooks + 18 _lib helpers + 69 generic .claude/hooks + 23 portable scripts (.claude/scripts/{copilot,board,cr,commit,labels,dogfood,maintain,triage}/). Dual-purpose: Claude Code plugin AND pre-commit hooks repo. v0.6.0 is the canonical release that consumers pin.",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "author": {
     "name": "Damien Adams",
     "url": "https://github.com/repbyrepdev"
