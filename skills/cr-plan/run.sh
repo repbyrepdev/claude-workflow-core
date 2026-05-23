@@ -24,9 +24,20 @@ set -euo pipefail
 #   gh (authed), jq, .claude/skills/github-epic-creation/run.sh
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
-# EPIC_SKILL env override allows bats tests to inject a stub.
-EPIC_SKILL="${EPIC_SKILL:-$REPO_ROOT/.claude/skills/github-epic-creation/run.sh}"
+# v0.6.7 (#15): REPO_ROOT via git rev-parse (consumer or plugin-cache OK).
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
+# EPIC_SKILL: prefer consumer copy, fall back to sibling in plugin cache.
+# Both layouts colocate this skill under <root>/skills/github-epic-creation/.
+if [ -n "${EPIC_SKILL:-}" ]; then
+	: # env override (bats stub) wins
+elif [ -x "$REPO_ROOT/.claude/skills/github-epic-creation/run.sh" ]; then
+	EPIC_SKILL="$REPO_ROOT/.claude/skills/github-epic-creation/run.sh"
+elif [ -x "$SCRIPT_DIR/../github-epic-creation/run.sh" ]; then
+	EPIC_SKILL="$SCRIPT_DIR/../github-epic-creation/run.sh"
+else
+	echo "cr-plan: github-epic-creation/run.sh not found (consumer .claude/ or plugin sibling)" >&2
+	exit 2
+fi
 
 # SKILL_WRAPPER=1 lets nested gh/git calls pass skill-bypass-guard.sh.
 export SKILL_WRAPPER=1
