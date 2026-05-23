@@ -39,7 +39,7 @@ set -euo pipefail
 # require git) while keeping the bats contract.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-	REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+	REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
 }
 cd "$REPO_ROOT"
 

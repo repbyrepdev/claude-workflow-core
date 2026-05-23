@@ -20,9 +20,9 @@ set -euo pipefail
 # bash (skills are Claude-initiated).
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
 # shellcheck source=../_common.sh
-source "$REPO_ROOT/.claude/scripts/_common.sh"
+source "$SCRIPT_DIR/../_common.sh"
 
 SCM_DRY_RUN=0
 PR=""

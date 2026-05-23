@@ -23,7 +23,7 @@ set -euo pipefail
 #   errored  — agent crashed / timed-out / unparseable; count is ignored
 #   clean    — for Phase 2, equivalent to ok+0-findings
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/../.." && pwd; })
 LOG_DIR="$REPO_ROOT/.claude/review-log"
 mkdir -p "$LOG_DIR"
 

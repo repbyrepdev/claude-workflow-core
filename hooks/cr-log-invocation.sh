@@ -10,7 +10,7 @@
 #   .claude/hooks/cr-log-invocation.sh ci 365 ee84980 6
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/../.." && pwd; })
 LOG_DIR="$REPO_ROOT/.claude/review-log"
 LOG="$LOG_DIR/cr-budget.jsonl"
 mkdir -p "$LOG_DIR"

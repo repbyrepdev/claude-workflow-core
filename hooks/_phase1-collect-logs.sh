@@ -23,7 +23,7 @@
 # Exit 0 always (empty output = no logs). Stderr gets any git warnings.
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/../.." && pwd; })
 LOG_DIR="$REPO_ROOT/.claude/review-log"
 BASE="${1:-main}"
 

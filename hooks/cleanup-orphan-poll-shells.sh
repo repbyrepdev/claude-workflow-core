@@ -38,7 +38,7 @@ set -euo pipefail
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=""
 if [ -d "$SELF_DIR/../.." ] && [ -d "$SELF_DIR/../../.git" ]; then
-	REPO_ROOT=$(cd "$SELF_DIR/../.." && pwd)
+	REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SELF_DIR/../.." && pwd; })
 else
 	rev_err=$(mktemp -t orphan-cleanup-rev-err.XXXXXX 2>/dev/null) || rev_err="/dev/null"
 	REPO_ROOT=$(git rev-parse --show-toplevel 2>"$rev_err") || REPO_ROOT=""

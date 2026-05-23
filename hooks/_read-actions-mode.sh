@@ -13,7 +13,7 @@
 #   Exit 0 always (caller acts on the output, not the exit code).
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/../.." && pwd; })
 FILE="$REPO_ROOT/.claude/mode.conf"
 
 mode=local

@@ -15,9 +15,9 @@ set -euo pipefail
 #   .claude/scripts/labels/apply-area.sh --diff-range <BASE..HEAD>
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
 # shellcheck source=../_common.sh
-source "$REPO_ROOT/.claude/scripts/_common.sh"
+source "$SCRIPT_DIR/../_common.sh"
 
 LABELER_YML="$REPO_ROOT/.github/labeler.yml"
 [ -f "$LABELER_YML" ] || scm_fail ".github/labeler.yml missing"

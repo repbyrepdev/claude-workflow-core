@@ -12,7 +12,7 @@
 #   1 — budget exhausted (>= 5 in last hour) OR log corrupt (all rows malformed, status=corrupt)
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/../.." && pwd; })
 LOG="$REPO_ROOT/.claude/review-log/cr-budget.jsonl"
 
 QUIET=0

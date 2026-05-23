@@ -29,7 +29,7 @@ fi
 
 # shellcheck disable=SC2034  # REPO_ROOT may be referenced by sourced libs
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/../.." && pwd; })
 LIST_SCRIPT="$(dirname "$0")/list-phase1-agents.sh"
 # v4.15.V: fail-closed on SSOT error. Prior `2>/dev/null || true` let dashboard
 # render "all clean" tables when list-phase1-agents.sh was broken — hiding
