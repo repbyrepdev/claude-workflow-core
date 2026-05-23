@@ -39,8 +39,21 @@
 # distinguish rc=1 (skip Phase 1 cleanly) from rc=2 (real config bug).
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-CONFIG="$REPO_ROOT/.claude/review-config.yml"
+# v0.6.5 (#39): resolve REPO_ROOT from git (so the hook works when invoked
+# from plugin-cache where ../../ resolves into the cache layout, not a repo).
+# Then resolve config via the plugin-helper resolver — consumer copy wins,
+# plugin cache fallback otherwise.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
+if [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
+	# shellcheck source=../_lib/resolve-plugin-helper.sh
+	. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+	CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
+	[ -n "$CONFIG" ] || CONFIG="$REPO_ROOT/.claude/review-config.yml"
+else
+	# Legacy path — running before v0.6.5 lib was installed.
+	CONFIG="$REPO_ROOT/.claude/review-config.yml"
+fi
 ALL_MODE=0
 if [ "${1:-}" = "--all" ]; then
 	ALL_MODE=1

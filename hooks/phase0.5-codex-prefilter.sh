@@ -52,14 +52,19 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-CONFIG="$REPO_ROOT/.claude/review-config.yml"
+# v0.6.5 (#39): plugin-cache fallback for shared config.
+PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
+# shellcheck source=../_lib/resolve-plugin-helper.sh
+. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+
+CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
 DEDUP_HOOK="$(dirname "$0")/phase1-dedup.sh"
 LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 CODEX_HOME_REPO="$REPO_ROOT/.codex"
 
-[ -f "$CONFIG" ] || {
-	echo "phase0.5-codex: review-config.yml missing at $CONFIG" >&2
+[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
+	echo "phase0.5-codex: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 }
 command -v codex >/dev/null 2>&1 || {
