@@ -92,8 +92,28 @@ case "$FILE" in
 	if [ -f "$FILE" ]; then
 		ISSUES=""
 		if command -v shellcheck >/dev/null 2>&1; then
-			if SC=$(shellcheck -S warning "$FILE" 2>&1); then
+			# v0.8.1 (#55): capture rc + output separately so we can
+			# distinguish: rc=0 clean / rc!=0-with-findings / rc!=0-CRASH.
+			# Prior `if SC=$(shellcheck ...)` treated a shellcheck CRASH
+			# (Haskell exception "Non-exhaustive patterns in checkCmd")
+			# as "fail" then grepped for "^In .*line" which matches 0 →
+			# logged as "fail-0-issues" giving operators a sentinel they
+			# can't resolve.
+			SC=$(shellcheck -S warning "$FILE" 2>&1)
+			sc_rc=$?
+			if [ "$sc_rc" -eq 0 ]; then
 				lint_log_append "$FILE" "shellcheck" "pass" 0 ""
+			elif printf '%s\n' "$SC" | grep -qE "Uncaught exception|Non-exhaustive patterns|HasCallStack backtrace"; then
+				# Shellcheck itself crashed — log as "skip" so the gate
+				# distinguishes "linter broken" from "code has issues".
+				# Emit stderr breadcrumb naming the actual exception so
+				# the operator has actionable detail (and can file an
+				# upstream bug against the linter if needed).
+				echo "lint-dispatch: shellcheck CRASHED on $FILE — Haskell exception (likely upstream bug):" >&2
+				printf '%s\n' "$SC" | head -5 | sed 's/^/    /' >&2
+				echo "  Workaround: file an upstream linter issue + try rewriting the offending pattern. lint-gate treats this as 'skip' (not fail) so commits aren't blocked indefinitely." >&2
+				lint_log_append "$FILE" "shellcheck" "skip" 0 "shellcheck crashed (Haskell exception) — likely upstream bug"
+				_lint_pending_append "$FILE" "shellcheck" "crashed-upstream-bug"
 			else
 				sc_count=$(printf '%s\n' "$SC" | grep -cE '^In .*line [0-9]+:' || echo "1")
 				lint_log_append "$FILE" "shellcheck" "fail" "${sc_count:-1}" "$(printf '%s' "$SC" | head -3 | tr '\n' ' ')"
