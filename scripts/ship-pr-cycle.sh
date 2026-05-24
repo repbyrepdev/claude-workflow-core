@@ -1140,10 +1140,14 @@ cmd_next() {
 		# "every audit-record commit restarts phase1" loop — was costing 6+
 		# extra cycles per PR. Per v4.29 design (#792): once Phase 0.5 + 1
 		# pass on a branch, they're DONE for that branch.
+		# CR r2 fix — graduation short-circuit MUST run before
+		# _scaler_rounds + _phase1_clean_streak. Those calls are not pure
+		# and can fail on a graduated branch (e.g., missing review-config.yml
+		# in plugin source repo), causing phase1 to error before the
+		# short-circuit fires. Eval order: graduation first, convergence
+		# only if not graduated.
 		local sha cap clean_streak
 		sha=$(_current_sha)
-		cap=$(_scaler_rounds)
-		clean_streak=$(_phase1_clean_streak "$sha")
 		# Graduation short-circuit (v0.8.4 #63). Mirrors phase0.5's
 		# error-handling discipline (lines ~1000-1085): capture stderr to
 		# tmpfile, distinguish source-rc / function-missing / check-rc>1.
@@ -1212,6 +1216,11 @@ cmd_next() {
 			echo "→ phase1 skipped (branch graduated past Phase 0.5/1); advanced to phase2"
 			return 0
 		fi
+		# Graduation didn't fire — now do the convergence eval. CR r2:
+		# delayed until here so a graduated branch never pays the cost
+		# of these calls (which can fail on missing review-config.yml).
+		cap=$(_scaler_rounds)
+		clean_streak=$(_phase1_clean_streak "$sha")
 		# v0.8.4 (#63): criterion is `>= cap from scaler`, not hardcoded 2.
 		# When scaler returns 1 (small/trivial diff), one clean round is
 		# enough; demanding 2 was costing extra rounds on every pin bump.

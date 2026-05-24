@@ -133,11 +133,14 @@ _warn_with_err() {
 }
 
 # Resolve current sha. F2 fix — was: bare 2>/dev/null suppressing real
-# git errors.
+# git errors. CR r2 fix — actually honor fail-open contract: if git
+# resolution fails, exit 0 (the documented infra-glitch behavior) rather
+# than fall through with empty sha and hit the rc=2 denial path.
 sha_err=$(_capture_err_tmp "scgate-sha")
 sha=$(git rev-parse HEAD 2>"$sha_err") || {
 	_warn_with_err "git rev-parse HEAD failed — fail-open" "$sha_err"
-	sha=""
+	[ "$sha_err" != "/dev/null" ] && rm -f "$sha_err"
+	exit 0
 }
 [ "$sha_err" != "/dev/null" ] && rm -f "$sha_err"
 
@@ -152,11 +155,13 @@ if [ -n "$sha" ] && [ -f "$sf" ]; then
 	[ "$stage_err" != "/dev/null" ] && rm -f "$stage_err"
 fi
 
-# Resolve branch. F3 fix — was: bare 2>/dev/null.
+# Resolve branch. F3 fix — was: bare 2>/dev/null. CR r2 fix —
+# honor fail-open on git failure (exit 0, not continue with empty branch).
 branch_err=$(_capture_err_tmp "scgate-branch")
 branch=$(git rev-parse --abbrev-ref HEAD 2>"$branch_err") || {
-	_warn_with_err "git rev-parse --abbrev-ref HEAD failed — fail-open on graduation" "$branch_err"
-	branch=""
+	_warn_with_err "git rev-parse --abbrev-ref HEAD failed — fail-open" "$branch_err"
+	[ "$branch_err" != "/dev/null" ] && rm -f "$branch_err"
+	exit 0
 }
 [ "$branch_err" != "/dev/null" ] && rm -f "$branch_err"
 
@@ -211,26 +216,30 @@ fi
 # Decision matrix.
 allow=0
 deny_reason=""
+# CR r2 fix — all three categories require GRAD=yes. The state file is
+# sha-keyed so without the branch-level graduation check, the same
+# commit's `push`/`merge-gate` state could carry across branches and
+# let a non-graduated branch bypass the gate.
 case "$CATEGORY" in
 cr-cli)
 	if [ "$GRAD" = "yes" ] && [ "$STAGE" = "phase2" ]; then
 		allow=1
 	else
-		deny_reason="CR-CLI requires cycle stage=phase2 (current=${STAGE:-<unset>}, graduated=${GRAD:-no})."
+		deny_reason="CR-CLI requires graduated branch + cycle stage=phase2 (current=${STAGE:-<unset>}, graduated=${GRAD:-no})."
 	fi
 	;;
 push)
-	if [ "$STAGE" = "push" ]; then
+	if [ "$GRAD" = "yes" ] && [ "$STAGE" = "push" ]; then
 		allow=1
 	else
-		deny_reason="git push requires cycle stage=push (current=${STAGE:-<unset>})."
+		deny_reason="git push requires graduated branch + cycle stage=push (current=${STAGE:-<unset>}, graduated=${GRAD:-no})."
 	fi
 	;;
 merge)
-	if [ "$STAGE" = "merge-gate" ]; then
+	if [ "$GRAD" = "yes" ] && [ "$STAGE" = "merge-gate" ]; then
 		allow=1
 	else
-		deny_reason="gh pr merge requires cycle stage=merge-gate (current=${STAGE:-<unset>})."
+		deny_reason="gh pr merge requires graduated branch + cycle stage=merge-gate (current=${STAGE:-<unset>}, graduated=${GRAD:-no})."
 	fi
 	;;
 esac
