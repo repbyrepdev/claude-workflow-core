@@ -166,7 +166,12 @@ branch=$(git rev-parse --abbrev-ref HEAD 2>"$branch_err") || {
 [ "$branch_err" != "/dev/null" ] && rm -f "$branch_err"
 
 # Resolve graduation marker via the SSOT library.
+# CR r2 fix — track GRAD_FAIL_OPEN flag. Every "fail-open on graduation"
+# WARN sets the flag; we exit 0 below if it's set so the documented
+# fail-open contract is actually honored (previously empty GRAD fell
+# through to deny because all categories require GRAD=yes).
 GRAD=""
+GRAD_FAIL_OPEN=0
 if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
 	grad_lib="$REPO_ROOT/_lib/phase-graduation.sh"
 	# Cache-resolved plugin path fallback for consumer repos where
@@ -176,9 +181,8 @@ if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
 		grad_lib=$(find "$HOME/.claude/plugins/cache/claude-workflow-core" \
 			-maxdepth 4 -type f -name "phase-graduation.sh" 2>"$find_err" | head -1)
 		if [ -z "$grad_lib" ]; then
-			# N4 fix — was silent when find_err was /dev/null (mktemp
-			# cascade). Now always WARN, with stderr if available.
 			_warn_with_err "phase-graduation.sh not found at REPO_ROOT/_lib or plugin cache — fail-open on graduation" "$find_err"
+			GRAD_FAIL_OPEN=1
 		fi
 		[ "$find_err" != "/dev/null" ] && rm -f "$find_err"
 	fi
@@ -199,19 +203,24 @@ if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
 		if [ "$grc" -eq 0 ]; then
 			GRAD="yes"
 		elif [ "$grc" -eq 99 ]; then
-			# F5 fix — function-missing path was silent because $grad_err
-			# is empty (command -v -o-die emits nothing).
 			echo "ship-cycle-director-gate: WARN — graduation_check function missing after sourcing $grad_lib (lib incomplete) — fail-open on graduation" >&2
+			GRAD_FAIL_OPEN=1
 		elif [ "$grc" -gt 1 ]; then
 			if [ -s "$grad_err" ]; then
-				echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc: $(head -c 200 "$grad_err")" >&2
+				echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc: $(head -c 200 "$grad_err") — fail-open on graduation" >&2
 			else
-				echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc (no stderr captured)" >&2
+				echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc (no stderr captured) — fail-open on graduation" >&2
 			fi
+			GRAD_FAIL_OPEN=1
 		fi
 		[ "$grad_err" != "/dev/null" ] && rm -f "$grad_err"
 	fi
 fi
+
+# Honor documented fail-open contract — when graduation lookup itself
+# failed (lib missing, function missing, check errored), allow the
+# command rather than deny. The WARN above tells the operator why.
+[ "$GRAD_FAIL_OPEN" = "1" ] && exit 0
 
 # Decision matrix.
 allow=0
