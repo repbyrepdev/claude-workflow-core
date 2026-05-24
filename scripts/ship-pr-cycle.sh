@@ -1152,8 +1152,10 @@ cmd_next() {
 		# fix was meant to prevent.
 		local _grad_lib _grad_branch _grad_check_rc=99 _grad_err
 		_grad_lib="$(_shipcycle_resolve _lib/phase-graduation.sh)"
+		# N3 fix — mktemp stderr now leaks naturally (was 2>/dev/null
+		# which left the WARN context-less and hid the actual cause).
 		local _grad_branch_err _grad_branch_rc=0 _grad_branch_mk_rc=0
-		_grad_branch_err=$(mktemp -t shipcyc-p1grad.XXXXXX 2>/dev/null) || _grad_branch_mk_rc=$?
+		_grad_branch_err=$(mktemp -t shipcyc-p1grad.XXXXXX) || _grad_branch_mk_rc=$?
 		if [ "$_grad_branch_mk_rc" -ne 0 ]; then
 			# F6 fix — was silently falling back to /dev/null which then
 			# suppressed every downstream WARN; surface the mktemp failure.
@@ -1174,8 +1176,9 @@ cmd_next() {
 		fi
 		[ "$_grad_branch_err" != /dev/null ] && rm -f "$_grad_branch_err"
 		if [ -f "$_grad_lib" ] && [ -n "$_grad_branch" ] && [ "$_grad_branch" != "HEAD" ]; then
+			# N3 fix — same as branch mktemp above.
 			local _grad_check_mk_rc=0
-			_grad_err=$(mktemp -t shipcyc-p1grad-check.XXXXXX 2>/dev/null) || _grad_check_mk_rc=$?
+			_grad_err=$(mktemp -t shipcyc-p1grad-check.XXXXXX) || _grad_check_mk_rc=$?
 			if [ "$_grad_check_mk_rc" -ne 0 ]; then
 				scm_warn "phase1 graduation: mktemp check-stderr-capture failed (rc=$_grad_check_mk_rc) — check-failure WARN will be context-less"
 				_grad_err=/dev/null

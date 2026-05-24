@@ -109,20 +109,34 @@ esac
 # Stderr-capture helper used across all subsequent calls. tmpfile fallback
 # to /dev/null + audible WARN on mktemp failure (F6 fix — was silently
 # falling back to /dev/null which then suppressed every downstream WARN).
+# N1 fix — mktemp stderr now leaks to operator's stderr naturally (was
+# 2>/dev/null which left the WARN content-less when mktemp failed).
 _capture_err_tmp() {
 	local prefix="$1" out
-	out=$(mktemp -t "$prefix.XXXXXX" 2>/dev/null) || {
+	out=$(mktemp -t "$prefix.XXXXXX") || {
 		echo "ship-cycle-director-gate: WARN — mktemp for $prefix failed; downstream WARNs will be context-less" >&2
 		out="/dev/null"
 	}
 	printf '%s' "$out"
 }
 
-# Resolve current sha. Was: bare 2>/dev/null suppressing real git errors
-# (F2 fix).
+# Stderr-aware WARN: surfaces captured stderr if available, otherwise
+# emits an explicit "no stderr captured" so the cascade (mktemp fail +
+# downstream op fail) is never silent. N2/N4 fix.
+_warn_with_err() {
+	local context="$1" err_file="$2"
+	if [ -s "$err_file" ]; then
+		echo "ship-cycle-director-gate: WARN — ${context}: $(head -c 200 "$err_file")" >&2
+	else
+		echo "ship-cycle-director-gate: WARN — ${context} (no stderr captured)" >&2
+	fi
+}
+
+# Resolve current sha. F2 fix — was: bare 2>/dev/null suppressing real
+# git errors.
 sha_err=$(_capture_err_tmp "scgate-sha")
 sha=$(git rev-parse HEAD 2>"$sha_err") || {
-	[ -s "$sha_err" ] && echo "ship-cycle-director-gate: WARN — git rev-parse HEAD failed: $(head -c 200 "$sha_err") — fail-open" >&2
+	_warn_with_err "git rev-parse HEAD failed — fail-open" "$sha_err"
 	sha=""
 }
 [ "$sha_err" != "/dev/null" ] && rm -f "$sha_err"
@@ -132,7 +146,7 @@ STAGE=""
 if [ -n "$sha" ] && [ -f "$sf" ]; then
 	stage_err=$(_capture_err_tmp "scgate-stage")
 	STAGE=$(jq -r '.stage // ""' "$sf" 2>"$stage_err") || {
-		[ -s "$stage_err" ] && echo "ship-cycle-director-gate: WARN — state file $sf unparseable: $(head -c 200 "$stage_err")" >&2
+		_warn_with_err "state file $sf unparseable" "$stage_err"
 		STAGE=""
 	}
 	[ "$stage_err" != "/dev/null" ] && rm -f "$stage_err"
@@ -141,7 +155,7 @@ fi
 # Resolve branch. F3 fix — was: bare 2>/dev/null.
 branch_err=$(_capture_err_tmp "scgate-branch")
 branch=$(git rev-parse --abbrev-ref HEAD 2>"$branch_err") || {
-	[ -s "$branch_err" ] && echo "ship-cycle-director-gate: WARN — git rev-parse --abbrev-ref HEAD failed: $(head -c 200 "$branch_err") — fail-open on graduation" >&2
+	_warn_with_err "git rev-parse --abbrev-ref HEAD failed — fail-open on graduation" "$branch_err"
 	branch=""
 }
 [ "$branch_err" != "/dev/null" ] && rm -f "$branch_err"
@@ -156,9 +170,10 @@ if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
 		find_err=$(_capture_err_tmp "scgate-find")
 		grad_lib=$(find "$HOME/.claude/plugins/cache/claude-workflow-core" \
 			-maxdepth 4 -type f -name "phase-graduation.sh" 2>"$find_err" | head -1)
-		if [ -z "$grad_lib" ] && [ -s "$find_err" ]; then
-			# F4 fix — was: bare 2>/dev/null suppressing find errors.
-			echo "ship-cycle-director-gate: WARN — phase-graduation.sh not found at REPO_ROOT/_lib or plugin cache: $(head -c 200 "$find_err") — fail-open on graduation" >&2
+		if [ -z "$grad_lib" ]; then
+			# N4 fix — was silent when find_err was /dev/null (mktemp
+			# cascade). Now always WARN, with stderr if available.
+			_warn_with_err "phase-graduation.sh not found at REPO_ROOT/_lib or plugin cache — fail-open on graduation" "$find_err"
 		fi
 		[ "$find_err" != "/dev/null" ] && rm -f "$find_err"
 	fi
