@@ -1131,15 +1131,102 @@ cmd_next() {
 		# Phase 1 firing itself is operator-driven (Claude invokes the
 		# 5 parallel Agents + security-review separately — see
 		# feedback_phase1_security_review_separate.md). The orchestrator
-		# detects convergence (2-streak clean rounds in review-log) and
-		# advances; otherwise prints the directive for Claude to read.
+		# detects convergence (clean rounds >= cap from scaler in review-log)
+		# and advances; otherwise prints the directive for Claude to read.
+		#
+		# v0.8.4 (#63 fix): if branch is already graduated (phase0.5 + phase1
+		# converged once on a prior sha), short-circuit to phase2 without
+		# requiring re-convergence on every new sha. This is THE fix for the
+		# "every audit-record commit restarts phase1" loop — was costing 6+
+		# extra cycles per PR. Per v4.29 design (#792): once Phase 0.5 + 1
+		# pass on a branch, they're DONE for that branch.
+		# CR r2 fix — graduation short-circuit MUST run before
+		# _scaler_rounds + _phase1_clean_streak. Those calls are not pure
+		# and can fail on a graduated branch (e.g., missing review-config.yml
+		# in plugin source repo), causing phase1 to error before the
+		# short-circuit fires. Eval order: graduation first, convergence
+		# only if not graduated.
 		local sha cap clean_streak
 		sha=$(_current_sha)
+		# Graduation short-circuit (v0.8.4 #63). Mirrors phase0.5's
+		# error-handling discipline (lines ~1000-1085): capture stderr to
+		# tmpfile, distinguish source-rc / function-missing / check-rc>1.
+		# v0.8.4 CR r1 F2/F3 fix — the prior `2>/dev/null` pattern silenced
+		# every lib failure mode and reproduced the very bug this stage's
+		# fix was meant to prevent.
+		local _grad_lib _grad_branch _grad_check_rc=99 _grad_err
+		_grad_lib="$(_shipcycle_resolve _lib/phase-graduation.sh)"
+		# N3 fix — mktemp stderr now leaks naturally (was 2>/dev/null
+		# which left the WARN context-less and hid the actual cause).
+		local _grad_branch_err _grad_branch_rc=0 _grad_branch_mk_rc=0
+		_grad_branch_err=$(mktemp -t shipcyc-p1grad.XXXXXX) || _grad_branch_mk_rc=$?
+		if [ "$_grad_branch_mk_rc" -ne 0 ]; then
+			# F6 fix — was silently falling back to /dev/null which then
+			# suppressed every downstream WARN; surface the mktemp failure.
+			scm_warn "phase1 graduation: mktemp branch-stderr-capture failed (rc=$_grad_branch_mk_rc) — branch-failure WARN will be context-less"
+			_grad_branch_err=/dev/null
+		fi
+		_grad_branch=$(git rev-parse --abbrev-ref HEAD 2>"$_grad_branch_err") || _grad_branch_rc=$?
+		if [ "$_grad_branch_rc" -ne 0 ]; then
+			# F7 fix — was branch="" silent fallthrough; now WARN flags
+			# that graduation skip is unavailable so operator knows phase1
+			# may over-iterate.
+			if [ -s "$_grad_branch_err" ]; then
+				scm_warn "phase1 graduation: branch resolution failed (rc=$_grad_branch_rc): $(head -c 200 "$_grad_branch_err") — graduation skip unavailable, phase1 may over-iterate"
+			else
+				scm_warn "phase1 graduation: branch resolution failed (rc=$_grad_branch_rc, no stderr) — graduation skip unavailable"
+			fi
+			_grad_branch=""
+		fi
+		[ "$_grad_branch_err" != /dev/null ] && rm -f "$_grad_branch_err"
+		if [ -f "$_grad_lib" ] && [ -n "$_grad_branch" ] && [ "$_grad_branch" != "HEAD" ]; then
+			# N3 fix — same as branch mktemp above.
+			local _grad_check_mk_rc=0
+			_grad_err=$(mktemp -t shipcyc-p1grad-check.XXXXXX) || _grad_check_mk_rc=$?
+			if [ "$_grad_check_mk_rc" -ne 0 ]; then
+				scm_warn "phase1 graduation: mktemp check-stderr-capture failed (rc=$_grad_check_mk_rc) — check-failure WARN will be context-less"
+				_grad_err=/dev/null
+			fi
+			_grad_check_rc=0
+			# shellcheck source=../_lib/phase-graduation.sh
+			# Wrap source + check in subshell so a lib parse error or
+			# missing function name doesn't abort the whole `case` walk.
+			# F1 fix — removed inner `. lib 2>/dev/null` that was eating
+			# source-time parse errors before outer capture saw them.
+			(
+				. "$_grad_lib"
+				command -v graduation_check >/dev/null 2>&1 || exit 99
+				graduation_check "$_grad_branch"
+			) 2>"$_grad_err" || _grad_check_rc=$?
+			# F5 fix — function-missing path was silent because $_grad_err
+			# is empty (command -v -o-die emits nothing).
+			if [ "$_grad_check_rc" -eq 99 ]; then
+				scm_warn "phase1 graduation_check function missing after sourcing $_grad_lib (lib incomplete) — fail-open"
+			elif [ "$_grad_check_rc" -gt 1 ]; then
+				if [ -s "$_grad_err" ]; then
+					scm_warn "phase1 graduation_check rc=$_grad_check_rc: $(head -c 200 "$_grad_err")"
+				else
+					scm_warn "phase1 graduation_check rc=$_grad_check_rc (no stderr captured)"
+				fi
+			fi
+			[ "$_grad_err" != /dev/null ] && rm -f "$_grad_err"
+		fi
+		if [ "$_grad_check_rc" -eq 0 ]; then
+			_set_stage "phase2"
+			echo "→ phase1 skipped (branch graduated past Phase 0.5/1); advanced to phase2"
+			return 0
+		fi
+		# Graduation didn't fire — now do the convergence eval. CR r2:
+		# delayed until here so a graduated branch never pays the cost
+		# of these calls (which can fail on missing review-config.yml).
 		cap=$(_scaler_rounds)
 		clean_streak=$(_phase1_clean_streak "$sha")
-		if [ "$clean_streak" -ge 2 ]; then
+		# v0.8.4 (#63): criterion is `>= cap from scaler`, not hardcoded 2.
+		# When scaler returns 1 (small/trivial diff), one clean round is
+		# enough; demanding 2 was costing extra rounds on every pin bump.
+		if [ "$clean_streak" -ge "$cap" ]; then
 			_set_stage "phase2"
-			echo "→ phase1 converged ($clean_streak-clean-streak ≥ 2); advanced to phase2"
+			echo "→ phase1 converged ($clean_streak-clean-streak ≥ $cap cap); advanced to phase2"
 		else
 			# v4.28-W4 (#732): write the directive ALSO to a marker file
 			# so the phase1-directive-emit UserPromptSubmit hook can
