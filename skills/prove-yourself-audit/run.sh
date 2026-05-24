@@ -1200,6 +1200,20 @@ _append_tracked_audit() {
 	# without it, an empty $jq_err yields `2>""` ambiguous-redirect that
 	# aborts under set -e. Same scenario as phase0.5: TMPDIR-full +
 	# audit-dir-unwriteable usually share a disk.
+	# v0.8.1 (#54): always populate severity. When source uses confidence
+	# (phase0.5/phase1), derive severity from confidence so the field is
+	# never null in the tracked audit log. Mapping:
+	#   conf >= 8 → high     (confidence floor for actionable findings)
+	#   conf 4-7  → medium   (borderline / investigate)
+	#   conf < 4  → low      (speculative / suppress)
+	# This makes the audit log self-describing — downstream tools (CR-in-CI,
+	# external auditors, traceability reports) can rely on severity without
+	# needing to know the per-source field convention.
+	#
+	# evidence_path is intentionally a pointer into session-state (gitignored
+	# transient storage) — the audit entry's finding_text + source + cluster
+	# is the canonical record. We add evidence_persists=false so consumers
+	# know the path is operational, not authoritative.
 	jq_err=$(mktemp 2>/dev/null) || jq_err=/dev/null
 	if ! jq -nc \
 		--arg ts "$ts" --arg kind "$kind" --arg fid "$fid" \
@@ -1208,11 +1222,16 @@ _append_tracked_audit() {
 		--arg evidence "$sfile_rel" \
 		--arg cluster "$cluster" \
 		'{ts:$ts, kind:$kind, finding_id:$fid, source:$src,
-		  severity: (if $sev == "" then null else $sev end),
+		  severity: (if $sev != "" then $sev
+		             elif $conf == "" then null
+		             elif ($conf|tonumber) >= 8 then "high"
+		             elif ($conf|tonumber) >= 4 then "medium"
+		             else "low" end),
 		  confidence: (if $conf == "" then null else ($conf|tonumber) end),
 		  finding_text:$ftext, finding_text_hash:$ftext_hash,
 		  cluster_id: (if $cluster == "" then null else $cluster end),
-		  evidence_path:$evidence}' \
+		  evidence_path:$evidence,
+		  evidence_persists:false}' \
 		>>"$AUDIT_FILE" 2>"$jq_err"; then
 		# CR-CI fix: fail closed on append failure (was WARN+return 0).
 		# Caller depends on the audit entry persisting; silent loss
