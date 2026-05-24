@@ -1144,19 +1144,40 @@ cmd_next() {
 		sha=$(_current_sha)
 		cap=$(_scaler_rounds)
 		clean_streak=$(_phase1_clean_streak "$sha")
-		# Graduation short-circuit (v0.8.4 #63).
-		local _grad_lib _grad_branch _grad_check_rc=99
+		# Graduation short-circuit (v0.8.4 #63). Mirrors phase0.5's
+		# error-handling discipline (lines ~1000-1085): capture stderr to
+		# tmpfile, distinguish source-rc / function-missing / check-rc>1.
+		# v0.8.4 CR r1 F2/F3 fix — the prior `2>/dev/null` pattern silenced
+		# every lib failure mode and reproduced the very bug this stage's
+		# fix was meant to prevent.
+		local _grad_lib _grad_branch _grad_check_rc=99 _grad_err
 		_grad_lib="$(_shipcycle_resolve _lib/phase-graduation.sh)"
-		_grad_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+		local _grad_branch_err _grad_branch_rc=0
+		_grad_branch_err=$(mktemp -t shipcyc-p1grad.XXXXXX) || _grad_branch_err=/dev/null
+		_grad_branch=$(git rev-parse --abbrev-ref HEAD 2>"$_grad_branch_err") || _grad_branch_rc=$?
+		if [ "$_grad_branch_rc" -ne 0 ]; then
+			if [ -s "$_grad_branch_err" ]; then
+				scm_warn "phase1 graduation: branch resolution failed (rc=$_grad_branch_rc): $(head -c 200 "$_grad_branch_err")"
+			fi
+			_grad_branch=""
+		fi
+		[ "$_grad_branch_err" != /dev/null ] && rm -f "$_grad_branch_err"
 		if [ -f "$_grad_lib" ] && [ -n "$_grad_branch" ] && [ "$_grad_branch" != "HEAD" ]; then
+			_grad_err=$(mktemp -t shipcyc-p1grad-check.XXXXXX) || _grad_err=/dev/null
+			_grad_check_rc=0
 			# shellcheck source=../_lib/phase-graduation.sh
-			# v0.8.4: wrap source + check in subshell so a lib parse error or
+			# Wrap source + check in subshell so a lib parse error or
 			# missing function name doesn't abort the whole `case` walk.
 			(
 				. "$_grad_lib" 2>/dev/null
 				command -v graduation_check >/dev/null 2>&1 || exit 99
-				graduation_check "$_grad_branch" 2>/dev/null
-			) && _grad_check_rc=0 || _grad_check_rc=$?
+				graduation_check "$_grad_branch"
+			) 2>"$_grad_err" || _grad_check_rc=$?
+			# rc=0 → graduated; rc=1 → not graduated (silent); rc>1 → lib problem.
+			if [ "$_grad_check_rc" -gt 1 ] && [ -s "$_grad_err" ]; then
+				scm_warn "phase1 graduation_check rc=$_grad_check_rc: $(head -c 200 "$_grad_err")"
+			fi
+			[ "$_grad_err" != /dev/null ] && rm -f "$_grad_err"
 		fi
 		if [ "$_grad_check_rc" -eq 0 ]; then
 			_set_stage "phase2"
