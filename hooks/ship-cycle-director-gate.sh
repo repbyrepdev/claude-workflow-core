@@ -106,12 +106,31 @@ case "$CMD" in
 *) exit 0 ;;
 esac
 
-# Resolve current cycle stage.
-sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+# Stderr-capture helper used across all subsequent calls. tmpfile fallback
+# to /dev/null + audible WARN on mktemp failure (F6 fix — was silently
+# falling back to /dev/null which then suppressed every downstream WARN).
+_capture_err_tmp() {
+	local prefix="$1" out
+	out=$(mktemp -t "$prefix.XXXXXX" 2>/dev/null) || {
+		echo "ship-cycle-director-gate: WARN — mktemp for $prefix failed; downstream WARNs will be context-less" >&2
+		out="/dev/null"
+	}
+	printf '%s' "$out"
+}
+
+# Resolve current sha. Was: bare 2>/dev/null suppressing real git errors
+# (F2 fix).
+sha_err=$(_capture_err_tmp "scgate-sha")
+sha=$(git rev-parse HEAD 2>"$sha_err") || {
+	[ -s "$sha_err" ] && echo "ship-cycle-director-gate: WARN — git rev-parse HEAD failed: $(head -c 200 "$sha_err") — fail-open" >&2
+	sha=""
+}
+[ "$sha_err" != "/dev/null" ] && rm -f "$sha_err"
+
 sf="$REPO_ROOT/.claude/.session-state/ship-cycle/$sha.json"
 STAGE=""
 if [ -n "$sha" ] && [ -f "$sf" ]; then
-	stage_err=$(mktemp -t scgate-stage.XXXXXX) || stage_err="/dev/null"
+	stage_err=$(_capture_err_tmp "scgate-stage")
 	STAGE=$(jq -r '.stage // ""' "$sf" 2>"$stage_err") || {
 		[ -s "$stage_err" ] && echo "ship-cycle-director-gate: WARN — state file $sf unparseable: $(head -c 200 "$stage_err")" >&2
 		STAGE=""
@@ -119,35 +138,56 @@ if [ -n "$sha" ] && [ -f "$sf" ]; then
 	[ "$stage_err" != "/dev/null" ] && rm -f "$stage_err"
 fi
 
-# Resolve graduation marker via the SSOT library (F2/F4 fix — was
-# reimplementing the lookup via glob+jq).
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+# Resolve branch. F3 fix — was: bare 2>/dev/null.
+branch_err=$(_capture_err_tmp "scgate-branch")
+branch=$(git rev-parse --abbrev-ref HEAD 2>"$branch_err") || {
+	[ -s "$branch_err" ] && echo "ship-cycle-director-gate: WARN — git rev-parse --abbrev-ref HEAD failed: $(head -c 200 "$branch_err") — fail-open on graduation" >&2
+	branch=""
+}
+[ "$branch_err" != "/dev/null" ] && rm -f "$branch_err"
+
+# Resolve graduation marker via the SSOT library.
 GRAD=""
 if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
 	grad_lib="$REPO_ROOT/_lib/phase-graduation.sh"
 	# Cache-resolved plugin path fallback for consumer repos where
 	# _lib/ lives under .claude/plugins/cache/...
 	if [ ! -f "$grad_lib" ]; then
+		find_err=$(_capture_err_tmp "scgate-find")
 		grad_lib=$(find "$HOME/.claude/plugins/cache/claude-workflow-core" \
-			-maxdepth 4 -type f -name "phase-graduation.sh" 2>/dev/null | head -1)
+			-maxdepth 4 -type f -name "phase-graduation.sh" 2>"$find_err" | head -1)
+		if [ -z "$grad_lib" ] && [ -s "$find_err" ]; then
+			# F4 fix — was: bare 2>/dev/null suppressing find errors.
+			echo "ship-cycle-director-gate: WARN — phase-graduation.sh not found at REPO_ROOT/_lib or plugin cache: $(head -c 200 "$find_err") — fail-open on graduation" >&2
+		fi
+		[ "$find_err" != "/dev/null" ] && rm -f "$find_err"
 	fi
 	if [ -n "$grad_lib" ] && [ -f "$grad_lib" ]; then
-		# Subshell isolation: any source/parse error inside the lib
-		# cannot abort the gate script. rc=0 from graduation_check means
-		# graduated; rc=1 means not graduated (silent); rc>1 means lib
-		# error (surface stderr).
-		grad_err=$(mktemp -t scgate-grad.XXXXXX) || grad_err="/dev/null"
+		# Subshell isolation: any source/parse error inside the lib cannot
+		# abort the gate script. F1 fix — inner `. lib 2>/dev/null` was
+		# eating source-time parse errors before outer capture saw them.
+		# rc=0 → graduated; rc=1 → not graduated (silent); rc=99 → function
+		# missing (lib incomplete); rc>1 (≠99) → real lib error.
+		grad_err=$(_capture_err_tmp "scgate-grad")
 		grc=0
 		(
 			# shellcheck source=/dev/null
-			. "$grad_lib" 2>/dev/null
+			. "$grad_lib"
 			command -v graduation_check >/dev/null 2>&1 || exit 99
 			graduation_check "$branch"
 		) 2>"$grad_err" || grc=$?
 		if [ "$grc" -eq 0 ]; then
 			GRAD="yes"
-		elif [ "$grc" -gt 1 ] && [ -s "$grad_err" ]; then
-			echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc: $(head -c 200 "$grad_err")" >&2
+		elif [ "$grc" -eq 99 ]; then
+			# F5 fix — function-missing path was silent because $grad_err
+			# is empty (command -v -o-die emits nothing).
+			echo "ship-cycle-director-gate: WARN — graduation_check function missing after sourcing $grad_lib (lib incomplete) — fail-open on graduation" >&2
+		elif [ "$grc" -gt 1 ]; then
+			if [ -s "$grad_err" ]; then
+				echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc: $(head -c 200 "$grad_err")" >&2
+			else
+				echo "ship-cycle-director-gate: WARN — graduation_check rc=$grc (no stderr captured)" >&2
+			fi
 		fi
 		[ "$grad_err" != "/dev/null" ] && rm -f "$grad_err"
 	fi

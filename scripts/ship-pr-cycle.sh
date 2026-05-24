@@ -1152,30 +1152,55 @@ cmd_next() {
 		# fix was meant to prevent.
 		local _grad_lib _grad_branch _grad_check_rc=99 _grad_err
 		_grad_lib="$(_shipcycle_resolve _lib/phase-graduation.sh)"
-		local _grad_branch_err _grad_branch_rc=0
-		_grad_branch_err=$(mktemp -t shipcyc-p1grad.XXXXXX) || _grad_branch_err=/dev/null
+		local _grad_branch_err _grad_branch_rc=0 _grad_branch_mk_rc=0
+		_grad_branch_err=$(mktemp -t shipcyc-p1grad.XXXXXX 2>/dev/null) || _grad_branch_mk_rc=$?
+		if [ "$_grad_branch_mk_rc" -ne 0 ]; then
+			# F6 fix — was silently falling back to /dev/null which then
+			# suppressed every downstream WARN; surface the mktemp failure.
+			scm_warn "phase1 graduation: mktemp branch-stderr-capture failed (rc=$_grad_branch_mk_rc) — branch-failure WARN will be context-less"
+			_grad_branch_err=/dev/null
+		fi
 		_grad_branch=$(git rev-parse --abbrev-ref HEAD 2>"$_grad_branch_err") || _grad_branch_rc=$?
 		if [ "$_grad_branch_rc" -ne 0 ]; then
+			# F7 fix — was branch="" silent fallthrough; now WARN flags
+			# that graduation skip is unavailable so operator knows phase1
+			# may over-iterate.
 			if [ -s "$_grad_branch_err" ]; then
-				scm_warn "phase1 graduation: branch resolution failed (rc=$_grad_branch_rc): $(head -c 200 "$_grad_branch_err")"
+				scm_warn "phase1 graduation: branch resolution failed (rc=$_grad_branch_rc): $(head -c 200 "$_grad_branch_err") — graduation skip unavailable, phase1 may over-iterate"
+			else
+				scm_warn "phase1 graduation: branch resolution failed (rc=$_grad_branch_rc, no stderr) — graduation skip unavailable"
 			fi
 			_grad_branch=""
 		fi
 		[ "$_grad_branch_err" != /dev/null ] && rm -f "$_grad_branch_err"
 		if [ -f "$_grad_lib" ] && [ -n "$_grad_branch" ] && [ "$_grad_branch" != "HEAD" ]; then
-			_grad_err=$(mktemp -t shipcyc-p1grad-check.XXXXXX) || _grad_err=/dev/null
+			local _grad_check_mk_rc=0
+			_grad_err=$(mktemp -t shipcyc-p1grad-check.XXXXXX 2>/dev/null) || _grad_check_mk_rc=$?
+			if [ "$_grad_check_mk_rc" -ne 0 ]; then
+				scm_warn "phase1 graduation: mktemp check-stderr-capture failed (rc=$_grad_check_mk_rc) — check-failure WARN will be context-less"
+				_grad_err=/dev/null
+			fi
 			_grad_check_rc=0
 			# shellcheck source=../_lib/phase-graduation.sh
 			# Wrap source + check in subshell so a lib parse error or
 			# missing function name doesn't abort the whole `case` walk.
+			# F1 fix — removed inner `. lib 2>/dev/null` that was eating
+			# source-time parse errors before outer capture saw them.
 			(
-				. "$_grad_lib" 2>/dev/null
+				. "$_grad_lib"
 				command -v graduation_check >/dev/null 2>&1 || exit 99
 				graduation_check "$_grad_branch"
 			) 2>"$_grad_err" || _grad_check_rc=$?
-			# rc=0 → graduated; rc=1 → not graduated (silent); rc>1 → lib problem.
-			if [ "$_grad_check_rc" -gt 1 ] && [ -s "$_grad_err" ]; then
-				scm_warn "phase1 graduation_check rc=$_grad_check_rc: $(head -c 200 "$_grad_err")"
+			# F5 fix — function-missing path was silent because $_grad_err
+			# is empty (command -v -o-die emits nothing).
+			if [ "$_grad_check_rc" -eq 99 ]; then
+				scm_warn "phase1 graduation_check function missing after sourcing $_grad_lib (lib incomplete) — fail-open"
+			elif [ "$_grad_check_rc" -gt 1 ]; then
+				if [ -s "$_grad_err" ]; then
+					scm_warn "phase1 graduation_check rc=$_grad_check_rc: $(head -c 200 "$_grad_err")"
+				else
+					scm_warn "phase1 graduation_check rc=$_grad_check_rc (no stderr captured)"
+				fi
 			fi
 			[ "$_grad_err" != /dev/null ] && rm -f "$_grad_err"
 		fi
