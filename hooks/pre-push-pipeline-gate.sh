@@ -211,31 +211,32 @@ _cr_cli_clean_for_sha() {
 	latest_findings=$(jq -rs --arg s "$short_sha" \
 		'[.[] | select(.sha==$s)] | if length > 0 then (last.findings // -1) else -1 end' \
 		"$cr_log" 2>/dev/null || echo -1)
-	# v0.8.2 (FCP toolkit #55): clean iff findings=0 OR every CR finding
-	# is covered by a prove-yourself record (fix or rejection-with-
-	# evidence). This honors the documented workflow escape for false-
-	# positive CR findings (e.g. CR sandbox cannot reach external URLs
-	# and false-flags 404 on valid plugin pins). Without this clause,
-	# verified false positives force the operator to PIPELINE_GATE_SKIP
-	# which the workflow explicitly forbids — leaving no clean exit.
+	# v0.8.3 (CR critical on #33): reject non-numeric / missing / negative
+	# latest_findings BEFORE the coverage path. -1 means "no CR-CLI run
+	# for this SHA" which must fail-closed, not get whitewashed by old
+	# audit records.
+	case "$latest_findings" in
+	'' | *[!0-9]*)
+		return 1
+		;;
+	esac
 	if [ "$latest_findings" = "0" ]; then
 		return 0
 	fi
-	# Count prove-yourself records covering CR findings for this sha.
+	# v0.8.2/v0.8.3 (FCP #55 + CR #33 followup): clean iff findings>0
+	# but every CR finding has a prove-yourself record SCOPED TO THIS
+	# SHA. Per CR review, scope by .covered_sha (recorded by writer
+	# when the rejection is for a specific commit) — not the whole
+	# audit history.
 	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl"
 	[ -f "$audit_log" ] || return 1
 	local cr_covered
-	cr_covered=$(jq -rs '
-		[.[] | select(.source == "cr")] |
+	cr_covered=$(jq -rs --arg s "$short_sha" '
+		[.[] | select(.source == "cr") | select((.covered_sha // "") | startswith($s))] |
 		map(.covers_count // 1) | add // 0
 	' "$audit_log" 2>/dev/null || echo 0)
-	# Only consider records covering THIS sha's findings: we track this
-	# via the audit log's append-only history. Conservative coverage:
-	# require cr_covered >= latest_findings (could be slightly over-
-	# counted if prior CR rounds were on earlier shas, but err on the
-	# side of accepting the push when evidence exists).
 	if [ "${cr_covered:-0}" -ge "${latest_findings:-0}" ]; then
-		echo "pre-push-pipeline-gate: CR findings=$latest_findings on $short_sha covered by $cr_covered prove-yourself records — accepting." >&2
+		echo "pre-push-pipeline-gate: CR findings=$latest_findings on $short_sha covered by $cr_covered prove-yourself records (scoped to sha) — accepting." >&2
 		return 0
 	fi
 	return 1

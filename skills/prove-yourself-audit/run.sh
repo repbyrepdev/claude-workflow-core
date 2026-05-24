@@ -1214,6 +1214,13 @@ _append_tracked_audit() {
 	# transient storage) — the audit entry's finding_text + source + cluster
 	# is the canonical record. We add evidence_persists=false so consumers
 	# know the path is operational, not authoritative.
+	# v0.8.3 (#33 CR fix): record covered_sha (current HEAD at write time)
+	# so the pipeline-gate's CR-coverage query can scope by sha rather
+	# than summing the whole audit history. Empty if not in a repo (e.g.
+	# tests). Cannot use $REPO_ROOT here because some callers pre-set it
+	# to a fixture dir; resolve from git directly for the current HEAD.
+	local covered_sha
+	covered_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
 	jq_err=$(mktemp 2>/dev/null) || jq_err=/dev/null
 	if ! jq -nc \
 		--arg ts "$ts" --arg kind "$kind" --arg fid "$fid" \
@@ -1221,6 +1228,7 @@ _append_tracked_audit() {
 		--arg ftext "$ftext" --arg ftext_hash "$ftext_hash" \
 		--arg evidence "$sfile_rel" \
 		--arg cluster "$cluster" \
+		--arg csha "$covered_sha" \
 		'{ts:$ts, kind:$kind, finding_id:$fid, source:$src,
 		  severity: (if $sev != "" then $sev
 		             elif $conf == "" then null
@@ -1231,7 +1239,8 @@ _append_tracked_audit() {
 		  finding_text:$ftext, finding_text_hash:$ftext_hash,
 		  cluster_id: (if $cluster == "" then null else $cluster end),
 		  evidence_path:$evidence,
-		  evidence_persists:false}' \
+		  evidence_persists:false,
+		  covered_sha: (if $csha == "" then null else $csha end)}' \
 		>>"$AUDIT_FILE" 2>"$jq_err"; then
 		# CR-CI fix: fail closed on append failure (was WARN+return 0).
 		# Caller depends on the audit entry persisting; silent loss
