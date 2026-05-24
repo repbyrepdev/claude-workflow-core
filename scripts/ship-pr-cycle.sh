@@ -1131,15 +1131,44 @@ cmd_next() {
 		# Phase 1 firing itself is operator-driven (Claude invokes the
 		# 5 parallel Agents + security-review separately — see
 		# feedback_phase1_security_review_separate.md). The orchestrator
-		# detects convergence (2-streak clean rounds in review-log) and
-		# advances; otherwise prints the directive for Claude to read.
+		# detects convergence (clean rounds >= cap from scaler in review-log)
+		# and advances; otherwise prints the directive for Claude to read.
+		#
+		# v0.8.4 (#63 fix): if branch is already graduated (phase0.5 + phase1
+		# converged once on a prior sha), short-circuit to phase2 without
+		# requiring re-convergence on every new sha. This is THE fix for the
+		# "every audit-record commit restarts phase1" loop — was costing 6+
+		# extra cycles per PR. Per v4.29 design (#792): once Phase 0.5 + 1
+		# pass on a branch, they're DONE for that branch.
 		local sha cap clean_streak
 		sha=$(_current_sha)
 		cap=$(_scaler_rounds)
 		clean_streak=$(_phase1_clean_streak "$sha")
-		if [ "$clean_streak" -ge 2 ]; then
+		# Graduation short-circuit (v0.8.4 #63).
+		local _grad_lib _grad_branch _grad_check_rc=99
+		_grad_lib="$(_shipcycle_resolve _lib/phase-graduation.sh)"
+		_grad_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+		if [ -f "$_grad_lib" ] && [ -n "$_grad_branch" ] && [ "$_grad_branch" != "HEAD" ]; then
+			# shellcheck source=../_lib/phase-graduation.sh
+			# v0.8.4: wrap source + check in subshell so a lib parse error or
+			# missing function name doesn't abort the whole `case` walk.
+			(
+				. "$_grad_lib" 2>/dev/null
+				command -v graduation_check >/dev/null 2>&1 || exit 99
+				graduation_check "$_grad_branch" 2>/dev/null
+			) && _grad_check_rc=0 || _grad_check_rc=$?
+		fi
+		if [ "$_grad_check_rc" -eq 0 ]; then
 			_set_stage "phase2"
-			echo "→ phase1 converged ($clean_streak-clean-streak ≥ 2); advanced to phase2"
+			echo "→ phase1 skipped (branch graduated past Phase 0.5/1); advanced to phase2"
+			return 0
+		fi
+		# v0.8.4 (#63): criterion is `>= cap from scaler`, not hardcoded 2.
+		# When scaler returns 1 (small/trivial diff), one clean round is
+		# enough; demanding 2 was costing extra rounds on every pin bump.
+		if [ "$clean_streak" -ge "$cap" ]; then
+			_set_stage "phase2"
+			echo "→ phase1 converged ($clean_streak-clean-streak ≥ $cap cap); advanced to phase2"
 		else
 			# v4.28-W4 (#732): write the directive ALSO to a marker file
 			# so the phase1-directive-emit UserPromptSubmit hook can
