@@ -6,6 +6,13 @@ set -euo pipefail
 # autonomous. Drives Phase 0.5 → Phase 1 → Phase 2 → push → CR-in-CI →
 # auto-triage → merge-gate as a single state machine.
 #
+# Relationship to cr-plan (#24): cr-plan is a PARALLEL workflow that runs
+# BEFORE ship-pr-cycle, not nested. cr-plan handles issue → epic+subs
+# planning; ship-pr-cycle handles branch → merge once an operator has
+# picked a sub. No auto-fire from ship-pr-cycle into cr-plan — they are
+# disjoint by design (see skills/cr-plan/SKILL.md "Relationship to
+# ship-pr-cycle").
+#
 # State file: .claude/.session-state/ship-cycle/<sha>.json — keyed per-HEAD,
 # preserved across amends via branch-pointer linkage at
 # .claude/.session-state/ship-cycle/branch/<branch>.json

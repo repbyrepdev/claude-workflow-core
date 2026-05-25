@@ -52,6 +52,48 @@ CR provides the AI plan generation — strong context awareness via issue histor
 - `jq` — JSON parsing
 - `.claude/skills/github-epic-creation/run.sh` — for the actual epic+subs creation
 
+## Relationship to ship-pr-cycle (#24)
+
+cr-plan and ship-pr-cycle are **parallel workflows**, not nested. They
+run at different points in the issue → PR lifecycle:
+
+```text
+[issue planning]            [PR work]
+   cr-plan                    ship-pr-cycle
+   ↓                          ↓
+   issue → epic + subs   →   branch off sub → phase0.5 → phase1 →
+                              phase2 → push → cr-in-ci-wait → merge
+```
+
+**Decision (v0.8.6 #24): manual cr-plan invocation, no auto-fire from
+ship-pr-cycle**. Reasons:
+
+- **Magic auto-fire is brittle.** Hooking ship-pr-cycle to detect
+  `plan-me` and auto-trigger cr-plan would couple a state machine
+  (PR workflow) to an event stream (issue labeling). Each consumer
+  repo has different Actions-cap posture, project board IDs, label
+  conventions — auto-fire makes this fragile.
+- **cr-plan precedes ship-pr-cycle.** By the time ship-pr-cycle
+  starts (branch ready, ready to phase0.5), the issue → epic + subs
+  has already happened (operator ran `cr-plan parse <N>`). ship-pr-
+  cycle doesn't need to know cr-plan ran.
+- **Consumers without project boards work fine.** cr-plan uses
+  github sub-issue linkage (GraphQL `addSubIssue`), not project
+  fields. No project board required.
+
+**Operator workflow:**
+
+1. Issue filed (operator OR ai-triage) → optionally `plan-me`
+   labeled.
+2. CR Issue Planner posts plan comment (~5-10min after label).
+3. **Operator runs `cr-plan parse <N>`** → epic + subs created.
+4. Operator picks a sub, runs `gh issue edit <sub> --add-assignee
+   @me`, branches off `feat/v0.X/<sub>-…`.
+5. ship-pr-cycle takes over from `branch-ready` stage.
+
+No ship-pr-cycle stage change required — the two workflows are
+disjoint by design.
+
 ## Tests
 
 `.claude/tests/skills/cr-plan-run.bats` covers:
