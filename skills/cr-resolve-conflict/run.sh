@@ -26,8 +26,8 @@ Wraps CodeRabbit's resolve-merge-conflict feature.
 
 Exit codes:
   0 — CR resolved the conflict (or no conflict to resolve)
-  2 — CR declined, timed out, or pre-check failed
-  3 — missing prerequisites (gh not authed, etc.)
+  2 — CR declined or timed out
+  3 — missing prerequisites (gh not authed, pre-check API failure, etc.)
 EOF
 }
 
@@ -46,6 +46,12 @@ while [ $# -gt 0 ]; do
 			echo "error: --timeout requires value" >&2
 			exit 2
 		}
+		# Guard against non-numeric / negative values — both would blow up
+		# at the arithmetic comparison below (`[ "$ELAPSED" -ge "$TIMEOUT_SEC" ]`).
+		if ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -le 0 ]; then
+			echo "error: --timeout must be a positive integer (got '$2')" >&2
+			exit 2
+		fi
 		TIMEOUT_SEC="$2"
 		shift 2
 		;;
@@ -151,11 +157,21 @@ while true; do
 	fi
 
 	# Check head SHA — did CR push a resolution?
+	# Verify the commit author: an operator force-push during the poll window
+	# would otherwise be mistaken for CR's resolution. Per CR docs, if an
+	# external commit lands while CR is resolving, CR aborts — we shouldn't
+	# claim success in that case.
 	HEAD_AFTER=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "$HEAD_BEFORE")
 	if [ "$HEAD_AFTER" != "$HEAD_BEFORE" ]; then
-		echo "cr-resolve-conflict: CR pushed resolution ($HEAD_BEFORE -> $HEAD_AFTER) — success (rc=0)" >&2
-		_log_event "resolved" "$HEAD_BEFORE" "$HEAD_AFTER" "$ELAPSED" ""
-		exit 0
+		LATEST_AUTHOR=$(gh api "repos/{owner}/{repo}/commits/$HEAD_AFTER" --jq '.author.login // ""' 2>/dev/null || echo "")
+		if [ "$LATEST_AUTHOR" = "coderabbitai[bot]" ] || [ "$LATEST_AUTHOR" = "coderabbitai" ]; then
+			echo "cr-resolve-conflict: CR pushed resolution ($HEAD_BEFORE -> $HEAD_AFTER) — success (rc=0)" >&2
+			_log_event "resolved" "$HEAD_BEFORE" "$HEAD_AFTER" "$ELAPSED" ""
+			exit 0
+		fi
+		echo "cr-resolve-conflict: head changed ($HEAD_BEFORE -> $HEAD_AFTER) but author='$LATEST_AUTHOR' (not CR) — continuing poll" >&2
+		# Update baseline so we don't keep re-checking the same external commit.
+		HEAD_BEFORE="$HEAD_AFTER"
 	fi
 
 	# Check latest CR comment for decline markers.

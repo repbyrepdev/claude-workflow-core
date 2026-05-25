@@ -13,7 +13,7 @@ Wraps CodeRabbit's [resolve-merge-conflict](https://docs.coderabbit.ai/finishing
 2. Capture `head_before` SHA + post `@coderabbitai resolve merge conflict` comment.
 3. Poll loop (default 600s, configurable via `CR_RESOLVE_TIMEOUT_SEC`):
    - Watch for `head_after != head_before` (CR pushed a resolution commit) → success, exit 0
-   - Watch for CR reply containing decline markers (`ambiguous`, `security-critical`, `decline`, `manual`) → fall back, exit 2
+   - Watch for CR reply containing decline markers (`unable to resolve`, `decline`, `ambiguous`, `security-critical`, `requires manual`, `cannot automatically`) → fall back, exit 2
    - On timeout: exit 2 (treat as decline; operator does manual rebase)
 4. Append JSONL entry to `.claude/logs/cr-resolve-conflict.jsonl`.
 
