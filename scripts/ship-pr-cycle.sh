@@ -1360,6 +1360,32 @@ EOF
 		if [ -n "$upstream_sha" ] && [ "$upstream_sha" = "$head_sha" ]; then
 			echo "ship-pr-cycle: push — already pushed (upstream matches HEAD)"
 		else
+			# Pre-flight: clear stale .git/index.lock if present + no live git
+			# process holds it (#35). git push checks for index.lock before
+			# its own ref-locks; a stale sentinel from a prior interrupted op
+			# would fail this with "Unable to create '.git/index.lock'".
+			local cycle_lock="$REPO_ROOT/.git/index.lock"
+			if [ -e "$cycle_lock" ]; then
+				local cycle_lock_held=0
+				if command -v lsof >/dev/null 2>&1; then
+					lsof -- "$cycle_lock" >/dev/null 2>&1 && cycle_lock_held=1
+				fi
+				if [ "$cycle_lock_held" -eq 0 ] && pgrep -af "git[ ].*${REPO_ROOT}" >/dev/null 2>&1; then
+					cycle_lock_held=1
+				fi
+				if [ "$cycle_lock_held" -eq 0 ]; then
+					local stale_log="$REPO_ROOT/.claude/logs/git-commit-stale-lock-clear.jsonl"
+					mkdir -p "$(dirname "$stale_log")" 2>/dev/null || true
+					local cycle_ts
+					cycle_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+					echo "ship-pr-cycle: push — removing stale .git/index.lock (no live git holds it)" >&2
+					printf '{"ts":"%s","repo":"%s","lock":"%s","action":"cleared","reason":"stale-sentinel-no-live-git","source":"ship-pr-cycle"}\n' \
+						"$cycle_ts" "$REPO_ROOT" "$cycle_lock" >>"$stale_log" 2>/dev/null || true
+					rm -f "$cycle_lock"
+				else
+					echo "ship-pr-cycle: push — .git/index.lock present + live git process detected — NOT removing" >&2
+				fi
+			fi
 			echo "ship-pr-cycle: push — running 'git push -u origin $branch'"
 			if ! git push -u origin "$branch"; then
 				echo "ship-pr-cycle: ERROR: git push failed (see output above)" >&2

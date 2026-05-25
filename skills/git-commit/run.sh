@@ -57,6 +57,42 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$REPO_ROOT"
 
+# Pre-flight: clear stale .git/index.lock if present + no live git process
+# holds it (#35). Lock-as-sentinel pattern means it shouldn't persist
+# without a running git op; if it does, a prior commit was killed
+# (Bash 2-min timeout, TaskStop, shell death). Safe to remove.
+LOCK="$REPO_ROOT/.git/index.lock"
+if [ -e "$LOCK" ]; then
+	# Verify no live git is holding it. Two signals:
+	#  - any `git ...` process running with our REPO_ROOT in cwd
+	#  - any pre-commit/pre-push hook child running with our REPO_ROOT
+	# `pgrep -af` matches against argv only — pair with lsof to also
+	# catch processes that have the lock file open.
+	lock_held=0
+	if command -v lsof >/dev/null 2>&1; then
+		if lsof -- "$LOCK" >/dev/null 2>&1; then
+			lock_held=1
+		fi
+	fi
+	if [ "$lock_held" -eq 0 ] && pgrep -af "git[ ].*${REPO_ROOT}" >/dev/null 2>&1; then
+		lock_held=1
+	fi
+	if [ "$lock_held" -eq 0 ] && pgrep -af "pre[-_]commit.*${REPO_ROOT}" >/dev/null 2>&1; then
+		lock_held=1
+	fi
+	if [ "$lock_held" -eq 0 ]; then
+		stale_log="$REPO_ROOT/.claude/logs/git-commit-stale-lock-clear.jsonl"
+		mkdir -p "$(dirname "$stale_log")" 2>/dev/null || true
+		ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+		echo "git-commit: removing stale .git/index.lock (0-byte sentinel, no live git holds it) — see $stale_log" >&2
+		printf '{"ts":"%s","repo":"%s","lock":"%s","action":"cleared","reason":"stale-sentinel-no-live-git"}\n' \
+			"$ts" "$REPO_ROOT" "$LOCK" >>"$stale_log" 2>/dev/null || true
+		rm -f "$LOCK"
+	else
+		echo "git-commit: .git/index.lock present + live git process detected — NOT removing. Wait or kill the live process." >&2
+	fi
+fi
+
 MESSAGE=""
 MESSAGE_FILE=""
 # COPILOT_DRAFT: legacy opt-in flag; Copilot-draft is now DEFAULT
