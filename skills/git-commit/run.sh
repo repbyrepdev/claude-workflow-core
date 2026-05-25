@@ -85,7 +85,7 @@ if [ -e "$LOCK" ]; then
 		mkdir -p "$(dirname "$stale_log")" 2>/dev/null || true
 		ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 		echo "git-commit: removing stale .git/index.lock (0-byte sentinel, no live git holds it) — see $stale_log" >&2
-		printf '{"ts":"%s","repo":"%s","lock":"%s","action":"cleared","reason":"stale-sentinel-no-live-git"}\n' \
+		printf '{"ts":"%s","repo":"%s","lock":"%s","action":"cleared","reason":"stale-sentinel-no-live-git","source":"git-commit"}\n' \
 			"$ts" "$REPO_ROOT" "$LOCK" >>"$stale_log" 2>/dev/null || true
 		rm -f "$LOCK"
 	else
