@@ -98,6 +98,10 @@ cd "$TARGET" || {
 	echo "error: cannot cd into $TARGET after mkdir (permissions? symlink loop?)" >&2
 	exit 2
 }
+# Resolve to absolute after cd so dry-run cleanup (which does `cd /`)
+# can still locate the target by absolute path even when $TARGET was
+# originally given as a relative argument.
+TARGET=$(pwd)
 
 # Track skipped files so the end-of-run summary can warn loudly.
 SKIPPED_FILES=()
@@ -268,7 +272,13 @@ if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	exit 2
 fi
 
-exec "$PLUGIN_CACHE/$PIN/hooks/review-log.sh" "$@"
+TARGET_HOOK="$PLUGIN_CACHE/$PIN/hooks/review-log.sh"
+if [ ! -x "$TARGET_HOOK" ]; then
+	echo "review-log.sh shim: target hook missing or non-executable at $TARGET_HOOK" >&2
+	echo "  ensure plugin cache for $PIN is installed (scripts/bootstrap-machine.sh)" >&2
+	exit 2
+fi
+exec "$TARGET_HOOK" "$@"
 EOF
 
 # --- .github/pull_request_template.md --------------------------------
@@ -342,6 +352,9 @@ _write .github/labels.yml 644 <<'EOF'
   color: 5319e7
 - name: area:infrastructure
   color: 0e8a16
+- name: brainstorm
+  color: c5def5
+  description: Discussion-style ideation
 EOF
 
 # --- .github/required-checks-list.yml --------------------------------
@@ -481,6 +494,92 @@ body:
       required: true
 EOF
 
+# --- .github/labeler.yml ---------------------------------------------
+_write .github/labeler.yml 644 <<'EOF'
+---
+# Path → label rules consumed by pr-labeler.yml workflow.
+# See https://github.com/actions/labeler for syntax.
+area:infrastructure:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/**
+          - .github/**
+          - .claude/**
+          - .pre-commit-config.yaml
+EOF
+
+# --- .github/workflows/ stubs ----------------------------------------
+# Minimal workflow set: gitleaks, pr-lint, pr-labeler. Operator extends
+# (lint-ci, project-automation, ai-triage) per repo needs.
+_write .github/workflows/gitleaks.yml 644 <<'EOF'
+name: Gitleaks Secret Scan
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+EOF
+
+_write .github/workflows/pr-lint.yml 644 <<'EOF'
+name: PR Lint
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  pull-requests: read
+jobs:
+  pr-lint:
+    runs-on: ubuntu-latest
+    env:
+      BODY: ${{ github.event.pull_request.body }}
+    steps:
+      - name: Require PR body
+        if: always() && !cancelled()
+        run: |
+          if [ -z "$BODY" ] || [ "${#BODY}" -lt 50 ]; then
+            echo "::error::PR body too short — fill out the template"
+            exit 1
+          fi
+      - name: Require issue reference
+        if: always() && !cancelled()
+        run: |
+          if echo "$BODY" | grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+"; then
+            echo "Issue link found"
+          else
+            echo "::error::PR body must reference an issue (e.g., 'Closes #N')"
+            exit 1
+          fi
+EOF
+
+_write .github/workflows/pr-labeler.yml 644 <<'EOF'
+name: PR auto-label
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+EOF
+
 # --- Summary ---------------------------------------------------------
 _log ""
 if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
@@ -492,14 +591,15 @@ fi
 if [ "$DRY_RUN" = "1" ]; then
 	_log "bootstrap-repo dry-run complete. Re-run without --dry-run to apply."
 	# Clean up the temp-created dir IF it was empty + we created it.
-	# Don't suppress rmdir errors — they signal something unexpected
-	# happened during dry-run (files leaked despite DRY_RUN guard).
+	# Resolve TARGET to absolute BEFORE cd / so a relative argument like
+	# "new-repo" doesn't get re-resolved against root after cd.
 	if [ "$TARGET_PREEXISTED" = "0" ]; then
+		TARGET_ABS=$(cd "$TARGET" && pwd)
 		cd /
-		if [ -z "$(ls -A "$TARGET" 2>/dev/null)" ]; then
-			rmdir "$TARGET"
+		if [ -z "$(ls -A "$TARGET_ABS" 2>/dev/null)" ]; then
+			rmdir "$TARGET_ABS"
 		else
-			_log "⚠ dry-run target dir $TARGET unexpectedly non-empty — leaving in place for inspection"
+			_log "⚠ dry-run target dir $TARGET_ABS unexpectedly non-empty — leaving in place for inspection"
 		fi
 	fi
 else
