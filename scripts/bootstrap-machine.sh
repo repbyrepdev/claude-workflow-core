@@ -10,8 +10,10 @@ set -euo pipefail
 #
 # Wires:
 #   - Plugin cache install at latest tagged version
-#   - ~/.claude/settings.json hook registrations (idempotent merge)
-#   - Keychain entries (interactive, prompts on missing)
+#   - ~/.claude/settings.json: reference check only (no auto-edit —
+#     operator enables via `/plugin enable` to avoid magic mutation)
+#   - Keychain entries: presence check only, prints add commands
+#     for missing entries (operator runs `security add-generic-password`)
 #
 # Idempotent: every step checks current state first; safe to re-run.
 #
@@ -33,6 +35,10 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	--tag)
+		if [ $# -lt 2 ]; then
+			echo "error: --tag requires a value (e.g. --tag v0.8.5)" >&2
+			exit 2
+		fi
 		PIN_TAG="$2"
 		shift 2
 		;;
@@ -93,6 +99,11 @@ done
 
 # --- Python-installed tools (semgrep) --------------------------------
 if ! command -v semgrep >/dev/null 2>&1; then
+	if ! command -v pip3 >/dev/null 2>&1; then
+		_log "  ⚠ pip3 not available — install Python3 first (brew install python@3.12)"
+		_log "    then re-run, or: pip3 install --user semgrep"
+		exit 2
+	fi
 	_log "installing semgrep via pip3..."
 	_run pip3 install --user semgrep
 else
@@ -101,12 +112,13 @@ fi
 
 # --- CodeRabbit CLI (npm global) -------------------------------------
 if ! command -v coderabbit >/dev/null 2>&1; then
-	if command -v npm >/dev/null 2>&1; then
-		_log "installing @coderabbit/cli via npm..."
-		_run npm install -g @coderabbit/cli
-	else
-		_log "  ⚠ npm not available — install Node.js first, then: npm install -g @coderabbit/cli"
+	if ! command -v npm >/dev/null 2>&1; then
+		_log "  ⚠ npm not available — install Node.js first (brew install node)"
+		_log "    then re-run, or: npm install -g @coderabbit/cli"
+		exit 2
 	fi
+	_log "installing @coderabbit/cli via npm..."
+	_run npm install -g @coderabbit/cli
 else
 	_log "  ✓ coderabbit CLI already installed"
 fi
@@ -124,11 +136,18 @@ PLUGIN_REPO_URL="${PLUGIN_REPO_URL:-https://github.com/repbyrepdev/claude-workfl
 PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
 
 if [ -z "$PIN_TAG" ]; then
-	# Latest tag
+	# Latest tag — derive owner/repo from PLUGIN_REPO_URL so overrides work.
 	_log "resolving latest plugin tag from $PLUGIN_REPO_URL..."
-	PIN_TAG=$(gh api repos/repbyrepdev/claude-workflow-core/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+	# Strip protocol + .git suffix → owner/repo. Supports both https + ssh.
+	owner_repo=$(echo "$PLUGIN_REPO_URL" | sed -E 's|^https?://github\.com/||; s|^git@github\.com:||; s|\.git$||')
+	if [ -z "$owner_repo" ] || [[ ! "$owner_repo" =~ ^[^/]+/[^/]+$ ]]; then
+		_log "  ⚠ cannot parse owner/repo from PLUGIN_REPO_URL='$PLUGIN_REPO_URL'"
+		_log "    expected format: https://github.com/<owner>/<repo>"
+		exit 2
+	fi
+	PIN_TAG=$(gh api "repos/$owner_repo/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
 	if [ -z "$PIN_TAG" ]; then
-		_log "  ⚠ failed to resolve latest tag — re-run with --tag <vX.Y.Z>"
+		_log "  ⚠ failed to resolve latest tag from $owner_repo — re-run with --tag <vX.Y.Z>"
 		exit 2
 	fi
 fi
