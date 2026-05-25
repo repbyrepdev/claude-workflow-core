@@ -77,9 +77,8 @@ done
 	exit 2
 }
 
-# Opt-out
+# Opt-out: silent no-op per SKILL.md contract.
 if [ "${CR_RESOLVE_CONFLICT_DISABLED:-0}" = "1" ]; then
-	echo "cr-resolve-conflict: CR_RESOLVE_CONFLICT_DISABLED=1 — skipping (rc=0)" >&2
 	exit 0
 fi
 
@@ -92,7 +91,11 @@ else
 	LOG_FILE="/tmp/cr-resolve-conflict.jsonl"
 fi
 
-# gh authed?
+# Prereqs: gh authed + jq present (jq is used to parse gh JSON output below).
+if ! command -v jq >/dev/null 2>&1; then
+	echo "cr-resolve-conflict: jq not found in PATH — refusing (rc=3)" >&2
+	exit 3
+fi
 if ! gh auth status >/dev/null 2>&1; then
 	echo "cr-resolve-conflict: gh not authed — refusing (rc=3)" >&2
 	exit 3
@@ -175,10 +178,12 @@ while true; do
 	fi
 
 	# Check latest CR comment for decline markers.
-	LATEST_CR=$(gh pr view "$PR" --json comments --jq '[.comments[] | select(.author.login == "coderabbitai")] | last | .body // ""' 2>/dev/null || echo "")
-	if echo "$LATEST_CR" | grep -qiE "(unable to resolve|decline|ambiguous|security-critical|requires manual|cannot automatically)"; then
+	# Match both `coderabbitai` and `coderabbitai[bot]` authors (CR uses
+	# either depending on context). Marker list aligned with SKILL.md.
+	LATEST_CR=$(gh pr view "$PR" --json comments --jq '[.comments[] | select(.author.login == "coderabbitai" or .author.login == "coderabbitai[bot]")] | last | .body // ""' 2>/dev/null || echo "")
+	if echo "$LATEST_CR" | grep -qiE "(unable to resolve|decline|ambiguous|security-critical|requires manual|cannot automatically|manual)"; then
 		# Extract a short reason for logging.
-		REASON=$(echo "$LATEST_CR" | grep -oiE "(unable to resolve|decline|ambiguous|security-critical|requires manual|cannot automatically)" | head -1 | tr '[:upper:]' '[:lower:]')
+		REASON=$(echo "$LATEST_CR" | grep -oiE "(unable to resolve|decline|ambiguous|security-critical|requires manual|cannot automatically|manual)" | head -1 | tr '[:upper:]' '[:lower:]')
 		echo "cr-resolve-conflict: CR declined (reason='$REASON') — falling back to manual (rc=2)" >&2
 		_log_event "declined" "$HEAD_BEFORE" "$HEAD_BEFORE" "$ELAPSED" "$REASON"
 		exit 2
