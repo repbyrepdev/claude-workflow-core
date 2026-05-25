@@ -57,7 +57,7 @@ CR provides the AI plan generation — strong context awareness via issue histor
 cr-plan and ship-pr-cycle are **parallel workflows**, not nested. They
 run at different points in the issue → PR lifecycle:
 
-```
+```text
 [issue planning]            [PR work]
    cr-plan                    ship-pr-cycle
    ↓                          ↓
