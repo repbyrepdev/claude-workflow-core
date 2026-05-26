@@ -118,6 +118,18 @@ _write_legacy_settings() {
 	[[ $output == *"0.8.5 → 0.8.8"* ]]
 }
 
+@test "TO_VER auto-detect ignores non-semver dirs in cache base" {
+	# CR finding: prior `sort -V | tail -1` would pick a name like 'tmp'
+	# or 'current' if such dirs existed under the cache base. Filter
+	# must reject anything not matching X.Y.Z.
+	_write_legacy_settings
+	mkdir -p "$PLUGIN_CACHE_BASE/tmp" "$PLUGIN_CACHE_BASE/current"
+	run "$SCRIPT" --dry-run
+	[ "$status" -eq 0 ]
+	# Should still pick 0.8.8 (the highest semver), not 'tmp' or 'current'
+	[[ $output == *"→ 0.8.8"* ]]
+}
+
 @test "explicit --from --to overrides auto-detect" {
 	_write_legacy_settings
 	run "$SCRIPT" --from 0.7.0 --to 0.9.0 --dry-run

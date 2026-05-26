@@ -117,12 +117,14 @@ if [ -z "$TO_VER" ]; then
 		echo "  Specify --to <version> explicitly or install the plugin first." >&2
 		exit 2
 	fi
-	# List dirs under the cache base, pick the highest semver-like name.
-	# `sort -V` puts 0.8.10 after 0.8.9 which is what we want.
+	# List dirs under the cache base, FILTER to semver-shaped names only
+	# (X.Y.Z), then pick the highest. Without the filter a stray dir like
+	# `tmp` or `current` could win `sort -V | tail -1` and produce
+	# invalid paths after the jq walk.
 	TO_VER=$(find "$PLUGIN_CACHE_BASE" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; |
-		sort -V | tail -1)
+		grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
 	if [ -z "$TO_VER" ]; then
-		echo "migrate-settings.sh: no cache dirs found under $PLUGIN_CACHE_BASE" >&2
+		echo "migrate-settings.sh: no semver cache dirs (X.Y.Z) found under $PLUGIN_CACHE_BASE" >&2
 		exit 2
 	fi
 fi
