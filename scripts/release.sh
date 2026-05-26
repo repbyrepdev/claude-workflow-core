@@ -8,10 +8,12 @@ set -euo pipefail
 # by cloning the tag into that path. Optionally creates a GitHub release with
 # release notes from `gh release create`.
 #
-# Idempotent — re-running on the same version no-ops if tag + cache + release
-# already exist. Refuses to run if the working tree is dirty (commit or stash
-# first), if the latest commit on main isn't this branch's HEAD, or if the
-# version in plugin.json is older than the latest existing tag.
+# Idempotent — re-running skips tag-create, cache-clone, and gh release
+# create when each is already in place. (git push origin <tag> still runs
+# unconditionally but is a no-op on the remote when the tag is already
+# pushed.) Refuses to run if the working tree is dirty / untracked-not-
+# clean (commit or stash first), or if the version in plugin.json is
+# older than the latest existing tag.
 #
 # Usage:
 #   scripts/release.sh                   # release plugin.json's version
@@ -50,11 +52,27 @@ while [ "$#" -gt 0 ]; do
 			exit 2
 		fi
 		NOTES_FILE=$2
+		# Validate existence at parse time. Without this, a typo'd path
+		# silently falls through to --generate-notes downstream (CR R1).
+		if [ ! -f "$NOTES_FILE" ]; then
+			echo "release.sh: --notes file '$NOTES_FILE' not found" >&2
+			exit 2
+		fi
 		shift 2
 		;;
 	-h | --help)
-		# Range 5-26 ends at the last header line; lines after are non-comment code.
-		sed -n '5,26p' "$0"
+		# Print every leading `# ` comment line in the header block, stop
+		# at the first non-comment line after the `set -u` directives.
+		# Skips the shebang. Future-proofs against the help block growing
+		# or shrinking — no hardcoded line numbers to drift.
+		awk '
+			NR == 1 { next }                              # shebang
+			/^set / { next }                              # set -euo pipefail
+			/^#/ { sub(/^# ?/, ""); print; next }
+			NF == 0 && in_header { print; next }          # blank lines inside header
+			{ if (in_header) exit; }
+			/^#/ { in_header = 1 }
+		' "$0"
 		exit 0
 		;;
 	*)
@@ -64,6 +82,11 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+if ! command -v jq >/dev/null 2>&1; then
+	echo "release.sh: jq required but not installed" >&2
+	exit 2
+fi
+
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "release.sh: not in a git repo" >&2
 	exit 2
@@ -72,9 +95,12 @@ cd "$REPO_ROOT"
 
 # --- Precondition checks ---------------------------------------------
 
-# 1. Working tree clean
-if ! git diff --quiet || ! git diff --cached --quiet; then
-	echo "release.sh: working tree has uncommitted changes — commit or stash before releasing" >&2
+# 1. Working tree clean (tracked AND untracked — untracked files at release
+# time are usually unintended state that shouldn't ship in the tag).
+DIRTY=$(git status --porcelain 2>/dev/null)
+if [ -n "$DIRTY" ]; then
+	echo "release.sh: working tree has uncommitted or untracked changes — commit/stash/.gitignore before releasing:" >&2
+	printf '%s\n' "$DIRTY" >&2
 	exit 2
 fi
 
@@ -91,9 +117,15 @@ if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
 fi
 TAG="v$VERSION"
 
-# 3. Version not regressing — compare to the latest existing tag
-git fetch --tags --quiet 2>/dev/null || true
-LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1 || true)
+# 3. Version not regressing — compare to the latest existing tag.
+# Fetch remote tags so the comparison uses the actual state of origin,
+# not stale local refs. Capture rc — a fetch failure means we may be
+# comparing against stale state, but that's recoverable; warn and
+# proceed so offline release-rehearsal is still possible.
+if ! git fetch --tags --quiet 2>&1; then
+	echo "release.sh: WARNING git fetch --tags failed; comparing against local tags only" >&2
+fi
+LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname 2>/dev/null | head -1 || true)
 if [ -n "$LATEST_TAG" ]; then
 	# Sort the two; if our target sorts BEFORE the latest, we're regressing
 	# unless the target IS the latest (idempotent re-run).
@@ -127,30 +159,77 @@ else
 	fi
 fi
 
-# Push tag to origin (idempotent — gh refuses noop push silently)
+# Push tag to origin. `git push` of an already-pushed identical tag is a
+# no-op on the remote, so this is safe to invoke unconditionally.
 if [ "$DRY_RUN" = "1" ]; then
 	echo "  [dry-run] would: git push origin $TAG"
 else
 	echo "  pushing tag $TAG to origin..."
-	git push origin "$TAG" 2>&1 | tail -2 || {
-		echo "release.sh: git push origin $TAG failed" >&2
+	# Don't truncate via `| tail` — auth errors / non-fast-forward / hint
+	# lines need to reach the operator. Surface full output, then exit 3.
+	if ! git push origin "$TAG"; then
+		echo "release.sh: git push origin $TAG failed (see above for details)" >&2
 		exit 3
-	}
+	fi
 fi
 
 # --- Plugin cache population -----------------------------------------
 CACHE_BASE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
 CACHE_DIR="$CACHE_BASE/$VERSION"
 if [ -d "$CACHE_DIR" ]; then
-	echo "  ✓ plugin cache already populated at $CACHE_DIR"
+	# Validate the existing cache actually corresponds to this tag — a
+	# partial clone from a prior aborted run leaves an "exists" directory
+	# that the next install consumes silently with the wrong content.
+	# Skip validity check in --dry-run since the tag may not exist yet
+	# locally (planning, not state coherence).
+	if [ "$DRY_RUN" = "1" ]; then
+		echo "  [dry-run] cache dir already at $CACHE_DIR (validity check skipped)"
+	else
+		if [ -d "$CACHE_DIR/.git" ]; then
+			cached_sha=$(git -C "$CACHE_DIR" rev-parse HEAD 2>/dev/null || echo MISSING)
+		else
+			cached_sha=NO_GIT_DIR
+		fi
+		expected_sha=$(git rev-parse "$TAG" 2>/dev/null || echo MISSING)
+		if [ "$cached_sha" != "$expected_sha" ] || [ "$cached_sha" = "MISSING" ]; then
+			echo "release.sh: cache $CACHE_DIR exists but contains sha=$cached_sha (expected $expected_sha) — remove and re-run" >&2
+			exit 2
+		fi
+		echo "  ✓ plugin cache already populated at $CACHE_DIR"
+	fi
 else
 	if [ "$DRY_RUN" = "1" ]; then
 		echo "  [dry-run] would: git clone --branch $TAG --single-branch --depth 1 <origin> $CACHE_DIR"
 	else
 		echo "  populating plugin cache at $CACHE_DIR..."
-		REMOTE_URL=$(git config --get remote.origin.url)
-		mkdir -p "$CACHE_BASE"
-		git clone --branch "$TAG" --single-branch --depth 1 "$REMOTE_URL" "$CACHE_DIR" 2>&1 | tail -3
+		# Allow PLUGIN_REPO_URL override (matches bootstrap-machine.sh
+		# behavior); fall back to current repo's origin if unset.
+		if [ -z "${PLUGIN_REPO_URL:-}" ]; then
+			if ! REMOTE_URL=$(git config --get remote.origin.url); then
+				echo "release.sh: no remote.origin.url configured — set PLUGIN_REPO_URL or git remote add origin" >&2
+				exit 2
+			fi
+		else
+			REMOTE_URL="$PLUGIN_REPO_URL"
+		fi
+		if ! mkdir -p "$CACHE_BASE"; then
+			echo "release.sh: failed to create $CACHE_BASE — check permissions" >&2
+			exit 2
+		fi
+		# Atomic clone: clone to tmp, mv on success. Prevents partial cache
+		# from fooling the idempotency check on a re-run after Ctrl-C.
+		TMP_CLONE=$(mktemp -d "${TMPDIR:-/tmp}/release-clone.XXXXXX") || {
+			echo "release.sh: mktemp -d failed" >&2
+			exit 2
+		}
+		# trap removes tmp on any exit path (success after mv leaves empty
+		# parent; failure leaves the partial clone for debugging).
+		trap '[ -d "$TMP_CLONE" ] && rm -rf "$TMP_CLONE"' EXIT
+		if ! git clone --branch "$TAG" --single-branch --depth 1 "$REMOTE_URL" "$TMP_CLONE/clone"; then
+			echo "release.sh: git clone failed (see above)" >&2
+			exit 3
+		fi
+		mv "$TMP_CLONE/clone" "$CACHE_DIR"
 	fi
 fi
 
@@ -158,18 +237,36 @@ fi
 if [ "$NO_GITHUB" = "1" ]; then
 	echo "  ⊘ --no-github — skipping gh release create"
 elif command -v gh >/dev/null 2>&1; then
-	if gh release view "$TAG" >/dev/null 2>&1; then
-		echo "  ✓ GitHub release $TAG already exists"
-	else
-		if [ "$DRY_RUN" = "1" ]; then
-			echo "  [dry-run] would: gh release create $TAG --title $TAG --notes-file ${NOTES_FILE:-<auto-generated>}"
+	# Distinguish 'release not found' (expected, proceed to create) from
+	# auth/network errors (must surface, don't fall through silently).
+	release_exists=0
+	view_err=$(gh release view "$TAG" 2>&1 >/dev/null) || {
+		view_rc=$?
+		if printf '%s' "$view_err" | grep -qi 'release not found\|not found'; then
+			release_exists=0
 		else
-			echo "  creating GitHub release $TAG..."
-			if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then
-				gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE" 2>&1 | tail -2
-			else
-				gh release create "$TAG" --title "$TAG" --generate-notes 2>&1 | tail -2
-			fi
+			echo "release.sh: gh release view failed (rc=$view_rc): $view_err" >&2
+			exit 3
+		fi
+	}
+	[ -z "$view_err" ] && release_exists=1
+	if [ "$release_exists" = "1" ]; then
+		echo "  ✓ GitHub release $TAG already exists"
+	elif [ "$DRY_RUN" = "1" ]; then
+		echo "  [dry-run] would: gh release create $TAG --title $TAG --notes-file ${NOTES_FILE:-<auto-generated>}"
+	else
+		echo "  creating GitHub release $TAG..."
+		# Don't pipe through tail — auth/upload errors need to reach the
+		# operator in full. NOTES_FILE existence already validated at parse
+		# time (no silent fallback).
+		if [ -n "$NOTES_FILE" ]; then
+			gh_args=(--notes-file "$NOTES_FILE")
+		else
+			gh_args=(--generate-notes)
+		fi
+		if ! gh release create "$TAG" --title "$TAG" "${gh_args[@]}"; then
+			echo "release.sh: gh release create $TAG failed — tag pushed and cache populated; re-run after fixing gh to finish" >&2
+			exit 3
 		fi
 	fi
 else
