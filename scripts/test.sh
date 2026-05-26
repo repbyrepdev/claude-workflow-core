@@ -108,12 +108,14 @@ if [ "$MODE" = "coverage" ]; then
 	if [ -d .claude/tests ]; then
 		bats_count=$(find .claude/tests -name "*.bats" | wc -l | tr -d ' ')
 		# Scan bats files for explicit "# covers: <path>" declarations (SSOT).
-		# Trailing `|| true` is belt-and-suspenders: `find ... -exec grep ...
-		# \;` swallows grep's per-file rc (verified on both BSD find/macOS
-		# and GNU findutils — `find . -exec false {} \;` returns rc=0), so
-		# the pipeline is already safe in the no-match case. The guard
-		# remains in case a future refactor swaps to `find | xargs grep`,
-		# where grep's rc=1 WOULD propagate under set -o pipefail.
+		# Trailing `|| true` is belt-and-suspenders. The CURRENT pipeline
+		# is already safe because `find ... -exec grep ... \;` (note: `\;`
+		# semicolon form, one grep invocation per file) does NOT propagate
+		# per-invocation rc to find's exit. Verified on BSD/macOS + GNU
+		# findutils: `find . -exec false {} \;` returns rc=0. The guard
+		# remains in case a future refactor swaps to `find -exec ... +`
+		# (aggregated grep) or `find | xargs grep` / `find | grep`, where
+		# grep's rc=1 on no-match WOULD propagate under set -o pipefail.
 		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u || true)
 	else
 		bats_count=0

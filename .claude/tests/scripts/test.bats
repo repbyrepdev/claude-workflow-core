@@ -15,11 +15,12 @@ setup() {
 	SCRIPT="${BATS_TEST_DIRNAME}/../../../scripts/test.sh"
 	# TEST_TMP (NOT $TMPDIR — that's the POSIX scratch-dir var consulted
 	# by mktemp + many child processes; clobbering would silently redirect
-	# their temp files into our fixture tree). Capture rc explicitly so
-	# an mktemp failure (ENOSPC, unwritable TMPDIR, sandbox deny) doesn't
-	# silently produce TEST_TMP="" which would target the real repo via
-	# fallback in test.sh's TEST_REPO_ROOT empty-string check.
-	TEST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-bats.XXXXXX") || {
+	# their temp files into our fixture tree). Repo standard form
+	# `mktemp -d -t pfx.XXXXXX` (memory: feedback_check_existing_test_patterns).
+	# Capture rc explicitly so an mktemp failure (ENOSPC, unwritable TMPDIR,
+	# sandbox deny) fails loudly — test.sh's TEST_REPO_ROOT '+set' check
+	# would catch a silent TEST_TMP="" leak, but failing here is cleaner.
+	TEST_TMP=$(mktemp -d -t test-bats.XXXXXX) || {
 		echo "FATAL: mktemp -d failed" >&2
 		return 1
 	}
@@ -27,6 +28,10 @@ setup() {
 		echo "FATAL: TEST_TMP='$TEST_TMP' not a directory after mktemp" >&2
 		return 1
 	}
+	# Unset env that test.sh reads, so parent-shell leakage can't bleed
+	# into fixture runs (a developer or CI runner with BATS_LOG=/some/path
+	# exported would silently redirect our isolated logging).
+	unset BATS_LOG SHA256_WARNED
 	export TEST_REPO_ROOT="$TEST_TMP"
 }
 
@@ -71,7 +76,9 @@ teardown() {
 
 @test "--coverage exits 0 when only some roots exist (plugin-shape)" {
 	# Plugin repo ships scripts/ + .claude/tests/ but NOT .claude/scripts/
-	# or .claude/hooks/ — exactly the case CR-CLI flagged.
+	# or .claude/hooks/ — exactly the case CR-CLI flagged. Also asserts
+	# the success-branch NOTE so a future bug in the REPO_ROOT swap line
+	# (e.g. typo'd self-assign) is caught.
 	mkdir -p "$TEST_TMP/scripts" "$TEST_TMP/.claude/tests"
 	cat >"$TEST_TMP/scripts/foo.sh" <<-'EOF'
 		#!/bin/bash
@@ -86,9 +93,29 @@ teardown() {
 	EOF
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
+	[[ $output == *"TEST_REPO_ROOT override active"* ]]
 	[[ $output == *"Shell scripts in scope: 1"* ]]
 	[[ $output == *"Bats test files:"*"1"* ]]
 	[[ $output == *"Coverage: 100%"* ]]
+}
+
+@test "--coverage 50% partial coverage (1 of 2 .sh covered)" {
+	# Exercises the integer-arithmetic path pct=$((covered*100/sh_count)).
+	# Boundary tests cover 0%/100%/N/A — without this case, a refactor
+	# that flipped numerator/denominator or used floor-only division would
+	# pass at the boundaries while silently corrupting partial reports.
+	mkdir -p "$TEST_TMP/scripts" "$TEST_TMP/.claude/tests"
+	echo "#!/bin/bash" >"$TEST_TMP/scripts/a.sh"
+	echo "#!/bin/bash" >"$TEST_TMP/scripts/b.sh"
+	cat >"$TEST_TMP/.claude/tests/cover.bats" <<-'EOF'
+		#!/usr/bin/env bats
+		# covers: scripts/a.sh
+		@test "x" { true; }
+	EOF
+	run "$SCRIPT" --coverage
+	[ "$status" -eq 0 ]
+	[[ $output == *"Shell scripts in scope: 2"* ]]
+	[[ $output == *"Coverage: 50%"* ]]
 }
 
 @test "--coverage exits 0 with existing root containing zero .sh files" {
@@ -129,6 +156,10 @@ teardown() {
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"Shell scripts in scope: 5"* ]]
+	# Locks in that the script reached the end of the coverage block
+	# without aborting (the COVERED_PATHS pipeline runs successfully here
+	# because no .bats has a `# covers:` header).
+	[[ $output == *"Coverage: 0%"* ]]
 }
 
 @test "FAIL summary path runs end-to-end (#53)" {
