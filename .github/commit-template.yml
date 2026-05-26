@@ -97,6 +97,8 @@ examples:
       - .github/commit-template.yml (full schema)
       - .yamllint.yaml (relaxed + line-length disable)
 
+      Advances #<issue-number>
+
       Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 
 # Anti-patterns — commit messages in these shapes should be REFUSED by the
