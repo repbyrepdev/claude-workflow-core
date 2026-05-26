@@ -59,7 +59,16 @@ _audit_log_bypass() {
 	mkdir -p "$log_dir" 2>/dev/null || return 0
 	local cmd_hash="-"
 	if [ -n "${1:-}" ]; then
-		cmd_hash=$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)
+		# Try sha256sum first (GNU coreutils, Linux default), fall back
+		# to shasum -a 256 (macOS default). CR-CLI r3 minor: previous
+		# code only tried shasum, leaving cmd_hash empty on Linux
+		# systems without it. Validate the result is a 64-hex shape
+		# before overwriting the "-" default.
+		local candidate
+		candidate=$(printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null; } | cut -d' ' -f1)
+		if [[ $candidate =~ ^[a-f0-9]{64}$ ]]; then
+			cmd_hash=$candidate
+		fi
 	fi
 	local ts
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -95,6 +104,13 @@ fi
 
 if ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null); then
 	deny "tool_input.command unparseable — failing closed"
+fi
+# Fail-closed if tool_input exists but is not an object (e.g., string,
+# number, array) — '.tool_input.command // ""' returns "" silently in
+# those cases, which would let malformed payloads slip past. Explicit
+# type check denies them. CR-CLI r3 critical.
+if printf '%s' "$PAYLOAD" | jq -e 'has("tool_input") and (.tool_input | type != "object")' >/dev/null 2>&1; then
+	deny "tool_input is not an object — failing closed"
 fi
 if [ -z "$CMD" ]; then
 	exit 0
