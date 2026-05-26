@@ -105,6 +105,12 @@
   pass_filenames: false
   stages: [pre-commit]
 
+- id: commit-subject-version-gate
+  name: "commit-subject-version — scope vX.Y.Z must not exceed plugin.json (#74)"
+  entry: pre-commit-hooks/commit-subject-version-gate.sh
+  language: script
+  stages: [commit-msg]
+
 - id: label-sync-on-labels-change
   name: Preview label-sync --dry-run when .github/labels.yml changes
   entry: pre-commit-hooks/label-sync-on-labels-change.sh
