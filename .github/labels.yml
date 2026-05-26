@@ -5,12 +5,14 @@
 # epic). Manual one-shot today: `gh label create <name> --color <hex>`.
 #
 # 8-color Primer palette (kept in sync across plugin / homelab / FCP):
-#   Red     cf222e  priority:p1 · bug
-#   Orange  bc4c00  (reserved for status:* — added in follow-up)
+#   Red     cf222e  priority:p0 · priority:p1 · bug
+#   Orange  bc4c00  priority:p0-proposed · status:in-review
 #   Yellow  bf8700  priority:p2
 #   Green   1a7f37  priority:p3
+#   Blue    0969da  documentation
 #   Purple  8250df  area:infrastructure · epic · brainstorm
-#   Gray    6e7681  priority:needs-triage · enhancement
+#   Pink    bf3989  question
+#   Gray    6e7681  priority:needs-triage · status:blocked · enhancement
 # -----------------------------------------------------------------------------
 
 # ---- Type ----
