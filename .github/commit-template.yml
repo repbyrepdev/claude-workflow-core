@@ -1,11 +1,9 @@
-# v4.24 — Gold-standard commit-message schema for this repo.
+# Gold-standard commit-message schema for this repo.
 #
 # Consumed by:
-#   - /git-commit skill — drafts via Copilot gpt-4.1 using this as system context
-#   - .claude/pre-commit-hooks/commit-template-check.sh — schema drift guard
-#   - .claude/hooks/post-commit-template-lint.sh — post-commit lint, warns on drift
-# NOT consumed by auto-release.sh (it reads release-template.yml and has its
-# own hardcoded commit-prefix categorization in _copilot_section's caller).
+#   - skills/git-commit/run.sh — drafts via Copilot gpt-4.1 using this as system context
+#   - pre-commit-hooks/commit-template-check.sh — schema drift guard
+#   - hooks/post-commit-template-lint.sh — post-commit lint, warns on drift
 #
 # Convention: Conventional Commits 1.0.0 + 70-char subject cap + body required
 # for feat/fix/refactor/perf explaining the WHY (not the WHAT).
@@ -29,7 +27,7 @@ schema:
       - ci        # CI / workflow changes
       - revert    # revert of prior commit
     scope_optional: true
-    scope_examples: [v4.23, v4.24, vX.Y, vX.Y-Z, stacks, board]
+    scope_examples: [v0.9.5, v0.9, vX.Y, vX.Y.Z, skills, hooks, scripts]
 
   body:
     required_for: [feat, fix, refactor, perf]
@@ -46,44 +44,60 @@ schema:
       - pattern: "Co-Authored-By: <Name> <email>"
         purpose: "Multi-author attribution — MANDATORY for Claude-assisted commits"
 
-# Exemplar commits from this repo's history that represent the gold standard.
-# New commits should match this structure, tone, and specificity.
+# Exemplar commits showing the gold-standard shape. Drawn from this repo
+# where possible (v0.9.4 #54 — the most recent shippable PR at backport time).
+# Match this structure, tone, and specificity.
 examples:
-  - scope: "feat with explicit scope + multi-closes"
-    content: |
-      feat(v4.23): review-efficiency + test-enforcement epic (#593)
-
-      Advances #544. Lands the 11-tier diff-size scaler, diff-hash agent cache,
-      file-type-aware agent subset, and weekly bats baseline cron together driving
-      a measured 60-70% reduction in typical-PR Phase 1 token cost. Also adds
-      commit-time bats-gate and push-time hash-match verification so test drift
-      can't slip past unnoticed.
-
-      Closes #517 #519 #547 #549 #550 #551 #552 #553 #554 #555 #556 #557 #558 #562 #564 #565 #589 #591
-
-      Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-
   - scope: "fix with tight why"
     content: |
-      fix(v4.23): macOS portability in stuck-shells.sh
+      fix(v0.9.4): test runner — 2 set -euo pipefail aborts (#53)
 
-      `ps -axo etimes` is GNU-only; macOS ps emits zeros, silently breaking the
-      stuck-shell detector. Replaced with portable `etime` ([[dd-]hh:]mm:ss) plus
-      an awk conversion block. Verified on Darwin 25.4.
+      CR-CLI flagged 2 silent-failure issues on the merged PR #51. Both also
+      exist upstream.
 
-      Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+      Bug 1: grep -E pipeline returns rc=1 on no-match. Under set -euo
+      pipefail, truncates summary output. Fix: || true on both pipelines.
 
-  - scope: "refactor with rationale"
+      Bug 2: find aborts when starting roots are missing. Plugin root doesn't
+      ship .claude/scripts or .claude/hooks. Fix: pre-filter via [ -d ] check.
+
+      Closes #53
+      Advances #52
+
+      Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+  - scope: "test with regression coverage"
     content: |
-      refactor(v4.23): per-file diff-hash agent cache key
+      test(v0.9.4): 3 final regression tests for #53
 
-      Prior cache keyed on entire branch diff hash — every new commit changed the
-      hash, so agents that had reviewed unchanged files still re-ran next round.
-      Moving cache key to (file × content_hash × agent) lets each file's prior
-      clean verdict survive unrelated commits. Measured: 40% agent-invocation
-      reduction on multi-commit sessions.
+      F1: '50% partial coverage' test exercises pct integer arithmetic at
+      non-boundary point (boundary tests miss numerator/denominator flips).
 
-      Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+      F2: 'Coverage: 0%' assertion added to 'every .sh root populated' test
+      locks in end-to-end coverage block completion.
+
+      F3: 'TEST_REPO_ROOT override active' assertion added to plugin-shape
+      catches typo'd self-assign of REPO_ROOT.
+
+      Advances #53
+
+      Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+  - scope: "feat with explicit scope"
+    content: |
+      feat(v0.9.5): backport .github SSOT + yamllint to plugin
+
+      Plugin had no .github directory while shipping templates to consumers
+      via bootstrap-repo.sh. Own skills epic-creation + issue-creation failed
+      on the plugin itself.
+
+      Backported from bootstrap-repo.sh + homelab SSOT:
+      - .github/labels.yml (9 labels created on GitHub)
+      - .github/ISSUE_TEMPLATE/{bug,feature,task,epic,brainstorm}.yml
+      - .github/commit-template.yml (full schema)
+      - .yamllint.yaml (relaxed + line-length disable)
+
+      Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 
 # Anti-patterns — commit messages in these shapes should be REFUSED by the
 # skill wrapper + flagged by the post-commit lint. Exemplars of what NOT to do.

@@ -1,23 +1,47 @@
-# Label catalog SSOT. Sync via `gh label create` or label-sync workflow.
+# Label catalog — SINGLE SOURCE OF TRUTH for this repo.
+#
+# Synced to GitHub by .github/workflows/label-sync.yml on push to main that
+# changes this file (workflow landing in a follow-up sub-issue of the v0.9.5
+# epic). Manual one-shot today: `gh label create <name> --color <hex>`.
+#
+# 8-color Primer palette (kept in sync across plugin / homelab / FCP):
+#   Red     cf222e  priority:p1 · bug
+#   Orange  bc4c00  (reserved for status:* — added in follow-up)
+#   Yellow  bf8700  priority:p2
+#   Green   1a7f37  priority:p3
+#   Purple  8250df  area:infrastructure · epic · brainstorm
+#   Gray    6e7681  priority:needs-triage · enhancement
+# -----------------------------------------------------------------------------
+
+# ---- Type ----
 - name: bug
-  color: d73a4a
-  description: Something broken
+  color: "cf222e"
+  description: Something isn't working
 - name: enhancement
-  color: a2eeef
-  description: New capability
+  color: "6e7681"
+  description: New feature or improvement
 - name: epic
-  color: 7057ff
-  description: Parent of sub-issues
-- name: priority:p1
-  color: b60205
-- name: priority:p2
-  color: d93f0b
-- name: priority:p3
-  color: fbca04
-- name: priority:needs-triage
-  color: 5319e7
-- name: area:infrastructure
-  color: 0e8a16
+  color: "8250df"
+  description: Parent of sub-issues (multi-PR scope)
 - name: brainstorm
-  color: c5def5
-  description: Discussion-style ideation
+  color: "8250df"
+  description: Discussion-style ideation, no concrete scope yet
+
+# ---- Priority ----
+- name: priority:p1
+  color: "cf222e"
+  description: Urgent — fix this week
+- name: priority:p2
+  color: "bf8700"
+  description: Important — fix this milestone
+- name: priority:p3
+  color: "1a7f37"
+  description: Nice-to-have — backlog
+- name: priority:needs-triage
+  color: "6e7681"
+  description: AI triage couldn't classify confidently — human review needed
+
+# ---- Area ----
+- name: area:infrastructure
+  color: "8250df"
+  description: Skills, hooks, scripts, workflows, repo infrastructure
