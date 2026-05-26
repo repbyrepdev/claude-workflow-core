@@ -1,15 +1,25 @@
 #!/bin/bash
 set -euo pipefail
-# v4.28 (#638) — pre-commit gate: every staged .claude/hooks/*.sh must have
-# a valid `# event:` frontmatter OR an explicit opt-out, so the
-# install-hooks.sh frontmatter-scanner can pick it up. Without this, a new
-# hook lands silently unwired — the exact paper-tiger pattern we built
-# install-hooks.sh to eliminate.
+# v4.28 (#638) — pre-commit gate: every staged hook (consumer- or
+# plugin-source layout) must have valid `# event:` frontmatter OR an
+# explicit opt-out, so install-hooks.sh + register-hook.sh frontmatter
+# scanners can pick it up. Without this, a new hook lands silently
+# unwired — the exact paper-tiger pattern we built install-hooks.sh
+# to eliminate.
 #
-# Rules per staged file:
-#   - .claude/hooks/_*.sh → skip (helpers, by convention)
-#   - .claude/hooks/install-*.sh → skip (installers)
-#   - .claude/hooks/*.sh → MUST contain ONE of:
+# v0.9.5 (#70): plugin-source enforcement (hooks/*.sh) catches the
+# SSOT files BEFORE they're copied into consumer .claude/hooks/.
+# Without it, a plugin author lands an unwired hook in the source
+# repo and only fails the gate in downstream consumer installs.
+#
+# Layouts covered (collectively `<hook-dir>` below):
+#   - .claude/hooks/  (consumer layout — installed plugin path)
+#   - hooks/          (plugin source layout — this repo's source-of-truth)
+#
+# Rules per staged file (apply to both layouts):
+#   - <hook-dir>/_*.sh        → skip (helpers, by convention)
+#   - <hook-dir>/install-*.sh → skip (installers)
+#   - <hook-dir>/*.sh         → MUST contain ONE of:
 #       (a) `# event: <PreToolUse|PostToolUse|SessionStart|PreCompact|Stop|UserPromptSubmit>`
 #           in the first 30 lines
 #       (b) `# auto-register: false` (explicit helper opt-out)
@@ -78,8 +88,7 @@ for f in "$@"; do
 	# source layout — #70). pre-commit-hooks/ is excluded; those use a
 	# different lifecycle (entry: in .pre-commit-hooks.yaml).
 	case "$rel" in
-	.claude/hooks/*.sh) ;;
-	hooks/*.sh) ;;
+	.claude/hooks/*.sh | hooks/*.sh) ;;
 	*) continue ;;
 	esac
 
@@ -128,7 +137,10 @@ Add ONE of these to the file's first 30 lines:
 OR if this is a helper script called by other hooks (not directly registered):
   # auto-register: false
 
-Either fix the file(s) above or rename them with a leading underscore (helpers).
+Either fix the file(s) above or use an opt-out form:
+  - rename with leading underscore (e.g. _helper.sh) — by-convention helpers
+  - rename with install- prefix (e.g. install-something.sh) — installer scripts
+  - add `# auto-register: false` to the first 30 lines — explicit opt-out
 Bypass: EVENT_FRONTMATTER_SKIP=1 git commit ...
 EOF
 	exit 1
