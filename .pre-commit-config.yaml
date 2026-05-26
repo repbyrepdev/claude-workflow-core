@@ -1,0 +1,162 @@
+---
+# Plugin SELF-DOGFOOD pre-commit config (v0.9.1, #47).
+#
+# The plugin repo USES ITS OWN hooks via repo: local entries pointing at
+# the in-tree pre-commit-hooks/ directory. Consumer repos pin via
+# `repo: https://github.com/repbyrepdev/claude-workflow-core` +
+# `rev: vX.Y.Z` — see scripts/bootstrap-repo.sh template for the
+# consumer wiring.
+#
+# Hook IDs below MUST match `.pre-commit-hooks.yaml` exactly (Phase 1
+# code-reviewer + code-simplifier + comment-analyzer flagged ID drift).
+# Hooks intentionally OMITTED from this dogfood config (each with
+# rationale) are listed at the bottom of this file so future maintainers
+# know whether to mirror a new manifest entry here.
+#
+# Install:    scripts/install-hooks.sh   (also installs pre-push gate)
+# Run all:    pre-commit run --all-files
+
+repos:
+  # Upstream framework hooks — same set bootstrap-repo.sh installs for
+  # consumers (keep aligned to detect drift).
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-2
+    hooks:
+      - id: shfmt
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # Plugin's own hooks via repo: local. IDs match .pre-commit-hooks.yaml.
+  - repo: local
+    hooks:
+      - id: actions-permissions
+        name: Workflows require `permissions:` block
+        entry: pre-commit-hooks/actions-permissions.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: bash-safety
+        name: Shell scripts require `set -u`
+        entry: pre-commit-hooks/bash-safety.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: bash4-features-check
+        name: bash 4.0+ features require `#!/usr/bin/env bash` shebang
+        entry: pre-commit-hooks/bash4-features-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: commit-template-check
+        name: Validate commit-template.yml schema stability
+        entry: pre-commit-hooks/commit-template-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: lint-gate
+        name: lint-gate — staged .sh/.yml lint at current hash
+        entry: pre-commit-hooks/lint-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: memory-index-valid
+        name: Memory directory integrity (MEMORY.md + frontmatter + Why/How)
+        entry: pre-commit-hooks/memory-index-valid.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: skill-md-loader-safety
+        name: SKILL.md loader-incompatibility patterns blocked
+        entry: pre-commit-hooks/skill-md-loader-safety.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: event-frontmatter-check
+        name: event-frontmatter — hooks must declare `# event:` for discovery
+        entry: pre-commit-hooks/event-frontmatter-check.sh
+        language: script
+        files: ^hooks/.*\.sh$
+        stages: [pre-commit]
+      - id: edit-corruption-guard
+        name: edit-corruption — detect heredoc/whitespace corruption
+        entry: pre-commit-hooks/edit-corruption-guard.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: review-config-check
+        name: Validate review-config.yml schema stability
+        entry: pre-commit-hooks/review-config-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: release-template-check
+        name: Validate release-template.yml + release.yml category sync
+        entry: pre-commit-hooks/release-template-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: epic-structure
+        name: Validate epic.yml template structure
+        entry: pre-commit-hooks/epic-structure.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: check-ssot-drift
+        name: SSOT drift — numeric claims must match their source of truth
+        entry: pre-commit-hooks/check-ssot-drift.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: check-review-accept-reason
+        name: review-accept — accepted findings need recorded reason
+        entry: pre-commit-hooks/check-review-accept-reason.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: commit-scope-to-issue
+        name: commit-scope — commit subject scope must match issue area
+        entry: pre-commit-hooks/commit-scope-to-issue.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: memory-drift-check
+        name: memory-drift — memory files must not reference missing scripts
+        entry: pre-commit-hooks/memory-drift-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: label-sync-on-labels-change
+        name: Preview label-sync --dry-run when .github/labels.yml changes
+        entry: pre-commit-hooks/label-sync-on-labels-change.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: prove-yourself-gate
+        name: prove-yourself — rejections need dogfood evidence + ext authority
+        entry: pre-commit-hooks/prove-yourself-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+# Hooks intentionally OMITTED from this dogfood config:
+#
+#   - bats-gate: requires bats test infrastructure that the plugin repo
+#     doesn't ship yet. Tracked under #47 (separate sub-issue for adding
+#     bats skeleton + first 5 skill tests).
+#
+#   - dogfood-gate: requires .claude/dogfood-registry.yml + recent-pass
+#     log infrastructure that consumer repos build via dogfood.sh.
+#     Plugin repo doesn't have target wrappers to register yet.
+#
+# When adding a new hook to .pre-commit-hooks.yaml, decide explicitly
+# whether commit-time dogfooding applies. If yes, mirror here. If no,
+# add it to the omission list above.
