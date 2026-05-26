@@ -20,6 +20,7 @@ set -euo pipefail
 #   register-hook.sh --all-auto-register   # all hooks/*.sh with the sentinel
 #   register-hook.sh --unregister <path>   # remove an entry (idempotent)
 #   register-hook.sh --check               # parity: settings refs ↔ hook files
+#   register-hook.sh --check-permissions   # (#72) classifier-allowlist readiness
 #   register-hook.sh --dry-run <args>      # print plan, no settings.json write
 #   register-hook.sh --help
 #
@@ -30,12 +31,16 @@ set -euo pipefail
 #   3 — settings.json malformed / jq failure / write failure
 #
 # Classifier note: writing to ~/.claude/settings.json is classifier-
-# blocked when invoked by the agent today. Operators run this script
-# directly. #72 lands the sanctioned wrapper path so the agent (or
-# plugin install/upgrade) can also invoke it autonomously.
+# blocked by default. To authorize autonomous invocation by the agent
+# or plugin install/upgrade flows, the operator runs the sibling
+# `install-register-hook-permissions.sh` once at machine bootstrap and
+# pastes its output into permissions.allow. Then this script runs
+# without classifier prompts. Use `--check-permissions` to verify the
+# allowlist is in place before relying on autonomous invocation.
 
 DRY_RUN=0
 CHECK=0
+CHECK_PERMS=0
 UNREGISTER=""
 ALL_AUTO=0
 HOOK_PATHS=()
@@ -48,6 +53,15 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--check)
 		CHECK=1
+		shift
+		;;
+	--check-permissions)
+		# Delegates to install-register-hook-permissions.sh (sibling
+		# script). #72 sanctioned wrapper path — operators run this
+		# once at machine bootstrap to verify ~/.claude/settings.json
+		# permissions.allow contains the classifier-exemption patterns
+		# that authorize autonomous register-hook.sh invocation.
+		CHECK_PERMS=1
 		shift
 		;;
 	--all-auto-register)
@@ -93,6 +107,13 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	exit 2
 }
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+
+# --check-permissions short-circuits before any settings.json read/write
+# so it works even when settings.json is missing or unreadable (the
+# installer reports a clear precondition error in that case).
+if [ "$CHECK_PERMS" = "1" ]; then
+	exec "$(dirname "$0")/install-register-hook-permissions.sh" --check
+fi
 
 # --- Frontmatter parsing ---------------------------------------------
 
@@ -241,6 +262,9 @@ _write_settings() {
 	fi
 	if ! mv "$tmp" "$SETTINGS"; then
 		echo "register-hook.sh: mv failed ($tmp → $SETTINGS) — possibly cross-filesystem" >&2
+		echo "  If you are invoking this script via the agent and see classifier blocks, run:" >&2
+		echo "    $(dirname "$0")/install-register-hook-permissions.sh" >&2
+		echo "  to print the one-time allowlist entries the operator adds to settings.json." >&2
 		exit 3
 	fi
 	trap - EXIT
