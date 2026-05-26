@@ -14,5 +14,17 @@ node_modules/
 .env
 .secrets
 
-# v0.3: plugin repo itself uses .claude/ only for session logs — ignore entirely
-.claude/
+# v0.3: plugin repo itself uses .claude/ only for session logs — ignore by
+# default. v0.9.3 (#47 sub-3): use the .claude/* pattern (NOT .claude/) so
+# !.claude/tests/ unignore actually takes effect — gitignore can't re-include
+# children of a directory-form ignore, but it CAN re-include children of a
+# pattern-form ignore. Reference: gitignore(5) — "It is not possible to
+# re-include a file if a parent directory of that file is excluded."
+.claude/*
+
+# Re-include .claude/tests/ — bats tests for plugin's own scripts live here
+# so scripts/test.sh + bats-gate.sh can discover them at their conventional
+# path. The !.claude/tests/ + !.claude/tests/** pair lets git recurse into
+# the tests dir while leaving the rest of .claude/ ignored.
+!.claude/tests/
+!.claude/tests/**
