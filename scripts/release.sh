@@ -68,10 +68,9 @@ while [ "$#" -gt 0 ]; do
 		awk '
 			NR == 1 { next }                              # shebang
 			/^set / { next }                              # set -euo pipefail
-			/^#/ { sub(/^# ?/, ""); print; next }
+			/^#/ { in_header = 1; sub(/^# ?/, ""); print; next }
 			NF == 0 && in_header { print; next }          # blank lines inside header
-			{ if (in_header) exit; }
-			/^#/ { in_header = 1 }
+			in_header { exit }                            # first non-comment after header
 		' "$0"
 		exit 0
 		;;
