@@ -14,7 +14,7 @@
 schema:
   subject:
     max_length: 70
-    format: "<type>(<optional_scope>): <summary>"
+    format: "<type>(<scope>): <summary>"
     types:
       - feat      # new capability (user-visible or infra)
       - fix       # bug fix
