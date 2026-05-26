@@ -166,7 +166,10 @@ _register_one() {
 		(.hooks[$ev] | map(.matcher // "")) as $matchers |
 		($matchers | index($mt)) as $idx |
 		if $idx == null then
-			.hooks[$ev] += [({matcher: $mt} + {hooks: [$nh]})]
+			# Omit "matcher" key when empty — keeps schema consistent
+			# with hand-written settings entries that never carry
+			# "matcher": "" on events like SessionStart.
+			.hooks[$ev] += [(if $mt == "" then {hooks: [$nh]} else {matcher: $mt, hooks: [$nh]} end)]
 		else
 			.hooks[$ev][$idx].hooks |= (if any(.command == $nh.command) then . else . + [$nh] end)
 		end
