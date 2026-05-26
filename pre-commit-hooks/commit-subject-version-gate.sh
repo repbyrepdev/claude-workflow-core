@@ -115,6 +115,14 @@ if [ -z "$manifest_ver" ]; then
 	echo "commit-subject-version-gate: $PLUGIN_JSON has no usable .version field (missing or null)" >&2
 	exit 2
 fi
+# Validate manifest .version matches the X.Y.Z shape we compare against.
+# Without this, malformed values (numeric, '1.0', '1.0.0-rc1') would
+# sort -V lexically against the captured subject ver, leading to
+# silent wrong gate decisions. Reject early as a precondition.
+if ! [[ $manifest_ver =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+	echo "commit-subject-version-gate: $PLUGIN_JSON .version='$manifest_ver' is not X.Y.Z — refusing to compare" >&2
+	exit 2
+fi
 
 # sort -V for numeric version ordering (handles 0.10.0 > 0.9.5
 # correctly, unlike lexicographic sort). Not full SemVer 2.0 —
@@ -122,7 +130,7 @@ fi
 # all and silently pass the gate. We don't use them today; revisit
 # if/when we do.
 if ! higher=$(printf '%s\n%s\n' "$subject_ver" "$manifest_ver" | sort -V | tail -1); then
-	echo "commit-subject-version-gate: version comparison failed (sort/tail)" >&2
+	echo "commit-subject-version-gate: version comparison failed — requires sort with version-sort support (GNU 'sort -V' or BSD 'sort --version-sort')" >&2
 	exit 2
 fi
 # tail -1 of sort -V gives the highest version. If it equals

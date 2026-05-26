@@ -205,6 +205,23 @@ _run_with_subject() {
 	[[ $output == *"no usable .version field"* ]]
 }
 
+@test "plugin.json with non-X.Y.Z .version (numeric) → exit 2 (CR r3)" {
+	# CR finding: manifest version must match X.Y.Z to be safely
+	# compared by sort -V — numeric/lex variants would silently
+	# distort comparison.
+	printf '{"name":"t","version":100}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"not X.Y.Z"* ]]
+}
+
+@test "plugin.json with two-segment .version → exit 2 (CR r3)" {
+	printf '{"name":"t","version":"1.0"}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"not X.Y.Z"* ]]
+}
+
 # --- Phase 1 r2 regression locks --------------------------------
 
 @test "uppercase V prefix feat(V9.9.9): is detected → FAIL (r2)" {
