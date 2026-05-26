@@ -103,6 +103,15 @@ done
 # delegated installer has its own jq + settings checks with clearer
 # diagnostics, so we don't gate on ours first.
 if [ "$CHECK_PERMS" = "1" ]; then
+	# --check-permissions is an exclusive mode. If callers combine it
+	# with action flags or hook paths, those args would be silently
+	# discarded by the exec — making a bad invocation look successful
+	# even though nothing was registered/unregistered.
+	if [ "$DRY_RUN" = "1" ] || [ "$CHECK" = "1" ] || [ "$ALL_AUTO" = "1" ] ||
+		[ -n "$UNREGISTER" ] || [ "${#HOOK_PATHS[@]}" -gt 0 ]; then
+		echo "register-hook.sh: --check-permissions is exclusive — cannot combine with other flags or paths" >&2
+		exit 2
+	fi
 	installer="$(dirname "$0")/install-register-hook-permissions.sh"
 	if [ ! -x "$installer" ]; then
 		echo "register-hook.sh: sibling installer not found or not executable: $installer" >&2

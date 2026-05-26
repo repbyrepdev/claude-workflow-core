@@ -262,6 +262,56 @@ _write_full_allowlist() {
 	[ "$status" -eq 0 ]
 }
 
+@test "conflicting mode flags rejected with exit 2" {
+	# CR finding: --check --json silently won the last-set, turning
+	# failing probe into exit 0. Conflict must be a usage error.
+	echo '{}' >"$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --check --json
+	[ "$status" -eq 2 ]
+	[[ $output == *"conflicting flags"* ]]
+}
+
+@test "same mode flag repeated is OK (idempotent)" {
+	# Conflict-check should distinguish 'same flag twice' (harmless)
+	# from 'two different flags' (ambiguous). Only the latter errors.
+	_write_full_allowlist
+	run "$SCRIPT" --check --check
+	[ "$status" -eq 0 ]
+}
+
+@test "--json works without jq (no dependency)" {
+	# CR finding: --json snippet is constant, doesn't need jq. Fresh
+	# machines must be able to extract the snippet BEFORE installing jq.
+	# Simulate jq absence by setting PATH to a directory without jq.
+	mkdir -p "$TEST_TMP/nobin"
+	run env PATH="$TEST_TMP/nobin" "$SCRIPT" --json
+	[ "$status" -eq 0 ]
+	# Output must still be valid JSON (verified with jq via real PATH)
+	echo "$output" | jq empty
+	got=$(echo "$output" | jq -r '.permissions.allow | length')
+	[ "$got" -eq 7 ]
+}
+
+@test "register-hook --check-permissions: rejects combination with --check" {
+	# CR finding: --check-permissions execs immediately; other flags
+	# would be silently discarded. Must be exclusive.
+	run "$REGSCRIPT" --check-permissions --check
+	[ "$status" -eq 2 ]
+	[[ $output == *"exclusive"* ]]
+}
+
+@test "register-hook --check-permissions: rejects combination with hook path" {
+	run "$REGSCRIPT" --check-permissions hooks/foo.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"exclusive"* ]]
+}
+
+@test "register-hook --check-permissions: rejects combination with --all-auto-register" {
+	run "$REGSCRIPT" --check-permissions --all-auto-register
+	[ "$status" -eq 2 ]
+	[[ $output == *"exclusive"* ]]
+}
+
 @test "register-hook.sh --check-permissions: works outside git repo" {
 	# Bootstrap scenario: operator runs from $HOME (no git repo) to
 	# verify allowlist readiness. The short-circuit MUST run before

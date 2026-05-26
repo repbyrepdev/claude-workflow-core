@@ -28,14 +28,26 @@ set -euo pipefail
 #   3 — settings.json malformed
 
 MODE="status"
+_mode_set_by=""
+_set_mode() {
+	# Reject conflicting mode flags — `--check --json` would silently
+	# fall through to whichever appears last, turning a failing probe
+	# into exit 0. Callers must pick exactly one mode.
+	if [ -n "$_mode_set_by" ] && [ "$_mode_set_by" != "$1" ]; then
+		echo "install-register-hook-permissions.sh: conflicting flags '$_mode_set_by' and '$1' — pick one" >&2
+		exit 2
+	fi
+	MODE=$2
+	_mode_set_by=$1
+}
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--json)
-		MODE="json"
+		_set_mode --json json
 		shift
 		;;
 	--check)
-		MODE="check"
+		_set_mode --check check
 		shift
 		;;
 	-h | --help)
@@ -58,11 +70,6 @@ while [ "$#" -gt 0 ]; do
 		;;
 	esac
 done
-
-if ! command -v jq >/dev/null 2>&1; then
-	echo "install-register-hook-permissions.sh: jq required but not installed" >&2
-	exit 2
-fi
 
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 
@@ -111,14 +118,32 @@ REQUIRED_PATTERNS=(
 	"Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh --json)"
 )
 
-# --json short-circuits before settings.json access — the snippet shape
-# is constant and doesn't depend on current state. Operators on fresh
-# machines need this output BEFORE settings.json exists.
+# --json short-circuits before settings.json access AND before the jq
+# dependency check — the snippet shape is constant and doesn't depend
+# on current state. Operators on fresh machines need this output BEFORE
+# settings.json exists, AND before they install jq (since the snippet
+# itself is what authorizes the rest of the bootstrap flow).
 if [ "$MODE" = "json" ]; then
-	jq -n --argjson reqs "$(printf '%s\n' "${REQUIRED_PATTERNS[@]}" | jq -R . | jq -s .)" '
-		{permissions: {allow: $reqs}}
-	'
+	printf '{\n  "permissions": {\n    "allow": [\n'
+	last_idx=$((${#REQUIRED_PATTERNS[@]} - 1))
+	for i in "${!REQUIRED_PATTERNS[@]}"; do
+		# REQUIRED_PATTERNS are literal strings containing no characters
+		# that need JSON escaping (no quotes, backslashes, control chars
+		# — only path globs + flag tokens). If a future pattern includes
+		# such characters, switch this to jq -R + jq -s.
+		if [ "$i" -lt "$last_idx" ]; then
+			printf '      "%s",\n' "${REQUIRED_PATTERNS[$i]}"
+		else
+			printf '      "%s"\n' "${REQUIRED_PATTERNS[$i]}"
+		fi
+	done
+	printf '    ]\n  }\n}\n'
 	exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+	echo "install-register-hook-permissions.sh: jq required but not installed" >&2
+	exit 2
 fi
 
 if [ ! -f "$SETTINGS" ]; then
