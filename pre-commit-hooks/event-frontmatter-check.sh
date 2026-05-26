@@ -33,7 +33,7 @@ fi
 # Both gates parse + validate identically; renaming the helper convention or
 # adding a 7th event is a one-file edit.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=../_lib/event-frontmatter.sh
+# shellcheck source=../_lib/event-frontmatter.sh disable=SC1091
 . "$SCRIPT_DIR/../_lib/event-frontmatter.sh"
 
 # Manual-invocation advisory — pre-commit always supplies args, so empty `$@`
@@ -74,9 +74,12 @@ for f in "$@"; do
 		fi
 		;;
 	esac
-	# Must be under .claude/hooks/ (not pre-commit-hooks/)
+	# Must be under .claude/hooks/ (consumer layout) OR hooks/ (plugin
+	# source layout — #70). pre-commit-hooks/ is excluded; those use a
+	# different lifecycle (entry: in .pre-commit-hooks.yaml).
 	case "$rel" in
 	.claude/hooks/*.sh) ;;
+	hooks/*.sh) ;;
 	*) continue ;;
 	esac
 
