@@ -107,7 +107,7 @@ _run_with_subject() {
 	echo "not json" >"$TEST_TMP/.claude-plugin/plugin.json"
 	run _run_with_subject "feat(v0.9.8): something"
 	[ "$status" -eq 2 ]
-	[[ $output == *"malformed JSON"* ]]
+	[[ $output == *"failed jq validation"* ]]
 }
 
 @test "empty commit message passes" {
@@ -195,5 +195,56 @@ _run_with_subject() {
 	printf '{"name":"t"}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
 	run _run_with_subject "feat(v0.9.8): x"
 	[ "$status" -eq 2 ]
-	[[ $output == *"no .version field"* ]]
+	[[ $output == *"no usable .version field"* ]]
+}
+
+@test "plugin.json with null .version → exit 2" {
+	printf '{"name":"t","version":null}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"no usable .version field"* ]]
+}
+
+# --- Phase 1 r2 regression locks --------------------------------
+
+@test "uppercase V prefix feat(V9.9.9): is detected → FAIL (r2)" {
+	# r2 found asymmetric case: regex made type case-insensitive but
+	# `v` was still literal lowercase, so `Feat` was caught but
+	# `feat(V...)` slipped through. Fixed in r2 with [vV].
+	run _run_with_subject "feat(V9.9.9): uppercase V prefix"
+	[ "$status" -eq 1 ]
+	[[ $output == *"9.9.9"* ]]
+}
+
+@test "subdir-relative commit-msg path → still detects (r2)" {
+	# r2 found: line-48 `[ -f ]` check passes against original CWD,
+	# then `cd $REPO_ROOT` happens, then sed reads relative path
+	# from new CWD and fails. r2 fix resolves COMMIT_MSG_FILE to
+	# absolute path BEFORE the cd.
+	mkdir -p "$TEST_TMP/sub"
+	printf 'feat(v9.9.9): subdir relative\n' >"$TEST_TMP/sub/msg"
+	run bash -c "cd '$TEST_TMP/sub' && bash '$SCRIPT' msg 2>&1"
+	[ "$status" -eq 1 ]
+	[[ $output == *"9.9.9"* ]]
+}
+
+@test "feat(v0.9.5)! breaking-change == manifest → passes (r2)" {
+	# Locks the inverse of the breaking-change FAIL case: equal
+	# version with `!` marker should pass through `!?` regex branch
+	# without firing the gate.
+	run _run_with_subject "feat(v0.9.5)!: breaking at current version"
+	[ "$status" -eq 0 ]
+}
+
+@test "non-version scope with breaking-change marker feat(skills)!: passes (r2)" {
+	# Lock bang-in-non-version-scope as silent-pass.
+	run _run_with_subject "feat(skills)!: drop legacy skill"
+	[ "$status" -eq 0 ]
+}
+
+@test "four-segment version feat(v9.9.9.1): does NOT match → passes (r2)" {
+	# Regex requires exactly X.Y.Z. Mirrors the existing two-segment
+	# test. Locks SemVer-strict regex behavior.
+	run _run_with_subject "feat(v9.9.9.1): four segment"
+	[ "$status" -eq 0 ]
 }
