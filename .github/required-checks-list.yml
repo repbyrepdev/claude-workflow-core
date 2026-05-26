@@ -1,0 +1,7 @@
+# SSOT for required status checks. Branch protection on main reads
+# this list; pr-merge skill validates each is present + green before
+# proceeding.
+required:
+  - check_name: CodeRabbit
+  - check_name: gitleaks
+  - check_name: pr-lint

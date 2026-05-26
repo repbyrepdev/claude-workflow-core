@@ -1,0 +1,69 @@
+# Label catalog — SINGLE SOURCE OF TRUTH for this repo.
+#
+# Synced to GitHub by .github/workflows/label-sync.yml on push to main that
+# changes this file (workflow landing in a follow-up sub-issue of the v0.9.5
+# epic). Manual one-shot today: `gh label create <name> --color <hex>`.
+#
+# 8-color Primer palette (kept in sync across plugin / homelab / FCP):
+#   Red     cf222e  priority:p0 · priority:p1 · bug
+#   Orange  bc4c00  priority:p0-proposed · status:in-review
+#   Yellow  bf8700  priority:p2
+#   Green   1a7f37  priority:p3
+#   Blue    0969da  documentation
+#   Purple  8250df  area:infrastructure · epic · brainstorm
+#   Pink    bf3989  question
+#   Gray    6e7681  priority:needs-triage · status:blocked · enhancement
+# -----------------------------------------------------------------------------
+
+# ---- Type ----
+- name: bug
+  color: "cf222e"
+  description: Something isn't working
+- name: enhancement
+  color: "6e7681"
+  description: New feature or improvement
+- name: epic
+  color: "8250df"
+  description: Parent of sub-issues (multi-PR scope)
+- name: brainstorm
+  color: "8250df"
+  description: Discussion-style ideation, no concrete scope yet
+- name: documentation
+  color: "0969da"
+  description: Improvements or additions to documentation
+- name: question
+  color: "bf3989"
+  description: Further information is requested
+
+# ---- Priority ----
+- name: priority:p0
+  color: "cf222e"
+  description: Production broken — fix immediately
+- name: priority:p0-proposed
+  color: "bc4c00"
+  description: AI-flagged as critical — human approval required (never auto-escalates)
+- name: priority:p1
+  color: "cf222e"
+  description: Urgent — fix this week
+- name: priority:p2
+  color: "bf8700"
+  description: Important — fix this milestone
+- name: priority:p3
+  color: "1a7f37"
+  description: Nice-to-have — backlog
+- name: priority:needs-triage
+  color: "6e7681"
+  description: AI triage couldn't classify confidently — human review needed
+
+# ---- Status ----
+- name: status:in-review
+  color: "bc4c00"
+  description: PR open awaiting review
+- name: status:blocked
+  color: "6e7681"
+  description: Waiting on dependency / external blocker
+
+# ---- Area ----
+- name: area:infrastructure
+  color: "8250df"
+  description: Skills, hooks, scripts, workflows, repo infrastructure

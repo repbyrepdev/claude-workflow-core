@@ -1,0 +1,16 @@
+name: Brainstorm
+description: Discussion-style issue
+labels: [brainstorm]
+body:
+  - type: input
+    id: area
+    attributes:
+      label: Area
+    validations:
+      required: true
+  - type: textarea
+    id: topic
+    attributes:
+      label: Topic
+    validations:
+      required: true

@@ -1,0 +1,12 @@
+# v4.24-O (#601) — yamllint SSOT.
+# Consumed by:
+#   - .pre-commit-config.yaml (yamllint hook)
+#   - .claude/_lib/lint-gate-core.sh (_lint_run_on_miss yamllint branch)
+#   - .claude/hooks/lint-yaml.sh (PostToolUse per-file lint)
+# yamllint auto-discovers this file at repo root; explicit `-c` not needed.
+# One source of truth — prior inline config in 3 places was a drift hazard.
+
+extends: relaxed
+rules:
+  line-length: disable
+  truthy: disable
