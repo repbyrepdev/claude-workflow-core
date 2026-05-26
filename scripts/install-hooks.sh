@@ -52,10 +52,20 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
-	echo "install-hooks: must be run inside a git repo" >&2
+# Derive REPO_ROOT from the script's own location, NOT git rev-parse.
+# Reason: a user running this script from inside ANOTHER git repo (via
+# absolute path) would otherwise install hooks for the wrong repo.
+# CR-CLI Phase 2 caught this. The script lives at <repo>/scripts/
+# install-hooks.sh so dirname(BASH_SOURCE)/.. is the repo root.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# Still verify the inferred root IS a git repo — otherwise the hooks
+# we're about to install have nowhere to live.
+if ! (cd "$REPO_ROOT" && git rev-parse --git-dir >/dev/null 2>&1); then
+	echo "install-hooks: $REPO_ROOT is not a git repo (script must live in <repo>/scripts/)" >&2
 	exit 2
-}
+fi
 cd "$REPO_ROOT"
 
 _log() { echo "[install-hooks] $*" >&2; }
