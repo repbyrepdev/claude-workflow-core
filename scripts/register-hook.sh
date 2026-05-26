@@ -104,15 +104,18 @@ _parse_frontmatter() {
 		echo "register-hook.sh: hook file not found: $path" >&2
 		return 1
 	fi
-	# Match `# event: <name>` and `# matcher: <pattern>`. Order
-	# doesn't matter; only first occurrence wins.
+	# event and matcher may appear in either order; for each key the
+	# first occurrence wins (subsequent duplicates ignored). Strip CR
+	# (windows endings) and trailing whitespace so silent-mismatch
+	# bugs ('SessionStart\r' or 'SessionStart ') can't happen.
 	while IFS= read -r line; do
+		line=${line%$'\r'}
 		case "$line" in
 		'# event:'*)
-			[ -z "$event" ] && event=$(printf '%s' "$line" | sed -E 's/^# event:[[:space:]]*//')
+			[ -z "$event" ] && event=$(printf '%s' "$line" | sed -E 's/^# event:[[:space:]]*//; s/[[:space:]]+$//')
 			;;
 		'# matcher:'*)
-			[ -z "$matcher" ] && matcher=$(printf '%s' "$line" | sed -E 's/^# matcher:[[:space:]]*//')
+			[ -z "$matcher" ] && matcher=$(printf '%s' "$line" | sed -E 's/^# matcher:[[:space:]]*//; s/[[:space:]]+$//')
 			;;
 		esac
 	done < <(head -15 "$path")
@@ -208,11 +211,36 @@ _write_settings() {
 		printf '%s\n' "$new_json" | jq . >&2
 		return 0
 	fi
-	# Atomic write: tmp + mv in same dir
+	# Atomic write (tmp + rename) — prevents partial settings.json on
+	# crash/SIGKILL mid-write. mkdir -p the parent so fresh-machine
+	# first-run actually works (the _load_settings synthesis claim).
+	local parent
+	parent=$(dirname "$SETTINGS")
+	if ! mkdir -p "$parent"; then
+		echo "register-hook.sh: failed to create $parent — check permissions" >&2
+		exit 3
+	fi
 	local tmp
-	tmp=$(mktemp "$(dirname "$SETTINGS")/.settings.XXXXXX")
-	printf '%s\n' "$new_json" | jq . >"$tmp"
-	mv "$tmp" "$SETTINGS"
+	tmp=$(mktemp "$parent/.settings.XXXXXX") || {
+		echo "register-hook.sh: cannot create tmp file in $parent — permission denied?" >&2
+		exit 3
+	}
+	# Clean up tmp on any failure path (success after mv leaves nothing to clean).
+	trap 'rm -f "$tmp"' EXIT
+	if ! printf '%s\n' "$new_json" | jq . >"$tmp"; then
+		echo "register-hook.sh: jq failed to format settings — refusing to overwrite $SETTINGS" >&2
+		exit 3
+	fi
+	# Post-write validation: refuse to clobber settings.json with invalid JSON.
+	if ! jq empty "$tmp" 2>/dev/null; then
+		echo "register-hook.sh: post-write validation failed — refusing to overwrite $SETTINGS" >&2
+		exit 3
+	fi
+	if ! mv "$tmp" "$SETTINGS"; then
+		echo "register-hook.sh: mv failed ($tmp → $SETTINGS) — possibly cross-filesystem" >&2
+		exit 3
+	fi
+	trap - EXIT
 }
 
 # Discover all auto-register hooks if --all-auto-register.
@@ -226,26 +254,42 @@ if [ "$ALL_AUTO" = "1" ]; then
 	done < <(grep -l '^# auto-register: true' "$REPO_ROOT/hooks"/*.sh 2>/dev/null || true)
 fi
 
-# --check mode: report drift between settings.json refs and on-disk hooks
+# --check mode: bidirectional drift between settings.json refs ↔ hook files
 if [ "$CHECK" = "1" ]; then
 	settings=$(_load_settings)
-	# Collect settings refs to hooks/ paths
 	settings_refs=$(printf '%s' "$settings" | jq -r '
 		[.hooks // {} | to_entries[] |
 		  .value[] | (.hooks // [])[] |
 		  select(.command | test("/hooks/[^/]+\\.sh$"))
 		  | .command | capture("/hooks/(?<f>[^/]+\\.sh)$").f
 		] | unique | .[]
-	' 2>/dev/null || true)
-	# Collect hooks/ files that declare event frontmatter
-	hook_files=$(grep -lE '^# event:' "$REPO_ROOT/hooks"/*.sh 2>/dev/null | awk -F/ '{print $NF}' | sort -u || true)
+	')
+	# Hooks on disk with frontmatter — separately track sentinel hooks
+	# (those declaring `# auto-register: true`) so the reverse-direction
+	# check only flags hooks that SHOULD be registered.
+	hook_files=""
+	sentinel_files=""
+	if [ -d "$REPO_ROOT/hooks" ]; then
+		hook_files=$(grep -lE '^# event:' "$REPO_ROOT/hooks"/*.sh 2>/dev/null | awk -F/ '{print $NF}' | sort -u || true)
+		sentinel_files=$(grep -lE '^# auto-register: true' "$REPO_ROOT/hooks"/*.sh 2>/dev/null | awk -F/ '{print $NF}' | sort -u || true)
+	fi
 	drift=0
-	for r in $settings_refs; do
-		if ! grep -qFx "$r" <<<"$hook_files"; then
+	# Direction 1: orphan refs (settings ref → hook file missing)
+	while IFS= read -r r; do
+		[ -z "$r" ] && continue
+		if [ -z "$hook_files" ] || ! printf '%s\n' "$hook_files" | grep -qFx "$r"; then
 			echo "  ✗ settings.json refs hooks/$r but file does not exist" >&2
 			drift=1
 		fi
-	done
+	done <<<"$settings_refs"
+	# Direction 2: unregistered sentinel hooks (file with auto-register → not in settings)
+	while IFS= read -r h; do
+		[ -z "$h" ] && continue
+		if [ -z "$settings_refs" ] || ! printf '%s\n' "$settings_refs" | grep -qFx "$h"; then
+			echo "  ✗ hooks/$h has '# auto-register: true' but is not in settings.json" >&2
+			drift=1
+		fi
+	done <<<"$sentinel_files"
 	echo "register-hook.sh: --check complete (drift=$drift)"
 	exit "$drift"
 fi

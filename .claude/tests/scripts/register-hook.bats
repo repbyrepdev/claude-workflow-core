@@ -159,8 +159,9 @@ teardown() {
 
 # --- --check (drift detection) ---------------------------------------
 
-@test "--check clean returns 0" {
-	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+@test "--check clean returns 0 (all sentinel hooks registered + no orphans)" {
+	# Must register every hook with `# auto-register: true` to be clean.
+	"$SCRIPT" --all-auto-register
 	run "$SCRIPT" --check
 	[ "$status" -eq 0 ]
 	[[ $output == *"drift=0"* ]]
@@ -184,6 +185,67 @@ teardown() {
 	run "$SCRIPT" hooks/cr-auto-parse-poll.sh
 	[ "$status" -eq 3 ]
 	[[ $output == *"malformed JSON"* ]]
+}
+
+@test "register preserves pre-existing hooks under different events" {
+	# Pre-populate with an unrelated hook entry (e.g. PostToolUse)
+	jq '.hooks = {"PostToolUse": [{"matcher":"","hooks":[{"type":"command","command":"/x/sibling.sh"}]}]}' \
+		"$CLAUDE_SETTINGS_FILE" >"$CLAUDE_SETTINGS_FILE.tmp"
+	mv "$CLAUDE_SETTINGS_FILE.tmp" "$CLAUDE_SETTINGS_FILE"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	# Both should coexist
+	[ "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")" = "/x/sibling.sh" ]
+	[[ $(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE") == *"cr-auto-parse-poll.sh"* ]]
+}
+
+@test "--check detects unregistered auto-register hook (bidirectional drift)" {
+	# Plugin has ship-cycle-director-gate.sh with auto-register:true; with
+	# empty settings.json, --check should flag the unregistered direction.
+	echo '{}' >"$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --check
+	[ "$status" -eq 1 ]
+	[[ $output == *"ship-cycle-director-gate.sh"* ]]
+	[[ $output == *"not in settings.json"* ]]
+}
+
+@test "register-hook handles paths with embedded spaces" {
+	# jq's --arg should round-trip arbitrary strings; verify with a
+	# space-containing fixture path.
+	mkdir -p "$TEST_TMP/repo with space/hooks"
+	cd "$TEST_TMP/repo with space" || return 1
+	git init -q
+	git config user.email "test@test"
+	git config user.name "test"
+	cat >hooks/spaced.sh <<-'EOF'
+		#!/bin/bash
+		set -euo pipefail
+		# event: SessionStart
+		echo "spaced"
+	EOF
+	chmod +x hooks/spaced.sh
+	git add . >/dev/null
+	git commit -q -m "initial"
+	"$SCRIPT" hooks/spaced.sh
+	cmd=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")
+	[[ $cmd == *"repo with space/hooks/spaced.sh" ]]
+}
+
+@test "frontmatter with trailing whitespace stripped (silent-mismatch guard)" {
+	mkdir -p "$TEST_TMP/repo/hooks"
+	cd "$TEST_TMP/repo" || return 1
+	git init -q
+	git config user.email "test@test"
+	git config user.name "test"
+	# Trailing space after event name — must be stripped
+	printf '#!/bin/bash\nset -euo pipefail\n# event: SessionStart   \necho ok\n' >hooks/trail.sh
+	chmod +x hooks/trail.sh
+	git add . >/dev/null
+	git commit -q -m "initial"
+	"$SCRIPT" hooks/trail.sh
+	# Key in settings.json should be exactly "SessionStart" (no trailing whitespace)
+	[ -n "$(jq -r '.hooks.SessionStart // null' "$CLAUDE_SETTINGS_FILE")" ]
+	# Verify the trailing-whitespace key was NOT created
+	[ "$(jq -r '.hooks | keys[]' "$CLAUDE_SETTINGS_FILE" | grep -c 'SessionStart$')" = "1" ]
 }
 
 @test "--check on malformed settings.json refused with exit 3" {
