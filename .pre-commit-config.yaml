@@ -1,22 +1,24 @@
 ---
 # Plugin SELF-DOGFOOD pre-commit config (v0.9.1, #47).
 #
-# The plugin repo USES ITS OWN hooks via repo: local entries pointing at the
-# in-tree pre-commit-hooks/ directory. Consumer repos use the same hooks via
-# `repo: https://github.com/repbyrepdev/claude-workflow-core` + `rev: vX.Y.Z`
-# — see scripts/bootstrap-repo.sh template for the consumer wiring.
+# The plugin repo USES ITS OWN hooks via repo: local entries pointing at
+# the in-tree pre-commit-hooks/ directory. Consumer repos pin via
+# `repo: https://github.com/repbyrepdev/claude-workflow-core` +
+# `rev: vX.Y.Z` — see scripts/bootstrap-repo.sh template for the
+# consumer wiring.
 #
-# Why local: pinning to a published tag means the plugin always tests the
-# PREVIOUS release's hooks, not the working-tree hooks. local: tests the
-# in-tree code we're about to ship — catches breakage at commit time, not
-# after release.
+# Hook IDs below MUST match `.pre-commit-hooks.yaml` exactly (Phase 1
+# code-reviewer + code-simplifier + comment-analyzer flagged ID drift).
+# Hooks intentionally OMITTED from this dogfood config (each with
+# rationale) are listed at the bottom of this file so future maintainers
+# know whether to mirror a new manifest entry here.
 #
 # Install:    scripts/install-hooks.sh   (also installs pre-push gate)
 # Run all:    pre-commit run --all-files
 
 repos:
-  # Upstream framework hooks (same set bootstrap-repo.sh installs for
-  # consumers — keep aligned to detect drift).
+  # Upstream framework hooks — same set bootstrap-repo.sh installs for
+  # consumers (keep aligned to detect drift).
   - repo: https://github.com/adrienverge/yamllint
     rev: v1.38.0
     hooks:
@@ -34,11 +36,15 @@ repos:
     hooks:
       - id: gitleaks
 
-  # Plugin's own hooks via repo: local. Keep the id list aligned with the
-  # in-tree .pre-commit-hooks.yaml so the published-tag declaration and
-  # the self-dogfood declaration don't drift.
+  # Plugin's own hooks via repo: local. IDs match .pre-commit-hooks.yaml.
   - repo: local
     hooks:
+      - id: actions-permissions
+        name: Workflows require `permissions:` block
+        entry: pre-commit-hooks/actions-permissions.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: bash-safety
         name: Shell scripts require `set -u`
         entry: pre-commit-hooks/bash-safety.sh
@@ -48,12 +54,6 @@ repos:
       - id: bash4-features-check
         name: bash 4.0+ features require `#!/usr/bin/env bash` shebang
         entry: pre-commit-hooks/bash4-features-check.sh
-        language: script
-        pass_filenames: false
-        stages: [pre-commit]
-      - id: actions-permissions
-        name: Workflows require `permissions:` block
-        entry: pre-commit-hooks/actions-permissions.sh
         language: script
         pass_filenames: false
         stages: [pre-commit]
@@ -81,13 +81,13 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
-      - id: event-frontmatter
+      - id: event-frontmatter-check
         name: event-frontmatter — hooks must declare `# event:` for discovery
         entry: pre-commit-hooks/event-frontmatter-check.sh
         language: script
-        files: ^\.claude/hooks/.*\.sh$
+        files: ^hooks/.*\.sh$
         stages: [pre-commit]
-      - id: edit-corruption
+      - id: edit-corruption-guard
         name: edit-corruption — detect heredoc/whitespace corruption
         entry: pre-commit-hooks/edit-corruption-guard.sh
         language: script
@@ -117,3 +117,46 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: check-review-accept-reason
+        name: review-accept — accepted findings need recorded reason
+        entry: pre-commit-hooks/check-review-accept-reason.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: commit-scope-to-issue
+        name: commit-scope — commit subject scope must match issue area
+        entry: pre-commit-hooks/commit-scope-to-issue.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: memory-drift-check
+        name: memory-drift — memory files must not reference missing scripts
+        entry: pre-commit-hooks/memory-drift-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: label-sync-on-labels-change
+        name: Preview label-sync --dry-run when .github/labels.yml changes
+        entry: pre-commit-hooks/label-sync-on-labels-change.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: prove-yourself-gate
+        name: prove-yourself — rejections need dogfood evidence + ext authority
+        entry: pre-commit-hooks/prove-yourself-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+# Hooks intentionally OMITTED from this dogfood config:
+#
+#   - bats-gate: requires bats test infrastructure that the plugin repo
+#     doesn't ship yet. Tracked under #47 (separate sub-issue for adding
+#     bats skeleton + first 5 skill tests).
+#
+#   - dogfood-gate: requires .claude/dogfood-registry.yml + recent-pass
+#     log infrastructure that consumer repos build via dogfood.sh.
+#     Plugin repo doesn't have target wrappers to register yet.
+#
+# When adding a new hook to .pre-commit-hooks.yaml, decide explicitly
+# whether commit-time dogfooding applies. If yes, mirror here. If no,
+# add it to the omission list above.
