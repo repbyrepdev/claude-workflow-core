@@ -1,0 +1,10 @@
+---
+# Path → label rules consumed by pr-labeler.yml workflow.
+# See https://github.com/actions/labeler for syntax.
+area:infrastructure:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/**
+          - .github/**
+          - .claude/**
+          - .pre-commit-config.yaml

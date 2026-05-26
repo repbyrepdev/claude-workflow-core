@@ -1,0 +1,23 @@
+# Label catalog SSOT. Sync via `gh label create` or label-sync workflow.
+- name: bug
+  color: d73a4a
+  description: Something broken
+- name: enhancement
+  color: a2eeef
+  description: New capability
+- name: epic
+  color: 7057ff
+  description: Parent of sub-issues
+- name: priority:p1
+  color: b60205
+- name: priority:p2
+  color: d93f0b
+- name: priority:p3
+  color: fbca04
+- name: priority:needs-triage
+  color: 5319e7
+- name: area:infrastructure
+  color: 0e8a16
+- name: brainstorm
+  color: c5def5
+  description: Discussion-style ideation

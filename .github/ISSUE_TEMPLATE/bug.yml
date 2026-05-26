@@ -1,0 +1,16 @@
+name: Bug report
+description: Something broken
+labels: [bug]
+body:
+  - type: input
+    id: area
+    attributes:
+      label: Area
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What's happening?
+    validations:
+      required: true

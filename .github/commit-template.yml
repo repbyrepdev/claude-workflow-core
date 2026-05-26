@@ -1,0 +1,106 @@
+# v4.24 — Gold-standard commit-message schema for this repo.
+#
+# Consumed by:
+#   - /git-commit skill — drafts via Copilot gpt-4.1 using this as system context
+#   - .claude/pre-commit-hooks/commit-template-check.sh — schema drift guard
+#   - .claude/hooks/post-commit-template-lint.sh — post-commit lint, warns on drift
+# NOT consumed by auto-release.sh (it reads release-template.yml and has its
+# own hardcoded commit-prefix categorization in _copilot_section's caller).
+#
+# Convention: Conventional Commits 1.0.0 + 70-char subject cap + body required
+# for feat/fix/refactor/perf explaining the WHY (not the WHAT).
+#
+# This is SSOT. All downstream tooling reads from here — do not restate rules
+# in CLAUDE.md or skill prose. Update here and downstream auto-conforms.
+
+schema:
+  subject:
+    max_length: 70
+    format: "<type>(<optional_scope>): <summary>"
+    types:
+      - feat      # new capability (user-visible or infra)
+      - fix       # bug fix
+      - refactor  # code restructure, no behavior change
+      - perf      # performance improvement
+      - chore     # maintenance (deps, tooling, renames)
+      - test      # test-only changes
+      - docs      # docs/comments only
+      - build     # build system / packaging
+      - ci        # CI / workflow changes
+      - revert    # revert of prior commit
+    scope_optional: true
+    scope_examples: [v4.23, v4.24, vX.Y, vX.Y-Z, stacks, board]
+
+  body:
+    required_for: [feat, fix, refactor, perf]
+    optional_for: [chore, test, docs, build, ci, revert]
+    format: "Plain prose explaining WHY not WHAT. 1-2 sentences minimum on required types."
+    separator: "One blank line between subject and body"
+
+  footer:
+    trailers:
+      - pattern: "Closes #<N>"
+        purpose: "Auto-closes the referenced issue on merge"
+      - pattern: "Advances #<N>"
+        purpose: "Progress on an epic without closing"
+      - pattern: "Co-Authored-By: <Name> <email>"
+        purpose: "Multi-author attribution — MANDATORY for Claude-assisted commits"
+
+# Exemplar commits from this repo's history that represent the gold standard.
+# New commits should match this structure, tone, and specificity.
+examples:
+  - scope: "feat with explicit scope + multi-closes"
+    content: |
+      feat(v4.23): review-efficiency + test-enforcement epic (#593)
+
+      Advances #544. Lands the 11-tier diff-size scaler, diff-hash agent cache,
+      file-type-aware agent subset, and weekly bats baseline cron together driving
+      a measured 60-70% reduction in typical-PR Phase 1 token cost. Also adds
+      commit-time bats-gate and push-time hash-match verification so test drift
+      can't slip past unnoticed.
+
+      Closes #517 #519 #547 #549 #550 #551 #552 #553 #554 #555 #556 #557 #558 #562 #564 #565 #589 #591
+
+      Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+  - scope: "fix with tight why"
+    content: |
+      fix(v4.23): macOS portability in stuck-shells.sh
+
+      `ps -axo etimes` is GNU-only; macOS ps emits zeros, silently breaking the
+      stuck-shell detector. Replaced with portable `etime` ([[dd-]hh:]mm:ss) plus
+      an awk conversion block. Verified on Darwin 25.4.
+
+      Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+  - scope: "refactor with rationale"
+    content: |
+      refactor(v4.23): per-file diff-hash agent cache key
+
+      Prior cache keyed on entire branch diff hash — every new commit changed the
+      hash, so agents that had reviewed unchanged files still re-ran next round.
+      Moving cache key to (file × content_hash × agent) lets each file's prior
+      clean verdict survive unrelated commits. Measured: 40% agent-invocation
+      reduction on multi-commit sessions.
+
+      Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+# Anti-patterns — commit messages in these shapes should be REFUSED by the
+# skill wrapper + flagged by the post-commit lint. Exemplars of what NOT to do.
+anti_patterns:
+  - pattern: "updated files"
+    why: "Describes WHAT changed (duplicating the diff) without WHY"
+  - pattern: "fixed bug"
+    why: "No context. Which bug? What was the root cause?"
+  - pattern: "wip"
+    why: "Work-in-progress commits should never reach main"
+  - pattern: "misc / stuff / things / changes"
+    why: "Meaningless. Split or rewrite with a specific summary"
+  - pattern: "Let Claude do X"
+    why: "Self-attribution in subject line. Use Co-Authored-By footer instead"
+  - pattern: "Subject line >70 chars"
+    why: "GitHub UI truncates. Use body for details"
+  - pattern: "Missing body on feat/fix/refactor/perf"
+    why: "Required types must explain WHY — not optional"
+  - pattern: "Subject in all caps / missing conventional prefix"
+    why: "Breaks categorization for release-notes auto-generation"

@@ -1,0 +1,16 @@
+name: Feature request
+description: New capability
+labels: [enhancement]
+body:
+  - type: input
+    id: area
+    attributes:
+      label: Area
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What's the goal?
+    validations:
+      required: true
