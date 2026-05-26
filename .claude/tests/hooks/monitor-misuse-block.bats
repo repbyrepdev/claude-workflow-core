@@ -113,18 +113,21 @@ done"
 
 # --- bypass + audit log -----------------------------------------
 
-@test "MONITOR_MISUSE_SKIP=1 bypasses + writes audit log file" {
+@test "MONITOR_MISUSE_SKIP=1 bypasses + writes audit log with cmd_hash" {
 	# silent-failure-hunter finding: prior 'audit logged' message
 	# was an empty promise — only stderr emission. Now writes
-	# .claude/logs/monitor-misuse-bypass.jsonl.
+	# .claude/logs/monitor-misuse-bypass.jsonl with command hash.
+	# CR-CLI r3 major: prior fix passed "" so cmd_hash was always "-".
 	payload=$(jq -nc --arg c 'until grep -q done; do sleep 5; done' '{tool_name:"Monitor",tool_input:{command:$c}}')
 	run bash -c "cd '$TEST_TMP' && export MONITOR_MISUSE_SKIP=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
-	# Audit log file MUST exist with one entry
 	[ -f "$TEST_TMP/.claude/logs/monitor-misuse-bypass.jsonl" ]
 	got=$(jq -r '.event' "$TEST_TMP/.claude/logs/monitor-misuse-bypass.jsonl")
 	[ "$got" = "monitor_misuse_skip" ]
+	# cmd_hash MUST be a sha256 (64 hex chars), not the "-" placeholder
+	got_hash=$(jq -r '.cmd_hash' "$TEST_TMP/.claude/logs/monitor-misuse-bypass.jsonl")
+	[[ $got_hash =~ ^[a-f0-9]{64}$ ]]
 }
 
 # --- non-Monitor passthrough ------------------------------------

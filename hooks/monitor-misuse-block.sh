@@ -68,7 +68,17 @@ _audit_log_bypass() {
 
 if [ "${MONITOR_MISUSE_SKIP:-0}" = "1" ]; then
 	echo "monitor-misuse-block: MONITOR_MISUSE_SKIP=1 — passing through (logged to .claude/logs/monitor-misuse-bypass.jsonl)" >&2
-	_audit_log_bypass ""
+	# Read stdin best-effort so the audit log can record the
+	# command-hash. If stdin is broken (the emergency case the
+	# bypass-above-stdin-read positioning exists for), we still
+	# log the bypass event with cmd_hash="-".
+	BYPASS_PAYLOAD=""
+	if BYPASS_PAYLOAD=$(cat 2>/dev/null); then
+		bypass_cmd=$(printf '%s' "$BYPASS_PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || printf '')
+	else
+		bypass_cmd=""
+	fi
+	_audit_log_bypass "$bypass_cmd"
 	exit 0
 fi
 
