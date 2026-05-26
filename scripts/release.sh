@@ -246,17 +246,19 @@ if [ "$NO_GITHUB" = "1" ]; then
 elif command -v gh >/dev/null 2>&1; then
 	# Distinguish 'release not found' (expected, proceed to create) from
 	# auth/network errors (must surface, don't fall through silently).
+	# Use the exit code as the primary signal — view_err emptiness fails
+	# if gh prints warnings to stderr on success (CR finding).
 	release_exists=0
-	view_err=$(gh release view "$TAG" 2>&1 >/dev/null) || {
-		view_rc=$?
-		if printf '%s' "$view_err" | grep -qi 'release not found\|not found'; then
-			release_exists=0
-		else
-			echo "release.sh: gh release view failed (rc=$view_rc): $view_err" >&2
-			exit 3
-		fi
-	}
-	[ -z "$view_err" ] && release_exists=1
+	view_rc=0
+	view_err=$(gh release view "$TAG" 2>&1 >/dev/null) || view_rc=$?
+	if [ "$view_rc" = "0" ]; then
+		release_exists=1
+	elif printf '%s' "$view_err" | grep -qi 'release not found\|not found'; then
+		release_exists=0
+	else
+		echo "release.sh: gh release view failed (rc=$view_rc): $view_err" >&2
+		exit 3
+	fi
 	if [ "$release_exists" = "1" ]; then
 		echo "  ✓ GitHub release $TAG already exists"
 	elif [ "$DRY_RUN" = "1" ]; then
