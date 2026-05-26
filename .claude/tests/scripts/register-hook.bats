@@ -186,6 +186,13 @@ teardown() {
 	[[ $output == *"malformed JSON"* ]]
 }
 
+@test "--check on malformed settings.json refused with exit 3" {
+	echo 'not json' >"$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --check
+	[ "$status" -eq 3 ]
+	[[ $output == *"malformed JSON"* ]]
+}
+
 @test "missing settings.json is created with empty hooks" {
 	rm -f "$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" hooks/cr-auto-parse-poll.sh

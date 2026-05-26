@@ -11,7 +11,7 @@ set -euo pipefail
 # edits (see #72 for classifier-exemption strategy).
 #
 # Hook discovery (#69 — manifest baked into hooks themselves):
-#   # event: <EventName>             — required (first 10 lines of the .sh)
+#   # event: <EventName>             — required (first 15 lines of the .sh)
 #   # matcher: <pattern>             — optional (PreToolUse etc.)
 #   # auto-register: true            — optional sentinel for --all-auto
 #
