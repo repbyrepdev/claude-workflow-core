@@ -87,6 +87,12 @@ repos:
         language: script
         files: ^hooks/.*\.sh$
         stages: [pre-commit]
+      - id: plugin-version-bump-gate
+        name: plugin-version-bump — hook add must bump plugin.json version (#87)
+        entry: pre-commit-hooks/plugin-version-bump-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: edit-corruption-guard
         name: edit-corruption — detect heredoc/whitespace corruption
         entry: pre-commit-hooks/edit-corruption-guard.sh

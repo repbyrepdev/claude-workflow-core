@@ -98,6 +98,13 @@
   files: '^\.claude/hooks/.*\.sh$'
   stages: [pre-commit]
 
+- id: plugin-version-bump-gate
+  name: "plugin-version-bump — hook add must bump plugin.json version (#87)"
+  entry: pre-commit-hooks/plugin-version-bump-gate.sh
+  language: script
+  pass_filenames: false
+  stages: [pre-commit]
+
 - id: label-sync-on-labels-change
   name: Preview label-sync --dry-run when .github/labels.yml changes
   entry: pre-commit-hooks/label-sync-on-labels-change.sh
