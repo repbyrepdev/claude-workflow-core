@@ -121,8 +121,18 @@ if [ -z "$TO_VER" ]; then
 	# (X.Y.Z), then pick the highest. Without the filter a stray dir like
 	# `tmp` or `current` could win `sort -V | tail -1` and produce
 	# invalid paths after the jq walk.
-	TO_VER=$(find "$PLUGIN_CACHE_BASE" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; |
-		grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+	#
+	# Use `awk` for the filter rather than `grep -E`: under `set -o
+	# pipefail` (line 2), grep returns rc=1 when no matches found and
+	# the whole pipeline fails BEFORE the empty-check below can emit
+	# the operator-friendly message. awk treats no-match as rc=0 so the
+	# pipeline succeeds with empty stdout, and the empty-check handles
+	# the missing-semver case cleanly.
+	TO_VER=$(
+		find "$PLUGIN_CACHE_BASE" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; |
+			awk '/^[0-9]+\.[0-9]+\.[0-9]+$/' |
+			sort -V | tail -1
+	)
 	if [ -z "$TO_VER" ]; then
 		echo "migrate-settings.sh: no semver cache dirs (X.Y.Z) found under $PLUGIN_CACHE_BASE" >&2
 		exit 2

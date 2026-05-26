@@ -118,6 +118,20 @@ _write_legacy_settings() {
 	[[ $output == *"0.8.5 → 0.8.8"* ]]
 }
 
+@test "TO_VER auto-detect: no-semver cache base exits 2 (pipefail-safe)" {
+	# CR finding: prior `grep -E ... | sort -V | tail -1` died under
+	# set -o pipefail when grep matched 0 lines, bypassing the
+	# empty-check + friendly error. awk-based filter returns rc=0 on
+	# zero matches so the empty-check fires correctly.
+	_write_legacy_settings
+	# Cache base exists but contains ONLY non-semver dirs
+	rm -rf "$PLUGIN_CACHE_BASE"
+	mkdir -p "$PLUGIN_CACHE_BASE/tmp" "$PLUGIN_CACHE_BASE/current"
+	run "$SCRIPT" --dry-run
+	[ "$status" -eq 2 ]
+	[[ $output == *"no semver cache dirs"* ]]
+}
+
 @test "TO_VER auto-detect ignores non-semver dirs in cache base" {
 	# CR finding: prior `sort -V | tail -1` would pick a name like 'tmp'
 	# or 'current' if such dirs existed under the cache base. Filter
