@@ -247,14 +247,21 @@ _write_settings() {
 }
 
 # Discover all auto-register hooks if --all-auto-register.
-# Use while-read array build (portable across bash 3.2 macOS + bash 4+ Linux);
-# `mapfile` is bash 4+.
+# Restricted to first 15 lines per the frontmatter contract — _parse_frontmatter
+# only trusts that window, so discovery must too (a later heredoc/comment
+# containing `# auto-register: true` shouldn't make a hook auto-register).
+# Use while-read array build (portable across bash 3.2 + bash 4+); mapfile is bash 4+.
 if [ "$ALL_AUTO" = "1" ]; then
 	while IFS= read -r h; do
 		[ -z "$h" ] && continue
 		rel=${h#"$REPO_ROOT/"}
 		HOOK_PATHS+=("$rel")
-	done < <(grep -l '^# auto-register: true' "$REPO_ROOT/hooks"/*.sh 2>/dev/null || true)
+	done < <(
+		for f in "$REPO_ROOT"/hooks/*.sh; do
+			[ -f "$f" ] || continue
+			head -15 "$f" | grep -q '^# auto-register: true' && printf '%s\n' "$f"
+		done
+	)
 fi
 
 # --check mode: bidirectional drift between settings.json refs ↔ hook files
@@ -270,11 +277,25 @@ if [ "$CHECK" = "1" ]; then
 	# Hooks on disk with frontmatter — separately track sentinel hooks
 	# (those declaring `# auto-register: true`) so the reverse-direction
 	# check only flags hooks that SHOULD be registered.
+	# Frontmatter-window-restricted discovery (matches _parse_frontmatter's
+	# 15-line contract): a later heredoc/comment doesn't accidentally
+	# pull a hook into either list.
 	hook_files=""
 	sentinel_files=""
 	if [ -d "$REPO_ROOT/hooks" ]; then
-		hook_files=$(grep -lE '^# event:' "$REPO_ROOT/hooks"/*.sh 2>/dev/null | awk -F/ '{print $NF}' | sort -u || true)
-		sentinel_files=$(grep -lE '^# auto-register: true' "$REPO_ROOT/hooks"/*.sh 2>/dev/null | awk -F/ '{print $NF}' | sort -u || true)
+		for f in "$REPO_ROOT"/hooks/*.sh; do
+			[ -f "$f" ] || continue
+			bn=$(basename "$f")
+			window=$(head -15 "$f")
+			if printf '%s\n' "$window" | grep -qE '^# event:'; then
+				hook_files=$(printf '%s\n%s' "${hook_files}" "$bn")
+			fi
+			if printf '%s\n' "$window" | grep -qE '^# auto-register: true'; then
+				sentinel_files=$(printf '%s\n%s' "${sentinel_files}" "$bn")
+			fi
+		done
+		hook_files=$(printf '%s' "$hook_files" | sed '/^$/d' | sort -u || true)
+		sentinel_files=$(printf '%s' "$sentinel_files" | sed '/^$/d' | sort -u || true)
 	fi
 	drift=0
 	# Direction 1: orphan refs (settings ref → hook file missing)
