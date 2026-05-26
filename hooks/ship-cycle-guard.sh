@@ -107,13 +107,24 @@ _is_active_feature_branch() {
 	esac
 	# State file under .claude/.session-state/ship-pr-cycle/<sha>.json
 	# means the orchestrator has been initialized for this HEAD.
-	local sha state_dir
+	local sha state_dir state_file
 	sha=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null) || return 1
 	state_dir="$repo_root/.claude/.session-state/ship-pr-cycle"
-	[ -f "$state_dir/$sha.json" ] || return 1
-	# Skip if already merged
+	state_file="$state_dir/$sha.json"
+	# Distinguish "no state file" (legitimate no-op — branch not yet
+	# in-flight via ship-pr-cycle) from "state file exists but corrupt"
+	# (suspicious — fail closed to deny rather than silently
+	# disabling the guard). CR-CLI r3 major: a partial-write race
+	# could otherwise let a corrupt state JSON sneak hand-rolls past.
+	[ -f "$state_file" ] || return 1
 	local stage
-	stage=$(jq -r '.stage // ""' "$state_dir/$sha.json" 2>/dev/null) || return 1
+	if ! stage=$(jq -r '.stage // ""' "$state_file" 2>/dev/null); then
+		# File exists but jq couldn't parse — corrupt state.
+		# Setting CORRUPT_STATE=1 signals the caller to deny()
+		# rather than treat as no-op.
+		export _SHIP_CYCLE_GUARD_CORRUPT_STATE=1
+		return 1
+	fi
 	case "$stage" in
 	merged | "") return 1 ;;
 	esac
@@ -121,7 +132,12 @@ _is_active_feature_branch() {
 }
 
 if ! _is_active_feature_branch; then
-	exit 0 # no in-flight branch — guard inactive
+	# Corrupt state file → deny (fail-closed). Otherwise legitimate
+	# no-op (no state file, not a feature branch, stage=merged).
+	if [ "${_SHIP_CYCLE_GUARD_CORRUPT_STATE:-0}" = "1" ]; then
+		deny "ship-pr-cycle state file is corrupt JSON — failing closed. Inspect .claude/.session-state/ship-pr-cycle/<sha>.json or run 'ship-pr-cycle.sh start' to re-initialize."
+	fi
+	exit 0
 fi
 
 # Branch is active. Apply tool-specific rules.

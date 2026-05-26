@@ -36,13 +36,16 @@ teardown() {
 }
 
 _payload_bash() {
+	# Use jq to safely encode the command — printf '%s' would break on
+	# commands containing quotes, backslashes, or control chars (CR-CLI
+	# r3 finding).
 	local cmd=$1
-	printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$cmd"
+	jq -nc --arg cmd "$cmd" '{tool_name:"Bash",tool_input:{command:$cmd}}'
 }
 
 _payload_agent() {
 	local subagent=$1
-	printf '{"tool_name":"Agent","tool_input":{"subagent_type":"%s"}}' "$subagent"
+	jq -nc --arg s "$subagent" '{tool_name:"Agent",tool_input:{subagent_type:$s}}'
 }
 
 # Helper: run guard with cwd in TEST_TMP, return status + output
@@ -77,6 +80,17 @@ _run_guard() {
 	(cd "$TEST_TMP" && rm -rf .claude/.session-state/ship-pr-cycle)
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
+}
+
+@test "corrupt state JSON denies (fail-closed)" {
+	# CR-CLI r3 major: partial-write race on state file shouldn't
+	# silently disable the guard. Corrupt jq → deny.
+	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	echo 'not valid {{ json' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
+	run _run_guard "$(_payload_bash 'gh pr merge 91')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"corrupt JSON"* ]]
 }
 
 @test "passes through when stage=merged" {
