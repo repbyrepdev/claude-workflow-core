@@ -1,0 +1,119 @@
+---
+# Plugin SELF-DOGFOOD pre-commit config (v0.9.1, #47).
+#
+# The plugin repo USES ITS OWN hooks via repo: local entries pointing at the
+# in-tree pre-commit-hooks/ directory. Consumer repos use the same hooks via
+# `repo: https://github.com/repbyrepdev/claude-workflow-core` + `rev: vX.Y.Z`
+# — see scripts/bootstrap-repo.sh template for the consumer wiring.
+#
+# Why local: pinning to a published tag means the plugin always tests the
+# PREVIOUS release's hooks, not the working-tree hooks. local: tests the
+# in-tree code we're about to ship — catches breakage at commit time, not
+# after release.
+#
+# Install:    scripts/install-hooks.sh   (also installs pre-push gate)
+# Run all:    pre-commit run --all-files
+
+repos:
+  # Upstream framework hooks (same set bootstrap-repo.sh installs for
+  # consumers — keep aligned to detect drift).
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-2
+    hooks:
+      - id: shfmt
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # Plugin's own hooks via repo: local. Keep the id list aligned with the
+  # in-tree .pre-commit-hooks.yaml so the published-tag declaration and
+  # the self-dogfood declaration don't drift.
+  - repo: local
+    hooks:
+      - id: bash-safety
+        name: Shell scripts require `set -u`
+        entry: pre-commit-hooks/bash-safety.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: bash4-features-check
+        name: bash 4.0+ features require `#!/usr/bin/env bash` shebang
+        entry: pre-commit-hooks/bash4-features-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: actions-permissions
+        name: Workflows require `permissions:` block
+        entry: pre-commit-hooks/actions-permissions.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: commit-template-check
+        name: Validate commit-template.yml schema stability
+        entry: pre-commit-hooks/commit-template-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: lint-gate
+        name: lint-gate — staged .sh/.yml lint at current hash
+        entry: pre-commit-hooks/lint-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: memory-index-valid
+        name: Memory directory integrity (MEMORY.md + frontmatter + Why/How)
+        entry: pre-commit-hooks/memory-index-valid.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: skill-md-loader-safety
+        name: SKILL.md loader-incompatibility patterns blocked
+        entry: pre-commit-hooks/skill-md-loader-safety.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: event-frontmatter
+        name: event-frontmatter — hooks must declare `# event:` for discovery
+        entry: pre-commit-hooks/event-frontmatter-check.sh
+        language: script
+        files: ^\.claude/hooks/.*\.sh$
+        stages: [pre-commit]
+      - id: edit-corruption
+        name: edit-corruption — detect heredoc/whitespace corruption
+        entry: pre-commit-hooks/edit-corruption-guard.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: review-config-check
+        name: Validate review-config.yml schema stability
+        entry: pre-commit-hooks/review-config-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: release-template-check
+        name: Validate release-template.yml + release.yml category sync
+        entry: pre-commit-hooks/release-template-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: epic-structure
+        name: Validate epic.yml template structure
+        entry: pre-commit-hooks/epic-structure.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: check-ssot-drift
+        name: SSOT drift — numeric claims must match their source of truth
+        entry: pre-commit-hooks/check-ssot-drift.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
