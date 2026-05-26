@@ -123,3 +123,77 @@ _run_with_subject() {
 	run bash "$SCRIPT" "$msg_file"
 	[ "$status" -eq 0 ]
 }
+
+# --- realistic git-editor regression locks -----------------------
+
+@test "comment header + blank line + version subject → FAIL (regression #74-r1)" {
+	# Canonical git editor flow: instructions, then a blank line,
+	# then the real subject. Earlier `grep -m1 | sed` extraction had
+	# a silent-bypass bug here (blank line consumed the match).
+	msg_file="$TEST_TMP/msg"
+	printf '# Please enter the commit message...\n#\n\nfeat(v9.9.9): real subject after preamble\n' >"$msg_file"
+	run bash -c "cd '$TEST_TMP' && bash '$SCRIPT' '$msg_file' 2>&1"
+	[ "$status" -eq 1 ]
+	[[ $output == *"9.9.9"* ]]
+}
+
+@test "indented comment line is treated as comment, not subject" {
+	# Editor may indent `#` instructions. Regex skips leading whitespace
+	# before checking for `#`.
+	msg_file="$TEST_TMP/msg"
+	printf '   # indented instruction\nfeat(v9.9.9): real subject\n' >"$msg_file"
+	run bash -c "cd '$TEST_TMP' && bash '$SCRIPT' '$msg_file' 2>&1"
+	[ "$status" -eq 1 ]
+	[[ $output == *"9.9.9"* ]]
+}
+
+# --- regex-completeness regression locks -------------------------
+
+@test "feat(v0.9.8)! breaking-change marker > manifest → FAIL" {
+	# Conventional Commits 1.0.0 breaking-change `!` between scope
+	# and `:` must be tolerated by the regex.
+	run _run_with_subject "feat(v0.9.8)!: breaking change"
+	[ "$status" -eq 1 ]
+	[[ $output == *"0.9.8"* ]]
+}
+
+@test "uppercase type Feat(v9.9.9): is detected → FAIL" {
+	# Case-insensitive regex prevents silent bypass on typo'd type.
+	run _run_with_subject "Feat(v9.9.9): uppercase type"
+	[ "$status" -eq 1 ]
+	[[ $output == *"9.9.9"* ]]
+}
+
+@test "two-segment version scope feat(v1.0): does NOT match → passes" {
+	# Regex requires full X.Y.Z; partial versions pass silently.
+	run _run_with_subject "feat(v1.0): two segment"
+	[ "$status" -eq 0 ]
+}
+
+@test "leading whitespace before type → skipped, passes silently" {
+	# Indented subject doesn't match the type-anchored regex; gate
+	# does not fire (commit-template-check catches the indent).
+	run _run_with_subject "   feat(v9.9.9): leading ws"
+	[ "$status" -eq 0 ]
+}
+
+# --- FAIL output guidance regression locks -----------------------
+
+@test "FAIL output includes manifest path, fix guidance, and bypass hint" {
+	# Operator-facing guidance is the gate's product; lock it against
+	# inadvertent stripping in future edits.
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 1 ]
+	[[ $output == *".claude-plugin/plugin.json"* ]]
+	[[ $output == *"Fix:"* ]]
+	[[ $output == *"COMMIT_SUBJECT_VERSION_SKIP=1"* ]]
+}
+
+# --- manifest precondition regression locks ----------------------
+
+@test "plugin.json with no .version field → exit 2" {
+	printf '{"name":"t"}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"no .version field"* ]]
+}
