@@ -20,7 +20,9 @@ setup() {
 }
 
 teardown() {
-	cd /tmp || true
+	# shellcheck disable=SC2164  # `cd /tmp` essentially never fails;
+	# masking with || true silently swallowed errors (CR-CLI r1).
+	cd /tmp
 	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */mon-misuse.* ]]; then
 		rm -rf "$TEST_TMP"
 	fi
