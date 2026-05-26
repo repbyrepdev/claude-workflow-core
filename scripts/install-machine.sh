@@ -26,14 +26,18 @@ set -euo pipefail
 #   - One-shot migration story via migrate-settings.sh (step 3)
 #
 # Exit codes:
-#   0 — full setup succeeded (or --check found everything in place)
-#   1 — --check found drift (classifier allowlist missing, OR hooks
-#       discovered that are not yet registered)
-#   2 — usage / precondition error (missing jq, missing sibling script,
-#       classifier allowlist not yet installed and operator needs to
-#       paste the snippet manually before this script can write
-#       settings.json autonomously)
-#   3 — settings.json malformed or write failed mid-install
+#   0 — full setup succeeded (or --check found everything in place
+#       across all 3 steps)
+#   1 — --check found drift in Step 1 (allowlist patterns missing)
+#       OR Step 2 (register-hook --check reported settings/hook-file
+#       mismatch)
+#   2 — usage / precondition error (missing sibling script, classifier
+#       allowlist not yet installed and operator needs to paste the
+#       snippet, perms-check failed unexpectedly with non-drift rc,
+#       missing migrate-settings.sh without explicit --no-migrate)
+#   Other non-zero — propagated from a sibling under `set -e` (the
+#       wrapper doesn't remap; install-hooks.sh / migrate-settings.sh
+#       failure exits with the child's rc unchanged)
 
 CHECK_ONLY=0
 SKIP_MIGRATE=0
@@ -83,11 +87,30 @@ for sibling in "$PERMS_SCRIPT" "$HOOKS_INSTALLER"; do
 	fi
 done
 
-# Step 1: classifier-allowlist readiness check
+# Step 1: classifier-allowlist readiness check.
+# Distinguish drift (perms script exit 1 = patterns missing) from
+# error (any other rc = jq missing, malformed settings.json, etc.).
+# Silent-failure-hunter HIGH: prior code piped both stdout AND stderr
+# to /dev/null, collapsing all failure modes into a single misleading
+# "patterns missing" diagnosis.
 echo "=== Step 1: classifier allowlist (PR #72) ==="
-if "$PERMS_SCRIPT" --check >/dev/null 2>&1; then
+perms_stderr=$(mktemp)
+perms_rc=0
+"$PERMS_SCRIPT" --check 2>"$perms_stderr" >/dev/null || perms_rc=$?
+if [ "$perms_rc" -eq 0 ]; then
 	echo "  ✓ Allowlist patterns present"
+	rm -f "$perms_stderr"
+elif [ "$perms_rc" -ne 1 ]; then
+	# Unexpected error (NOT drift) — surface the captured stderr
+	# verbatim instead of pretending it's an allowlist-missing case.
+	echo "  ✗ perms-check failed unexpectedly (rc=$perms_rc):" >&2
+	cat "$perms_stderr" >&2
+	rm -f "$perms_stderr"
+	exit 2
 else
+	# rc=1 = drift (allowlist patterns missing) per perms-script
+	# documented exit codes.
+	rm -f "$perms_stderr"
 	if [ "$CHECK_ONLY" = "1" ]; then
 		echo "  ✗ Allowlist patterns missing (--check)" >&2
 		"$PERMS_SCRIPT" --check >&2 || true
@@ -109,40 +132,49 @@ fi
 
 # Step 2: hook registration
 echo ""
-echo "=== Step 2: register plugin hooks (hooks/install-hooks.sh) ==="
+echo "=== Step 2: register plugin hooks ($HOOKS_INSTALLER) ==="
 if [ "$CHECK_ONLY" = "1" ]; then
-	# install-hooks.sh is itself additive + idempotent; --check mode is
-	# not provided. Approximation: run register-hook.sh --check via the
-	# sibling script if available, otherwise just report invocation.
+	# install-hooks.sh is itself additive + idempotent; --check mode
+	# is not provided. We delegate to register-hook.sh --check as the
+	# verification path. If register-hook.sh is missing, fail-closed
+	# rather than silently passing — silent-failure-hunter HIGH:
+	# --check exit 0 must mean ALL three steps verified.
 	REGISTER_HOOK="$SCRIPT_DIR/register-hook.sh"
-	if [ -x "$REGISTER_HOOK" ]; then
-		if ! "$REGISTER_HOOK" --check; then
-			echo "  ✗ register-hook --check found drift" >&2
-			exit 1
-		fi
-		echo "  ✓ register-hook --check clean"
-	else
-		echo "  (skipping — install-hooks.sh has no --check mode and register-hook.sh not found)"
+	if [ ! -x "$REGISTER_HOOK" ]; then
+		echo "  ✗ register-hook.sh not found; cannot verify Step 2 — failing closed" >&2
+		echo "  Reinstall the plugin or supply register-hook.sh next to install-machine.sh." >&2
+		exit 2
 	fi
+	if ! "$REGISTER_HOOK" --check; then
+		echo "  ✗ register-hook --check found drift" >&2
+		exit 1
+	fi
+	echo "  ✓ register-hook --check clean"
 else
 	"$HOOKS_INSTALLER"
 fi
 
-# Step 3: version path migration (optional)
+# Step 3: version path migration. MIGRATE_SCRIPT is required (not
+# optional) — it's the "one-shot migration story" per #71 acceptance
+# criteria. Operators can skip via --no-migrate. Silent-failure-hunter
+# HIGH: missing sibling silently exited 0 with success message,
+# masking corrupted plugin installs.
 if [ "$SKIP_MIGRATE" = "1" ]; then
 	echo ""
 	echo "=== Step 3: SKIPPED via --no-migrate ==="
 elif [ -x "$MIGRATE_SCRIPT" ]; then
 	echo ""
-	echo "=== Step 3: bump stale path versions (scripts/migrate-settings.sh) ==="
+	echo "=== Step 3: bump stale path versions ($MIGRATE_SCRIPT) ==="
 	if [ "$CHECK_ONLY" = "1" ]; then
 		"$MIGRATE_SCRIPT" --dry-run
 	else
 		"$MIGRATE_SCRIPT"
 	fi
 else
-	echo ""
-	echo "=== Step 3: SKIPPED (migrate-settings.sh not present) ==="
+	echo "" >&2
+	echo "  ✗ migrate-settings.sh not found at $MIGRATE_SCRIPT — failing closed." >&2
+	echo "  Reinstall the plugin, or skip Step 3 explicitly via --no-migrate." >&2
+	exit 2
 fi
 
 echo ""

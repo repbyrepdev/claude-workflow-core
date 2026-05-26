@@ -174,3 +174,65 @@ EOF
 	[ "$status" -eq 2 ]
 	[[ $output == *"required sibling script not found"* ]]
 }
+
+# --- new coverage from Phase 1 r1 findings ---
+
+@test "missing migrate-settings.sh → exit 2 (not silent skip)" {
+	# silent-failure-hunter HIGH: prior code silently exited 0 with
+	# success message when MIGRATE_SCRIPT was missing, masking
+	# corrupted plugin installs. Now treated symmetrically with the
+	# other two siblings (exit 2 + reinstall guidance).
+	fake=$(_install_fake_layout 0)
+	rm -f "$TEST_TMP/fakerepo/scripts/migrate-settings.sh"
+	run "$fake"
+	[ "$status" -eq 2 ]
+	[[ $output == *"migrate-settings.sh not found"* ]]
+	[[ $output == *"--no-migrate"* ]]
+}
+
+@test "--check happy path runs Step 2 + Step 3 dry-run" {
+	# pr-test-analyzer finding: --check happy path was uncovered;
+	# the documented exit 0 = "found everything in place" contract
+	# was never exercised across all three steps.
+	fake=$(_install_fake_layout 0 0 0)
+	run "$fake" --check
+	[ "$status" -eq 0 ]
+	[[ $output == *"register-hook --check clean"* ]]
+	[[ $output == *"Step 3:"* ]]
+	# Verify migrate called with --dry-run (NOT a writing variant)
+	grep -q "stub-migrate called: --dry-run" "$TEST_TMP/calls.log"
+}
+
+@test "--check missing register-hook.sh → exit 2 (not silent skip)" {
+	# silent-failure-hunter HIGH: Step 2 used to print "(skipping...)"
+	# and continue to exit 0 if register-hook.sh was absent under
+	# --check. Now fails closed.
+	fake=$(_install_fake_layout 0 0 0)
+	rm -f "$TEST_TMP/fakerepo/scripts/register-hook.sh"
+	run "$fake" --check
+	[ "$status" -eq 2 ]
+	[[ $output == *"register-hook.sh not found"* ]]
+}
+
+@test "step composition order: Step 1 → Step 2 → Step 3" {
+	# pr-test-analyzer finding: reordering would break (e.g. migrate
+	# before install-hooks). bash 3.2 has no mapfile — read explicit lines.
+	fake=$(_install_fake_layout 0 0 0)
+	run "$fake"
+	[ "$status" -eq 0 ]
+	line1=$(sed -n '1p' "$TEST_TMP/calls.log" | awk -F: '{print $1}')
+	line2=$(sed -n '2p' "$TEST_TMP/calls.log" | awk -F: '{print $1}')
+	line3=$(sed -n '3p' "$TEST_TMP/calls.log" | awk -F: '{print $1}')
+	[ "$line1" = "stub-perms called" ]
+	[ "$line2" = "stub-installer called" ]
+	[ "$line3" = "stub-migrate called" ]
+}
+
+@test "unexpected positional argument exits 2 (not silent install)" {
+	# pr-test-analyzer finding: only the '-*' unknown-flag branch was
+	# tested; positionals would silently fall through if the case
+	# arm broke.
+	run "$SCRIPT" stray
+	[ "$status" -eq 2 ]
+	[[ $output == *"unexpected positional"* ]]
+}
