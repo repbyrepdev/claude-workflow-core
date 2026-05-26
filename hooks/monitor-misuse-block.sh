@@ -28,13 +28,6 @@ set -euo pipefail
 # (`\until`, eval-wrap, etc.). The hook catches the naive case the
 # operator observed 2026-05-26.
 
-command -v jq >/dev/null 2>&1 || {
-	# Hand-built deny JSON (no jq required) — emit structured deny
-	# instead of exit 2 so downstream consumers see consistent shape.
-	printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"monitor-misuse-block: jq not installed — failing closed"}}'
-	exit 0
-}
-
 deny() {
 	local reason="$1" json
 	echo "monitor-misuse-block: $reason" >&2
@@ -85,19 +78,30 @@ _audit_log_bypass() {
 
 if [ "${MONITOR_MISUSE_SKIP:-0}" = "1" ]; then
 	echo "monitor-misuse-block: MONITOR_MISUSE_SKIP=1 — passing through (logged to .claude/logs/monitor-misuse-bypass.jsonl)" >&2
+	# Bypass path intentionally runs BEFORE the jq presence check
+	# below — operator's emergency override must work even if jq
+	# is missing from the environment. The audit-log helpers handle
+	# the no-jq case gracefully (cmd_hash falls through to "-").
 	# Read stdin best-effort so the audit log can record the
 	# command-hash. If stdin is broken (the emergency case the
 	# bypass-above-stdin-read positioning exists for), we still
 	# log the bypass event with cmd_hash="-".
 	BYPASS_PAYLOAD=""
-	if BYPASS_PAYLOAD=$(cat 2>/dev/null); then
+	bypass_cmd=""
+	if BYPASS_PAYLOAD=$(cat 2>/dev/null) && command -v jq >/dev/null 2>&1; then
 		bypass_cmd=$(printf '%s' "$BYPASS_PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || printf '')
-	else
-		bypass_cmd=""
 	fi
 	_audit_log_bypass "$bypass_cmd"
 	exit 0
 fi
+
+command -v jq >/dev/null 2>&1 || {
+	# Hand-built deny JSON (no jq required) — failing closed when
+	# jq is missing. Positioned AFTER the MONITOR_MISUSE_SKIP bypass
+	# above so the emergency override works even without jq.
+	printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"monitor-misuse-block: jq not installed — failing closed"}}'
+	exit 0
+}
 
 if ! PAYLOAD=$(cat); then
 	deny "stdin read failed — failing closed"
