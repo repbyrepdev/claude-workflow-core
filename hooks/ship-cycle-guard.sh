@@ -186,7 +186,7 @@ Agent)
 		if [ -f "$directive_log" ]; then
 			exit 0
 		fi
-		deny "raw pr-review-toolkit:$SUBAGENT Agent call detected outside an active Phase 1 directive — invoke 'ship-pr-cycle.sh next' first; the orchestrator emits a templated prompt + creates the directive-pending sentinel. Bypass: SHIP_PR_CYCLE_BYPASS=1 env (not inline — Agent has no command-string for prefix)."
+		deny "raw $SUBAGENT Agent call detected outside an active Phase 1 directive — invoke 'ship-pr-cycle.sh next' first; the orchestrator emits a templated prompt + creates the directive-pending sentinel. Bypass: SHIP_PR_CYCLE_BYPASS=1 env (not inline — Agent has no command-string for prefix)."
 		;;
 	esac
 	exit 0
