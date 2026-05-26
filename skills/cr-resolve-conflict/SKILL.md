@@ -13,7 +13,7 @@ Wraps CodeRabbit's [resolve-merge-conflict](https://docs.coderabbit.ai/finishing
 2. Capture `head_before` SHA + post `@coderabbitai resolve merge conflict` comment.
 3. Poll loop (default 600s, configurable via `CR_RESOLVE_TIMEOUT_SEC`):
    - Watch for `head_after != head_before` (CR pushed a resolution commit) → success, exit 0
-   - Watch for CR reply containing decline markers (`unable to resolve`, `decline`, `ambiguous`, `security-critical`, `requires manual`, `cannot automatically`) → fall back, exit 2
+   - Watch (only for comments posted **after** the trigger timestamp) for CR reply containing phrase-anchored decline markers (`unable to resolve`, `declined to resolve`, `ambiguous conflict`, `security-critical`, `requires manual (rebase|resolution|intervention|review)`, `cannot automatically (resolve|merge)`) → fall back, exit 2
    - On timeout: exit 2 (treat as decline; operator does manual rebase)
 4. Append JSONL entry to `.claude/logs/cr-resolve-conflict.jsonl`.
 
@@ -48,7 +48,7 @@ Before this skill, ship-pr-cycle at push stage would surface DIRTY state and req
 
 ## Opt-out
 
-`CR_RESOLVE_CONFLICT_DISABLED=1` → silent no-op (rc=0).
+`CR_RESOLVE_CONFLICT_DISABLED=1` → emits one-line stderr warning + telemetry event with `outcome=disabled` + exits rc=0. The warning makes the no-op visible to callers (e.g. ship-pr-cycle) so disabled state isn't mistaken for a successful resolution.
 
 ## References
 
