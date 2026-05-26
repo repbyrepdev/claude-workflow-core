@@ -26,7 +26,7 @@ teardown() {
 	fi
 }
 
-# Helper: write a settings.json with three 0.8.5 hook command paths.
+# Helper: write a settings.json with two 0.8.5 hook command paths.
 _write_legacy_settings() {
 	jq -n '{
 		hooks: {
@@ -145,27 +145,51 @@ _write_legacy_settings() {
 
 # --- real version bump ----------------------------------------------
 
-@test "version bump rewrites all matching path refs" {
-	_write_legacy_settings
-	# Stub register-hook.sh so the migration script doesn't try to register
-	# real hooks during the test.
-	export PATH="$TEST_TMP/stubs:$PATH"
-	mkdir -p "$TEST_TMP/stubs"
-	# The script invokes $SCRIPT_DIR/register-hook.sh by absolute path,
-	# not via PATH, so stubbing PATH alone isn't enough. We make sure no
-	# new hooks are present so register-hook.sh is never invoked.
-	# (NEW_HOOKS are filtered to "present files" — in this test those
-	# files don't exist in the test tmpdir context, but they DO exist
-	# in the real repo... so the test creates a special env where the
-	# repo's hooks dir is invisible.)
-	# Simplest: assert the version bump happened by checking the JSON
-	# content directly and accept that register-hook.sh runs against
-	# the real settings.json. Since CLAUDE_SETTINGS_FILE is isolated,
-	# the register-hook.sh call writes to OUR tmp file, not the real one.
+# Helper: install a fake migrate-settings + stub register-hook into a
+# tmpdir so tests can exercise the sibling-script delegation path with
+# controlled behavior (missing/failing register-hook.sh).
+_install_fake_layout() {
+	local register_behavior=$1    # 'success' | 'fail' | 'missing'
+	local hooks_present=${2:-yes} # 'yes' | 'no' (../hooks/<name>.sh existence)
+	local fakedir="$TEST_TMP/fakerepo/scripts"
+	mkdir -p "$fakedir"
+	cp "$SCRIPT" "$fakedir/migrate-settings.sh"
+	chmod +x "$fakedir/migrate-settings.sh"
+	if [ "$register_behavior" != "missing" ]; then
+		# Stub: write the path-args to a log file so the test can assert
+		# the call shape. Behavior is success unless 'fail'.
+		cat >"$fakedir/register-hook.sh" <<EOF
+#!/bin/bash
+set -euo pipefail
+echo "stub-register-hook called: \$*" >"$TEST_TMP/register-hook.log"
+EOF
+		if [ "$register_behavior" = "fail" ]; then
+			echo "exit 1" >>"$fakedir/register-hook.sh"
+		fi
+		chmod +x "$fakedir/register-hook.sh"
+	fi
+	if [ "$hooks_present" = "yes" ]; then
+		mkdir -p "$TEST_TMP/fakerepo/hooks"
+		for h in cr-auto-parse-poll phase1-directive-pending-guard ship-cycle-director-gate; do
+			# Real hook frontmatter — needed by register-hook.sh
+			cat >"$TEST_TMP/fakerepo/hooks/$h.sh" <<EOF
+#!/bin/bash
+# event: PreToolUse
+# matcher: Bash
+echo "stub-hook"
+EOF
+			chmod +x "$TEST_TMP/fakerepo/hooks/$h.sh"
+		done
+	fi
+	echo "$fakedir/migrate-settings.sh"
+}
 
-	run "$SCRIPT" --from 0.8.5 --to 0.8.8
+@test "version bump rewrites all matching path refs + invokes register-hook.sh" {
+	_write_legacy_settings
+	fake=$(_install_fake_layout success yes)
+	run "$fake" --from 0.8.5 --to 0.8.8
 	[ "$status" -eq 0 ]
-	# Both refs should now be 0.8.8
+	# Version bump applied
 	count_old=$(jq -r '
 		[.. | .command? // empty | select(type == "string")
 			| select(contains("/claude-workflow-core/0.8.5/"))] | length
@@ -175,11 +199,59 @@ _write_legacy_settings() {
 			| select(contains("/claude-workflow-core/0.8.8/"))] | length
 	' "$CLAUDE_SETTINGS_FILE")
 	[ "$count_old" -eq 0 ]
-	# 2 original refs + 3 new hooks registered = 5 entries. But hooks
-	# get registered under new event/matcher groupings, so count of
-	# 0.8.8 paths is at least 2 (the bumped ones) plus however many
-	# the register-hook.sh added.
-	[ "$count_new" -ge 2 ]
+	[ "$count_new" -eq 2 ]
+	# Stub register-hook.sh was invoked with all 3 hook paths
+	[ -f "$TEST_TMP/register-hook.log" ]
+	log=$(cat "$TEST_TMP/register-hook.log")
+	[[ $log == *"cr-auto-parse-poll"* ]]
+	[[ $log == *"phase1-directive-pending-guard"* ]]
+	[[ $log == *"ship-cycle-director-gate"* ]]
+}
+
+@test "missing register-hook.sh sibling → exit 2" {
+	_write_legacy_settings
+	fake=$(_install_fake_layout missing yes)
+	run "$fake" --dry-run
+	[ "$status" -eq 2 ]
+	[[ $output == *"register-hook.sh not found"* ]]
+}
+
+@test "register-hook.sh non-zero exit → exit 3 + partial-state guidance" {
+	_write_legacy_settings
+	fake=$(_install_fake_layout fail yes)
+	run "$fake" --from 0.8.5 --to 0.8.8
+	[ "$status" -eq 3 ]
+	[[ $output == *"hook registration FAILED"* ]]
+	[[ $output == *"partial-migration state"* ]]
+	# Version bump WAS committed before the failure
+	count_new=$(jq -r '
+		[.. | .command? // empty | select(type == "string")
+			| select(contains("/claude-workflow-core/0.8.8/"))] | length
+	' "$CLAUDE_SETTINGS_FILE")
+	[ "$count_new" -eq 2 ]
+}
+
+@test "ALL hooks missing → loud warning + Step 2 skipped" {
+	_write_legacy_settings
+	fake=$(_install_fake_layout success no)
+	run "$fake" --from 0.8.5 --to 0.8.8
+	[ "$status" -eq 0 ]
+	[[ $output == *"none of the"* ]]
+	[[ $output == *"expected hook files exist"* ]]
+	# register-hook stub was NOT invoked (no log file)
+	[ ! -f "$TEST_TMP/register-hook.log" ]
+}
+
+@test "from==to no-op: settings.json content unchanged" {
+	_write_legacy_settings
+	fake=$(_install_fake_layout success no) # hooks absent → Step 2 skipped
+	before=$(jq -S . "$CLAUDE_SETTINGS_FILE" | shasum -a 256 | cut -d' ' -f1)
+	run "$fake" --from 0.8.8 --to 0.8.8
+	[ "$status" -eq 0 ]
+	after=$(jq -S . "$CLAUDE_SETTINGS_FILE" | shasum -a 256 | cut -d' ' -f1)
+	# from == to means no refs match (the legacy settings has 0.8.5 refs,
+	# not 0.8.8). Content should be byte-identical.
+	[ "$before" = "$after" ]
 }
 
 @test "version bump preserves unrelated path strings" {
@@ -204,10 +276,28 @@ _write_legacy_settings() {
 	[[ $got == */claude-workflow-core/0.8.8/* ]]
 }
 
-@test "no version refs + explicit --to → still attempts hook registration" {
+@test "no version refs in settings + explicit --to → reports SKIPPED bump" {
+	# Replaces the prior loose-OR test. Asserts the auto-detect branch
+	# explicitly emits the SKIPPED label (post-fix) AND that Migration
+	# complete is reached.
 	echo '{"hooks":{}}' >"$CLAUDE_SETTINGS_FILE"
-	run "$SCRIPT" --to 0.8.8
-	# Either succeeds (with warning) or fails — but must report the
-	# no-refs-found condition clearly.
-	[[ $output == *"no claude-workflow-core version refs"* ]] || [[ $output == *"Migration complete"* ]]
+	fake=$(_install_fake_layout success no) # hooks absent → Step 2 also skipped
+	run "$fake" --to 0.8.8
+	[ "$status" -eq 0 ]
+	[[ $output == *"NOTE: no claude-workflow-core version refs"* ]]
+	[[ $output == *"SKIPPED (no refs found)"* ]]
+	[[ $output == *"Migration complete"* ]]
+}
+
+@test "no version refs in settings → Step 1 inode unchanged (no spurious mv)" {
+	# When SKIP_BUMP is set, the mktemp + mv path is skipped entirely
+	# so the inode + mtime stay stable. Catches a regression where a
+	# future refactor reintroduces a no-op write.
+	echo '{"hooks":{}}' >"$CLAUDE_SETTINGS_FILE"
+	inode_before=$(stat -f '%i' "$CLAUDE_SETTINGS_FILE" 2>/dev/null || stat -c '%i' "$CLAUDE_SETTINGS_FILE")
+	fake=$(_install_fake_layout success no)
+	run "$fake" --to 0.8.8
+	[ "$status" -eq 0 ]
+	inode_after=$(stat -f '%i' "$CLAUDE_SETTINGS_FILE" 2>/dev/null || stat -c '%i' "$CLAUDE_SETTINGS_FILE")
+	[ "$inode_before" = "$inode_after" ]
 }

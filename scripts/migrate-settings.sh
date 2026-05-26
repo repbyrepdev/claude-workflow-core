@@ -4,11 +4,13 @@ set -euo pipefail
 #
 # What it does:
 #   1. Bumps plugin-cache version segments in any hook command path
-#      from --from <ver> to --to <ver> (defaults: 0.8.5 → latest installed
-#      cache version under ~/.claude/plugins/cache/claude-workflow-core/).
-#   2. Registers the three new v0.8.8 hooks via the sibling
+#      from --from <ver> to --to <ver>. Defaults: most-referenced semver
+#      segment in settings.json → highest installed cache dir under
+#      ~/.claude/plugins/cache/claude-workflow-core/.
+#   2. Registers the three plugin-v0.8.8 hooks via the sibling
 #      register-hook.sh wrapper (cr-auto-parse-poll, phase1-directive-
-#      pending-guard, ship-cycle-director-gate).
+#      pending-guard, ship-cycle-director-gate). Idempotent — already-
+#      present entries are no-ops.
 #
 # Why this script exists:
 # Plugin version bumps that add new hooks or move hook paths require
@@ -20,16 +22,22 @@ set -euo pipefail
 # sanctioned wrapper path.
 #
 # Usage:
-#   migrate-settings.sh                          # bump 0.8.5 → latest, register 3 new hooks
+#   migrate-settings.sh                          # auto-detect from/to
 #   migrate-settings.sh --from 0.8.5 --to 0.8.8  # explicit version bump
 #   migrate-settings.sh --dry-run                # show plan, no writes
 #   migrate-settings.sh --help
 #
+# Environment overrides (used by tests + advanced operators):
+#   CLAUDE_SETTINGS_FILE — path to settings.json (default ~/.claude/settings.json)
+#   PLUGIN_CACHE_BASE    — plugin-cache root for TO_VER auto-detect
+#                          (default ~/.claude/plugins/cache/claude-workflow-core/claude-workflow-core)
+#
 # Exit codes:
 #   0 — migration succeeded (or --dry-run shows clean plan)
 #   2 — usage / precondition error (missing jq, missing settings.json,
-#       missing register-hook.sh, classifier-allowlist not installed)
-#   3 — settings.json malformed / write failure
+#       missing register-hook.sh, no cache dirs to detect TO_VER from)
+#   3 — settings.json malformed / write failure / hook registration failed
+#       AFTER the version bump landed (partial-success state)
 
 DRY_RUN=0
 FROM_VER=""
@@ -124,6 +132,7 @@ fi
 # The plugin-cache path shape has TWO `claude-workflow-core/` segments
 # (package + manifest names), so we capture the semver-shaped segment
 # that follows them rather than the manifest name.
+SKIP_BUMP=0
 if [ -z "$FROM_VER" ]; then
 	FROM_VER=$(jq -r '
 		[.. | .command? // empty | select(type == "string")
@@ -131,42 +140,61 @@ if [ -z "$FROM_VER" ]; then
 		| group_by(.) | map({v: .[0], n: length}) | sort_by(.n) | reverse | .[0].v // empty
 	' "$SETTINGS")
 	if [ -z "$FROM_VER" ]; then
-		echo "migrate-settings.sh: no claude-workflow-core version refs found in $SETTINGS — nothing to bump" >&2
-		# Continue to hook registration anyway — paths may already be current.
-		FROM_VER="$TO_VER"
+		echo "migrate-settings.sh: NOTE: no claude-workflow-core version refs found in $SETTINGS" >&2
+		echo "  — skipping Step 1 (version bump). Continuing to Step 2 (hook registration)." >&2
+		SKIP_BUMP=1
+		FROM_VER="$TO_VER" # placeholder; Step 1 is skipped via SKIP_BUMP
 	fi
 fi
 
-# The three v0.8.8 hooks added since the last migration.
+# The three hooks introduced in plugin v0.8.8 that need explicit
+# registration in settings.json. NEW_HOOKS is version-pinned data — if a
+# future plugin version adds different hooks, edit this list.
 NEW_HOOKS=(
 	"$SCRIPT_DIR/../hooks/cr-auto-parse-poll.sh"
 	"$SCRIPT_DIR/../hooks/phase1-directive-pending-guard.sh"
 	"$SCRIPT_DIR/../hooks/ship-cycle-director-gate.sh"
 )
 
-# Filter to existing files only — the migration is forward-compatible
-# (newer plugin versions may have already dropped some of these in favor
-# of a different mechanism).
+# Filter to existing files. Partial-missing is OK (forward-compat: a
+# future plugin version may drop one of these in favor of a different
+# mechanism). ALL-missing is NOT ok — it likely means $SCRIPT_DIR/../hooks
+# doesn't resolve to the plugin's hooks dir (wrong checkout, broken
+# symlink, plugin layout changed). Surface that loudly.
 present_hooks=()
 for h in "${NEW_HOOKS[@]}"; do
 	if [ -f "$h" ]; then
 		present_hooks+=("$h")
 	fi
 done
+if [ "${#present_hooks[@]}" -eq 0 ]; then
+	echo "migrate-settings.sh: WARNING: none of the ${#NEW_HOOKS[@]} expected hook files exist" >&2
+	echo "  Expected under: $(cd "$SCRIPT_DIR/.." && pwd)/hooks/" >&2
+	echo "  Either the plugin layout has changed, this script lives outside the plugin," >&2
+	echo "  or the operator deleted them. Step 2 (hook registration) will be skipped." >&2
+fi
 
 echo "=== Migration plan ==="
 echo "  Settings file:    $SETTINGS"
-echo "  Version bump:     $FROM_VER → $TO_VER"
+if [ "$SKIP_BUMP" = "1" ]; then
+	echo "  Version bump:     SKIPPED (no refs found)"
+	bump_count=0
+else
+	echo "  Version bump:     $FROM_VER → $TO_VER"
+	bump_count=$(jq --arg from "$FROM_VER" '
+		[.. | .command? // empty | select(type == "string")
+			| select(contains("/claude-workflow-core/" + $from + "/"))] | length
+	' "$SETTINGS")
+fi
 echo "  New hooks:        ${#present_hooks[@]} of ${#NEW_HOOKS[@]} present"
-for h in "${present_hooks[@]}"; do
-	echo "    - $h"
-done
-
-# Count how many path refs would be bumped.
-bump_count=$(jq --arg from "$FROM_VER" '
-	[.. | .command? // empty | select(type == "string")
-		| select(contains("/claude-workflow-core/" + $from + "/"))] | length
-' "$SETTINGS")
+# Empty-array iteration under `set -u` errors on bash 3.2 — guard with
+# length check rather than the `${arr[@]+"${arr[@]}"}` idiom (clearer
+# and avoids shellcheck's SC2068 warnings).
+if [ "${#present_hooks[@]}" -gt 0 ]; then
+	for h in "${present_hooks[@]}"; do
+		echo "    - $h"
+	done
+fi
 echo "  Refs to bump:     $bump_count"
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -177,47 +205,62 @@ fi
 
 # Step 1: version bump in-place via jq walk. Only replace within the
 # specific `/claude-workflow-core/<from>/` segment to avoid touching
-# unrelated paths that happen to contain the version string.
-parent=$(dirname "$SETTINGS")
-tmp=$(mktemp "$parent/.settings.XXXXXX") || {
-	echo "migrate-settings.sh: cannot create tmp file in $parent" >&2
-	exit 3
-}
-trap 'rm -f "$tmp"' EXIT
+# unrelated paths that happen to contain the version string. Skipped
+# entirely when no matching refs exist (a no-op write would still rename
+# the inode + reset mtime — not worth the side-effect).
+if [ "$SKIP_BUMP" = "0" ]; then
+	parent=$(dirname "$SETTINGS")
+	tmp=$(mktemp "$parent/.settings.XXXXXX") || {
+		echo "migrate-settings.sh: cannot create tmp file in $parent" >&2
+		exit 3
+	}
+	trap 'rm -f "$tmp"' EXIT
 
-if ! jq --arg from "$FROM_VER" --arg to "$TO_VER" '
-	walk(
-		if type == "string" and contains("/claude-workflow-core/" + $from + "/")
-		then gsub("/claude-workflow-core/" + $from + "/"; "/claude-workflow-core/" + $to + "/")
-		else . end
-	)
-' "$SETTINGS" >"$tmp"; then
-	echo "migrate-settings.sh: jq walk failed — refusing to overwrite $SETTINGS" >&2
-	exit 3
+	if ! jq --arg from "$FROM_VER" --arg to "$TO_VER" '
+		walk(
+			if type == "string" and contains("/claude-workflow-core/" + $from + "/")
+			then gsub("/claude-workflow-core/" + $from + "/"; "/claude-workflow-core/" + $to + "/")
+			else . end
+		)
+	' "$SETTINGS" >"$tmp"; then
+		echo "migrate-settings.sh: jq walk failed — refusing to overwrite $SETTINGS" >&2
+		exit 3
+	fi
+	if ! mv "$tmp" "$SETTINGS"; then
+		echo "migrate-settings.sh: mv failed ($tmp → $SETTINGS)" >&2
+		echo "  Likely causes: cross-filesystem move, read-only mount, permission" >&2
+		echo "  denied, or disk full. Check the parent directory ($parent)." >&2
+		exit 3
+	fi
+	trap - EXIT
+	echo ""
+	echo "✓ Version bump applied: $FROM_VER → $TO_VER ($bump_count refs)"
 fi
-if ! jq empty "$tmp" 2>/dev/null; then
-	echo "migrate-settings.sh: post-walk validation failed — refusing to overwrite $SETTINGS" >&2
-	exit 3
-fi
-if ! mv "$tmp" "$SETTINGS"; then
-	echo "migrate-settings.sh: mv failed ($tmp → $SETTINGS) — possibly cross-filesystem" >&2
-	echo "  If you are invoking this via the agent and see classifier blocks, run:" >&2
-	echo "    $SCRIPT_DIR/install-register-hook-permissions.sh" >&2
-	echo "  to print the one-time allowlist entries the operator adds to settings.json." >&2
-	exit 3
-fi
-trap - EXIT
-echo ""
-echo "✓ Version bump applied: $FROM_VER → $TO_VER ($bump_count refs)"
 
 # Step 2: register the new hooks via the sanctioned wrapper. Each
 # register-hook.sh call is idempotent — already-present hooks are a no-op.
-if [ "${#present_hooks[@]}" -eq 0 ]; then
-	echo "  No new hooks to register."
-else
+# Step 1 has already committed the bump, so a Step 2 failure leaves
+# settings.json in a partial state — wrap with an explicit error handler
+# so the operator knows which step failed + how to retry only Step 2.
+if [ "${#present_hooks[@]}" -gt 0 ]; then
 	echo ""
 	echo "=== Registering ${#present_hooks[@]} new hook(s) ==="
-	"$REGISTER_HOOK" "${present_hooks[@]}"
+	if ! "$REGISTER_HOOK" "${present_hooks[@]}"; then
+		echo "" >&2
+		echo "migrate-settings.sh: hook registration FAILED." >&2
+		if [ "$SKIP_BUMP" = "0" ]; then
+			echo "  Version bump (Step 1) HAS been applied — settings.json is in a" >&2
+			echo "  partial-migration state. Retry hook registration manually:" >&2
+		else
+			echo "  Retry hook registration manually:" >&2
+		fi
+		echo "    $REGISTER_HOOK ${present_hooks[*]}" >&2
+		echo "" >&2
+		echo "  If you see classifier blocks from the agent, run" >&2
+		echo "  $SCRIPT_DIR/install-register-hook-permissions.sh" >&2
+		echo "  first to install the one-time allowlist (PR #72)." >&2
+		exit 3
+	fi
 fi
 
 echo ""
