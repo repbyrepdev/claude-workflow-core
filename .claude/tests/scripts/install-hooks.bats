@@ -76,7 +76,11 @@ setup() {
 	# Don't skip-on-missing — pre-commit's shellcheck hook already runs
 	# globally + would catch this. If a dev runs bats without shellcheck
 	# installed, that's a setup issue worth surfacing, not silently skipping.
-	command -v shellcheck >/dev/null 2>&1
+	# Explicit fail-with-diagnostic if missing so the cause is obvious.
+	command -v shellcheck >/dev/null 2>&1 || {
+		echo "shellcheck not found in PATH — required in dev/CI environment"
+		return 1
+	}
 	run shellcheck "$SCRIPT"
 	[ "$status" -eq 0 ]
 }
