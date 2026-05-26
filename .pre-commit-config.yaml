@@ -93,6 +93,11 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: commit-subject-version-gate
+        name: commit-subject-version — scope vX.Y.Z must not exceed plugin.json (#74)
+        entry: pre-commit-hooks/commit-subject-version-gate.sh
+        language: script
+        stages: [commit-msg]
       - id: edit-corruption-guard
         name: edit-corruption — detect heredoc/whitespace corruption
         entry: pre-commit-hooks/edit-corruption-guard.sh
