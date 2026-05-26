@@ -205,7 +205,7 @@ _run_with_subject() {
 	[[ $output == *"no usable .version field"* ]]
 }
 
-@test "plugin.json with non-X.Y.Z .version (numeric) → exit 2 (CR r3)" {
+@test "plugin.json with non-X.Y.Z .version (numeric) → exit 2 (CR r1)" {
 	# CR finding: manifest version must match X.Y.Z to be safely
 	# compared by sort -V — numeric/lex variants would silently
 	# distort comparison.
@@ -215,8 +215,33 @@ _run_with_subject() {
 	[[ $output == *"not X.Y.Z"* ]]
 }
 
-@test "plugin.json with two-segment .version → exit 2 (CR r3)" {
+@test "plugin.json with two-segment .version → exit 2 (CR r1)" {
 	printf '{"name":"t","version":"1.0"}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"not X.Y.Z"* ]]
+}
+
+@test "plugin.json with pre-release .version (1.0.0-rc1) → exit 2 (CR r1, MAJOR)" {
+	# CR's exact motivating example for the validation fix — locks
+	# the regression target that the MAJOR finding called out.
+	printf '{"name":"t","version":"1.0.0-rc1"}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"not X.Y.Z"* ]]
+}
+
+@test "plugin.json with v-prefixed .version (v1.0.0) → exit 2 (Phase1 r1)" {
+	# Realistic operator typo (matches the commit-scope convention).
+	printf '{"name":"t","version":"v1.0.0"}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
+	run _run_with_subject "feat(v0.9.8): x"
+	[ "$status" -eq 2 ]
+	[[ $output == *"not X.Y.Z"* ]]
+}
+
+@test "plugin.json with boolean .version (true coerced) → exit 2 (Phase1 r1)" {
+	# jq -r coerces boolean to string 'true' → regex rejects.
+	printf '{"name":"t","version":true}\n' >"$TEST_TMP/.claude-plugin/plugin.json"
 	run _run_with_subject "feat(v0.9.8): x"
 	[ "$status" -eq 2 ]
 	[[ $output == *"not X.Y.Z"* ]]

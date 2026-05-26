@@ -133,6 +133,13 @@ if ! higher=$(printf '%s\n%s\n' "$subject_ver" "$manifest_ver" | sort -V | tail 
 	echo "commit-subject-version-gate: version comparison failed — requires sort with version-sort support (GNU 'sort -V' or BSD 'sort --version-sort')" >&2
 	exit 2
 fi
+# Belt+suspenders: if sort -V is silently broken (e.g., minimal env
+# returns nothing on stdout but exits 0), tail -1 yields empty and the
+# subsequent equality check silently passes the gate. Explicit guard.
+if [ -z "$higher" ]; then
+	echo "commit-subject-version-gate: sort -V produced no output — requires version-sort support (GNU 'sort -V' or BSD 'sort --version-sort')" >&2
+	exit 2
+fi
 # tail -1 of sort -V gives the highest version. If it equals
 # subject_ver AND the two versions differ, subject is strictly
 # greater than manifest.
