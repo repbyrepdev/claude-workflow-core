@@ -65,6 +65,14 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# Opt-out: silent no-op per SKILL.md contract. Runs BEFORE input validation
+# so a disabled invocation never surfaces "--pr required" or "bad timeout"
+# noise. Operators expect `CR_RESOLVE_CONFLICT_DISABLED=1` to mean "stay
+# out of the way, no matter what else is wrong with the call."
+if [ "${CR_RESOLVE_CONFLICT_DISABLED:-0}" = "1" ]; then
+	exit 0
+fi
+
 [ -n "$PR" ] || {
 	echo "error: --pr <num> is required" >&2
 	usage
@@ -78,11 +86,6 @@ done
 if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [ "$TIMEOUT_SEC" -le 0 ]; then
 	echo "error: timeout must be a positive integer (got '$TIMEOUT_SEC'; from --timeout or CR_RESOLVE_TIMEOUT_SEC env)" >&2
 	exit 2
-fi
-
-# Opt-out: silent no-op per SKILL.md contract.
-if [ "${CR_RESOLVE_CONFLICT_DISABLED:-0}" = "1" ]; then
-	exit 0
 fi
 
 # Resolve repo root for JSONL log; fall back to /tmp if outside a repo.
