@@ -122,24 +122,24 @@ if [ "$CHECK_ONLY" = "1" ]; then
 	# macOS readlink lacks -f; use flagless form which works on BSD + GNU
 	# and returns the raw symlink target.
 	target=$(readlink "$GATE_DST")
-	expected_abs="$REPO_ROOT/$GATE_SRC"
-	# Symlink target may be relative or absolute; resolve both to absolute
-	# via the symlink's directory for comparison.
+	# Symlink target may be relative or absolute; resolve to absolute via
+	# the symlink's directory. expected_abs is already canonical (REPO_ROOT
+	# was canonicalized at script init via `cd "$SCRIPT_DIR/.." && pwd`),
+	# so only the readlink side needs canonicalization.
 	case "$target" in
 	/*) target_abs="$target" ;;
 	*) target_abs="$HOOKS_DIR/$target" ;;
 	esac
-	# Canonicalize both sides for comparison. Do NOT suppress cd stderr —
-	# if the symlink target's parent dir is missing/unreadable, the
-	# operator needs the real error, not a generic DRIFT message
-	# (Phase 1 silent-failure-hunter finding).
+	# Do NOT suppress cd stderr — if the symlink target's parent dir is
+	# missing/unreadable, the operator needs the real error, not a
+	# generic DRIFT message (Phase 1 silent-failure-hunter r1 finding).
 	if ! target_dir=$(cd "$(dirname "$target_abs")" && pwd); then
 		_log "error: cannot resolve symlink target dir for $target_abs"
 		exit 1
 	fi
 	target_canon="$target_dir/$(basename "$target_abs")"
-	expected_canon=$(cd "$(dirname "$expected_abs")" && pwd)/$(basename "$expected_abs")
-	if [ "$target_canon" != "$expected_canon" ]; then
+	expected_abs="$REPO_ROOT/$GATE_SRC"
+	if [ "$target_canon" != "$expected_abs" ]; then
 		_log "DRIFT: $GATE_DST → $target (expected $GATE_SRC)"
 		exit 1
 	fi
@@ -154,17 +154,19 @@ else
 	fi
 	gate_abs="$REPO_ROOT/$GATE_SRC"
 	# Build relative path from hook dir to gate via python3 (works on
-	# macOS + Linux without GNU coreutils). Fall back to absolute path
-	# if python3 unavailable.
-	if command -v python3 >/dev/null 2>&1; then
-		rel_target=$(python3 -c "import os.path,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$gate_abs" "$_hook_dir_abs")
-	else
-		_log "note: python3 unavailable — using absolute symlink target"
-		rel_target="$gate_abs"
+	# macOS + Linux without GNU coreutils, which lack readlink -f).
+	# Require python3 as a hard prereq — silent fallback to absolute
+	# symlinks would defeat the relocation-safety property we picked
+	# relative symlinks for in the first place.
+	if ! command -v python3 >/dev/null 2>&1; then
+		_log "error: python3 not in PATH — required for symlink relpath computation"
+		_log "  install via: brew install python@3.12 (or your distro's package)"
+		exit 3
 	fi
-	if [ -e "$GATE_DST" ] || [ -L "$GATE_DST" ]; then
-		rm -f "$GATE_DST"
-	fi
+	rel_target=$(python3 -c "import os.path,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$gate_abs" "$_hook_dir_abs")
+	# rm -f silently ignores nonexistent operands AND removes broken
+	# symlinks fine, so the pre-test was dead code (Phase 1 r2 finding).
+	rm -f "$GATE_DST"
 	ln -s "$rel_target" "$GATE_DST"
 fi
 
