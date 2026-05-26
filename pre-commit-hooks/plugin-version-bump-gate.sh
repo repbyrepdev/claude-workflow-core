@@ -103,7 +103,14 @@ if [ "$staged_ver" = "$head_ver" ]; then
 	printf '%s\n' "$hooks_staged" | sed 's/^/  /' >&2
 	echo "" >&2
 	echo "Plugin.json IS staged but .version is still '$head_ver' (unchanged from HEAD)." >&2
-	echo "Bump the patch version (e.g. $head_ver → $(printf '%s' "$head_ver" | awk -F. '{printf "%s.%s.%d\n", $1, $2, $3+1}'))." >&2
+	# Only suggest a concrete bump when the version is a 3-part semver
+	# we can safely increment. Non-semver schemes get a generic message.
+	if [[ $head_ver =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		suggested=$(printf '%s' "$head_ver" | awk -F. '{printf "%s.%s.%d\n", $1, $2, $3+1}')
+		echo "Bump the patch version (e.g. $head_ver → $suggested)." >&2
+	else
+		echo "Bump the version per your versioning scheme." >&2
+	fi
 	exit 1
 fi
 

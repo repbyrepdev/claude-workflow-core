@@ -10,7 +10,10 @@ setup() {
 		echo "FATAL: mktemp failed" >&2
 		return 1
 	}
-	# Init a real git repo + seed plugin.json + an empty initial commit
+	# Init a real git repo + seed plugin.json + an empty initial commit.
+	# `|| return 1` makes subshell failures propagate to setup() (CR
+	# r2: prior version swallowed subshell exit, letting setup silently
+	# half-complete if any git step failed).
 	(
 		cd "$TEST_TMP" || exit 1
 		git init -q
@@ -20,7 +23,7 @@ setup() {
 		printf '{"name":"test","version":"0.1.0"}\n' >.claude-plugin/plugin.json
 		git add .claude-plugin/plugin.json
 		git commit -q -m "init"
-	)
+	) || return 1
 }
 
 teardown() {
