@@ -2,8 +2,9 @@
 set -euo pipefail
 # event: git-post-merge
 # auto-register: false
-# v0.9.6 introduced (#88) — post-merge auto-fire of scripts/release.sh
-# when .claude-plugin/plugin.json.version changed in the merge.
+# Introduced in #88 (released as v0.9.7) — post-merge auto-fire of
+# scripts/release.sh when .claude-plugin/plugin.json.version changed
+# in the merge.
 #
 # Why: prior to #88, operator had to remember to run scripts/release.sh
 # after every plugin-version-bumping PR merge. Forgetting meant

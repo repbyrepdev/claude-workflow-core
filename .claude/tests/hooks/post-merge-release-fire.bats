@@ -171,6 +171,10 @@ _run_hook() {
 	# that introduces plugin.json with .version.
 	local newdir
 	newdir=$(mktemp -d -t pmrf-fresh.XXXXXX)
+	# Trap-based cleanup so newdir is removed even if assertions fail
+	# below (CR-CLI minor: explicit cleanup beat manual rm-at-end).
+	# shellcheck disable=SC2064  # intentional early-expand of $newdir
+	trap "[ -n '$newdir' ] && [ -d '$newdir' ] && rm -rf '$newdir'" EXIT
 	(
 		cd "$newdir" || exit 1
 		git init -q
@@ -192,7 +196,6 @@ EOF
 	grep -q '"status":"fired-first-introduction"' "$newdir/.claude/logs/release-auto-fire.jsonl"
 	grep -q '"from":""' "$newdir/.claude/logs/release-auto-fire.jsonl"
 	grep -q '"to":"1.0.0"' "$newdir/.claude/logs/release-auto-fire.jsonl"
-	rm -rf "$newdir"
 }
 
 @test "malformed .version on HEAD (numeric) → exit 2" {
