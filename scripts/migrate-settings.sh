@@ -218,10 +218,16 @@ if [ "$SKIP_BUMP" = "0" ]; then
 	}
 	trap 'rm -f "$tmp"' EXIT
 
+	# jq `gsub` is regex-based — escape dots in $from before interpolation
+	# so '0.8.5' matches literally instead of allowing '0a8b5' etc.
+	# `contains()` is a literal substring check; gsub still needs the
+	# escape to avoid replacing regex-coincidental matches elsewhere in
+	# the same string.
 	if ! jq --arg from "$FROM_VER" --arg to "$TO_VER" '
+		def escape_dots: gsub("\\."; "\\.");
 		walk(
 			if type == "string" and contains("/claude-workflow-core/" + $from + "/")
-			then gsub("/claude-workflow-core/" + $from + "/"; "/claude-workflow-core/" + $to + "/")
+			then gsub("/claude-workflow-core/" + ($from | escape_dots) + "/"; "/claude-workflow-core/" + $to + "/")
 			else . end
 		)
 	' "$SETTINGS" >"$tmp"; then

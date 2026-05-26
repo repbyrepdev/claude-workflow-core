@@ -313,3 +313,30 @@ EOF
 	inode_after=$(stat -f '%i' "$CLAUDE_SETTINGS_FILE" 2>/dev/null || stat -c '%i' "$CLAUDE_SETTINGS_FILE")
 	[ "$inode_before" = "$inode_after" ]
 }
+
+@test "version bump escapes dots in FROM_VER (no regex over-match)" {
+	# CR finding (minor): jq gsub treated '.' in $from as regex wildcard.
+	# A version like '0.8.5' would over-match strings containing
+	# '/claude-workflow-core/0a8b5/'. Fix escapes dots before interpolation.
+	jq -n '{
+		hooks: {
+			PreToolUse: [{
+				matcher: "Bash",
+				hooks: [
+					{type: "command", command: "/cache/claude-workflow-core/claude-workflow-core/0.8.5/hooks/real.sh"},
+					{type: "command", command: "/cache/claude-workflow-core/0a8b5/hooks/decoy.sh"}
+				]
+			}]
+		}
+	}' >"$CLAUDE_SETTINGS_FILE"
+	fake=$(_install_fake_layout success no)
+	run "$fake" --from 0.8.5 --to 0.8.8
+	[ "$status" -eq 0 ]
+	# The real 0.8.5 path got bumped to 0.8.8
+	real=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")
+	[[ $real == */claude-workflow-core/0.8.8/hooks/real.sh ]]
+	# The decoy 0a8b5 path was NOT touched (regex wildcard would have
+	# matched it under the old gsub).
+	decoy=$(jq -r '.hooks.PreToolUse[0].hooks[1].command' "$CLAUDE_SETTINGS_FILE")
+	[ "$decoy" = "/cache/claude-workflow-core/0a8b5/hooks/decoy.sh" ]
+}
