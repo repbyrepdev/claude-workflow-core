@@ -20,6 +20,23 @@ set -euo pipefail
 #   this log to verify bats ran since last push.
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# TEST_REPO_ROOT overrides REPO_ROOT for the bats regression suite, which
+# exercises --coverage against fixture trees (missing roots, etc.) without
+# recompiling the script. Production callers never set it. Distinguish
+# 'set + empty' (refuse — caller probably had a failed $(mktemp ...) sub)
+# from 'unset' (fall back silently — the production path).
+if [ "${TEST_REPO_ROOT+set}" = "set" ]; then
+	if [ -z "$TEST_REPO_ROOT" ]; then
+		echo "ERROR: TEST_REPO_ROOT is set but empty — refusing to silently fall back" >&2
+		exit 2
+	fi
+	if [ ! -d "$TEST_REPO_ROOT" ]; then
+		echo "ERROR: TEST_REPO_ROOT='$TEST_REPO_ROOT' is not a directory" >&2
+		exit 2
+	fi
+	echo "NOTE: TEST_REPO_ROOT override active (target=$TEST_REPO_ROOT)" >&2
+	REPO_ROOT="$TEST_REPO_ROOT"
+fi
 
 if ! command -v bats >/dev/null 2>&1; then
 	echo "ERROR: bats not installed. Install: brew install bats-core" >&2
@@ -75,46 +92,48 @@ cd "$REPO_ROOT" || exit 2
 if [ "$MODE" = "coverage" ]; then
 	echo "=== bats coverage inventory ==="
 	# v0.9.4 (#53): filter roots to those that exist first. `find` returns
-	# rc=1 when any starting path is missing — under `set -euo pipefail`
-	# the pipeline aborts even with stderr suppressed. CR-CLI flagged this
-	# on #51 (plugin root doesn't ship .claude/scripts or .claude/hooks).
-	_existing_sh_roots=""
+	# rc=1 on any missing starting path; under `set -o pipefail` the
+	# `find | wc -l` pipeline inherits that rc=1 and `set -e` aborts the
+	# script. CR-CLI flagged this on #51 (plugin root ships no .claude/
+	# scripts or .claude/hooks).
+	_existing_sh_roots=()
 	for r in .claude/scripts .claude/hooks .claude/skills .claude/local-backups scripts; do
-		[ -d "$r" ] && _existing_sh_roots="$_existing_sh_roots $r"
+		[ -d "$r" ] && _existing_sh_roots+=("$r")
 	done
-	if [ -n "$_existing_sh_roots" ]; then
-		# shellcheck disable=SC2086  # intentional word-split to expand roots
-		sh_count=$(find $_existing_sh_roots -name "*.sh" | wc -l | tr -d ' ')
+	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
+		sh_count=$(find "${_existing_sh_roots[@]}" -name "*.sh" | wc -l | tr -d ' ')
 	else
 		sh_count=0
 	fi
 	if [ -d .claude/tests ]; then
 		bats_count=$(find .claude/tests -name "*.bats" | wc -l | tr -d ' ')
+		# Scan bats files for explicit "# covers: <path>" declarations (SSOT).
+		# Trailing `|| true` is belt-and-suspenders: `find ... -exec grep ...
+		# \;` swallows grep's per-file rc (verified on both BSD find/macOS
+		# and GNU findutils — `find . -exec false {} \;` returns rc=0), so
+		# the pipeline is already safe in the no-match case. The guard
+		# remains in case a future refactor swaps to `find | xargs grep`,
+		# where grep's rc=1 WOULD propagate under set -o pipefail.
+		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u || true)
 	else
 		bats_count=0
+		COVERED_PATHS=""
 	fi
 	echo "Shell scripts in scope: $sh_count"
 	echo "Bats test files:        $bats_count"
 	echo ""
-	# Scan bats files for explicit "# covers: <path>" declarations (SSOT)
-	if [ -d .claude/tests ]; then
-		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u)
-	else
-		COVERED_PATHS=""
-	fi
 	covered=0
 	uncovered=0
-	if [ -n "$_existing_sh_roots" ]; then
-		# shellcheck disable=SC2086  # intentional word-split of root list
-		find_cmd=$(find $_existing_sh_roots -name "*.sh")
+	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
 		while IFS= read -r sh; do
+			[ -z "$sh" ] && continue
 			# Normalize to relative path matching covers: declarations
 			if printf '%s\n' "$COVERED_PATHS" | grep -qxF "$sh"; then
 				covered=$((covered + 1))
 			else
 				uncovered=$((uncovered + 1))
 			fi
-		done <<<"$find_cmd"
+		done < <(find "${_existing_sh_roots[@]}" -name "*.sh")
 	fi
 	echo "Covered (referenced in some .bats): $covered"
 	echo "Uncovered:                           $uncovered"
