@@ -18,6 +18,15 @@ TIMEOUT_SEC="${CR_RESOLVE_TIMEOUT_SEC:-600}"
 POLL_INTERVAL=15
 DRY_RUN=0
 
+# Validate env-provided timeout (CLI --timeout has its own validation in the
+# arg-parse loop). Without this guard, a malformed CR_RESOLVE_TIMEOUT_SEC
+# would blow up the arithmetic comparison in the poll loop instead of
+# returning a controlled exit code.
+if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [ "$TIMEOUT_SEC" -le 0 ]; then
+	echo "error: CR_RESOLVE_TIMEOUT_SEC must be a positive integer (got '$TIMEOUT_SEC')" >&2
+	exit 2
+fi
+
 usage() {
 	cat <<'EOF'
 Usage: cr-resolve-conflict/run.sh --pr <num> [--timeout <sec>] [--dry-run]
@@ -125,7 +134,11 @@ MERGE_STATE=$(echo "$PR_STATE" | jq -r '.mergeStateStatus')
 MERGEABLE=$(echo "$PR_STATE" | jq -r '.mergeable')
 HEAD_BEFORE=$(echo "$PR_STATE" | jq -r '.headRefOid')
 
-if [ "$MERGE_STATE" != "DIRTY" ] && [ "$MERGEABLE" != "CONFLICTING" ]; then
+# Strict no-conflict gate: only proceed when BOTH fields say conflict.
+# Using `||` here means we exit-clean if EITHER mergeStateStatus != DIRTY
+# OR mergeable != CONFLICTING — so the CR resolver only fires when GitHub
+# is confident the PR is in conflict, not on transient UNKNOWN states.
+if [ "$MERGE_STATE" != "DIRTY" ] || [ "$MERGEABLE" != "CONFLICTING" ]; then
 	echo "cr-resolve-conflict: PR #$PR not in conflict state (merge=$MERGE_STATE mergeable=$MERGEABLE) — nothing to do (rc=0)" >&2
 	_log_event "no-conflict" "$HEAD_BEFORE" "$HEAD_BEFORE" 0 ""
 	exit 0
