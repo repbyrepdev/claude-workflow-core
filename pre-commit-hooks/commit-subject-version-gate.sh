@@ -126,9 +126,11 @@ fi
 
 # sort -V for numeric version ordering (handles 0.10.0 > 0.9.5
 # correctly, unlike lexicographic sort). Not full SemVer 2.0 —
-# pre-release suffixes (e.g. -rc1) don't match the scope regex at
-# all and silently pass the gate. We don't use them today; revisit
-# if/when we do.
+# pre-release suffixes (e.g. -rc1) in commit-subject scopes don't
+# match the subject regex above, so the gate exits 0 silently for
+# those. Manifest-side pre-release IS rejected upstream by the
+# X.Y.Z guard, so this only affects the subject side. We don't use
+# pre-release versions today; revisit if/when we do.
 if ! higher=$(printf '%s\n%s\n' "$subject_ver" "$manifest_ver" | sort -V | tail -1); then
 	echo "commit-subject-version-gate: version comparison failed — requires sort with version-sort support (GNU 'sort -V' or BSD 'sort --version-sort')" >&2
 	exit 2
