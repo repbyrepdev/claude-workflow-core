@@ -101,7 +101,8 @@ fi
 # --- 2. git pre-push gate (pipeline gate) -------------------------------
 # Write a wrapper script at $HOOKS_DIR/pre-push that exec's hooks/pre-
 # push-pipeline-gate.sh by an absolute path it resolves AT RUNTIME via
-# `git -C $(dirname $0) rev-parse --show-toplevel`. The in-tree gate
+# `git rev-parse --show-toplevel` (bare; git pre-push hooks run with
+# cwd = repo worktree root). The in-tree gate
 # script remains the source of truth (in-place edits take effect with
 # no re-install); runtime resolution preserves relocation-safety so the
 # wrapper survives `mv repo` AND git-worktree moves (per Phase 1 r1
