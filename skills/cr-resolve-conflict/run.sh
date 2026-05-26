@@ -18,15 +18,6 @@ TIMEOUT_SEC="${CR_RESOLVE_TIMEOUT_SEC:-600}"
 POLL_INTERVAL=15
 DRY_RUN=0
 
-# Validate env-provided timeout (CLI --timeout has its own validation in the
-# arg-parse loop). Without this guard, a malformed CR_RESOLVE_TIMEOUT_SEC
-# would blow up the arithmetic comparison in the poll loop instead of
-# returning a controlled exit code.
-if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [ "$TIMEOUT_SEC" -le 0 ]; then
-	echo "error: CR_RESOLVE_TIMEOUT_SEC must be a positive integer (got '$TIMEOUT_SEC')" >&2
-	exit 2
-fi
-
 usage() {
 	cat <<'EOF'
 Usage: cr-resolve-conflict/run.sh --pr <num> [--timeout <sec>] [--dry-run]
@@ -55,12 +46,6 @@ while [ $# -gt 0 ]; do
 			echo "error: --timeout requires value" >&2
 			exit 2
 		}
-		# Guard against non-numeric / negative values — both would blow up
-		# at the arithmetic comparison below (`[ "$ELAPSED" -ge "$TIMEOUT_SEC" ]`).
-		if ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -le 0 ]; then
-			echo "error: --timeout must be a positive integer (got '$2')" >&2
-			exit 2
-		fi
 		TIMEOUT_SEC="$2"
 		shift 2
 		;;
@@ -85,6 +70,15 @@ done
 	usage
 	exit 2
 }
+
+# Validate TIMEOUT_SEC after arg-parse so CLI --timeout can override a
+# malformed CR_RESOLVE_TIMEOUT_SEC env. Final value (CLI > env > default)
+# must be a positive integer — the poll loop uses [ -ge ] arithmetic which
+# would blow up on non-numeric/negative values otherwise.
+if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [ "$TIMEOUT_SEC" -le 0 ]; then
+	echo "error: timeout must be a positive integer (got '$TIMEOUT_SEC'; from --timeout or CR_RESOLVE_TIMEOUT_SEC env)" >&2
+	exit 2
+fi
 
 # Opt-out: silent no-op per SKILL.md contract.
 if [ "${CR_RESOLVE_CONFLICT_DISABLED:-0}" = "1" ]; then
