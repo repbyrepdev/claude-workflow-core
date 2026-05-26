@@ -2,37 +2,32 @@
 set -euo pipefail
 # (#87) Pre-commit gate: hook add must bump plugin.json version.
 #
-# Catches the gap where a PR adds a file under hooks/ but doesn't
-# bump .claude-plugin/plugin.json.version. Without the version bump,
-# the new hook ships in source but never reaches consumer machines
-# (plugin-cache directory selection on the consumer side is keyed on
-# version — until consumers pin the new version, the new hook is
-# unreachable).
+# Plugin-cache directory selection on consumer machines is keyed on
+# .claude-plugin/plugin.json.version. Without a bump, new hooks ship
+# in source but never reach consumer environments.
 #
-# Detects both:
-#   - A new hook file added (status A in `git diff --cached --name-status`)
-#   - An existing hook file modified (status M) IF the modification
-#     changes behavior — heuristically: any non-comment line change
-#     in a hooks/*.sh file requires a bump.
+# Fires on ANY staged change (add/modify/rename) to hook files in
+# either layout:
+#   - `hooks/*.sh` (plugin source-tree, single-level)
+#   - `.claude/hooks/*.sh` (consumer layout — also plugin-shipped per
+#     plugin.json description)
+# No content-aware filtering — comment-only or whitespace-only edits
+# also require a bump. Use PLUGIN_VERSION_BUMP_SKIP=1 for genuinely
+# no-op edits (audit-logged to stderr — ephemeral, not persistent).
 #
-# Fires when:
-#   - At least one staged file matches `^hooks/.*\.sh$`
-#   - AND .claude-plugin/plugin.json is NOT in the staged set, OR
-#     plugin.json IS staged but the `version` field didn't change.
-#
-# Bypass: PLUGIN_VERSION_BUMP_SKIP=1 (audit-logged via stderr).
-# Use for hot-fixes / doc-only hook edits that genuinely don't need
-# a version bump. Bypass leaves a trail so misuse is auditable.
+# Bonus downgrade catch (#74-adjacent): staged plugin.json version
+# strictly less than HEAD's version → also fail. Catches accidental
+# regression that breaks consumer pins. Compared via `sort -V` so
+# semver-aware (0.10.0 > 0.2.0). Compares against HEAD (previous
+# commit) not main — branch divergence is out of scope.
 #
 # Exit codes:
-#   0 — gate passed (no hooks staged, or hooks staged + plugin.json bumped, or bypass)
-#   1 — gate failed (hooks staged without corresponding plugin.json bump)
-#   2 — usage / precondition error (jq missing, plugin.json missing/malformed)
-#
-# Bonus #74-adjacent check: if the staged plugin.json's version field
-# is being set to a value LESS THAN the current main-branch value,
-# also fail (catches accidental downgrade). This is the #74 contract
-# in reverse — same gate, different direction.
+#   0 — passed (no hook changes staged, or staged + version bumped,
+#       or bypass via env, or plugin.json absent (not in plugin repo))
+#   1 — failed (hooks staged without plugin.json version bump, or
+#       plugin.json downgrade)
+#   2 — precondition error (jq missing, plugin.json malformed, staged
+#       plugin.json has no .version, not in git repo)
 
 if [ "${PLUGIN_VERSION_BUMP_SKIP:-0}" = "1" ]; then
 	echo "plugin-version-bump-gate: PLUGIN_VERSION_BUMP_SKIP=1 — passing through (audit logged)" >&2
@@ -60,9 +55,15 @@ if ! jq empty "$PLUGIN_JSON" 2>/dev/null; then
 	exit 2
 fi
 
-# Find staged hook files (matches hooks/*.sh — single-level only;
-# nested subdirs are out of scope per current plugin layout).
-hooks_staged=$(git diff --cached --name-status | awk '$2 ~ /^hooks\/[^\/]+\.sh$/ {print $0}')
+# Find staged hook files. Matches both layouts (single-level only —
+# nested subdirs are out of scope; plugin runtime only loads top-
+# level files). Uses --name-only (correct rename handling — unlike
+# --name-status whose 3-column rename format would trap awk-on-$2).
+# Pathspec `*` in git is path-recursive by default, so we filter
+# afterwards with grep for the single-level glob shape.
+hooks_staged=$(git diff --cached --name-only --diff-filter=ACMR -- \
+	'hooks/' '.claude/hooks/' 2>/dev/null |
+	grep -E '^(\.claude/)?hooks/[^/]+\.sh$' || true)
 if [ -z "$hooks_staged" ]; then
 	# No hook changes staged → gate doesn't fire
 	exit 0

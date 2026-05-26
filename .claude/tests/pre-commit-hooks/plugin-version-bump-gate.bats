@@ -72,7 +72,7 @@ _run_gate() {
 		echo '# event: PreToolUse' >>hooks/new.sh
 		chmod +x hooks/new.sh
 		# Touch plugin.json with the SAME version (e.g. description-only change)
-		jq '.description = "updated"' .claude-plugin/plugin.json >/tmp/_pj.json && mv /tmp/_pj.json .claude-plugin/plugin.json
+		jq '.description = "updated"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
 		git add hooks/new.sh .claude-plugin/plugin.json
 	)
 	run _run_gate
@@ -88,7 +88,7 @@ _run_gate() {
 		echo '#!/bin/bash' >hooks/new.sh
 		echo '# event: PreToolUse' >>hooks/new.sh
 		chmod +x hooks/new.sh
-		jq '.version = "0.1.1"' .claude-plugin/plugin.json >/tmp/_pj.json && mv /tmp/_pj.json .claude-plugin/plugin.json
+		jq '.version = "0.1.1"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
 		git add hooks/new.sh .claude-plugin/plugin.json
 	)
 	run _run_gate
@@ -103,12 +103,12 @@ _run_gate() {
 		echo '# event: PreToolUse' >>hooks/existing.sh
 		chmod +x hooks/existing.sh
 		git add hooks/existing.sh
-		jq '.version = "0.1.1"' .claude-plugin/plugin.json >/tmp/_pj.json && mv /tmp/_pj.json .claude-plugin/plugin.json
+		jq '.version = "0.1.1"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
 		git add .claude-plugin/plugin.json
 		git commit -q -m "seed existing.sh"
 		# Now modify the existing hook + bump again
 		echo 'echo "modified"' >>hooks/existing.sh
-		jq '.version = "0.1.2"' .claude-plugin/plugin.json >/tmp/_pj.json && mv /tmp/_pj.json .claude-plugin/plugin.json
+		jq '.version = "0.1.2"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
 		git add hooks/existing.sh .claude-plugin/plugin.json
 	)
 	run _run_gate
@@ -121,14 +121,14 @@ _run_gate() {
 	(
 		cd "$TEST_TMP"
 		# Seed a higher version first
-		jq '.version = "0.5.0"' .claude-plugin/plugin.json >/tmp/_pj.json && mv /tmp/_pj.json .claude-plugin/plugin.json
+		jq '.version = "0.5.0"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
 		git add .claude-plugin/plugin.json
 		git commit -q -m "bump to 0.5.0"
 		# Now stage a hook + downgrade plugin.json
 		echo '#!/bin/bash' >hooks/n.sh
 		echo '# event: PreToolUse' >>hooks/n.sh
 		chmod +x hooks/n.sh
-		jq '.version = "0.2.0"' .claude-plugin/plugin.json >/tmp/_pj.json && mv /tmp/_pj.json .claude-plugin/plugin.json
+		jq '.version = "0.2.0"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
 		git add hooks/n.sh .claude-plugin/plugin.json
 	)
 	run _run_gate
@@ -150,6 +150,79 @@ _run_gate() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"PLUGIN_VERSION_BUMP_SKIP=1"* ]]
 	[[ $output == *"audit logged"* ]]
+}
+
+# --- layout + scope coverage --------------------------------------
+
+@test ".claude/hooks/*.sh also triggers gate (consumer layout)" {
+	(
+		cd "$TEST_TMP"
+		mkdir -p .claude/hooks
+		echo '#!/bin/bash' >.claude/hooks/new.sh
+		echo '# event: PreToolUse' >>.claude/hooks/new.sh
+		chmod +x .claude/hooks/new.sh
+		git add .claude/hooks/new.sh
+	)
+	run _run_gate
+	[ "$status" -eq 1 ]
+	[[ $output == *"new.sh"* ]]
+}
+
+@test "modified existing hook + NO bump → FAIL (status M coverage)" {
+	(
+		cd "$TEST_TMP"
+		echo '#!/bin/bash' >hooks/existing.sh
+		echo '# event: PreToolUse' >>hooks/existing.sh
+		chmod +x hooks/existing.sh
+		jq '.version = "0.2.0"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
+		git add hooks/existing.sh .claude-plugin/plugin.json
+		git commit -q -m "seed existing hook"
+		echo 'echo modified' >>hooks/existing.sh
+		git add hooks/existing.sh
+	)
+	run _run_gate
+	[ "$status" -eq 1 ]
+	[[ $output == *"existing.sh"* ]]
+}
+
+@test "nested hooks/sub/x.sh ignored (single-level scope)" {
+	(
+		cd "$TEST_TMP"
+		mkdir -p hooks/sub
+		echo '#!/bin/bash' >hooks/sub/nested.sh
+		echo '# event: PreToolUse' >>hooks/sub/nested.sh
+		chmod +x hooks/sub/nested.sh
+		git add hooks/sub/nested.sh
+	)
+	run _run_gate
+	[ "$status" -eq 0 ]
+}
+
+@test "non-.sh files under hooks/ ignored (regex specificity)" {
+	(
+		cd "$TEST_TMP"
+		echo doc >hooks/README.md
+		git add hooks/README.md
+	)
+	run _run_gate
+	[ "$status" -eq 0 ]
+}
+
+@test "downgrade: semver ordering (0.10.0 > 0.9.0, not lex)" {
+	(
+		cd "$TEST_TMP"
+		jq '.version = "0.10.0"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
+		git add .claude-plugin/plugin.json
+		git commit -q -m "bump to 0.10.0"
+		echo '#!/bin/bash' >hooks/x.sh
+		echo '# event: PreToolUse' >>hooks/x.sh
+		chmod +x hooks/x.sh
+		jq '.version = "0.9.0"' .claude-plugin/plugin.json >"$TEST_TMP/_pj.json" && mv "$TEST_TMP/_pj.json" .claude-plugin/plugin.json
+		git add hooks/x.sh .claude-plugin/plugin.json
+	)
+	run _run_gate
+	[ "$status" -eq 1 ]
+	[[ $output == *"downgrades version"* ]]
 }
 
 # --- precondition handling -----------------------------------------
