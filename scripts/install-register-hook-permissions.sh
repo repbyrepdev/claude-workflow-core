@@ -66,22 +66,72 @@ fi
 
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 
-# The exact pattern entries to add. These authorize register-hook.sh +
-# its sister script install-register-hook-permissions.sh to run without
-# classifier prompts. The leading "Bash(" prefix matches Claude Code's
-# permissions schema for shell tool invocations.
+# Pattern entries to add. These authorize register-hook.sh + its sister
+# script install-register-hook-permissions.sh to run without classifier
+# prompts. The leading "Bash(" prefix matches Claude Code's permissions
+# schema for shell tool invocations.
+#
+# Security: each pattern ends with an EXACT argument set, NOT a trailing
+# wildcard. A trailing `*` in fnmatch matches shell metacharacters
+# including ` && `, ` ; `, ` | `, ` $(...) `, so `Bash(.../register-hook.sh*)`
+# would let `.../register-hook.sh && rm -rf ~` slip past the classifier.
+# By naming each safe argument form explicitly, command-chained variants
+# don't satisfy any pattern and re-trigger the classifier prompt.
+#
+# Path anchoring: each pattern requires `/claude-workflow-core/` as a
+# literal path segment. This raises the bar over a bare `*/scripts/...`
+# pattern — an attacker dropping a file at `/tmp/x/scripts/register-hook.sh`
+# no longer satisfies the pattern. The remaining `*` between
+# `claude-workflow-core/` and `scripts/` accommodates BOTH the
+# source-repo layout (`<home>/claude-workflow-core/scripts/...`, where
+# `*` matches nothing) AND the plugin-cache layout
+# (`<home>/.claude/plugins/cache/claude-workflow-core/<version>/scripts/...`,
+# where `*` matches the version segment).
+#
+# Residual risk: an attacker who can create `/tmp/x/claude-workflow-core/`
+# (a top-level directory literally named after this project) can still
+# satisfy the pattern. Full mitigation requires anchoring to the
+# operator's home tree (e.g. `/Users/<name>/...`) which varies per OS +
+# user, OR a different non-pattern-based authentication mechanism.
+# Deferred — file a follow-up sub-issue under #57 once Anthropic
+# publishes a path-realpath-resolution option for Bash() patterns.
+#
+# Adding new patterns expands the classifier-exemption surface — only
+# add scripts whose entire purpose is settings.json maintenance and
+# that have been reviewed for self-modification risk.
 REQUIRED_PATTERNS=(
-	"Bash(*/scripts/register-hook.sh*)"
-	"Bash(*/scripts/install-register-hook-permissions.sh*)"
+	# register-hook.sh — bounded forms for autonomous use.
+	"Bash(*/claude-workflow-core/*scripts/register-hook.sh --check)"
+	"Bash(*/claude-workflow-core/*scripts/register-hook.sh --check-permissions)"
+	"Bash(*/claude-workflow-core/*scripts/register-hook.sh --all-auto-register)"
+	"Bash(*/claude-workflow-core/*scripts/register-hook.sh --dry-run --all-auto-register)"
+	# install-register-hook-permissions.sh — read-only probe modes.
+	"Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh)"
+	"Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh --check)"
+	"Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh --json)"
 )
+
+# --json short-circuits before settings.json access — the snippet shape
+# is constant and doesn't depend on current state. Operators on fresh
+# machines need this output BEFORE settings.json exists.
+if [ "$MODE" = "json" ]; then
+	jq -n --argjson reqs "$(printf '%s\n' "${REQUIRED_PATTERNS[@]}" | jq -R . | jq -s .)" '
+		{permissions: {allow: $reqs}}
+	'
+	exit 0
+fi
 
 if [ ! -f "$SETTINGS" ]; then
 	echo "install-register-hook-permissions.sh: $SETTINGS does not exist" >&2
 	echo "  Claude Code not yet installed on this machine, or CLAUDE_SETTINGS_FILE points at the wrong path." >&2
 	exit 2
 fi
-if ! jq empty "$SETTINGS" 2>/dev/null; then
+# Surface jq's parse-error detail (line/char position) — settings.json
+# is hand-edited per this script's own remediation, so corruption is
+# the failure mode that most needs diagnostic context.
+if ! jq_err=$(jq empty "$SETTINGS" 2>&1 >/dev/null); then
 	echo "install-register-hook-permissions.sh: $SETTINGS is malformed JSON" >&2
+	[ -n "$jq_err" ] && echo "  jq: $jq_err" >&2
 	exit 3
 fi
 
@@ -92,14 +142,6 @@ for pat in "${REQUIRED_PATTERNS[@]}"; do
 		missing+=("$pat")
 	fi
 done
-
-if [ "$MODE" = "json" ]; then
-	# Emit just the snippet for operator paste
-	jq -n --argjson reqs "$(printf '%s\n' "${REQUIRED_PATTERNS[@]}" | jq -R . | jq -s .)" '
-		{permissions: {allow: $reqs}}
-	'
-	exit 0
-fi
 
 if [ "${#missing[@]}" -eq 0 ]; then
 	echo "✓ register-hook.sh permissions are present in $SETTINGS"

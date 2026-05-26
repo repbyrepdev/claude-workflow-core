@@ -97,6 +97,21 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+# --check-permissions short-circuits before any of register-hook.sh's
+# own preconditions (jq, git-repo, settings.json). Operators at machine
+# bootstrap legitimately run this from $HOME (no git repo) — the
+# delegated installer has its own jq + settings checks with clearer
+# diagnostics, so we don't gate on ours first.
+if [ "$CHECK_PERMS" = "1" ]; then
+	installer="$(dirname "$0")/install-register-hook-permissions.sh"
+	if [ ! -x "$installer" ]; then
+		echo "register-hook.sh: sibling installer not found or not executable: $installer" >&2
+		echo "  Reinstall the plugin or check file mode (chmod +x)." >&2
+		exit 2
+	fi
+	exec "$installer" --check
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
 	echo "register-hook.sh: jq required but not installed" >&2
 	exit 2
@@ -107,13 +122,6 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	exit 2
 }
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
-
-# --check-permissions short-circuits before any settings.json read/write
-# so it works even when settings.json is missing or unreadable (the
-# installer reports a clear precondition error in that case).
-if [ "$CHECK_PERMS" = "1" ]; then
-	exec "$(dirname "$0")/install-register-hook-permissions.sh" --check
-fi
 
 # --- Frontmatter parsing ---------------------------------------------
 
