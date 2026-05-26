@@ -58,9 +58,19 @@ _run_guard() {
 # --- inactive-branch passthrough ----------------------------------
 
 @test "passes through when not on feat/chore/fix branch" {
-	(cd "$TEST_TMP" && git checkout -q main 2>/dev/null || git checkout -q -b somebranch)
+	(cd "$TEST_TMP" && git checkout -q -b somebranch)
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
+}
+
+@test "fix/* branch activates the guard (parity with feat/chore)" {
+	(cd "$TEST_TMP" && git checkout -q -b fix/v0.9.5/bug)
+	# Re-create state file for the new branch's HEAD
+	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	echo '{"stage":"phase1","branch":"fix/v0.9.5/bug"}' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
+	run _run_guard "$(_payload_bash 'gh pr merge 91')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
 }
 
 @test "passes through when no ship-pr-cycle state file" {
@@ -125,17 +135,17 @@ _run_guard() {
 # --- Bypass paths ------------------------------------------------
 
 @test "SKILL_WRAPPER=1 env bypasses all checks" {
-	export SKILL_WRAPPER=1
-	run _run_guard "$(_payload_bash 'gh pr merge 91')"
-	unset SKILL_WRAPPER
+	# Use per-call env to avoid SC2030/SC2031 (bats @test subshell
+	# scope makes export-then-run-then-unset shellcheck-noisy).
+	payload=$(_payload_bash 'gh pr merge 91')
+	run bash -c "cd '$TEST_TMP' && export SKILL_WRAPPER=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
 }
 
 @test "SHIP_PR_CYCLE_BYPASS=1 env bypasses + emits audit log" {
-	export SHIP_PR_CYCLE_BYPASS=1
-	run _run_guard "$(_payload_bash 'gh pr merge 91')"
-	unset SHIP_PR_CYCLE_BYPASS
+	payload=$(_payload_bash 'gh pr merge 91')
+	run bash -c "cd '$TEST_TMP' && export SHIP_PR_CYCLE_BYPASS=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
 	[[ $output == *"audit logged"* ]]
@@ -146,6 +156,39 @@ _run_guard() {
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
 	[[ $output == *"inline prefix"* ]]
+}
+
+@test "SHIP_PR_CYCLE_BYPASS=1 at command END does NOT bypass (anchored regex)" {
+	# Security-review finding: prior regex matched the token anywhere.
+	# Anchored regex must reject the suffix-positioned form.
+	run _run_guard "$(_payload_bash 'gh pr merge 91 SHIP_PR_CYCLE_BYPASS=1')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+}
+
+@test "SHIP_PR_CYCLE_BYPASS=1 mid-command does NOT bypass (anchored regex)" {
+	run _run_guard "$(_payload_bash 'gh pr merge SHIP_PR_CYCLE_BYPASS=1 91')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+}
+
+@test "FOO_SHIP_PR_CYCLE_BYPASS=1 (different var) does NOT bypass" {
+	# Word-boundary protection — only the exact variable name bypasses.
+	run _run_guard "$(_payload_bash 'FOO_SHIP_PR_CYCLE_BYPASS=1 gh pr merge 91')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+}
+
+@test "SKILL_WRAPPER=1 bypass emits audit log line" {
+	# Silent-failure-hunter finding: SKILL_WRAPPER was silently
+	# passing through; leaked env from stale shell could disable
+	# enforcement undetectably. Now audit-logged.
+	payload=$(_payload_bash 'gh pr merge 91')
+	run bash -c "cd '$TEST_TMP' && export SKILL_WRAPPER=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"SKILL_WRAPPER=1"* ]]
+	[[ $output == *"passing through"* ]]
 }
 
 # --- malformed input fail-closed ---------------------------------

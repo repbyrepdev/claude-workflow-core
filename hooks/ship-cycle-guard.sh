@@ -3,39 +3,54 @@ set -euo pipefail
 # event: PreToolUse
 # matcher: Bash|Agent
 # auto-register: true
-# v0.9.5 (#82) — PreToolUse guard that mechanically enforces the
-# ship-pr-cycle.sh orchestrator as the entry point for the
-# branch→merge flow. Without this gate, nothing prevents the agent
-# from hand-rolling each stage individually (calling Phase 1 agents
-# directly, invoking coderabbit review by hand, raw `gh pr merge`,
-# etc.) and bypassing the convergence/budget/CR-finding logic the
-# orchestrator centralizes.
+# v0.9.5 (#82) — PreToolUse ADVISORY guard that nudges the agent
+# toward the ship-pr-cycle.sh orchestrator as the entry point for
+# the branch→merge flow. Without this gate, nothing prompts the
+# agent to use the orchestrator instead of hand-rolling each stage.
 #
-# WHAT IT BLOCKS (when on an active feature branch with commits):
+# THREAT MODEL — read this before relying on this guard for
+# anything load-bearing:
+# This is an ADVISORY hook, not a security boundary. The agent has
+# full control of the Bash command string and can syntactically
+# evade the substring matchers (`\gh pr merge`, `eval "..."`,
+# `/usr/bin/gh pr merge`, etc.) or `touch` the directive sentinel
+# to unblock Agent calls. Hardening to a true mechanical boundary
+# requires: (a) shell-tokenized command parsing with basename
+# checks, and (b) sentinel-with-nonce validated against the
+# orchestrator's state JSON. Both are tracked as follow-ups under
+# epic #86 (see #90 / new sub-issue). For now the guard catches
+# the COMMON case — naive hand-rolls — and surfaces a clear nudge
+# toward the orchestrator. It is intentionally not a defense
+# against an adversarial agent.
+#
+# WHAT IT BLOCKS (when on an active feat/chore/fix branch with
+# in-flight ship-pr-cycle state):
 #   - Bash:   `coderabbit review` (Phase 2 hand-roll)
 #   - Bash:   `gh pr merge` (merge-gate hand-roll)
-#   - Bash:   `git push` of a feat/chore branch (push hand-roll —
-#             optional; default OFF since orchestrator's resume now
-#             also pushes, but operators do legitimate pushes too)
-#   - Agent:  subagent_type prefixed `pr-review-toolkit:*` (Phase 1
-#             agents fired without orchestrator's logging chain)
+#   - Agent:  subagent_type prefixed `pr-review-toolkit:*` fired
+#             WITHOUT the orchestrator's Phase 1 directive sentinel
+#             (sentinel is created by the orchestrator when emitting
+#             the directive; the hook checks file existence, not
+#             freshness or provenance — see threat-model note above)
 #
 # BYPASS:
-#   - SHIP_PR_CYCLE_BYPASS=1 (env OR command-string prefix) — operator
-#     emergency override. Audit-logged to stderr.
-#   - SKILL_WRAPPER=1 — orchestrator + wrapper scripts set this. The
-#     guard honors it so ship-pr-cycle.sh's own internal calls don't
-#     trigger denials.
-#   - Branch not matching feat/...  | chore/... (no active feature
-#     branch — guard is a no-op).
+#   - SKILL_WRAPPER=1 (env) — orchestrator + wrapper scripts set this.
+#     Audit-logged to stderr so leaked env vars are detectable.
+#   - SHIP_PR_CYCLE_BYPASS=1 (env, OR command-string prefix at the
+#     START of a Bash command, e.g. `SHIP_PR_CYCLE_BYPASS=1 gh pr
+#     merge 91`) — operator emergency override. Audit-logged.
+#     Inline-prefix form is Bash-only — Agent calls require the env
+#     form (Agent has no command-string).
+#   - Branch not matching `feat/...` | `chore/...` | `fix/...` (no
+#     active feature branch — guard is a no-op).
 #   - ship-pr-cycle state file absent OR stage=merged (no in-flight
 #     work — guard is a no-op).
 #
 # WHY NOT A MEMORY RULE:
 # Operator framing 2026-05-26: "mechanical enforcement is NOT memory
 # files. Memory is discipline-based and the agent will forget." This
-# hook is specifically the tool-call-layer mechanical enforcement,
-# not yet-another memory rule.
+# hook is the tool-call-layer nudge — better than memory, weaker
+# than full mechanical enforcement (which #90's follow-up will land).
 
 # jq load-bearing for the deny path
 command -v jq >/dev/null 2>&1 || {
@@ -66,8 +81,11 @@ if ! TOOL_NAME=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // ""' 2>/dev/null);
 	deny "payload unparseable — failing closed"
 fi
 
-# Skill-wrapper / orchestrator bypass — honored across all tools
+# Skill-wrapper / orchestrator bypass — honored across all tools.
+# Audit-log to stderr so leaked env vars (e.g. stale parent shell
+# export) are detectable post-hoc by grepping operator output.
 if [ "${SKILL_WRAPPER:-0}" = "1" ]; then
+	echo "ship-cycle-guard: SKILL_WRAPPER=1 (env) — passing through (tool=${TOOL_NAME:-?}, ppid=$PPID)" >&2
 	exit 0
 fi
 
@@ -110,13 +128,19 @@ fi
 
 case "$TOOL_NAME" in
 Bash)
-	CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""')
+	if ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null); then
+		deny "tool_input.command unparseable — failing closed"
+	fi
 	if [ -z "$CMD" ]; then
 		exit 0
 	fi
 	# Inline-prefix bypass — operator can include `SHIP_PR_CYCLE_BYPASS=1`
-	# at the start of the command to bypass for that one invocation.
-	if printf '%s' "$CMD" | grep -qE '(^|[[:space:]])SHIP_PR_CYCLE_BYPASS=1([[:space:]]|;|&|$)'; then
+	# ONLY at the start of the command (shell env-var assignment
+	# syntax). The regex below anchors to the command start so
+	# `gh pr merge 91 SHIP_PR_CYCLE_BYPASS=1` (token positioned after
+	# the command) does NOT bypass — that was a regression vector
+	# identified in Phase 1 security-review.
+	if printf '%s' "$CMD" | grep -qE '^[[:space:]]*SHIP_PR_CYCLE_BYPASS=1[[:space:]]+'; then
 		echo "ship-cycle-guard: SHIP_PR_CYCLE_BYPASS=1 (inline prefix) — passing through, audit logged" >&2
 		exit 0
 	fi
@@ -134,27 +158,32 @@ Bash)
 	exit 0
 	;;
 Agent)
-	SUBAGENT=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.subagent_type // ""')
+	if ! SUBAGENT=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null); then
+		deny "tool_input.subagent_type unparseable — failing closed"
+	fi
 	# Phase 1 hand-roll: pr-review-toolkit:* agent invocations.
 	# The orchestrator's Phase 1 directive prints the templated prompts
 	# AND fires the review-log.sh barrier. A raw Agent call skips the
 	# log barrier → ship-pr-cycle stalls or double-spends rounds.
 	#
-	# NOTE: this is a controversial block. The orchestrator EXPECTS me
-	# to fire 5 parallel Agent calls at Phase 1. So the legitimate
-	# Phase 1 invocation path IS direct Agent. The guard differentiates
-	# by checking whether the orchestrator's directive was logged
-	# recently (within 5 minutes) — if so, the Agent call is the
-	# operator following the directive; if not, it's a hand-roll.
+	# NOTE: the orchestrator EXPECTS firing parallel Agent calls at
+	# Phase 1. So the LEGITIMATE Phase 1 invocation path IS direct
+	# Agent. The guard differentiates by checking for a directive
+	# sentinel file the orchestrator creates when emitting Phase 1
+	# directive. EXISTENCE-ONLY check: no freshness window, no
+	# content/nonce validation. The sentinel is cleared by
+	# review-log.sh barrier on completion. THREAT-MODEL note: this
+	# is `touch`-bypassable — the agent can `touch` the sentinel
+	# via a Bash tool call (touch is not in the blocklist) and
+	# unblock Agent calls. Hardening to a nonce-validated sentinel
+	# is tracked in follow-up under epic #86.
 	case "$SUBAGENT" in
 	pr-review-toolkit:*)
-		repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+		repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+			deny "git rev-parse failed in Agent path — failing closed (branch + state checks already passed, so this is unexpected)"
+		}
 		directive_log="$repo_root/.claude/.session-state/ship-pr-cycle/phase1-directive-pending.txt"
 		if [ -f "$directive_log" ]; then
-			# Orchestrator has just emitted a Phase 1 directive —
-			# this Agent call is the operator following it. Allow.
-			# Sentinel is cleared by review-log.sh barrier on
-			# completion.
 			exit 0
 		fi
 		deny "raw pr-review-toolkit:$SUBAGENT Agent call detected outside an active Phase 1 directive — invoke 'ship-pr-cycle.sh next' first; the orchestrator emits a templated prompt + creates the directive-pending sentinel. Bypass: SHIP_PR_CYCLE_BYPASS=1 env (not inline — Agent has no command-string for prefix)."
