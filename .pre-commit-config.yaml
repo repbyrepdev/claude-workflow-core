@@ -147,11 +147,13 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: bats-gate
+        name: bats-gate — touched .sh needs recent bats pass
+        entry: pre-commit-hooks/bats-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
 # Hooks intentionally OMITTED from this dogfood config:
-#
-#   - bats-gate: requires bats test infrastructure that the plugin repo
-#     doesn't ship yet. Tracked under #47 (separate sub-issue for adding
-#     bats skeleton + first 5 skill tests).
 #
 #   - dogfood-gate: requires .claude/dogfood-registry.yml + recent-pass
 #     log infrastructure that consumer repos build via dogfood.sh.
