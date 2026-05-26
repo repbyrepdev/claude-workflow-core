@@ -74,23 +74,48 @@ cd "$REPO_ROOT" || exit 2
 # --coverage: inventory mode, doesn't run tests.
 if [ "$MODE" = "coverage" ]; then
 	echo "=== bats coverage inventory ==="
-	sh_count=$(find .claude/scripts .claude/hooks .claude/skills .claude/local-backups scripts -name "*.sh" 2>/dev/null | wc -l | tr -d ' ')
-	bats_count=$(find .claude/tests -name "*.bats" 2>/dev/null | wc -l | tr -d ' ')
+	# v0.9.4 (#53): filter roots to those that exist first. `find` returns
+	# rc=1 when any starting path is missing — under `set -euo pipefail`
+	# the pipeline aborts even with stderr suppressed. CR-CLI flagged this
+	# on #51 (plugin root doesn't ship .claude/scripts or .claude/hooks).
+	_existing_sh_roots=""
+	for r in .claude/scripts .claude/hooks .claude/skills .claude/local-backups scripts; do
+		[ -d "$r" ] && _existing_sh_roots="$_existing_sh_roots $r"
+	done
+	if [ -n "$_existing_sh_roots" ]; then
+		# shellcheck disable=SC2086  # intentional word-split to expand roots
+		sh_count=$(find $_existing_sh_roots -name "*.sh" | wc -l | tr -d ' ')
+	else
+		sh_count=0
+	fi
+	if [ -d .claude/tests ]; then
+		bats_count=$(find .claude/tests -name "*.bats" | wc -l | tr -d ' ')
+	else
+		bats_count=0
+	fi
 	echo "Shell scripts in scope: $sh_count"
 	echo "Bats test files:        $bats_count"
 	echo ""
 	# Scan bats files for explicit "# covers: <path>" declarations (SSOT)
-	COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; 2>/dev/null | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u)
+	if [ -d .claude/tests ]; then
+		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u)
+	else
+		COVERED_PATHS=""
+	fi
 	covered=0
 	uncovered=0
-	while IFS= read -r sh; do
-		# Normalize to relative path matching covers: declarations
-		if printf '%s\n' "$COVERED_PATHS" | grep -qxF "$sh"; then
-			covered=$((covered + 1))
-		else
-			uncovered=$((uncovered + 1))
-		fi
-	done < <(find .claude/scripts .claude/hooks .claude/skills .claude/local-backups scripts -name "*.sh" 2>/dev/null)
+	if [ -n "$_existing_sh_roots" ]; then
+		# shellcheck disable=SC2086  # intentional word-split of root list
+		find_cmd=$(find $_existing_sh_roots -name "*.sh")
+		while IFS= read -r sh; do
+			# Normalize to relative path matching covers: declarations
+			if printf '%s\n' "$COVERED_PATHS" | grep -qxF "$sh"; then
+				covered=$((covered + 1))
+			else
+				uncovered=$((uncovered + 1))
+			fi
+		done <<<"$find_cmd"
+	fi
 	echo "Covered (referenced in some .bats): $covered"
 	echo "Uncovered:                           $uncovered"
 	if [ "$sh_count" -eq 0 ]; then
@@ -290,11 +315,14 @@ for f in "${FILES[@]}"; do
 		# so test-side `printf "..." >&2` debug output reaches the operator.
 		# Without this, the TAP comments are captured into $out but never
 		# printed, leaving failures opaque ("not ok 4 — and that's it").
-		printf '%s\n' "$out" | grep -E '^(not ok |# )' | head -30 | sed 's/^/    /'
+		# v0.9.4 (#53): || true on the grep pipeline. grep returns rc=1
+		# when no lines match; under set -euo pipefail that aborts the
+		# whole script, truncating the summary. CR-CLI flagged this on #51.
+		printf '%s\n' "$out" | grep -E '^(not ok |# )' | head -30 | sed 's/^/    /' || true
 		# Record full failure block for the bottom-of-run summary so a
 		# single `tail -N` captures everything.
 		FAIL_DETAILS="${FAIL_DETAILS:-}✗ $f ($failed failed, rc=$rc)
-$(printf '%s\n' "$out" | grep -E '^(not ok |# )' | head -30 | sed 's/^/    /')
+$(printf '%s\n' "$out" | grep -E '^(not ok |# )' | head -30 | sed 's/^/    /' || true)
 
 "
 	fi
