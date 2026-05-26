@@ -86,7 +86,11 @@ fi
 
 # plugin.json IS staged. Did the version field actually change?
 # Compare the staged version to the HEAD (committed) version.
-staged_ver=$(git show ":$PLUGIN_JSON" 2>/dev/null | jq -r '.version // ""')
+# Symmetric || printf '' fallback to head_ver below — set -euo pipefail
+# would otherwise abort here when git show fails (e.g. blob missing
+# from index for whatever reason). Empty staged_ver flows into the
+# next check + emits a clear precondition error.
+staged_ver=$(git show ":$PLUGIN_JSON" 2>/dev/null | jq -r '.version // ""' || printf '')
 head_ver=$(git show "HEAD:$PLUGIN_JSON" 2>/dev/null | jq -r '.version // ""' || printf '')
 
 if [ -z "$staged_ver" ]; then
