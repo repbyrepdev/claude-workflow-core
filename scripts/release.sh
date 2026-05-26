@@ -144,7 +144,10 @@ echo "release.sh: latest existing tag: ${LATEST_TAG:-<none>}"
 # --- Tag creation ----------------------------------------------------
 if git rev-parse "$TAG" >/dev/null 2>&1; then
 	echo "  ✓ tag $TAG already exists locally"
-	LOCAL_TAG_SHA=$(git rev-parse "$TAG")
+	# Peel to commit SHA via `^{}` — `git tag -a` creates annotated tags,
+	# and `git rev-parse $TAG` returns the tag OBJECT sha (not the commit).
+	# Without peeling, the comparison fails even when the tag is at HEAD.
+	LOCAL_TAG_SHA=$(git rev-parse "$TAG^{}")
 	HEAD_SHA=$(git rev-parse HEAD)
 	if [ "$LOCAL_TAG_SHA" != "$HEAD_SHA" ]; then
 		echo "release.sh: tag $TAG points at $LOCAL_TAG_SHA but HEAD is $HEAD_SHA — recreate the tag at HEAD or move HEAD" >&2
@@ -190,7 +193,8 @@ if [ -d "$CACHE_DIR" ]; then
 		else
 			cached_sha=NO_GIT_DIR
 		fi
-		expected_sha=$(git rev-parse "$TAG" 2>/dev/null || echo MISSING)
+		# Peel to commit SHA (see comment above re: annotated tag objects).
+		expected_sha=$(git rev-parse "$TAG^{}" 2>/dev/null || echo MISSING)
 		if [ "$cached_sha" != "$expected_sha" ] || [ "$cached_sha" = "MISSING" ]; then
 			echo "release.sh: cache $CACHE_DIR exists but contains sha=$cached_sha (expected $expected_sha) — remove and re-run" >&2
 			exit 2
@@ -216,10 +220,14 @@ else
 			echo "release.sh: failed to create $CACHE_BASE — check permissions" >&2
 			exit 2
 		fi
-		# Atomic clone: clone to tmp, mv on success. Prevents partial cache
-		# from fooling the idempotency check on a re-run after Ctrl-C.
-		TMP_CLONE=$(mktemp -d "${TMPDIR:-/tmp}/release-clone.XXXXXX") || {
-			echo "release.sh: mktemp -d failed" >&2
+		# Atomic clone: clone to tmp UNDER $CACHE_BASE (same filesystem as
+		# the final destination, so `mv` is actually a same-fs rename and
+		# atomic) — not the default $TMPDIR (typically on a different fs
+		# than $HOME, where mv would copy+unlink and lose atomicity).
+		# Prevents partial cache from fooling the idempotency check on a
+		# re-run after Ctrl-C.
+		TMP_CLONE=$(mktemp -d "$CACHE_BASE/release-clone.XXXXXX") || {
+			echo "release.sh: mktemp -d under $CACHE_BASE failed" >&2
 			exit 2
 		}
 		# trap removes tmp on any exit path (success after mv leaves empty
