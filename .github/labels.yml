@@ -26,8 +26,20 @@
 - name: brainstorm
   color: "8250df"
   description: Discussion-style ideation, no concrete scope yet
+- name: documentation
+  color: "0969da"
+  description: Improvements or additions to documentation
+- name: question
+  color: "bf3989"
+  description: Further information is requested
 
 # ---- Priority ----
+- name: priority:p0
+  color: "cf222e"
+  description: Production broken — fix immediately
+- name: priority:p0-proposed
+  color: "bc4c00"
+  description: AI-flagged as critical — human approval required (never auto-escalates)
 - name: priority:p1
   color: "cf222e"
   description: Urgent — fix this week
@@ -40,6 +52,14 @@
 - name: priority:needs-triage
   color: "6e7681"
   description: AI triage couldn't classify confidently — human review needed
+
+# ---- Status ----
+- name: status:in-review
+  color: "bc4c00"
+  description: PR open awaiting review
+- name: status:blocked
+  color: "6e7681"
+  description: Waiting on dependency / external blocker
 
 # ---- Area ----
 - name: area:infrastructure
