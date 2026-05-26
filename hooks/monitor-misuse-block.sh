@@ -64,8 +64,16 @@ _audit_log_bypass() {
 		# code only tried shasum, leaving cmd_hash empty on Linux
 		# systems without it. Validate the result is a 64-hex shape
 		# before overwriting the "-" default.
+		# Guard the assignment with `if` so set -euo pipefail can't
+		# abort the bypass when neither sha256sum nor shasum exist —
+		# we want fall-through to the "-" default, not termination.
+		# CR-CLI r5 major.
 		local candidate
-		candidate=$(printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null; } | cut -d' ' -f1)
+		if candidate=$(printf '%s' "$1" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null; } | cut -d' ' -f1); then
+			:
+		else
+			candidate=""
+		fi
 		if [[ $candidate =~ ^[a-f0-9]{64}$ ]]; then
 			cmd_hash=$candidate
 		fi
