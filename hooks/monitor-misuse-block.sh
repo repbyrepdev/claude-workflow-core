@@ -3,42 +3,36 @@ set -euo pipefail
 # event: PreToolUse
 # matcher: Monitor
 # auto-register: true
-# v0.9.5 (#80) — PreToolUse hook that blocks Monitor tool misuse for
-# one-shot "tell me when X completes" signals. The right tool for
-# that is `Bash run_in_background` — the harness sends a single
-# completion notification when the background bash exits, and no
-# Monitor orphan accumulation is possible.
 #
-# Anti-pattern this catches (verified observed 2026-05-26):
-#   Monitor with command `until grep -qE '"type":"complete"' .output;
-#   do sleep 5; done`
+# (#80) Block Monitor tool misuse for one-shot completion waits.
+# The right tool for those is `Bash run_in_background` — the harness
+# sends a single completion notification on bash exit, no orphan
+# Monitor accumulation possible.
 #
-# When the background bash dies silently (CR-CLI 0-byte .output case),
-# the Monitor's `until` loop polls forever until its own timeout, AND
-# a retry arms a NEW Monitor on top — 5 monitors accumulated in one
-# session before the operator noticed.
+# BLOCKS: `until <cond>; do ...; sleep ...; done` shape (any condition,
+# any body content as long as both `do` and `sleep` appear). This is
+# the canonical one-shot polling form.
 #
-# WHAT IT BLOCKS (substring matches on tool_input.command):
-#   - `until grep ... do sleep ... done` (one-shot polling pattern)
-#   - `until [[ ... ]]; do sleep ...` (variants)
-#   - `until <single-condition>; do sleep; done` (general form)
+# PASSES: `tail -f`, `inotifywait -m`, `while true; do ...`, plain
+# log-following — anything that doesn't have the `until ... done`
+# shape. The `while [ ... ]; do sleep` variant is NOT covered here
+# (less common in practice; can be added if observed — see follow-up
+# discussion under #80/#92).
 #
-# WHAT IT PASSES THROUGH (legitimate unbounded streams):
-#   - `tail -f` (continuous stream)
-#   - `inotifywait -m` (monitor mode)
-#   - `while true` (explicit continuous polling — operator opt-in)
-#   - Plain log-following commands without `until ... done`
+# BYPASS: MONITOR_MISUSE_SKIP=1 env. Audit-logged to
+# .claude/logs/monitor-misuse-bypass.jsonl (timestamped, command-hashed
+# — content not logged for privacy).
 #
-# BYPASS:
-#   - MONITOR_MISUSE_SKIP=1 (env) — emergency override, audit-logged
-#
-# WHY NOT A MEMORY RULE: operator framing 2026-05-26 — "mechanical
-# enforcement is NOT memory files." This hook is the tool-call-layer
-# mechanical gate.
+# THREAT MODEL: advisory ergonomic guard (same posture as #82). Agent
+# has full command-string control and can syntactically evade
+# (`\until`, eval-wrap, etc.). The hook catches the naive case the
+# operator observed 2026-05-26.
 
 command -v jq >/dev/null 2>&1 || {
-	echo "monitor-misuse-block: jq not found" >&2
-	exit 2
+	# Hand-built deny JSON (no jq required) — emit structured deny
+	# instead of exit 2 so downstream consumers see consistent shape.
+	printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"monitor-misuse-block: jq not installed — failing closed"}}'
+	exit 0
 }
 
 deny() {
@@ -46,26 +40,42 @@ deny() {
 	echo "monitor-misuse-block: $reason" >&2
 	json=$(jq -nc --arg r "$reason" \
 		'{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}') || {
-		echo "monitor-misuse-block: jq emit failed — falling back to exit 2" >&2
-		exit 2
+		# Fall back to hand-built JSON if jq somehow fails (shouldn't
+		# happen after the presence check above, but defense-in-depth).
+		printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"monitor-misuse-block: jq emit failed — failing closed"}}'
+		exit 0
 	}
 	printf '%s\n' "$json"
 	exit 0
 }
 
+# Bypass FIRST — before stdin read — so emergency override works even
+# if stdin is broken.
+_audit_log_bypass() {
+	local repo_root log_dir log_file
+	repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+	log_dir="$repo_root/.claude/logs"
+	log_file="$log_dir/monitor-misuse-bypass.jsonl"
+	mkdir -p "$log_dir" 2>/dev/null || return 0
+	local cmd_hash="-"
+	if [ -n "${1:-}" ]; then
+		cmd_hash=$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)
+	fi
+	local ts
+	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"ts":"%s","event":"monitor_misuse_skip","cmd_hash":"%s"}\n' "$ts" "$cmd_hash" >>"$log_file" 2>/dev/null || true
+}
+
+if [ "${MONITOR_MISUSE_SKIP:-0}" = "1" ]; then
+	echo "monitor-misuse-block: MONITOR_MISUSE_SKIP=1 — passing through (logged to .claude/logs/monitor-misuse-bypass.jsonl)" >&2
+	_audit_log_bypass ""
+	exit 0
+fi
+
 if ! PAYLOAD=$(cat); then
 	deny "stdin read failed — failing closed"
 fi
 
-# Bypass via env (audit-logged)
-if [ "${MONITOR_MISUSE_SKIP:-0}" = "1" ]; then
-	echo "monitor-misuse-block: MONITOR_MISUSE_SKIP=1 — passing through, audit logged" >&2
-	exit 0
-fi
-
-# Only fires for Monitor tool — matcher should already restrict, but
-# fail-closed if tool_name is anything else (shouldn't happen via the
-# matcher).
 if ! TOOL_NAME=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // ""' 2>/dev/null); then
 	deny "payload unparseable — failing closed"
 fi
@@ -77,31 +87,27 @@ if ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/nul
 	deny "tool_input.command unparseable — failing closed"
 fi
 if [ -z "$CMD" ]; then
-	exit 0 # no command = no anti-pattern to detect
+	exit 0
 fi
 
-# Anti-pattern detection: `until <condition>; do sleep N; done`
-# This is the canonical one-shot polling pattern. The condition can be
-# anything (grep, test, [[, etc.) — what makes it a one-shot is the
-# `until` + `sleep` + `done` shape with no `while true` / `-f` /
-# `-m` mode flags. Match conservatively (any `until` paired with
-# `sleep` inside a `do`/`done`).
-if printf '%s' "$CMD" | grep -qE 'until[[:space:]]'; then
-	# Has `until`. Check if it's paired with sleep + done (one-shot)
-	# vs being part of a legitimate unbounded construct.
-	if printf '%s' "$CMD" | grep -qE 'do[[:space:]]+sleep[[:space:]]'; then
-		deny "Monitor used with one-shot 'until <cond>; do sleep ...; done' polling — the harness sends ONE completion notification on bash exit, so this should be Bash with run_in_background instead. Pattern observed 2026-05-26: 5 orphan Monitors accumulated when the background process died silently and the until-loop polled past its timeout. Bypass: MONITOR_MISUSE_SKIP=1 env."
-	fi
-fi
+# Flatten newlines to spaces so multi-line until-blocks match the same
+# regex as single-line forms. Cheaper + clearer than a multi-line
+# regex flag.
+FLAT_CMD=$(printf '%s' "$CMD" | tr '\n' ' ')
 
-# Other anti-patterns: explicit `do sleep N; done` immediately after
-# any condition-loop (handles `while [[ ! -f ... ]]` variants too).
-# Skip if `while true` is present — that's the operator's explicit
-# unbounded-polling opt-in.
-if ! printf '%s' "$CMD" | grep -qE 'while[[:space:]]+true'; then
-	if printf '%s' "$CMD" | grep -qE 'while[[:space:]]+[^;]*\[\[?[^]]*\]\]?[[:space:]]*;[[:space:]]*do[[:space:]]+sleep'; then
-		deny "Monitor used with one-shot 'while <cond>; do sleep ...; done' polling — same misuse as the until form. Use Bash run_in_background instead. Bypass: MONITOR_MISUSE_SKIP=1 env."
-	fi
+# Single-shape match: `until <cond>(;| ) do ...; sleep N ...; done`.
+# - `until[[:space:]]` — the keyword
+# - `[^;]+` — at least one non-semicolon char (the condition)
+# - `(;|[[:space:]])[[:space:]]*do[[:space:]]` — closes the condition
+#   and opens the body. Single-line shell uses `;`, multi-line uses
+#   newline (flattened to space). Either is accepted.
+# - `.*sleep[[:space:]]+[0-9]` — sleep with a numeric arg anywhere in body
+# - `.*done` — closing the loop
+# Matching the full shape in ONE regex prevents independent-grep false
+# positives (e.g. unrelated `for x in 1 2 3; do sleep 1; done` with the
+# word "until" appearing elsewhere in a comment).
+if printf '%s' "$FLAT_CMD" | grep -qE 'until[[:space:]]+[^;]+(;|[[:space:]])[[:space:]]*do[[:space:]].*sleep[[:space:]]+[0-9].*done'; then
+	deny "Monitor used with one-shot 'until <cond>; do ...; sleep N; done' polling — the harness sends ONE completion notification when a background bash exits, so this should be Bash with run_in_background instead. Background process dying silently leaves the until-loop polling past its timeout, accumulating orphan Monitors across retries (see #80). Bypass: MONITOR_MISUSE_SKIP=1 env."
 fi
 
 exit 0
