@@ -182,9 +182,21 @@ _sha256() {
 	# derived at line 21) instead of re-deriving via git rev-parse;
 	# that handles installer/non-repo contexts correctly.
 	local repo_root="$REPO_ROOT"
+	# Probe consumer layout first (.claude/_lib/) then plugin layout (_lib/).
+	# Consumers install the helper under .claude/_lib via bootstrap-repo.sh;
+	# the plugin's own repo keeps it at top-level _lib/. Without this fallback
+	# the plugin can't dogfood semantic-hash on its own files — scripts/test.sh
+	# silently writes byte-hash entries that bats-gate (semantic-hash reader)
+	# can't match.
+	local sem_lib=""
 	if [ -r "$repo_root/.claude/_lib/semantic-hash.sh" ]; then
-		# shellcheck disable=SC1091  # sourced at runtime, path varies per consumer
-		. "$repo_root/.claude/_lib/semantic-hash.sh"
+		sem_lib="$repo_root/.claude/_lib/semantic-hash.sh"
+	elif [ -r "$repo_root/_lib/semantic-hash.sh" ]; then
+		sem_lib="$repo_root/_lib/semantic-hash.sh"
+	fi
+	if [ -n "$sem_lib" ]; then
+		# shellcheck disable=SC1090  # path resolved at runtime per repo layout
+		. "$sem_lib"
 		# CR PR #803 r2 MAJOR: capture rc per AGENTS.md rule. Bare
 		# `h=$(...)` under set -e exits before the byte-exact fallback
 		# below can run.
