@@ -45,23 +45,23 @@ All hooks use `git rev-parse --show-toplevel || pwd` so they work in any cwd.
 
 ## ship-pr-cycle is the canonical entry point (#130)
 
-`scripts/ship-pr-cycle.sh` is the **single end-to-end orchestrator** from brainstorm → cr-plan → epic + sub-issue creation → branch → commits → lint → push → PR-create → CR-CLI → CR-in-CI → merge. Every other skill in this plugin (`github-issue-creation`, `github-pr-creation`, `github-pr-merge`, `git-commit`, `coderabbit:autofix`, etc.) is an **internal building block** that ship-pr-cycle invokes at the appropriate phase.
+`scripts/ship-pr-cycle.sh` is the **single end-to-end orchestrator** for the inner ship cycle. Every other skill in this plugin (`github-issue-creation`, `github-pr-creation`, `github-pr-merge`, `git-commit`, `coderabbit:autofix`, etc.) is an **internal building block** that ship-pr-cycle invokes at the appropriate stage.
 
-Operators (and agents) should call `ship-pr-cycle.sh` as the entry point for ALL PR-bound work, not the individual skills directly. Each phase is mechanically guarded:
+Per `scripts/ship-pr-cycle.sh` (lines 30-39), the current canonical state machine is:
 
-- **brainstorm** — invokes brainstorm skill, asserts artifact emitted
-- **cr-plan** — parses brainstorm artifact into epic + sub-issue plan
-- **epic-create / sub-create** — invokes `github-epic-creation` + `github-issue-creation`, asserts `priority:*` + `area:*` labels at create (#120)
-- **branch-create** — verifies branch name + issue + labels via `meta-bootstrap.sh --target feature-branch` (#122)
-- **commit** — pre-commit hooks (existing)
-- **lint** — full local-lint suite (existing)
-- **push** — pre-push pipeline gate + local pr-lint mirror (#119, #127) — refuses on fail unless `PR_LINT_MIRROR_SKIP=1` (audit-logged)
-- **pr-create** — `github-pr-creation` derives body, auto-creates milestone (#121), validates labels (#118)
-- **cr-cli** — Phase 2 review locally
-- **cr-in-ci-wait** — wait for GitHub CR
-- **merge** — `github-pr-merge` with operator approval gate (the only interaction)
+- **branch-ready** — ≥1 commit ahead of `BASE_BRANCH`; meta-bootstrap feature-branch verify (#122) gates pre-work
+- **phase0.5** — Copilot prefilter
+- **phase1** — Claude Phase 1 review rounds (cap from scaler tier)
+- **phase2** — CR-CLI review loop (cap from scaler tier)
+- **push** — pre-push pipeline gate + local pr-lint mirror (#119/#127); `github-pr-creation` enforces label gates (#118/#120/#121)
+- **cr-in-ci-wait** — wait for server-side CodeRabbit on the open PR
+- **auto-triage** — placeholder for #733 classifier (currently a stub)
+- **merge-gate** — operator approves here (the only interaction)
+- **merged** — terminal
 
-The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which phase" (#129).
+**Note on upstream chains:** `brainstorm` → `cr-plan` → `github-epic-creation` is a **parallel workflow that runs BEFORE ship-pr-cycle** (per `scripts/ship-pr-cycle.sh:9-14`: "cr-plan is a PARALLEL workflow... No auto-fire from ship-pr-cycle into cr-plan — they are disjoint by design"). Wiring this into ship-pr-cycle as nested phases is the deferred work of #125. Until #125 lands, operators run those skills separately, and ship-pr-cycle takes over once `branch-ready` is reached.
+
+The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which stage" (#129). The future coverage report consumer is tracked in #131 (not yet implemented as of v0.15.0).
 
 ## Local-mirror-of-pr-lint chain (#118)
 

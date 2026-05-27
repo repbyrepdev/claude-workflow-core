@@ -1,16 +1,18 @@
 #!/usr/bin/env bats
 # covers: .github/ship-pr-cycle-mirror-map.yml
 #
-# Schema validation for the ship-pr-cycle mirror map. Mostly guards
-# against drift between the YAML SSOT and the workflows it claims to
-# mirror — every entry's `server_workflow` must point at a real
-# .github/workflows/*.yml file (or be intentionally marked as
-# alias-only in phase_aliases).
+# Schema validation for the ship-pr-cycle mirror map. Guards against
+# drift between (a) the YAML SSOT, (b) the workflows it claims to
+# mirror, (c) the local_command paths it claims to invoke, (d) the
+# orchestrator's actual state-machine stages.
 
 setup() {
 	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
 	MAP="${REPO_ROOT}/.github/ship-pr-cycle-mirror-map.yml"
 	WORKFLOWS_DIR="${REPO_ROOT}/.github/workflows"
+	ORCHESTRATOR="${REPO_ROOT}/scripts/ship-pr-cycle.sh"
+	command -v yq >/dev/null 2>&1 || skip "yq required (mikefarah/yq v4+)"
+	yq --version 2>&1 | grep -qi "mikefarah" || skip "yq must be mikefarah/yq (Go), found: $(yq --version 2>&1)"
 }
 
 @test "mirror-map file exists" {
@@ -27,7 +29,7 @@ setup() {
 	[ "$count" -ge 1 ]
 }
 
-@test "every mirror entry has all required fields" {
+@test "every mirror entry has all required fields including non-empty local_command" {
 	count=$(yq -r '.mirrors | length' "$MAP")
 	for i in $(seq 0 $((count - 1))); do
 		for field in server_workflow phase local_command refuse_on_fail; do
@@ -45,20 +47,37 @@ setup() {
 	done
 }
 
-@test "every mirror's phase is from the canonical phase set" {
+@test "every mirror's local_command first token resolves to a real path or PATH binary" {
 	count=$(yq -r '.mirrors | length' "$MAP")
 	for i in $(seq 0 $((count - 1))); do
-		phase=$(yq -r ".mirrors[$i].phase" "$MAP")
-		case "$phase" in
-		branch-ready | push | pr-create | cr-in-ci-wait) ;;
-		*) false ;;
-		esac
+		cmd=$(yq -r ".mirrors[$i].local_command" "$MAP")
+		first_token="${cmd%% *}"
+		# Either a repo-relative path that exists + is executable,
+		# OR a PATH-resolvable binary. This catches the class of
+		# drift where the YAML references a script that doesn't exist.
+		if [[ $first_token == */* ]]; then
+			[ -x "$REPO_ROOT/$first_token" ]
+		else
+			command -v "$first_token" >/dev/null 2>&1
+		fi
 	done
 }
 
-@test "phase_aliases sections are subsets of declared mirror server_workflows" {
+@test "every mirror's phase is from the orchestrator's actual state-machine" {
+	# SSOT: the stages declared in scripts/ship-pr-cycle.sh:30-39.
+	# Grep the orchestrator for stages directly so this test refuses
+	# to ratify a drift between the YAML's phase set + the script.
+	canonical=$(grep -E "^#   (branch-ready|phase[0-9.]+|push|cr-in-ci-wait|auto-triage|merge-gate|merged)" "$ORCHESTRATOR" | awk '{print $2}' | sort -u)
+	count=$(yq -r '.mirrors | length' "$MAP")
+	for i in $(seq 0 $((count - 1))); do
+		phase=$(yq -r ".mirrors[$i].phase" "$MAP")
+		echo "$canonical" | grep -qx "$phase"
+	done
+}
+
+@test "phase_aliases entries are subsets of declared mirror server_workflows" {
 	declared_workflows=$(yq -r '.mirrors[].server_workflow' "$MAP" | sort -u)
-	for phase in branch-ready push pr-create cr-in-ci-wait; do
+	for phase in branch-ready push cr-in-ci-wait; do
 		listed=$(yq -r ".phase_aliases.\"${phase}\"[]" "$MAP" 2>/dev/null || true)
 		while IFS= read -r wf; do
 			[ -z "$wf" ] && continue
@@ -67,21 +86,23 @@ setup() {
 	done
 }
 
-@test "every server-side workflow has a mirror entry OR is intentionally unmirrored" {
-	# This test catches the case where a new workflow lands but the
-	# mirror map wasn't updated. Listed unmirrored workflows must be
-	# documented here (intentional design decision: server-only check).
-	UNMIRRORED=(
-		# (none currently)
-	)
+@test "every server-side workflow has a mirror entry OR is in intentionally_unmirrored" {
+	# Use nullglob so an empty workflows/ dir doesn't produce a literal
+	# `*.yml` filename (silent-failure class — CR caught this).
+	shopt -s nullglob
+	workflows=("$WORKFLOWS_DIR"/*.yml)
+	[ "${#workflows[@]}" -gt 0 ] || skip "no .github/workflows/*.yml in this repo"
 	declared=$(yq -r '.mirrors[].server_workflow' "$MAP" | sort -u)
-	for wf in "$WORKFLOWS_DIR"/*.yml; do
+	unmirrored=$(yq -r '.intentionally_unmirrored[].workflow' "$MAP" 2>/dev/null | sort -u)
+	for wf in "${workflows[@]}"; do
 		basename=$(basename "$wf")
-		if echo "$declared" | grep -qx "$basename"; then continue; fi
-		found_in_unmirrored=0
-		for u in "${UNMIRRORED[@]+"${UNMIRRORED[@]}"}"; do
-			[ "$u" = "$basename" ] && found_in_unmirrored=1 && break
-		done
-		[ "$found_in_unmirrored" = "1" ]
+		echo "$declared" | grep -qx "$basename" && continue
+		echo "$unmirrored" | grep -qx "$basename"
 	done
+}
+
+@test "server_workflow values are unique across mirrors[]" {
+	total=$(yq -r '.mirrors | length' "$MAP")
+	unique=$(yq -r '.mirrors[].server_workflow' "$MAP" | sort -u | wc -l | tr -d ' ')
+	[ "$total" -eq "$unique" ]
 }
