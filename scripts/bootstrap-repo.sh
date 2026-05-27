@@ -155,6 +155,10 @@ else
 	[ -n "$PARSE_ERR" ] && rm -f "$PARSE_ERR"
 fi
 
+# Short-circuit early when --verify so the manifest-parity NOTE/WARN
+# lines above are the only setup noise verify mode emits. Anything
+# below this point is bootstrap (write/apply) territory.
+
 # --- --verify mode ---------------------------------------------------
 # Reads bootstrap-manifest.yml + .github/labels.yml, asserts each file
 # path exists in $TARGET and each label is present on the remote.
@@ -216,11 +220,21 @@ _verify_target() {
 		_log "  ✗ missing: .github/labels.yml (labels SSOT)"
 		rc=1
 	elif command -v gh >/dev/null 2>&1 && git -C "$TARGET" remote get-url origin 2>/dev/null | grep -q github.com; then
-		local expected actual
+		local expected actual gh_err
 		expected=$(yq -r '.labels[].name' "$MANIFEST_PATH" | sort -u)
-		actual=$( (cd "$TARGET" && gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null) | sort -u)
-		if [ -z "$actual" ]; then
-			_log "  ⚠ gh label list returned empty (auth? rate-limit? unpushed remote?)"
+		# --limit 500 per project gh-query-limits guidance (default 30 truncates silently).
+		# Capture stderr separately so auth/rate-limit/network errors are visible
+		# instead of being swallowed and indistinguishable from "0 labels exist".
+		gh_err=$(mktemp -t verify-gh-labels.XXXXXX 2>/dev/null || echo "")
+		if ! actual=$( (cd "$TARGET" && gh label list --limit 500 --json name --jq '.[].name' 2>"${gh_err:-/dev/null}") | sort -u); then
+			_log "  ✗ gh label list failed: $([ -n "$gh_err" ] && head -1 "$gh_err")"
+			rc=1
+		elif [ -z "$actual" ]; then
+			# Empty result on a real remote = auth/rate-limit/permission failure.
+			# Distinct from "remote unreachable" (the elif branch below).
+			_log "  ✗ gh label list returned empty (auth? rate-limit? permission?) — failing closed"
+			[ -n "$gh_err" ] && [ -s "$gh_err" ] && _log "      gh stderr: $(head -1 "$gh_err")"
+			rc=1
 		else
 			while IFS= read -r want; do
 				[ -z "$want" ] && continue
@@ -230,6 +244,7 @@ _verify_target() {
 				}
 			done <<<"$expected"
 		fi
+		[ -n "$gh_err" ] && rm -f "$gh_err"
 	else
 		_log "  NOTE: gh / GitHub remote unavailable — skipping label-remote check (run after first push)"
 	fi
