@@ -50,6 +50,13 @@
   language: script
   stages: [commit-msg]
 
+- id: bootstrap-heredoc-parity
+  name: bootstrap-repo.sh heredoc matches live .github/ISSUE_TEMPLATE/*
+  entry: pre-commit-hooks/bootstrap-heredoc-parity.sh
+  language: script
+  pass_filenames: false
+  stages: [pre-commit]
+
 - id: check-ssot-drift
   name: SSOT drift — numeric claims must match their source of truth
   entry: pre-commit-hooks/check-ssot-drift.sh
