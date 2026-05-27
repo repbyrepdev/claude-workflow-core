@@ -217,13 +217,14 @@ EOF
 	[[ $output == *"missing or not executable"* ]]
 }
 
-@test "JSONL log entries survive special characters in version (jq escapes)" {
-	# Force a malformed version through validation OFF — set on disk
-	# by hand to bypass the gates. Hook should refuse early (exit 2)
-	# rather than emit corrupt JSONL with raw special chars.
+@test "malformed version with shell-special chars → refused before JSONL emit" {
+	# CR-r1 minor: test name now reflects what it actually verifies —
+	# malformed version (shell-special chars in a JSON-valid string)
+	# is refused at the semver regex check BEFORE any JSONL is
+	# written. This is the desired behavior: refuse early instead of
+	# emitting corrupted log lines.
 	(
 		cd "$TEST_TMP" || exit 1
-		# Construct a manifest with a tricky-but-valid-JSON version.
 		printf '{"name":"t","version":"0.9.6\\"evil"}\n' >.claude-plugin/plugin.json
 		jq empty .claude-plugin/plugin.json
 		git add .claude-plugin/plugin.json
@@ -232,4 +233,10 @@ EOF
 	run _run_hook
 	[ "$status" -eq 2 ]
 	[[ $output == *"not X.Y.Z"* ]]
+	# Either the file never existed (early exit before mkdir) or every
+	# pre-existing line is still parseable JSON. The hook must NOT
+	# emit a corrupt line for this refused version.
+	if [ -f "$TEST_TMP/.claude/logs/release-auto-fire.jsonl" ]; then
+		jq -c . <"$TEST_TMP/.claude/logs/release-auto-fire.jsonl" >/dev/null
+	fi
 }

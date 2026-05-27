@@ -121,20 +121,29 @@ if ! [[ $NEW_VER =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 	exit 2
 fi
 
-# Resolve OLD_VER from HEAD~1's plugin.json. Three possible outcomes:
-#   - HEAD~1 doesn't have the file (first-time introduction): OLD_VER=""
+# Resolve OLD_VER from the pre-merge baseline plugin.json. Three
+# possible outcomes:
+#   - Baseline doesn't have the file (first-time introduction): OLD_VER=""
 #     → log first-introduction + still fire (release.sh handles tag-
 #     exists idempotency).
-#   - HEAD~1 has malformed plugin.json: hard fail (exit 2). Pre-#88
+#   - Baseline has malformed plugin.json: hard fail (exit 2). Pre-#88
 #     plugin.json is well-formed; a corrupted historical commit means
 #     bigger trouble than this hook should silently paper over.
-#   - HEAD~1 has the file: extract .version. Empty .version → OLD_VER="".
+#   - Baseline has the file: extract .version. Empty .version → OLD_VER="".
+#
+# Prefer ORIG_HEAD (set by `git merge` to the pre-merge HEAD) over
+# HEAD~1 — ORIG_HEAD captures the right baseline for fast-forward and
+# multi-commit-merge scenarios where HEAD~1 might point at the wrong
+# parent. Fall back to HEAD~1 when ORIG_HEAD is unset (e.g., this hook
+# is invoked outside the post-merge-from-merge flow).
 OLD_VER=""
-if old_raw=$(git show "HEAD~1:$PLUGIN_JSON" 2>/dev/null); then
+BASE_REF=$(git rev-parse -q --verify ORIG_HEAD 2>/dev/null || true)
+[ -n "$BASE_REF" ] || BASE_REF="HEAD~1"
+if old_raw=$(git show "$BASE_REF:$PLUGIN_JSON" 2>/dev/null); then
 	if printf '%s' "$old_raw" | jq empty 2>/dev/null; then
 		OLD_VER=$(printf '%s' "$old_raw" | jq -r '.version // ""')
 	else
-		echo "post-merge-release-fire: HEAD~1:$PLUGIN_JSON is malformed — refusing to compare" >&2
+		echo "post-merge-release-fire: $BASE_REF:$PLUGIN_JSON is malformed — refusing to compare" >&2
 		exit 2
 	fi
 fi
