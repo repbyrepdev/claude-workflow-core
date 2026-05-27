@@ -1,0 +1,89 @@
+# Declarative SSOT for what bootstrap-repo.sh produces.
+#
+# Field types (consumers must encode the SAME shape):
+#   schema_version: int — bump when removing/renaming a top-level section
+#   files[].path:   string  — relative to target repo root
+#   files[].mode:   string  — octal-as-string ("644", "755") — NOT decimal
+#   labels[].name:  string  — must match .github/labels.yml `name:`
+#   labels[].color: string  — 6-hex-digit, lowercase, no leading #
+#   labels[].description: string — optional; absent means "no description"
+#   workflows / issue_templates: basename-only convenience arrays,
+#     hand-maintained alongside files[] entries under .github/workflows/
+#     and .github/ISSUE_TEMPLATE/. Kept explicit so consumer scripts
+#     can iterate them without encoding the path-prefix filter.
+#     Drift between these arrays and files[] is caught by the bats
+#     "derived-view" parity tests.
+
+schema_version: 1
+
+files:
+  - path: .pre-commit-config.yaml
+    mode: "644"
+  - path: .claude/skills/ship-pr-cycle/run.sh
+    mode: "755"
+  - path: .claude/skills/ship-pr-cycle/SKILL.md
+    mode: "644"
+  - path: .claude/hooks/review-log.sh
+    mode: "755"
+  - path: .github/pull_request_template.md
+    mode: "644"
+  - path: .github/commit-template.yml
+    mode: "644"
+  - path: .github/labels.yml
+    mode: "644"
+  - path: .github/required-checks-list.yml
+    mode: "644"
+  - path: .github/labeler.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/bug.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/feature.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/task.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/epic.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/brainstorm.yml
+    mode: "644"
+  - path: .github/workflows/gitleaks.yml
+    mode: "644"
+  - path: .github/workflows/pr-lint.yml
+    mode: "644"
+  - path: .github/workflows/pr-labeler.yml
+    mode: "644"
+
+labels:
+  - name: bug
+    color: d73a4a
+    description: Something broken
+  - name: enhancement
+    color: a2eeef
+    description: New capability
+  - name: epic
+    color: 7057ff
+    description: Parent of sub-issues
+  - name: brainstorm
+    color: c5def5
+    description: Discussion-style ideation
+  - name: priority:p1
+    color: b60205
+  - name: priority:p2
+    color: d93f0b
+  - name: priority:p3
+    color: fbca04
+  - name: priority:needs-triage
+    color: 5319e7
+  - name: area:infrastructure
+    color: 0e8a16
+
+workflows:
+  - gitleaks.yml
+  - pr-lint.yml
+  - pr-labeler.yml
+
+issue_templates:
+  - bug.yml
+  - feature.yml
+  - task.yml
+  - epic.yml
+  - brainstorm.yml
