@@ -169,32 +169,48 @@ _write_phase1_directive_marker() {
 		}
 		return 0
 	fi
-	# Write nonce on line 1, directive on line 2..N. Atomic via
-	# rename(2) to avoid partial-write race with the guard's read.
-	local tmp_marker="$marker.tmp.$$"
-	if ! {
-		printf '%s\n%s\n' "$nonce" "$text" >"$tmp_marker"
-		mv "$tmp_marker" "$marker"
-	}; then
-		scm_warn "phase1-directive marker write failed at $marker — Claude may miss the hand-off; manual fire required"
+	# v0.10.0 (#92 r2): write STATE JSON FIRST, sentinel SECOND.
+	# Inverse order produced a window where guard saw new-sentinel-
+	# nonce vs old-state-nonce → false-positive 'touch-bypass' deny.
+	# With state-first ordering, between the two atomic renames the
+	# sentinel either doesn't exist or has the OLD nonce — both safe.
+	# Use mktemp (not $$) to avoid symlink-race with predictable
+	# tmp names.
+	local state_file="$STATE_DIR/$sha.json"
+	if [ ! -f "$state_file" ]; then
+		scm_warn "phase1-directive: state file $state_file missing — emit aborted (run 'ship-pr-cycle.sh start' to initialize)"
+		return 0
+	fi
+	local tmp_state
+	if ! tmp_state=$(mktemp "$state_file.XXXXXX" 2>/dev/null); then
+		scm_warn "phase1-directive: state-nonce mktemp failed (state dir not writable?) — emit aborted"
+		return 0
+	fi
+	if ! jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' "$state_file" >"$tmp_state" 2>/dev/null; then
+		scm_warn "phase1-directive state-nonce jq merge failed for $state_file"
+		rm -f "$tmp_state" 2>/dev/null || true
+		return 0
+	fi
+	if ! mv "$tmp_state" "$state_file"; then
+		scm_warn "phase1-directive state-nonce rename failed at $state_file"
+		rm -f "$tmp_state" 2>/dev/null || true
+		return 0
+	fi
+	# State JSON now has the new nonce. Write the sentinel.
+	local tmp_marker
+	if ! tmp_marker=$(mktemp "$marker.XXXXXX" 2>/dev/null); then
+		scm_warn "phase1-directive: marker mktemp failed — sentinel not written, Agent calls will be denied until next emit"
+		return 0
+	fi
+	if ! printf '%s\n%s\n' "$nonce" "$text" >"$tmp_marker"; then
+		scm_warn "phase1-directive marker write failed at $tmp_marker"
 		rm -f "$tmp_marker" 2>/dev/null || true
 		return 0
 	fi
-	# Persist nonce to state JSON. Atomic via jq + tmp + mv. Failure
-	# here is recoverable (guard will deny until next emit), but
-	# scm_warn so operator can debug.
-	local state_file="$STATE_DIR/$sha.json"
-	if [ -f "$state_file" ]; then
-		local tmp_state="$state_file.tmp.$$"
-		if jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' "$state_file" >"$tmp_state" 2>/dev/null; then
-			mv "$tmp_state" "$state_file" || {
-				scm_warn "phase1-directive state-nonce write failed at $state_file"
-				rm -f "$tmp_state" 2>/dev/null || true
-			}
-		else
-			scm_warn "phase1-directive state-nonce jq merge failed for $state_file"
-			rm -f "$tmp_state" 2>/dev/null || true
-		fi
+	if ! mv "$tmp_marker" "$marker"; then
+		scm_warn "phase1-directive marker rename failed at $marker"
+		rm -f "$tmp_marker" 2>/dev/null || true
+		return 0
 	fi
 }
 
@@ -216,6 +232,20 @@ _clear_phase1_directive_marker() {
 	marker=$(_phase1_directive_marker_file "$sha")
 	rm -f "$marker" ||
 		scm_warn "phase1-directive marker cleanup failed at $marker — stale directive may persist until removed manually"
+	# v0.10.0 (#92 r2): also clear the nonce from state JSON so a
+	# resurrected sentinel (with the stale nonce read from state)
+	# cannot replay-unlock Agent calls after stage transition.
+	local state_file="$STATE_DIR/$sha.json"
+	if [ -f "$state_file" ]; then
+		local tmp_state
+		if tmp_state=$(mktemp "$state_file.XXXXXX" 2>/dev/null); then
+			if jq 'del(.phase1_directive_nonce)' "$state_file" >"$tmp_state" 2>/dev/null; then
+				mv "$tmp_state" "$state_file" 2>/dev/null || rm -f "$tmp_state" 2>/dev/null || true
+			else
+				rm -f "$tmp_state" 2>/dev/null || true
+			fi
+		fi
+	fi
 }
 
 _branch_name_safe_for_pointer() {

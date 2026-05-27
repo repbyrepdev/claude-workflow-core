@@ -28,8 +28,8 @@ setup() {
 	)
 	cd "$TEST_TMP" || return 1
 	SHA=$(git rev-parse HEAD)
-	mkdir -p .claude/.session-state/ship-pr-cycle
-	cat >".claude/.session-state/ship-pr-cycle/$SHA.json" <<EOF
+	mkdir -p .claude/.session-state/ship-cycle
+	cat >".claude/.session-state/ship-cycle/$SHA.json" <<EOF
 {"stage": "phase1", "branch": "feat/v0.9.5/test-branch"}
 EOF
 }
@@ -76,14 +76,14 @@ _run_guard() {
 	(cd "$TEST_TMP" && git checkout -q -b fix/v0.9.5/bug)
 	# Re-create state file for the new branch's HEAD
 	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
-	echo '{"stage":"phase1","branch":"fix/v0.9.5/bug"}' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
+	echo '{"stage":"phase1","branch":"fix/v0.9.5/bug"}' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
 	[[ $output == *"permissionDecision\":\"deny"* ]]
 }
 
 @test "passes through when no ship-pr-cycle state file" {
-	(cd "$TEST_TMP" && rm -rf .claude/.session-state/ship-pr-cycle)
+	(cd "$TEST_TMP" && rm -rf .claude/.session-state/ship-cycle)
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
 }
@@ -92,7 +92,7 @@ _run_guard() {
 	# CR-CLI r3 major: partial-write race on state file shouldn't
 	# silently disable the guard. Corrupt jq → deny.
 	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
-	echo 'not valid {{ json' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
+	echo 'not valid {{ json' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
 	[[ $output == *"permissionDecision\":\"deny"* ]]
@@ -101,7 +101,7 @@ _run_guard() {
 
 @test "passes through when stage=merged" {
 	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
-	echo '{"stage":"merged"}' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
+	echo '{"stage":"merged"}' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
 }
@@ -143,9 +143,9 @@ _run_guard() {
 	# must match state JSON's phase1_directive_nonce.
 	nonce="11111111-2222-3333-4444-555555555555"
 	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
-		"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json" >/tmp/state.json
-	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
-	printf '%s\ndirective text\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.phase1-directive.txt"
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >/tmp/state.json
+	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\ndirective text\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
@@ -329,7 +329,7 @@ _run_guard() {
 @test "Agent: touch-bypass denied (empty sentinel, no nonce match) (#92)" {
 	# Pre-#92: touch sentinel → unblocks Agent.
 	# Post-#92: empty sentinel has no nonce on line 1 → denied.
-	touch "$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.phase1-directive.txt"
+	touch "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
@@ -342,9 +342,9 @@ _run_guard() {
 	# line 1 matches.
 	nonce="00000000-1111-2222-3333-444444444444"
 	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
-		"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json" >/tmp/state.json
-	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
-	printf '%s\nfire phase 1 directive\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.phase1-directive.txt"
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >/tmp/state.json
+	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\nfire phase 1 directive\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
@@ -356,9 +356,9 @@ _run_guard() {
 	# stale sentinel from a prior round or touch-bypass with guessed
 	# nonce. Deny.
 	jq '. + {phase1_directive_nonce: "real-nonce-aaaa"}' \
-		"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json" >/tmp/state.json
-	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.json"
-	printf 'fake-nonce-bbbb\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.phase1-directive.txt"
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >/tmp/state.json
+	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf 'fake-nonce-bbbb\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
@@ -369,11 +369,51 @@ _run_guard() {
 @test "Agent: state JSON without phase1_directive_nonce denied (#92)" {
 	# Sentinel exists with a nonce but state JSON has none — orchestrator
 	# emit path didn't run (or write failed). Deny.
-	printf 'some-nonce\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-pr-cycle/$SHA.phase1-directive.txt"
+	printf 'some-nonce\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	# state JSON still has the default {"stage":"phase1",...} — no nonce field.
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
 	[[ $output == *"permissionDecision\":\"deny"* ]]
 	[[ $output == *"no phase1_directive_nonce"* ]] || [[ $output == *"phase1_directive_nonce"* ]]
+}
+
+# --- v0.10.0 (#92) residual-bypass coverage (pinned as accepted) ---
+
+@test "residual: bash -c wrapper bypasses (basename=bash) — pinned residual" {
+	# Threat-model documents this as a known residual. Pin behavior:
+	# the wrapper passes through because basename(first real command)
+	# is the wrapper name, not the inner command.
+	payload=$(_payload_bash 'bash -c "gh pr merge 91"')
+	run _run_guard "$payload"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
+}
+
+@test "residual: eval wrapper bypasses — pinned residual" {
+	payload=$(_payload_bash 'eval "gh pr merge 91"')
+	run _run_guard "$payload"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
+}
+
+@test "residual: xargs wrapper bypasses — pinned residual" {
+	payload=$(_payload_bash 'xargs -I_ gh pr merge 91')
+	run _run_guard "$payload"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
+}
+
+@test "residual: compound and-chain bypasses — pinned residual" {
+	payload=$(_payload_bash 'true && gh pr merge 91')
+	run _run_guard "$payload"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
+}
+
+@test "residual: compound semi-chain bypasses — pinned residual" {
+	payload=$(_payload_bash 'true; gh pr merge 91')
+	run _run_guard "$payload"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
 }

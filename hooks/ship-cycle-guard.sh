@@ -8,30 +8,56 @@ set -euo pipefail
 # branch→merge flow.
 #
 # THREAT MODEL — v0.10.0 (#92):
-# This is now a HARDENED mechanical boundary (no longer purely
-# advisory). The Bash deny path uses python3 shlex tokenization with
-# basename matching, defeating the regex bypasses surfaced in PR #82
-# Phase 1 security-review (backslash, eval-wrap, bash-c-wrap, abs-path
-# prefix, quoted command name). The Agent deny path validates a UUID
-# nonce embedded in the orchestrator-emitted sentinel against the
-# state JSON's `phase1_directive_nonce` field — `touch`-bypassing the
-# sentinel (with no matching nonce) no longer unlocks pr-review-toolkit
-# Agent calls.
+# This is a hardened-but-not-airtight mechanical boundary. The Bash
+# deny path uses python3 shlex tokenization with basename + arg
+# matching (the deny check now lives inside python3 — bash command-
+# substitution strips NUL bytes, breaking the previous NUL-separated
+# token-passing approach end-to-end). Defeats DIRECT syntactic
+# bypasses from PR #82 Phase 1 security-review:
+#   - `\gh pr merge`       (backslash escape)
+#   - `/usr/bin/gh pr merge` (abs-path prefix → basename gh)
+#   - `'gh' pr merge`      (quoted command name)
+#   - `GH_TOKEN=x gh pr merge` (env-var prefix stripped)
 #
-# Residual threats (documented, accepted):
-#   - python3 unavailable → fail-closed: the Bash deny path refuses
-#     all Bash calls until python3 is installed (bootstrap dep).
-#   - state JSON write race between orchestrator and hook read: the
-#     orchestrator's `mv tmp state.json` rename is atomic; either the
-#     hook sees old-nonce (denied) or new-nonce (allowed). No partial
-#     write window.
+# Documented residual bypass classes (NOT defeated — operator must
+# rely on memory + post-hoc review to catch these):
+#   - Wrapper commands: `bash -c "gh pr merge"`, `eval "gh ..."`,
+#     `xargs gh pr merge`, `env gh pr merge`, `sudo gh pr merge`,
+#     `command gh pr merge`. basename(first command) is bash/eval/
+#     xargs/env/sudo/command, not gh. Defeating these requires
+#     recursive expansion of wrapper args (tracked as follow-up).
+#   - Compound chains: `true && gh pr merge`, `cmd; gh pr merge`,
+#     `cmd | gh pr merge`. basename of FIRST command in the chain
+#     doesn't match. (Follow-up: walk chain operators.)
+#   - Command substitution: `$(echo gh) pr merge`. shlex doesn't
+#     expand $(), so tokens[0] = '$(echo' (literal).
+#   - python3 missing → fail-closed (denies all Bash). Hard
+#     bootstrap dep.
+#
+# The Agent deny path validates a UUID nonce embedded in the
+# orchestrator-emitted sentinel against the state JSON's
+# `phase1_directive_nonce` field — `touch`-bypassing the empty
+# sentinel no longer unlocks pr-review-toolkit Agent calls.
+#
+# Residual Agent-path threats:
+#   - Single-use NOT enforced: once a valid nonce-sentinel is
+#     emitted, unlimited pr-review-toolkit Agent calls succeed
+#     until the orchestrator's _set_stage transition clears it.
+#     Follow-up: PostToolUse counter / per-call invalidation.
+#   - Nonce-replay via state-JSON read: an attacker with read
+#     access to .claude/.session-state/ship-cycle/<sha>.json
+#     (sibling to the sentinel, same perms) can read the nonce
+#     and write a matching sentinel. The hardening defeats `touch`
+#     of an empty file, not full state-dir-write access.
+#   - Write-order race: orchestrator writes sentinel first, then
+#     state JSON. A guard read interleaved between them sees
+#     mismatch → denies (fail-closed — safe, but may produce
+#     false-positive 'touch-bypass detected' messages).
 #
 # WHAT IT BLOCKS (when on an active feat/chore/fix branch with
 # in-flight ship-pr-cycle state):
 #   - Bash:   `coderabbit review` invocation (Phase 2 hand-roll)
 #   - Bash:   `gh pr merge` invocation (merge-gate hand-roll)
-#     Now defeats: \gh, eval "gh ...", bash -c "gh ...", /usr/bin/gh,
-#     'gh' (all syntactic variants).
 #   - Agent:  subagent_type prefixed `pr-review-toolkit:*` fired
 #             WITHOUT a valid orchestrator-emitted nonce-sentinel.
 #
@@ -95,7 +121,7 @@ _is_active_feature_branch() {
 	esac
 	local sha state_dir state_file
 	sha=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null) || return 1
-	state_dir="$repo_root/.claude/.session-state/ship-pr-cycle"
+	state_dir="$repo_root/.claude/.session-state/ship-cycle"
 	state_file="$state_dir/$sha.json"
 	[ -f "$state_file" ] || return 1
 	local stage
@@ -115,25 +141,25 @@ _is_active_feature_branch() {
 
 if ! _is_active_feature_branch; then
 	if [ "${_SHIP_CYCLE_GUARD_CORRUPT_STATE:-0}" = "1" ]; then
-		deny "ship-pr-cycle state file is corrupt JSON — failing closed. Inspect .claude/.session-state/ship-pr-cycle/<sha>.json or run 'ship-pr-cycle.sh start' to re-initialize."
+		deny "ship-pr-cycle state file is corrupt JSON — failing closed. Inspect .claude/.session-state/ship-cycle/<sha>.json or run 'ship-pr-cycle.sh start' to re-initialize."
 	fi
 	exit 0
 fi
 
 # v0.10.0 (#92): tokenize via python3 shlex.split, strip leading env-
-# assignment tokens (VAR=value), basename the next token. Defeats all
-# bypass variants surfaced by Phase 1 security-review on PR #82.
-_first_real_command_basename() {
+# assignment tokens (VAR=value), basename + first-arg compare against
+# deny set. Moved the deny-pattern check INTO python (Phase 1 r1:
+# bash command-substitution strips NUL bytes, breaking the previous
+# NUL-separated string-passing approach end-to-end). Python now
+# returns the verdict directly via exit code: 0=allow, 10=coderabbit
+# review, 11=gh pr merge, 12=tokenization failure (unbalanced quotes
+# or no command after env-strip).
+_classify_bash_command() {
 	local cmd=$1
 	if ! command -v python3 >/dev/null 2>&1; then
-		# python3 absent → cannot safely tokenize → fail closed by
-		# returning empty (caller treats as "couldn't classify").
-		return 1
+		return 12
 	fi
-	# shlex.split refuses on unbalanced quotes — that's fine, fail
-	# closed (return empty + nonzero) because we can't reason about
-	# what the shell would actually run.
-	python3 - "$cmd" <<'PY' 2>/dev/null || return 1
+	python3 - "$cmd" <<'PY' 2>/dev/null
 import shlex
 import os
 import sys
@@ -141,7 +167,7 @@ import sys
 try:
     tokens = shlex.split(sys.argv[1])
 except ValueError:
-    sys.exit(1)
+    sys.exit(12)
 
 # Strip leading env-assignment tokens (VAR=value pattern).
 i = 0
@@ -154,33 +180,20 @@ while i < len(tokens) and "=" in tokens[i]:
         break
 
 if i >= len(tokens):
-    sys.exit(2)
+    sys.exit(0)  # no real command after env-strip — pass through
 
-# Print basename of first real command + the rest of the args, NUL-
-# separated so caller can read them safely.
+# basename(first_real_command) + look at next args.
 cmd_basename = os.path.basename(tokens[i])
 rest = tokens[i + 1:]
-sys.stdout.write(cmd_basename)
-for tok in rest:
-    sys.stdout.write("\x00" + tok)
-sys.stdout.write("\n")
-PY
-}
 
-# Returns 0 if first-real-command + args match the deny pattern.
-# Patterns are space-joined for readability but matched against the
-# NUL-separated tokenized form.
-_matches_deny_pattern() {
-	local tokens=$1 pattern=$2
-	local pat_csv
-	pat_csv=$(printf '%s' "$pattern" | tr ' ' '\0')
-	# True iff $tokens STARTS WITH $pat_csv (followed by NUL or EOF).
-	case "$tokens" in
-	"$pat_csv" | "$pat_csv"$'\0'*)
-		return 0
-		;;
-	esac
-	return 1
+# Deny patterns: basename + first arg(s) match exactly.
+if cmd_basename == "coderabbit" and len(rest) >= 1 and rest[0] == "review":
+    sys.exit(10)
+if cmd_basename == "gh" and len(rest) >= 2 and rest[0] == "pr" and rest[1] == "merge":
+    sys.exit(11)
+
+sys.exit(0)
+PY
 }
 
 case "$TOOL_NAME" in
@@ -199,25 +212,27 @@ Bash)
 		echo "ship-cycle-guard: SHIP_PR_CYCLE_BYPASS=1 (inline prefix) — passing through, audit logged" >&2
 		exit 0
 	fi
-	# Tokenize via python3 shlex. Fail-closed if python3 missing.
-	if ! TOKENS=$(_first_real_command_basename "$CMD"); then
-		deny "command tokenization failed (python3 missing or unbalanced quotes) — failing closed. Install python3 or rewrite the command with balanced quoting. Bypass: SHIP_PR_CYCLE_BYPASS=1 prefix."
-	fi
-	if [ -z "$TOKENS" ]; then
-		# No identifiable command — pass through (e.g., empty after
-		# env-strip).
-		exit 0
-	fi
-	# Deny patterns: basename + arg-tokens (NUL-separated).
-	# `coderabbit review` (Phase 2 hand-roll)
-	if _matches_deny_pattern "$TOKENS" "coderabbit review"; then
+	# Classify via python3. Exit codes: 0=allow, 10=coderabbit-review,
+	# 11=gh-pr-merge, 12=tokenize-failure. Use `|| rc=$?` form so
+	# set -e doesn't abort on nonzero classification codes (per
+	# feedback_rc_capture_set_e memory).
+	cls_rc=0
+	_classify_bash_command "$CMD" || cls_rc=$?
+	case "$cls_rc" in
+	0) exit 0 ;;
+	10)
 		deny "raw 'coderabbit review' detected (post-tokenize) — use scripts/cr/local-review.sh (which the ship-pr-cycle.sh orchestrator drives at Phase 2). Bypass: SHIP_PR_CYCLE_BYPASS=1 prefix."
-	fi
-	# `gh pr merge` (merge-gate hand-roll)
-	if _matches_deny_pattern "$TOKENS" "gh pr merge"; then
+		;;
+	11)
 		deny "raw 'gh pr merge' detected (post-tokenize) — use .claude/skills/github-pr-merge/run.sh (which ship-pr-cycle.sh drives at the merge-gate stage). Bypass: SHIP_PR_CYCLE_BYPASS=1 prefix."
-	fi
-	exit 0
+		;;
+	12)
+		deny "command tokenization failed (python3 missing or unbalanced quotes) — failing closed. Install python3 or rewrite the command with balanced quoting. Bypass: SHIP_PR_CYCLE_BYPASS=1 prefix."
+		;;
+	*)
+		deny "_classify_bash_command returned unexpected code — failing closed"
+		;;
+	esac
 	;;
 Agent)
 	if ! SUBAGENT=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null); then
@@ -235,7 +250,7 @@ Agent)
 		if [ -z "$state_file" ] || [ -z "$repo_root" ] || [ -z "$sha" ]; then
 			deny "active-branch state exports missing in Agent path — failing closed (orchestrator state may be partially initialized)"
 		fi
-		sentinel="$repo_root/.claude/.session-state/ship-pr-cycle/$sha.phase1-directive.txt"
+		sentinel="$repo_root/.claude/.session-state/ship-cycle/$sha.phase1-directive.txt"
 		if [ ! -f "$sentinel" ]; then
 			deny "raw $SUBAGENT Agent call detected outside an active Phase 1 directive — invoke 'ship-pr-cycle.sh next' first; the orchestrator emits a templated prompt + creates the directive-pending sentinel. Bypass: SHIP_PR_CYCLE_BYPASS=1 env."
 		fi
