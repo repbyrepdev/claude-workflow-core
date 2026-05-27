@@ -50,7 +50,7 @@ Server-side workflow gates (`.github/workflows/pr-lint.yml`, `pr-labeler.yml`) h
 | Stage | Local mirror | Server-side workflow it mirrors |
 | --- | --- | --- |
 | Branch creation | `meta-bootstrap.sh --target feature-branch` | (none; manual) |
-| Issue creation | `github-issue-creation/run.sh` (#120 priority:* + area:* required at create) | (none in this repo; server-side classification is consumer-specific) |
+| Issue creation | `github-issue-creation/run.sh` (#120 `priority:*` + `area:*` required at create) | (none in this repo; server-side classification is consumer-specific) |
 | PR creation | `github-pr-creation/run.sh` + `pr-lint-check.sh` (#119 body validation) | `pr-lint.yml` (Closes/headings/area:*) |
 | PR creation | `github-pr-creation/run.sh` (#121 auto-create missing milestone) | (none; manual UI step) |
 | PR creation | `github-pr-creation/run.sh` (#122 calls feature-branch verify) | (none; manual) |
