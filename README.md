@@ -163,7 +163,7 @@ references the old version. Run the suggested
 `scripts/migrate-settings.sh` to update settings to the new cache
 dir.
 
-### Manual fallback
+### 6. Manual fallback
 
 If the post-merge hook didn't fire (operator on a fresh clone
 without `install-machine.sh` run yet):
