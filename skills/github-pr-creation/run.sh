@@ -125,6 +125,20 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# #122: branch-name convention validation at PR-creation time. Mirrors
+# the local pre-work check (meta-bootstrap.sh --target feature-branch)
+# at the moment the PR is about to land — if the branch name violates
+# convention, refuse before posting to GitHub. PR_BRANCH_VERIFY_SKIP=1
+# bypasses (e.g., hotfix branches with non-standard names).
+if [ "${PR_BRANCH_VERIFY_SKIP:-0}" != "1" ] && [ -x "$REPO_ROOT/scripts/meta-bootstrap.sh" ]; then
+	if ! "$REPO_ROOT/scripts/meta-bootstrap.sh" --target feature-branch >/dev/null 2>&1; then
+		echo "error: feature-branch verify failed — refusing to open PR" >&2
+		echo "  run: scripts/meta-bootstrap.sh --target feature-branch (for full output)" >&2
+		echo "  override: PR_BRANCH_VERIFY_SKIP=1" >&2
+		exit 2
+	fi
+fi
+
 # v4.28-W3-C (#662): no-arg auto-fill for title (derive from latest
 # commit subject) so `run.sh` matches SKILL.md's auto-flow promise.
 if [ -z "$TITLE" ]; then
@@ -247,15 +261,42 @@ fi
 # Auto-resolve milestone from current branch's version prefix. Loud-fail
 # on resolution errors (ambiguity, gh failure) — silent-swallow of these
 # is the bug that creates issues/PRs with no milestone attached.
+#
+# #121: when no milestone matches the version prefix, AUTO-CREATE one
+# instead of refusing — the previous behavior forced operators to either
+# pass --milestone explicitly OR pre-create via the GitHub UI mid-flow,
+# both of which add friction the wrapper can eliminate.
+# Override path: PR_MILESTONE_AUTO_CREATE=0 keeps strict refuse behavior.
 if [ -z "$MILESTONE" ]; then
 	ver=$(skc_extract_version_prefix)
 	if [ -n "$ver" ]; then
-		if ! MILESTONE=$(skc_match_milestone "$ver" 2>&1); then
-			echo "milestone auto-resolve failed for prefix '$ver':" >&2
-			echo "$MILESTONE" >&2
-			echo "Re-run with explicit --milestone <title>." >&2
-			exit 2
+		_milestone_err=$(mktemp -t milestone-err.XXXXXX)
+		_milestone_rc=0
+		MILESTONE=$(skc_match_milestone "$ver" 2>"$_milestone_err") || _milestone_rc=$?
+		if [ "$_milestone_rc" -ne 0 ]; then
+			# Distinguish "no open milestone" (auto-creatable) from
+			# "ambiguous match" or "gh failure" (not safe to auto-fix).
+			if [ "${PR_MILESTONE_AUTO_CREATE:-1}" = "1" ] &&
+				grep -q "no open milestone matches" "$_milestone_err"; then
+				echo "milestone '$ver' missing — auto-creating (PR_MILESTONE_AUTO_CREATE=0 to disable)" >&2
+				if ! gh api "repos/:owner/:repo/milestones" -f title="$ver" \
+					-f state="open" >/dev/null 2>>"$_milestone_err"; then
+					echo "milestone auto-create failed:" >&2
+					cat "$_milestone_err" >&2
+					rm -f "$_milestone_err"
+					echo "Re-run with explicit --milestone <title>." >&2
+					exit 2
+				fi
+				MILESTONE=$ver
+			else
+				echo "milestone auto-resolve failed for prefix '$ver':" >&2
+				cat "$_milestone_err" >&2
+				rm -f "$_milestone_err"
+				echo "Re-run with explicit --milestone <title>." >&2
+				exit 2
+			fi
 		fi
+		rm -f "$_milestone_err"
 	fi
 fi
 
@@ -368,7 +409,7 @@ fi
 # the disabled pr-labeler.yml workflow during Actions cap.
 LABELER="$REPO_ROOT/.claude/hooks/pr-labeler.sh"
 LABELER_OK=0
-if [ -x "$LABELER" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+if [ -x "$LABELER" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 	echo "=== Applying area labels via pr-labeler ==="
 	# Capture exit code immediately via `|| labeler_rc=$?`. The previous
 	# `if cmd; then ... else echo "... $?"` form happened to work today
@@ -392,12 +433,12 @@ fi
 # Skip if pr-labeler failed: the area-label gate would fail for reasons
 # unrelated to body content, making the message misleading for the
 # operator debugging the failure.
-if [ -x "$LINT" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "1" ]; then
+if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "1" ]; then
 	echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
 	if ! "$LINT" "$PR_NUM"; then
 		echo "⚠ pr-lint full gate failed on #$PR_NUM post-labeler — push a fix-up commit to satisfy the remote gate." >&2
 	fi
-elif [ -x "$LINT" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "0" ]; then
+elif [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "0" ]; then
 	echo "⚠ skipping post-labeler pr-lint — labeler did not succeed, label check would fail for the wrong reason." >&2
 fi
 
@@ -407,7 +448,7 @@ fi
 # broke — this closes the loop. Idempotent + state-aware (refuses if PR
 # is already merged/closed).
 BOARD_SYNC="$REPO_ROOT/.claude/local-backups/project-board-sync.sh"
-if [ -x "$BOARD_SYNC" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+if [ -x "$BOARD_SYNC" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 	echo "=== Firing project-board-sync --on-pr-open #$PR_NUM ==="
 	if ! "$BOARD_SYNC" --on-pr-open "$PR_NUM" 2>&1; then
 		echo "⚠ project-board-sync --on-pr-open #$PR_NUM failed — board Status may not reflect the PR." >&2

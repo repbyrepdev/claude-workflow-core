@@ -43,6 +43,21 @@ Damien Adams' Claude Code plugin — **portable workflow skills + session-resili
 
 All hooks use `git rev-parse --show-toplevel || pwd` so they work in any cwd.
 
+## Local-mirror-of-pr-lint chain (#118)
+
+Server-side workflow gates (`.github/workflows/pr-lint.yml`, `ai-triage.yml`) have local mirrors that fire BEFORE the change reaches GitHub. The goal: when a PR lands in GitHub, the only remaining issues are CR findings — never label/body/branch-name regressions that should have been caught locally.
+
+| Stage | Local mirror | Server-side workflow it mirrors |
+| --- | --- | --- |
+| Branch creation | `meta-bootstrap.sh --target feature-branch` | (none; manual) |
+| Issue creation | `github-issue-creation/run.sh` (#120 priority:* + area:* required at create) | `ai-triage.yml` (label assignment) |
+| PR creation | `github-pr-creation/run.sh` + `pr-lint-check.sh` (#119 body validation) | `pr-lint.yml` (Closes/headings/area:*) |
+| PR creation | `github-pr-creation/run.sh` (#121 auto-create missing milestone) | (none; manual UI step) |
+| PR creation | `github-pr-creation/run.sh` (#122 calls feature-branch verify) | (none; manual) |
+| Pre-push | `hooks/pre-push-pipeline-gate.sh` (Phase 0.5/1/2 evidence) | (none; advisory) |
+
+Override paths (audit-logged at use): `ISSUE_LABELS_REQUIRED_SKIP=1`, `PR_BRANCH_VERIFY_SKIP=1`, `PR_MILESTONE_AUTO_CREATE=0`.
+
 ## Installation
 
 ```bash

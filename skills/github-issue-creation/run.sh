@@ -165,7 +165,7 @@ bug | feature | task)
 		echo "Sub-issues must link to their parent epic. If this is genuinely standalone (no epic exists yet), file an epic first via --template epic." >&2
 		exit 2
 	fi
-	if ! [[ "$PARENT" =~ ^[0-9]+$ ]]; then
+	if ! [[ $PARENT =~ ^[0-9]+$ ]]; then
 		echo "error: --parent must be a numeric issue number (got: $PARENT)" >&2
 		exit 2
 	fi
@@ -314,6 +314,31 @@ if [ -n "$REQUIRED" ]; then
 	fi
 fi
 
+# #120: enforce priority:* + area:* labels at create time. The original
+# convention deferred this to server-side ai-triage, but ai-triage uses
+# regex-based classification (per feedback_ai_triage_regex_regression),
+# misclassifies on ACTIONS_MODE=local, and silently drops labels — so
+# operator-set labels at create are the correct enforcement point.
+# Override path: ISSUE_LABELS_REQUIRED_SKIP=1 (audit-logged at use site).
+if [ "${ISSUE_LABELS_REQUIRED_SKIP:-0}" != "1" ]; then
+	HAS_PRIORITY=0
+	HAS_AREA=0
+	for l in "${LABELS[@]+"${LABELS[@]}"}"; do
+		case "$l" in
+		priority:*) HAS_PRIORITY=1 ;;
+		area:*) HAS_AREA=1 ;;
+		esac
+	done
+	if [ "$HAS_PRIORITY" = "0" ] || [ "$HAS_AREA" = "0" ]; then
+		echo "error: issue must have BOTH a priority:* and an area:* label at create time" >&2
+		echo "  passed labels: ${LABELS[*]:-(none)}" >&2
+		echo "  fix: add --label priority:p2 --label area:infrastructure (or similar)" >&2
+		echo "  context: relying on server-side ai-triage drops labels under ACTIONS_MODE=local" >&2
+		echo "  override (rare): ISSUE_LABELS_REQUIRED_SKIP=1" >&2
+		exit 2
+	fi
+fi
+
 # Auto-resolve milestone from active branch's version prefix if not given.
 # Loud-fail on resolution errors: "no version on branch" is fine, but
 # "version present, resolution failed" is hidden silent-failure we don't want.
@@ -349,7 +374,7 @@ for l in "${LABELS[@]+"${LABELS[@]}"}"; do GH_ARGS+=(--label "$l"); done
 # Create — set SKILL_WRAPPER=1 so skill-bypass-guard allows the call.
 URL=$(SKILL_WRAPPER=1 gh "${GH_ARGS[@]}")
 NEW_NUM=$(printf '%s' "$URL" | grep -oE '[0-9]+$')
-if ! [[ "$NEW_NUM" =~ ^[0-9]+$ ]]; then
+if ! [[ $NEW_NUM =~ ^[0-9]+$ ]]; then
 	echo "Failed to parse issue number from: $URL" >&2
 	exit 2
 fi
