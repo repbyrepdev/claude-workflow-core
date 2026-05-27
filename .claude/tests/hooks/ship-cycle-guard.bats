@@ -88,6 +88,27 @@ _run_guard() {
 	[ "$status" -eq 0 ]
 }
 
+@test "state JSON with empty .stage denies (corrupt — CR PR #99 r1)" {
+	# CR finding: '{"stage": ""}' or {} or {"stage": null} previously
+	# slipped through (jq -r '.stage // ""' yielded ''), making the
+	# guard a no-op on missing-stage manifests. Now fail-closed.
+	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	echo '{"stage":""}' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	run _run_guard "$(_payload_bash 'gh pr merge 91')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"corrupt JSON"* ]]
+}
+
+@test "state JSON without .stage field denies (corrupt — CR PR #99 r1)" {
+	SHA=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	echo '{"branch":"feat/v/x"}' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	run _run_guard "$(_payload_bash 'gh pr merge 91')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"corrupt JSON"* ]]
+}
+
 @test "corrupt state JSON denies (fail-closed)" {
 	# CR-CLI r3 major: partial-write race on state file shouldn't
 	# silently disable the guard. Corrupt jq → deny.

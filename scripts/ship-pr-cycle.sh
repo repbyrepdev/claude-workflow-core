@@ -160,13 +160,14 @@ _write_phase1_directive_marker() {
 		nonce=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
 	fi
 	if [ -z "$nonce" ]; then
-		scm_warn "phase1-directive nonce generation failed — sentinel will be touch-bypassable for this round"
-		# Fall back to writing without nonce — preserves prior
-		# behavior under environments missing all UUID sources.
-		printf '%s\n' "$text" >"$marker" || {
-			scm_warn "phase1-directive marker write failed at $marker"
-			return 0
-		}
+		# CR PR #99 MAJOR: fallback used to write a text-only marker
+		# without a nonce, producing a sentinel the guard ALWAYS
+		# rejects ('sentinel empty' or 'no nonce on line 1'). That's
+		# silent degradation: the orchestrator returns 0 but every
+		# subsequent Agent call fails with a misleading 'touch-bypass'
+		# message. Fail loudly so operator knows to install a UUID
+		# source (uuidgen / python3 / /proc/sys/kernel/random/uuid).
+		scm_warn "phase1-directive: nonce generation failed (no uuidgen / /proc / python3) — emit aborted; install uuidgen via 'brew install util-linux' or 'apt install uuid-runtime'"
 		return 0
 	fi
 	# v0.10.0 (#92 r2): write STATE JSON FIRST, sentinel SECOND.
@@ -232,20 +233,12 @@ _clear_phase1_directive_marker() {
 	marker=$(_phase1_directive_marker_file "$sha")
 	rm -f "$marker" ||
 		scm_warn "phase1-directive marker cleanup failed at $marker — stale directive may persist until removed manually"
-	# v0.10.0 (#92 r2): also clear the nonce from state JSON so a
-	# resurrected sentinel (with the stale nonce read from state)
-	# cannot replay-unlock Agent calls after stage transition.
-	local state_file="$STATE_DIR/$sha.json"
-	if [ -f "$state_file" ]; then
-		local tmp_state
-		if tmp_state=$(mktemp "$state_file.XXXXXX" 2>/dev/null); then
-			if jq 'del(.phase1_directive_nonce)' "$state_file" >"$tmp_state" 2>/dev/null; then
-				mv "$tmp_state" "$state_file" 2>/dev/null || rm -f "$tmp_state" 2>/dev/null || true
-			else
-				rm -f "$tmp_state" 2>/dev/null || true
-			fi
-		fi
-	fi
+	# CR PR #99 MAJOR (v0.10.1 r2): nonce deletion is now folded into
+	# _set_stage's atomic jq transaction (single-write commit of stage
+	# transition + nonce delete). Removed the prior second-write
+	# best-effort cleanup here — it was a race window where process
+	# death between stage-write and nonce-clear could carry a valid
+	# nonce past Phase 1.
 }
 
 _branch_name_safe_for_pointer() {
@@ -517,8 +510,15 @@ _set_stage() {
 	# Order: `2>&1 >"$tmp"` puts stderr into $jq_err and stdout into
 	# $tmp (the reverse `>"$tmp" 2>&1` would dump both into $tmp,
 	# leaving $jq_err empty — shellcheck SC2327/SC2328).
+	# CR PR #99 MAJOR: fold phase1_directive_nonce deletion into the
+	# SAME jq transaction as the stage transition. Previous design
+	# had nonce cleanup as a SECOND best-effort write after the
+	# atomic-mv stage commit — if the process died between them, the
+	# post-phase1 state could carry a valid nonce + sentinel, letting
+	# ship-cycle-guard.sh continue to authorize pr-review-toolkit
+	# Agent calls AFTER Phase 1 ended.
 	jq_err=$(jq --arg new "$new_stage" --arg ts "$ts" \
-		'.history += [{from: .stage, to: $new, ts: $ts}] | .stage = $new' \
+		'.history += [{from: .stage, to: $new, ts: $ts}] | .stage = $new | del(.phase1_directive_nonce)' \
 		"$sf" 2>&1 >"$tmp") || jq_rc=$?
 	if [ "$jq_rc" -ne 0 ]; then
 		rm -f "$tmp"

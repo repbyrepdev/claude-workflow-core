@@ -129,8 +129,16 @@ _is_active_feature_branch() {
 		export _SHIP_CYCLE_GUARD_CORRUPT_STATE=1
 		return 1
 	fi
+	# CR PR #99 MAJOR: '' is a corrupt-state shape (missing .stage,
+	# null .stage), NOT a legitimate-pass-through signal. Treating
+	# it as inactive silently re-enables raw gh pr merge / coderabbit
+	# review. merged → no-op (legitimate); empty → fail-closed deny.
 	case "$stage" in
-	merged | "") return 1 ;;
+	merged) return 1 ;;
+	"")
+		export _SHIP_CYCLE_GUARD_CORRUPT_STATE=1
+		return 1
+		;;
 	esac
 	# Export for downstream Agent-path nonce lookup.
 	export _SHIP_CYCLE_GUARD_REPO_ROOT="$repo_root"
