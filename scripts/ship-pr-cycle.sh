@@ -2238,6 +2238,7 @@ Subcommands:
   next          Advance one stage (idempotent)
   resume        Auto-detect + advance until operator-input or terminal
   install-hook  Wire .git/hooks/post-commit to fire resume after commit
+  mirror-report Show mirror coverage telemetry summary (text or --json)
 
 State file: .claude/.session-state/ship-cycle/<sha>.json
 Env:        BASE_BRANCH (default: main)
@@ -2258,13 +2259,23 @@ status) cmd_status "$@" ;;
 next) cmd_next "$@" ;;
 resume) cmd_resume "$@" ;;
 install-hook) cmd_install_hook "$@" ;;
+mirror-report)
+	# #131: per-mirror coverage summary. Delegates to the standalone
+	# script so the helper can also be sourced by other consumers.
+	_helper=$(_shipcycle_resolve scripts/cr/mirror-coverage.sh)
+	if [ ! -x "$_helper" ]; then
+		echo "ship-pr-cycle: mirror-coverage helper missing or non-exec: $_helper" >&2
+		exit 2
+	fi
+	"$_helper" report "$@"
+	;;
 -h | --help)
 	_usage
 	exit 0
 	;;
 *)
 	echo "ship-pr-cycle: unknown subcommand: $SUBCMD" >&2
-	echo "Use one of: start, status, next, resume, install-hook" >&2
+	echo "Use one of: start, status, next, resume, install-hook, mirror-report" >&2
 	exit 2
 	;;
 esac

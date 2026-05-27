@@ -4,11 +4,13 @@ Damien Adams' Claude Code plugin — **portable workflow skills + session-resili
 
 **Marketplace + plugin in one repo** (per Claude Code's standard pattern, see `.claude-plugin/`).
 
-## What's in v0.3.0
+## What's in the plugin
+
+The current canonical version is the `version` field in `.claude-plugin/plugin.json` (SSOT — see GitHub Releases / CHANGELOG for per-version notes). The inventory below tracks the SHAPE of the plugin (skills + hooks), not version-specific deltas, so the document doesn't rot every release.
 
 ### Skills (15 total)
 
-**Ship-PR workflow (NEW in v0.3.0)** — extracted from homelab and FCP toolkit where they were duplicated:
+**Ship-PR workflow** — extracted from homelab and FCP toolkit where they were duplicated:
 
 | Skill | Purpose |
 | --- | --- |
@@ -61,7 +63,7 @@ Per `scripts/ship-pr-cycle.sh` (lines 30-39), the current canonical state machin
 
 **Note on upstream chains:** `brainstorm` → `cr-plan` → `github-epic-creation` is a **parallel workflow that runs BEFORE ship-pr-cycle** (per `scripts/ship-pr-cycle.sh:9-14`: "cr-plan is a PARALLEL workflow... No auto-fire from ship-pr-cycle into cr-plan — they are disjoint by design"). Wiring this into ship-pr-cycle as nested phases is the deferred work of #125. Until #125 lands, operators run those skills separately, and ship-pr-cycle takes over once `branch-ready` is reached.
 
-The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which stage" (#129). The future coverage report consumer is tracked in #131 (not yet implemented as of v0.15.0).
+The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which stage" (#129). The mirror coverage telemetry helper landed in v0.16.0 (#131) — invoke via `scripts/ship-pr-cycle.sh mirror-report`.
 
 ## Local-mirror-of-pr-lint chain (#118)
 
