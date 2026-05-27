@@ -11,13 +11,15 @@ set -euo pipefail
 #   plugin          — plugin release / cache prep
 #   feature-branch  — pre-work SSOT prereq check
 #
-# Per-target logic lands in follow-up sub-issues; this skeleton handles
-# flag parsing + dispatch. Unimplemented targets return rc=69 (per
-# sysexits EX_UNAVAILABLE) with a tracking-issue pointer.
+# Implemented: repo, feature-branch.
+# Unimplemented (return rc=69 with tracking-issue pointer): machine, plugin.
 #
 # Exit codes (stable contract):
 #   0   success
-#   2   argparse error (missing/invalid --target, unknown flag)
+#   1   dispatcher-level failure (orchestrated step refused or its
+#       post-condition verify disagreed — see log for which step)
+#   2   argparse error (missing/invalid --target, unknown flag) OR
+#       per-target required-positional missing / extra args
 #   69  unimplemented target (matches sysexits EX_UNAVAILABLE; distinct
 #       from the repo's rc=3 "refused due to malformed precondition"
 #       used by register-hook.sh / ship-pr-cycle.sh / etc.)
@@ -103,8 +105,8 @@ machine | repo | plugin | feature-branch) ;;
 	;;
 esac
 
-# Dispatch — per-target functions land in follow-up sub-issues. While
-# unimplemented, each target returns rc=69 (EX_UNAVAILABLE) with a
+# Per-target dispatch table. Implemented: repo, feature-branch. Machine
+# and plugin remain stubs returning rc=69 (EX_UNAVAILABLE) with the
 # tracking-issue pointer in the log line so a caller can grep the
 # tracker if they hit it. Tracking refs are intentional in the
 # user-facing message (operators need to know where the work is).
@@ -114,31 +116,43 @@ _dispatch_machine() {
 }
 _dispatch_repo() {
 	# Repo bootstrap orchestrator. Delegates to bootstrap-repo.sh (writes
-	# files + applies labels) then runs --verify --scope plugin to
-	# confirm completeness. Optional --verify-only short-circuits the
-	# bootstrap step and just runs the verify pass.
-	#
-	# First positional arg from EXTRA_ARGS is the target directory.
+	# files + applies labels) then runs --verify --scope both to confirm
+	# completeness across plugin-scope + consumer-scope manifest entries.
+	# Optional --verify-only short-circuits the bootstrap step and just
+	# runs the verify pass. Verify is a separate pass (not bundled into
+	# bootstrap-repo.sh) so --verify-only can reuse the same code path
+	# without mutation.
 	if [ "$#" -lt 1 ] || [ -z "${1:-}" ]; then
 		_log "ERROR: --target repo requires a target directory"
 		_log "    usage: meta-bootstrap.sh --target repo <target-dir>"
 		return 2
 	fi
+	if [ "$#" -gt 1 ]; then
+		# Reject extra positional args explicitly. Silent-drop would mask
+		# typos like `repo /tmp/x --force` where the operator expects a
+		# flag to forward but it gets dropped.
+		_log "ERROR: --target repo accepts exactly one positional argument (got $#)"
+		return 2
+	fi
 	local target_dir=$1
 	local script_dir
-	script_dir=$(cd "$(dirname "$0")" && pwd)
+	script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 	if [ "$VERIFY_ONLY" = "1" ]; then
-		_log "running --verify --scope plugin against $target_dir (no mutation)"
-		"$script_dir/bootstrap-repo.sh" "$target_dir" --verify --scope plugin
-		return $?
+		_log "running --verify --scope both against $target_dir (no mutation)"
+		if ! "$script_dir/bootstrap-repo.sh" "$target_dir" --verify --scope both; then
+			_log "ERROR: --verify-only failed for $target_dir — manifest files missing or labels unapplied"
+			return 1
+		fi
+		_log "✓ --target repo --verify-only complete: $target_dir verified"
+		return 0
 	fi
 	_log "running bootstrap-repo.sh against $target_dir..."
 	if ! "$script_dir/bootstrap-repo.sh" "$target_dir"; then
 		_log "ERROR: bootstrap-repo.sh failed; aborting before verify"
 		return 1
 	fi
-	_log "running --verify --scope plugin to confirm completeness..."
-	if ! "$script_dir/bootstrap-repo.sh" "$target_dir" --verify --scope plugin; then
+	_log "running --verify --scope both to confirm completeness..."
+	if ! "$script_dir/bootstrap-repo.sh" "$target_dir" --verify --scope both; then
 		_log "ERROR: post-bootstrap verify failed — files missing or labels not applied"
 		return 1
 	fi

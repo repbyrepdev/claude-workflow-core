@@ -24,16 +24,11 @@ teardown() {
 	[[ $output == *"requires a target directory"* ]]
 }
 
-@test "--target repo --verify-only against plugin's own repo passes" {
-	run "$SCRIPT" --target repo --verify-only -- "$REPO_ROOT"
-	[ "$status" -eq 0 ]
-	[[ $output == *"verify clean"* ]]
-}
-
 @test "--target repo --verify-only against empty dir fails (no manifest files)" {
 	mkdir -p "$TEST_TMP/empty"
 	run "$SCRIPT" --target repo --verify-only -- "$TEST_TMP/empty"
 	[ "$status" -eq 1 ]
+	[[ $output == *"--verify-only failed"* ]]
 }
 
 @test "--target repo bootstraps an empty dir then verifies clean (no gh remote = no label-remote check)" {
@@ -41,11 +36,57 @@ teardown() {
 	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
 	[ "$status" -eq 0 ]
 	[[ $output == *"bootstrapped + verified"* ]]
-	# Sanity: at least the pre-commit-config.yaml was written.
+	# Assert files from BOTH scopes landed — pre-commit-config.yaml is
+	# plugin-scope, consumer-only files prove the orchestrator's
+	# --scope both verify actually catches consumer drift.
 	[ -f "$TEST_TMP/target/.pre-commit-config.yaml" ]
+	[ -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/run.sh" ]
+	[ -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/SKILL.md" ]
+	[ -f "$TEST_TMP/target/.claude/hooks/review-log.sh" ]
+}
+
+@test "--target repo --verify-only on bootstrapped dir succeeds (re-runs clean)" {
+	mkdir -p "$TEST_TMP/target"
+	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
+	[ "$status" -eq 0 ]
+	run "$SCRIPT" --target repo --verify-only -- "$TEST_TMP/target"
+	[ "$status" -eq 0 ]
+	[[ $output == *"--verify-only complete"* ]]
+}
+
+@test "--target repo detects partial bootstrap (consumer file deleted)" {
+	# Bootstrap, then delete a consumer-scope file → verify must fail.
+	# Pins the --scope both contract: catches consumer drift the prior
+	# --scope plugin orchestrator would have silently missed.
+	mkdir -p "$TEST_TMP/target"
+	"$SCRIPT" --target repo -- "$TEST_TMP/target" >/dev/null 2>&1
+	rm -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/run.sh"
+	run "$SCRIPT" --target repo --verify-only -- "$TEST_TMP/target"
+	[ "$status" -eq 1 ]
+	[[ $output == *"--verify-only failed"* ]]
 }
 
 @test "--target repo --verify-only without target-dir exits 2 (same arg requirement)" {
 	run "$SCRIPT" --target repo --verify-only
 	[ "$status" -eq 2 ]
+}
+
+@test "--target repo with empty-string target-dir exits 2" {
+	run "$SCRIPT" --target repo -- ""
+	[ "$status" -eq 2 ]
+	[[ $output == *"requires a target directory"* ]]
+}
+
+@test "--target repo rejects extra positional args (silent-drop would mask typos)" {
+	mkdir -p "$TEST_TMP/target"
+	run "$SCRIPT" --target repo -- "$TEST_TMP/target" --force
+	[ "$status" -eq 2 ]
+	[[ $output == *"accepts exactly one positional argument"* ]]
+}
+
+@test "--target repo against target-dir that is a regular file fails cleanly" {
+	touch "$TEST_TMP/regular-file"
+	run "$SCRIPT" --target repo -- "$TEST_TMP/regular-file"
+	[ "$status" -eq 1 ]
+	[[ $output == *"aborting before verify"* ]]
 }
