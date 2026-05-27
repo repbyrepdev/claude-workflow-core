@@ -2238,6 +2238,7 @@ Subcommands:
   next          Advance one stage (idempotent)
   resume        Auto-detect + advance until operator-input or terminal
   install-hook  Wire .git/hooks/post-commit to fire resume after commit
+  mirror-report Show mirror coverage telemetry summary (text or --json)
 
 State file: .claude/.session-state/ship-cycle/<sha>.json
 Env:        BASE_BRANCH (default: main)

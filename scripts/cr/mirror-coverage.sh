@@ -44,25 +44,48 @@ _log() { echo "[mirror-coverage] $*" >&2; }
 # Args: --mirror NAME --phase PHASE --rc N [--sha SHA] [--refuse-on-fail BOOL]
 log_mirror_event() {
 	local mirror="" phase="" rc="" sha="" refuse_on_fail=""
+	# Arity guard: under `set -u`, a bare `$2` read when only `$1` exists
+	# aborts the script — breaking the fail-soft "logging never blocks the
+	# orchestrator" contract. Guard each value-bearing flag.
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		--mirror)
+			[ "$#" -ge 2 ] || {
+				_log "WARN: --mirror requires a value (skipping)"
+				return 0
+			}
 			mirror=$2
 			shift 2
 			;;
 		--phase)
+			[ "$#" -ge 2 ] || {
+				_log "WARN: --phase requires a value (skipping)"
+				return 0
+			}
 			phase=$2
 			shift 2
 			;;
 		--rc)
+			[ "$#" -ge 2 ] || {
+				_log "WARN: --rc requires a value (skipping)"
+				return 0
+			}
 			rc=$2
 			shift 2
 			;;
 		--sha)
+			[ "$#" -ge 2 ] || {
+				_log "WARN: --sha requires a value (skipping)"
+				return 0
+			}
 			sha=$2
 			shift 2
 			;;
 		--refuse-on-fail)
+			[ "$#" -ge 2 ] || {
+				_log "WARN: --refuse-on-fail requires a value (skipping)"
+				return 0
+			}
 			refuse_on_fail=$2
 			shift 2
 			;;
@@ -139,19 +162,22 @@ mirror_report() {
 	else
 		declared_mirrors=""
 	fi
-	# Filter malformed JSONL lines BEFORE slurp. A single truncated
-	# row would otherwise poison `jq -s` and the `|| echo []` fallback
-	# would silently empty the report (CR-caught silent-failure class).
+	# Filter malformed JSONL lines BEFORE slurp. Read raw lines (-R) and
+	# attempt fromjson? — parse errors yield `empty` and continue, so a
+	# single truncated row no longer aborts jq mid-file. The previous
+	# `jq -c 'select(...)' "$LOG_FILE"` form parsed the whole file and
+	# bailed at the first bad line, causing the `|| echo []` fallback
+	# to silently wipe the report (CR-caught silent-failure class).
 	local total_rows valid_rows
 	total_rows=$(wc -l <"$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
-	valid_rows=$(jq -c 'select(type=="object" and has("mirror"))' "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+	valid_rows=$(jq -R -c 'fromjson? | select(type=="object" and has("mirror"))' "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
 	if [ "$total_rows" -gt 0 ] && [ "$valid_rows" -ne "$total_rows" ]; then
 		_log "WARN: $((total_rows - valid_rows)) malformed JSONL row(s) in $LOG_FILE skipped"
 	fi
 	# Per-mirror aggregate: count, fail-count, latest ts. Stream valid
-	# rows through jq -c first, then slurp the cleaned set.
+	# rows through jq -R fromjson? first, then slurp the cleaned set.
 	local agg
-	agg=$(jq -c 'select(type=="object" and has("mirror"))' "$LOG_FILE" 2>/dev/null |
+	agg=$(jq -R -c 'fromjson? | select(type=="object" and has("mirror"))' "$LOG_FILE" 2>/dev/null |
 		jq -s '
 		group_by(.mirror) | map({
 			mirror: .[0].mirror,

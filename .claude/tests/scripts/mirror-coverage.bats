@@ -116,3 +116,36 @@ teardown() {
 	# No entry should be written
 	[ ! -f .claude/logs/ship-pr-mirror-coverage.jsonl ]
 }
+
+@test "log with --mirror but no value remains fail-soft under set -u" {
+	cd "$TEST_TMP" || return 1
+	rm -f .claude/logs/ship-pr-mirror-coverage.jsonl
+	run "$SCRIPT" log --mirror
+	[ "$status" -eq 0 ]
+	[[ $output == *"--mirror requires a value"* ]]
+	[ ! -f .claude/logs/ship-pr-mirror-coverage.jsonl ]
+}
+
+@test "log with --rc but no value remains fail-soft under set -u" {
+	cd "$TEST_TMP" || return 1
+	rm -f .claude/logs/ship-pr-mirror-coverage.jsonl
+	run "$SCRIPT" log --mirror pr-lint.yml --phase push --rc
+	[ "$status" -eq 0 ]
+	[[ $output == *"--rc requires a value"* ]]
+	[ ! -f .claude/logs/ship-pr-mirror-coverage.jsonl ]
+}
+
+@test "report skips malformed JSONL lines + counts only valid rows" {
+	cd "$TEST_TMP" || return 1
+	# Inject 2 valid + 1 truncated row directly so jq fromjson? must skip the bad one.
+	cat >.claude/logs/ship-pr-mirror-coverage.jsonl <<'JSONL'
+{"ts":"2026-01-01T00:00:00Z","sha":"1","mirror":"pr-lint.yml","phase":"push","local_fired":true,"local_rc":0,"refuse_on_fail":null}
+{"mirror":"BROKEN
+{"ts":"2026-01-01T00:00:01Z","sha":"2","mirror":"pr-lint.yml","phase":"push","local_fired":true,"local_rc":1,"refuse_on_fail":null}
+JSONL
+	run "$SCRIPT" report
+	[ "$status" -eq 0 ]
+	[[ $output == *"malformed JSONL row(s)"* ]]
+	# Should count 2 fires for pr-lint (1 fail) — the broken line MUST NOT abort jq mid-file.
+	[[ $output =~ pr-lint.yml[[:space:]]+2[[:space:]]+1 ]]
+}
