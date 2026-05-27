@@ -30,10 +30,31 @@
 #                                   semantics to the server-side workflow.
 #                                   IMPORTANT: must reference scripts that
 #                                   actually exist (bats validates this).
+#                                   May reference shell variables that the
+#                                   orchestrator (#131) is responsible for
+#                                   exporting before exec — see
+#                                   `variable_contract` below.
 #       refuse_on_fail: bool     — true: ship-pr-cycle refuses to advance
 #                                   past this phase on non-zero exit.
 #                                   false: warns + records, continues.
 #       notes: string            — optional rationale; not required.
+#
+# Variable contract (per phase — the orchestrator MUST export these
+# before invoking any local_command for that phase):
+#   push:
+#     BODY_FILE     — absolute path to a temp file containing the PR body
+#                     (must exist + be readable; pr-lint-check.sh uses
+#                     `grep -F file` against it).
+#     LABELS_JSON   — JSON-array string of label names being passed at
+#                     PR-create time (e.g. '["enhancement","area:infrastructure"]').
+#                     May be `[]` for the pre-create path when --skip-label-check
+#                     is set.
+#     PR_NUM        — open-PR number once `gh pr create` returns; only set
+#                     for post-create mirrors (currently none).
+#   branch-ready:
+#     (no orchestrator-injected vars; local_commands are self-contained)
+# Future phases (#125 wires brainstorm/cr-plan): variable_contract will
+# grow when those mirrors land.
 
 schema_version: 1
 
