@@ -414,10 +414,30 @@ _write .github/required-checks-list.yml 644 <<'EOF'
 # SSOT for required status checks. Branch protection on main reads
 # this list; pr-merge skill validates each is present + green before
 # proceeding.
+#
+# Schema (per entry):
+#   check_name, workflow_file (string|null), event (string|null), notes.
+#   advisory[] uses the same schema for not-yet-required checks.
 required:
   - check_name: CodeRabbit
+    workflow_file: null
+    event: null
+    notes: |
+      Third-party SaaS review. Runs server-side independent of Actions.
+      Consumers running checks locally should skip entries where
+      workflow_file is null.
   - check_name: gitleaks
+    workflow_file: gitleaks.yml
+    event: pull_request
+    notes: Secret scan with default rules
   - check_name: pr-lint
+    workflow_file: pr-lint.yml
+    event: pull_request
+    notes: |
+      Single job with 3 sequential steps: area:* label present
+      Closes #N body ref · template section headings
+
+advisory: []
 EOF
 
 # --- .github/ISSUE_TEMPLATE stubs ------------------------------------

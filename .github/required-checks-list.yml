@@ -1,7 +1,41 @@
 # SSOT for required status checks. Branch protection on main reads
 # this list; pr-merge skill validates each is present + green before
 # proceeding.
+#
+# Schema (per entry):
+#   check_name:    string  — exact GitHub check name (CodeRabbit, pr-lint, …)
+#   workflow_file: string|null — workflow file under .github/workflows/ that
+#                  produces this check. null for third-party / server-side
+#                  checks (e.g. CodeRabbit). Consumers may skip entries
+#                  where workflow_file is null when running checks locally.
+#   event:         string|null — the event that fires the workflow
+#                  (pull_request, push, schedule). null when workflow_file
+#                  is null.
+#   notes:         string  — free-form one-line description of what the
+#                  check does (multi-line via YAML | block when needed).
+#
+# advisory[]: same schema; these checks run locally / informationally but
+#   are NOT yet in branch protection's required list. Promote to required[]
+#   when the check has demonstrated stability for a sprint.
+
 required:
   - check_name: CodeRabbit
+    workflow_file: null
+    event: null
+    notes: |
+      Third-party SaaS review, not a GitHub Actions workflow. Runs
+      server-side independent of Actions cap. Consumers that run
+      required checks locally should skip entries where workflow_file
+      is null and rely on the CR findings helper instead.
   - check_name: gitleaks
+    workflow_file: gitleaks.yml
+    event: pull_request
+    notes: Secret scan with default rules (no .gitleaks.toml in this repo yet)
   - check_name: pr-lint
+    workflow_file: pr-lint.yml
+    event: pull_request
+    notes: |
+      Single job with 3 sequential steps:
+      area:* label present · Closes #N body ref · template section headings
+
+advisory: []
