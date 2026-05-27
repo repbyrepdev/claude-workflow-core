@@ -68,10 +68,13 @@ setup() {
 	[[ $output == *"plugin flow"* ]]
 }
 
-@test "--target feature-branch returns rc=69 with tracking pointer" {
+@test "--target feature-branch is now implemented (no rc=69)" {
+	# feature-branch was wired as of #113. Detailed coverage lives in
+	# meta-bootstrap-feature-branch.bats — this test just guards that
+	# the unimplemented stub didn't accidentally come back.
 	run "$SCRIPT" --target feature-branch
-	[ "$status" -eq 69 ]
-	[[ $output == *"feature-branch flow"* ]]
+	[ "$status" -ne 69 ]
+	[[ $output != *"not yet implemented"* ]]
 }
 
 @test "--verify-only refuses with rc=69 (not silently dispatched)" {
