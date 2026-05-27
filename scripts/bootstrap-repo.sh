@@ -422,10 +422,7 @@ required:
   - check_name: CodeRabbit
     workflow_file: null
     event: null
-    notes: |
-      Third-party SaaS review. Runs server-side independent of Actions.
-      Consumers running checks locally should skip entries where
-      workflow_file is null.
+    notes: Third-party SaaS review; runs server-side, not in Actions.
   - check_name: gitleaks
     workflow_file: gitleaks.yml
     event: pull_request
@@ -434,8 +431,8 @@ required:
     workflow_file: pr-lint.yml
     event: pull_request
     notes: |
-      Single job with 3 sequential steps: area:* label present
-      Closes #N body ref · template section headings
+      Sequential checks enforcing area:* label, issue link, and PR
+      template section headings — see pr-lint.yml for exact step list
 
 advisory: []
 EOF
