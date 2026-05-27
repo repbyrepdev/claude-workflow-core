@@ -7,21 +7,35 @@ set -euo pipefail
 # #131: mirror coverage telemetry helpers.
 #
 # Two responsibilities:
-#  1. `log_mirror_event` — append a JSONL row when a local mirror runs
-#     (called from ship-pr-cycle.sh push/pr-create phase wire-in).
+#  1. `log_mirror_event` — append a JSONL row when a local mirror runs.
+#     Intended caller: ship-pr-cycle.sh push/pr-create phase wire-in,
+#     tracked as follow-up under #124 (no in-repo caller yet; the helper
+#     is exposed for the future orchestrator wire-in).
 #     Schema: {ts, sha, mirror, phase, local_fired, local_rc, refuse_on_fail}.
 #  2. `mirror_report` — aggregate the JSONL log into a per-mirror summary
 #     (fire counts, fail rates, latest event per mirror). Output is
 #     plain-text by default; --json emits machine-readable.
 #
-# Gap detection (server-fired-but-no-local) is a v2 follow-up — needs
-# post-merge GitHub workflow state inspection. v1 here emits the local
-# side of the data so the operator can manually correlate today + the
-# auto-detector can read the same JSONL later.
+# Gap detection (server-fired-but-no-local) is deferred to a follow-up
+# under #124 — needs post-merge GitHub workflow state inspection. v1
+# here emits the local side of the data so the operator can manually
+# correlate today + the auto-detector can read the same JSONL later.
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-LOG_FILE="${REPO_ROOT}/.claude/logs/ship-pr-mirror-coverage.jsonl"
-MAP_FILE="${REPO_ROOT}/.github/ship-pr-cycle-mirror-map.yml"
+# Compute paths inside each function so sourced consumers pick up
+# their own repo root at call time (the load-time value would be wrong
+# when sourced from a non-repo cwd / different worktree / inside a
+# git hook).
+_resolve_paths() {
+	local root
+	root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+	if [ -z "$root" ]; then
+		_log "WARN: not in a git working tree — telemetry disabled"
+		return 1
+	fi
+	LOG_FILE="${root}/.claude/logs/ship-pr-mirror-coverage.jsonl"
+	MAP_FILE="${root}/.github/ship-pr-cycle-mirror-map.yml"
+	return 0
+}
 
 _log() { echo "[mirror-coverage] $*" >&2; }
 
@@ -62,8 +76,24 @@ log_mirror_event() {
 		_log "WARN: log_mirror_event requires --mirror, --phase, --rc (skipping)"
 		return 0
 	fi
-	[ -z "$sha" ] && sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-	mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || return 0
+	# `--rc` must be a parseable integer or jq aborts (we then drop the
+	# row silently — operator never learns the wire-in bug). Validate
+	# explicitly at parse-time.
+	if ! [[ $rc =~ ^-?[0-9]+$ ]]; then
+		_log "WARN: --rc must be an integer (got '$rc'); skipping"
+		return 0
+	fi
+	# Use `if` form (not `[ -z "$sha" ] && cmd`) so the statement is
+	# always 0-exit under set -e — the `&&` form aborts when LHS is
+	# false (i.e. when --sha IS supplied) and breaks fail-soft.
+	if [ -z "$sha" ]; then
+		sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	fi
+	_resolve_paths || return 0
+	mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || {
+		_log "WARN: cannot create log dir $(dirname "$LOG_FILE") — telemetry skipped"
+		return 0
+	}
 	command -v jq >/dev/null 2>&1 || {
 		_log "WARN: jq missing — skipping JSONL emit"
 		return 0
@@ -86,6 +116,7 @@ mirror_report() {
 	if [ "${1:-}" = "--json" ]; then
 		format=json
 	fi
+	_resolve_paths || return 1
 	if [ ! -f "$LOG_FILE" ]; then
 		_log "no coverage events logged yet: $LOG_FILE missing"
 		return 0
@@ -100,9 +131,20 @@ mirror_report() {
 	else
 		declared_mirrors=""
 	fi
-	# Per-mirror aggregate: count, fail-count, latest ts.
+	# Filter malformed JSONL lines BEFORE slurp. A single truncated
+	# row would otherwise poison `jq -s` and the `|| echo []` fallback
+	# would silently empty the report (CR-caught silent-failure class).
+	local total_rows valid_rows
+	total_rows=$(wc -l <"$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+	valid_rows=$(jq -c 'select(type=="object" and has("mirror"))' "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+	if [ "$total_rows" -gt 0 ] && [ "$valid_rows" -ne "$total_rows" ]; then
+		_log "WARN: $((total_rows - valid_rows)) malformed JSONL row(s) in $LOG_FILE skipped"
+	fi
+	# Per-mirror aggregate: count, fail-count, latest ts. Stream valid
+	# rows through jq -c first, then slurp the cleaned set.
 	local agg
-	agg=$(jq -s '
+	agg=$(jq -c 'select(type=="object" and has("mirror"))' "$LOG_FILE" 2>/dev/null |
+		jq -s '
 		group_by(.mirror) | map({
 			mirror: .[0].mirror,
 			fires: length,
@@ -110,7 +152,7 @@ mirror_report() {
 			latest_ts: ([.[].ts] | max),
 			latest_sha: (sort_by(.ts) | last | .sha)
 		})
-	' "$LOG_FILE" 2>/dev/null || echo "[]")
+	' 2>/dev/null || echo "[]")
 	if [ "$format" = "json" ]; then
 		printf '%s\n' "$agg"
 		return 0
@@ -134,7 +176,9 @@ mirror_report() {
 		local never=()
 		while IFS= read -r m; do
 			[ -z "$m" ] && continue
-			echo "$observed" | grep -qx "$m" || never+=("$m")
+			# `-F` fixed-string (no regex) — mirror names like
+			# `pr-lint.yml` contain regex metachars (the dot).
+			echo "$observed" | grep -Fqx "$m" || never+=("$m")
 		done <<<"$declared_mirrors"
 		if [ "${#never[@]}" -gt 0 ]; then
 			echo "Declared but never fired (potential gap or feature unused):"
