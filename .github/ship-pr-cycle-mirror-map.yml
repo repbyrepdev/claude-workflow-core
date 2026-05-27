@@ -1,0 +1,121 @@
+# ship-pr-cycle ↔ server-side workflow mirror map.
+#
+# SSOT for "every server-side workflow that exists on GitHub has a
+# locally-emulated mirror that runs BEFORE push". This file is consumed
+# by the future orchestrator wiring (tracked in #131 — NOT YET
+# IMPLEMENTED as of v0.15.0). Until #131 lands, the file is documented-
+# but-unread: validated by the bats suite at
+# .claude/tests/github/ship-pr-cycle-mirror-map.bats, but no runtime
+# consumer reads it.
+#
+# Schema (consumers must encode the SAME shape):
+#   schema_version: int  — bump in lockstep with the consumer.
+#                          Additive optional fields = no bump;
+#                          field removal/rename/semantics-change = +1.
+#                          Consumers MUST refuse schema_version > known_max.
+#   mirrors: list of
+#     - server_workflow: string  — basename of the .github/workflows/*.yml
+#                                   that the mirror locally emulates.
+#       phase: string            — ship-pr-cycle stage at which the mirror
+#                                   runs. Allowed values come from the actual
+#                                   ship-pr-cycle.sh state machine — see
+#                                   scripts/ship-pr-cycle.sh:30-39:
+#                                   branch-ready | phase0.5 | phase1 |
+#                                   phase2 | push | cr-in-ci-wait |
+#                                   auto-triage | merge-gate | merged.
+#                                   Currently only `push` and `branch-ready`
+#                                   are real mirror-targets.
+#       local_command: string    — shell command (cwd=repo root) that
+#                                   produces byte-identical pass/fail
+#                                   semantics to the server-side workflow.
+#                                   IMPORTANT: must reference scripts that
+#                                   actually exist (bats validates this).
+#                                   May reference shell variables that the
+#                                   orchestrator (#131) is responsible for
+#                                   exporting before exec — see
+#                                   `variable_contract` below.
+#       refuse_on_fail: bool     — true: ship-pr-cycle refuses to advance
+#                                   past this phase on non-zero exit.
+#                                   false: warns + records, continues.
+#       notes: string            — optional rationale; not required.
+#
+# Variable contract (per phase — the orchestrator MUST export these
+# before invoking any local_command for that phase):
+#   push:
+#     BODY_FILE     — absolute path to a temp file containing the PR body
+#                     (must exist + be readable; pr-lint-check.sh uses
+#                     `grep -F file` against it).
+#     LABELS_JSON   — JSON-array string of label names being passed at
+#                     PR-create time (e.g. '["enhancement","area:infrastructure"]').
+#                     May be `[]` for the pre-create path when --skip-label-check
+#                     is set.
+#     PR_NUM        — open-PR number once `gh pr create` returns; only set
+#                     for post-create mirrors (currently none).
+#   branch-ready:
+#     (no orchestrator-injected vars; local_commands are self-contained)
+# Future phases (#125 wires brainstorm/cr-plan): variable_contract will
+# grow when those mirrors land.
+
+schema_version: 1
+
+mirrors:
+  - server_workflow: pr-lint.yml
+    phase: push
+    local_command: hooks/pr-lint-check.sh --body $BODY_FILE --labels $LABELS_JSON --skip-label-check
+    refuse_on_fail: true
+    notes: |
+      Implements the mirror requested in #119/#127. The
+      github-pr-creation skill wrapper calls this script as
+      pre-create validation. `--skip-label-check` is required at
+      this phase because pr-labeler hasn't run yet (server-side
+      pr-lint runs the same check post-labeler).
+
+  - server_workflow: gitleaks.yml
+    phase: branch-ready
+    local_command: pre-commit run gitleaks --all-files
+    refuse_on_fail: true
+    notes: |
+      Gitleaks runs locally on every commit via pre-commit hook.
+      The server-side gitleaks.yml is redundant defense-in-depth.
+
+  - server_workflow: plugin-self-bootstrap-verify.yml
+    phase: push
+    local_command: scripts/bootstrap-repo.sh . --verify --scope plugin
+    refuse_on_fail: true
+    notes: |
+      Plugin self-dogfood verify. Identical script invocation
+      server-side + local — same exit code semantics.
+
+# phase_aliases is a DERIVED view of mirrors[].phase, useful for the
+# future coverage report (#131) to query "what mirrors fire in phase X?".
+# Schema-level enforcement: every entry here must point at a workflow
+# that appears in mirrors[].server_workflow (bats validates).
+phase_aliases:
+  branch-ready: [gitleaks.yml]
+  push: [pr-lint.yml, plugin-self-bootstrap-verify.yml]
+  # phase0.5/phase1/phase2: phase-specific Claude/Copilot review steps
+  # — no server-side workflow mirrors apply (these phases are local-
+  # only by design).
+  # cr-in-ci-wait: intentionally has no mirrors. The phase waits on
+  # the server-side CodeRabbit bot, which has no local-replica path
+  # (Phase 2 CR-CLI is the closest analog and fires earlier).
+  # auto-triage/merge-gate/merged: post-CR-in-CI phases. No mirrors.
+
+# Workflows present in .github/workflows/ that are INTENTIONALLY NOT
+# mirrored — typically because their semantics are not locally
+# reproducible (apply labels to a live PR, sync GitHub state, etc.).
+# Bats catches new workflows that lack EITHER a mirror entry OR an
+# intentionally_unmirrored entry — forces a deliberate decision.
+intentionally_unmirrored:
+  - workflow: pr-labeler.yml
+    reason: |
+      Applies area:* labels to a live PR based on .github/labeler.yml
+      glob matches. The "local equivalent" is just adding the labels
+      manually via `--label` at PR-create time (covered by #119 +
+      github-pr-creation wrapper). No standalone local script exists.
+  - workflow: label-sync.yml
+    reason: |
+      Syncs .github/labels.yml to GitHub repo labels (apply-only).
+      Pre-commit hook `Preview label-sync --dry-run` runs the same
+      yaml→action diff locally on labels.yml edits, but the actual
+      apply step is GitHub-side only.
