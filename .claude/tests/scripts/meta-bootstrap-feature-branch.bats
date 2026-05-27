@@ -204,8 +204,10 @@ _minimal_repo() {
 	[[ $output != *"not yet wired"* ]]
 }
 
-@test "--target machine --verify-only still refuses (other targets unwired)" {
+@test "--target machine --verify-only is now implemented (covered by meta-bootstrap-machine.bats)" {
+	# As of #110 machine --verify-only is wired against the manifest.
+	# Detailed coverage lives in the per-flow bats file.
 	run "$SCRIPT" --target machine --verify-only
-	[ "$status" -eq 69 ]
-	[[ $output == *"not yet wired"* ]]
+	[ "$status" -eq 0 ]
+	[[ $output != *"not yet wired"* ]]
 }

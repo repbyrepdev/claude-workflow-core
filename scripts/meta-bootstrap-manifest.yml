@@ -1,0 +1,73 @@
+# Declarative per-target verification manifest for meta-bootstrap.sh.
+#
+# Each top-level key under `targets:` lists the "what good looks like"
+# rules consumed by `meta-bootstrap.sh --target X --verify-only`. Rules
+# are read-only assertions; verify-only never mutates.
+#
+# Schema (consumers must encode the SAME shape):
+#   schema_version: int  — bump in lockstep with the consumer (the script
+#                          fails closed on mismatch — silent partial reads
+#                          would defeat the version field's purpose).
+#   targets:
+#     <target-name>:
+#       brew_packages:   [string]   — `brew list --formula --versions $pkg` must succeed
+#       commands:        [string]   — `command -v $cmd` must succeed
+#       keychain_entries: [string]  — `security find-generic-password -s $name` must succeed
+#                                      (presence only; never reads the value)
+#       paths:           [string]   — each path must exist (file or directory).
+#                                      Only leading `~/` is expanded — other
+#                                      forms (`~user/`, `$HOME/...`, globs)
+#                                      are NOT expanded; use absolute paths.
+#       json_fields:     [{file, jq, match}]
+#                                    — `jq -r $jq $file` must match the
+#                                      `match` regex. `min` is accepted as a
+#                                      deprecated alias for one schema_version
+#                                      cycle (the original name was misleading
+#                                      since it's always been a regex).
+#       inline: true                 — sentinel for targets whose verify is
+#                                      git/network-state-dependent and lives
+#                                      in inline bash (feature-branch). A
+#                                      target with no rule kinds AND no
+#                                      `inline: true` fails verify — refusing
+#                                      the vacuous-pass that would hide a
+#                                      missing-manifest-entry bug.
+
+schema_version: 1
+
+targets:
+  machine:
+    # Tooling installed via Homebrew per bootstrap-machine.sh's brew_packages list.
+    brew_packages:
+      - gh
+      - jq
+      - yq
+      - pre-commit
+      - shellcheck
+      - shfmt
+      - actionlint
+      - gitleaks
+      - age
+      - sops
+    # PATH-resolvable commands (covers non-brew installs: gh-copilot extension, npm-installed CLIs).
+    commands:
+      - gh
+      - jq
+      - yq
+      - pre-commit
+      - git
+    # Keychain entries — presence check only; never reads the value.
+    keychain_entries:
+      - sops-age-key
+
+  plugin:
+    # Plugin manifest version field must be non-empty + look like SemVer.
+    # `$` anchor required — without it, `1.2.3abc` passes via prefix match.
+    json_fields:
+      - file: .claude-plugin/plugin.json
+        jq: .version
+        match: '^[0-9]+\.[0-9]+\.[0-9]+$'
+
+  feature-branch:
+    # Verify is git/network-state-dependent; rules live in inline bash
+    # inside scripts/meta-bootstrap.sh's _dispatch_feature_branch.
+    inline: true
