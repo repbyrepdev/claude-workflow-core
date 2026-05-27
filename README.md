@@ -4,11 +4,13 @@ Damien Adams' Claude Code plugin — **portable workflow skills + session-resili
 
 **Marketplace + plugin in one repo** (per Claude Code's standard pattern, see `.claude-plugin/`).
 
-## What's in v0.3.0
+## What's in the plugin
+
+The current canonical version is the `version` field in `.claude-plugin/plugin.json` (SSOT — see GitHub Releases / CHANGELOG for per-version notes). The inventory below tracks the SHAPE of the plugin (skills + hooks), not version-specific deltas, so the document doesn't rot every release.
 
 ### Skills (15 total)
 
-**Ship-PR workflow (NEW in v0.3.0)** — extracted from homelab and FCP toolkit where they were duplicated:
+**Ship-PR workflow** — extracted from homelab and FCP toolkit where they were duplicated:
 
 | Skill | Purpose |
 | --- | --- |
