@@ -49,23 +49,16 @@ _extract_heredoc() {
 	grep -qE '^_apply_labels\(\)' "$SCRIPT"
 }
 
-@test "_apply_labels short-circuits when no GitHub remote (dry-run reports skip)" {
-	# Build a sandbox target without git remote; expect NOTE about remote missing.
-	# Use --dry-run so labels aren't actually applied even with a remote.
+@test "_apply_labels prints the would-apply message in dry-run" {
 	mkdir -p "$TEST_TMP/target"
 	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target\" --dry-run 2>&1"
 	[ "$status" -eq 0 ]
-	# Dry-run mode prints the would-apply message regardless of remote.
 	[[ $output == *"would apply labels"* ]]
 }
 
-@test "_apply_labels skips gracefully when gh missing (NOTE emitted)" {
-	# Run actual (non-dry) bootstrap into target dir with gh stripped from PATH.
-	# Target dir has no remote → expect "no GitHub remote yet" NOTE; if gh is
-	# also missing, we expect the "gh CLI not on PATH" NOTE instead.
-	mkdir -p "$TEST_TMP/target-no-gh"
-	run env PATH="/usr/bin:/bin" bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-gh\" 2>&1"
+@test "_apply_labels NOTE on no-remote target (gh present)" {
+	mkdir -p "$TEST_TMP/target-no-remote"
+	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" 2>&1"
 	[ "$status" -eq 0 ]
-	# Either the gh-missing NOTE or the no-remote NOTE — both are visible-skip.
-	[[ $output == *"NOTE:"*"label apply"* ]] || [[ $output == *"NOTE:"*"GitHub remote"* ]]
+	[[ $output == *"no GitHub remote yet"* ]]
 }
