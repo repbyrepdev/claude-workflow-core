@@ -67,3 +67,9 @@
 - name: area:infrastructure
   color: "8250df"
   description: Skills, hooks, scripts, workflows, repo infrastructure
+- name: area:docs
+  color: "8250df"
+  description: README + markdown documentation
+- name: area:plugin-manifest
+  color: "8250df"
+  description: .claude-plugin/plugin.json + marketplace metadata
