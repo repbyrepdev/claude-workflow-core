@@ -99,23 +99,27 @@ if ! command -v yq >/dev/null 2>&1; then
 	exit 3
 fi
 
-BODY=$(cat "$BODY_FILE")
 rc=0
 
-# Check 1: issue reference (Closes/Fixes/Resolves #N — case-insensitive,
-# supports closed/fixed/resolved/resolves past + present tense).
-if echo "$BODY" | grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+"; then
-	: # pass
-else
+# Read against the file directly — `echo "$BODY" | grep` interprets
+# `-n`/`-e`/backslash sequences when body starts with them; using
+# grep -F file path avoids both that and the trailing-newline strip
+# (`BODY=$(cat ...)` collapses trailing newlines).
+
+# Check 1: issue reference (matches Closes/Fixes/Resolves with optional
+# -s/-d suffix, case-insensitive).
+if ! grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+" "$BODY_FILE"; then
 	echo "✗ PR body must reference an issue (e.g., 'Closes #47')" >&2
 	rc=1
 fi
 
-# Check 2: template section headings. Mirror of pr-lint.yml's required
-# headings — '## Summary' and '## Test plan'.
+# Check 2: template section headings. Line-anchored to match the actual
+# heading (not a substring inside prose or a fenced code block).
 MISSING=""
 for heading in "## Summary" "## Test plan"; do
-	if ! echo "$BODY" | grep -qF "$heading"; then
+	# Escape the heading for ERE then anchor with `^...[[:space:]]*$`.
+	esc=$(printf '%s' "$heading" | sed 's/[][\\.*^$(){}?+|]/\\&/g')
+	if ! grep -qE "^${esc}[[:space:]]*$" "$BODY_FILE"; then
 		MISSING="$MISSING $heading"
 	fi
 done
@@ -127,6 +131,14 @@ fi
 
 # Check 3: area:* label (skippable for pre-create when labeler hasn't fired yet).
 if [ "$SKIP_LABEL_CHECK" = "0" ]; then
+	# Validate LABELS_JSON shape up front so a malformed --labels arg
+	# (e.g., 'area:foo' instead of '["area:foo"]') gets a clear error
+	# instead of a misleading "no area:* label" finding.
+	if ! _jq_err=$(printf '%s' "$LABELS_JSON" | jq -e 'type=="array"' 2>&1 >/dev/null); then
+		echo "error: --labels must be a JSON array (got: $LABELS_JSON)" >&2
+		[ -n "$_jq_err" ] && echo "  jq stderr: $_jq_err" >&2
+		exit 2
+	fi
 	# Resolve allowed area labels from .github/labels.yml SSOT — adding a
 	# new area:* there is immediately accepted without editing this script.
 	REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -143,7 +155,7 @@ if [ "$SKIP_LABEL_CHECK" = "0" ]; then
 	FOUND=0
 	while IFS= read -r label; do
 		[ -z "$label" ] && continue
-		if echo "$LABELS_JSON" | jq -e --arg l "$label" 'index($l)' >/dev/null 2>&1; then
+		if printf '%s' "$LABELS_JSON" | jq -e --arg l "$label" 'index($l)' >/dev/null 2>&1; then
 			FOUND=1
 			break
 		fi

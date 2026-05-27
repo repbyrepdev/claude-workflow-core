@@ -315,26 +315,39 @@ if [ -n "$REQUIRED" ]; then
 fi
 
 # #120: enforce priority:* + area:* labels at create time. The original
-# convention deferred this to server-side ai-triage, but ai-triage uses
-# regex-based classification (per feedback_ai_triage_regex_regression),
-# misclassifies on ACTIONS_MODE=local, and silently drops labels — so
+# convention deferred this to server-side label classification, but it
+# regex-misclassifies on ACTIONS_MODE=local and silently drops labels —
 # operator-set labels at create are the correct enforcement point.
-# Override path: ISSUE_LABELS_REQUIRED_SKIP=1 (audit-logged at use site).
-if [ "${ISSUE_LABELS_REQUIRED_SKIP:-0}" != "1" ]; then
+# Override: ISSUE_LABELS_REQUIRED_SKIP=1 (audit-logged to
+# .claude/logs/dogfood-gate-skip.jsonl).
+if [ "${ISSUE_LABELS_REQUIRED_SKIP:-0}" = "1" ]; then
+	echo "warn: ISSUE_LABELS_REQUIRED_SKIP=1 — issue label gate bypassed" >&2
+	_skip_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+	mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
+	jq -nc --arg ts "$(date -u +%FT%TZ)" --arg env "ISSUE_LABELS_REQUIRED_SKIP" \
+		--arg wrapper "github-issue-creation" \
+		'{ts:$ts, env:$env, wrapper:$wrapper}' >>"$_skip_log" 2>/dev/null || true
+else
 	HAS_PRIORITY=0
 	HAS_AREA=0
 	for l in "${LABELS[@]+"${LABELS[@]}"}"; do
-		case "$l" in
-		priority:*) HAS_PRIORITY=1 ;;
-		area:*) HAS_AREA=1 ;;
+		# Normalize to lowercase + strip surrounding whitespace so
+		# 'Priority:P2' / ' priority:p2 ' both match. GitHub label names
+		# are case-insensitive at the matching layer.
+		lower_l=$(printf '%s' "$l" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+		# `priority:?*` requires at least one char after the colon
+		# (rejects malformed 'priority:' with empty value).
+		case "$lower_l" in
+		priority:?*) HAS_PRIORITY=1 ;;
+		area:?*) HAS_AREA=1 ;;
 		esac
 	done
 	if [ "$HAS_PRIORITY" = "0" ] || [ "$HAS_AREA" = "0" ]; then
 		echo "error: issue must have BOTH a priority:* and an area:* label at create time" >&2
 		echo "  passed labels: ${LABELS[*]:-(none)}" >&2
 		echo "  fix: add --label priority:p2 --label area:infrastructure (or similar)" >&2
-		echo "  context: relying on server-side ai-triage drops labels under ACTIONS_MODE=local" >&2
-		echo "  override (rare): ISSUE_LABELS_REQUIRED_SKIP=1" >&2
+		echo "  context: server-side classification drops labels under ACTIONS_MODE=local" >&2
+		echo "  override (rare, audit-logged): ISSUE_LABELS_REQUIRED_SKIP=1" >&2
 		exit 2
 	fi
 fi

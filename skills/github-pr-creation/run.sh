@@ -125,18 +125,41 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# #122: branch-name convention validation at PR-creation time. Mirrors
-# the local pre-work check (meta-bootstrap.sh --target feature-branch)
-# at the moment the PR is about to land — if the branch name violates
-# convention, refuse before posting to GitHub. PR_BRANCH_VERIFY_SKIP=1
-# bypasses (e.g., hotfix branches with non-standard names).
-if [ "${PR_BRANCH_VERIFY_SKIP:-0}" != "1" ] && [ -x "$REPO_ROOT/scripts/meta-bootstrap.sh" ]; then
-	if ! "$REPO_ROOT/scripts/meta-bootstrap.sh" --target feature-branch >/dev/null 2>&1; then
-		echo "error: feature-branch verify failed — refusing to open PR" >&2
-		echo "  run: scripts/meta-bootstrap.sh --target feature-branch (for full output)" >&2
-		echo "  override: PR_BRANCH_VERIFY_SKIP=1" >&2
+# #122: feature-branch SSOT prereqs (branch name + issue exists + issue
+# has priority:* + area:* labels) verified at PR-creation time. The
+# delegate is `meta-bootstrap.sh --target feature-branch` — same rules
+# the operator should have hit at branch-create time, re-fired here so
+# a non-conventional branch can't reach GitHub. PR_BRANCH_VERIFY_SKIP=1
+# bypasses + audit-logs (e.g., hotfix branches with non-standard names).
+#
+# Fail-closed when meta-bootstrap.sh is missing/non-exec: silently
+# skipping would defeat the gate. Per feedback_build_infra_dont_skip:
+# missing infra fails-closed and forces install.
+if [ "${PR_BRANCH_VERIFY_SKIP:-0}" = "1" ]; then
+	echo "warn: PR_BRANCH_VERIFY_SKIP=1 — feature-branch SSOT verify bypassed" >&2
+	_skip_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+	mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
+	jq -nc --arg ts "$(date -u +%FT%TZ)" --arg env "PR_BRANCH_VERIFY_SKIP" \
+		--arg wrapper "github-pr-creation" \
+		'{ts:$ts, env:$env, wrapper:$wrapper}' >>"$_skip_log" 2>/dev/null || true
+else
+	if [ ! -x "$REPO_ROOT/scripts/meta-bootstrap.sh" ]; then
+		echo "error: scripts/meta-bootstrap.sh missing/non-exec — cannot verify branch convention" >&2
+		echo "  fix: install plugin meta-bootstrap, or set PR_BRANCH_VERIFY_SKIP=1 (audit-logged)" >&2
+		exit 3
+	fi
+	_verify_err=$(mktemp -t feature-branch-verify-err.XXXXXX) || _verify_err=""
+	if ! "$REPO_ROOT/scripts/meta-bootstrap.sh" --target feature-branch >/dev/null 2>"${_verify_err:-/dev/null}"; then
+		echo "error: feature-branch SSOT verify failed — refusing to open PR" >&2
+		if [ -n "$_verify_err" ] && [ -s "$_verify_err" ]; then
+			echo "  details:" >&2
+			head -20 "$_verify_err" | sed 's/^/    /' >&2
+		fi
+		echo "  override: PR_BRANCH_VERIFY_SKIP=1 (audit-logged)" >&2
+		[ -n "$_verify_err" ] && rm -f "$_verify_err"
 		exit 2
 	fi
+	[ -n "$_verify_err" ] && rm -f "$_verify_err"
 fi
 
 # v4.28-W3-C (#662): no-arg auto-fill for title (derive from latest
@@ -266,37 +289,65 @@ fi
 # instead of refusing — the previous behavior forced operators to either
 # pass --milestone explicitly OR pre-create via the GitHub UI mid-flow,
 # both of which add friction the wrapper can eliminate.
-# Override path: PR_MILESTONE_AUTO_CREATE=0 keeps strict refuse behavior.
+# Override path: PR_MILESTONE_AUTO_CREATE_SKIP=1 keeps strict refuse
+# behavior (polarity consistent with the other dogfood-gate SKIP envs).
 if [ -z "$MILESTONE" ]; then
 	ver=$(skc_extract_version_prefix)
 	if [ -n "$ver" ]; then
 		_milestone_err=$(mktemp -t milestone-err.XXXXXX)
+		# shellcheck disable=SC2064
+		trap "rm -f '$_milestone_err'" EXIT
 		_milestone_rc=0
 		MILESTONE=$(skc_match_milestone "$ver" 2>"$_milestone_err") || _milestone_rc=$?
 		if [ "$_milestone_rc" -ne 0 ]; then
 			# Distinguish "no open milestone" (auto-creatable) from
 			# "ambiguous match" or "gh failure" (not safe to auto-fix).
-			if [ "${PR_MILESTONE_AUTO_CREATE:-1}" = "1" ] &&
+			if [ "${PR_MILESTONE_AUTO_CREATE_SKIP:-0}" != "1" ] &&
 				grep -q "no open milestone matches" "$_milestone_err"; then
-				echo "milestone '$ver' missing — auto-creating (PR_MILESTONE_AUTO_CREATE=0 to disable)" >&2
-				if ! gh api "repos/:owner/:repo/milestones" -f title="$ver" \
-					-f state="open" >/dev/null 2>>"$_milestone_err"; then
-					echo "milestone auto-create failed:" >&2
-					cat "$_milestone_err" >&2
-					rm -f "$_milestone_err"
-					echo "Re-run with explicit --milestone <title>." >&2
-					exit 2
+				echo "milestone '$ver' missing — auto-creating (PR_MILESTONE_AUTO_CREATE_SKIP=1 to disable)" >&2
+				_create_out=$(mktemp -t milestone-create.XXXXXX)
+				# shellcheck disable=SC2064
+				trap "rm -f '$_milestone_err' '$_create_out'" EXIT
+				_create_rc=0
+				gh api "repos/:owner/:repo/milestones" -f title="$ver" \
+					-f state="open" >"$_create_out" 2>>"$_milestone_err" || _create_rc=$?
+				if [ "$_create_rc" -ne 0 ]; then
+					# 422 already_exists = race (concurrent run created
+					# the milestone). Re-resolve via skc_match_milestone
+					# to confirm + obtain canonical title.
+					if grep -qE "already_exists|already_taken" "$_milestone_err"; then
+						echo "milestone race: another run created '$ver' — re-resolving" >&2
+						_milestone_rc2=0
+						MILESTONE=$(skc_match_milestone "$ver" 2>>"$_milestone_err") || _milestone_rc2=$?
+						if [ "$_milestone_rc2" -ne 0 ]; then
+							echo "milestone re-resolve failed after 422:" >&2
+							cat "$_milestone_err" >&2
+							exit 2
+						fi
+					else
+						echo "milestone auto-create failed:" >&2
+						cat "$_milestone_err" >&2
+						echo "Re-run with explicit --milestone <title>." >&2
+						exit 2
+					fi
+				else
+					# Use canonical title from response (handles
+					# GitHub title normalization e.g. whitespace strip).
+					if command -v jq >/dev/null 2>&1; then
+						MILESTONE=$(jq -r '.title // empty' "$_create_out")
+					fi
+					[ -z "$MILESTONE" ] && MILESTONE=$ver
 				fi
-				MILESTONE=$ver
 			else
 				echo "milestone auto-resolve failed for prefix '$ver':" >&2
 				cat "$_milestone_err" >&2
-				rm -f "$_milestone_err"
 				echo "Re-run with explicit --milestone <title>." >&2
 				exit 2
 			fi
 		fi
-		rm -f "$_milestone_err"
+		# Trap handles cleanup; clear early for the success path.
+		trap - EXIT
+		rm -f "$_milestone_err" "${_create_out:-}"
 	fi
 fi
 
