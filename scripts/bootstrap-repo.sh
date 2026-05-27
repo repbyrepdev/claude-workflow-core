@@ -537,7 +537,7 @@ EOF
 _write .github/ISSUE_TEMPLATE/epic.yml 644 <<'EOF'
 name: Epic
 description: Parent of sub-issues
-labels: [epic, enhancement]
+labels: ["epic", "enhancement"]
 body:
   - type: input
     id: area
@@ -687,6 +687,69 @@ jobs:
           configuration-path: .github/labeler.yml
           sync-labels: true
 EOF
+
+# --- Apply labels via gh label create --------------------------------
+# Writing .github/labels.yml does not create labels on GitHub — that's
+# what label-sync.yml does, OR a manual `gh label create` per entry.
+# Run the create here so a freshly-bootstrapped repo doesn't ship with
+# area:* label gates failing on the first PR. Idempotent: `gh label
+# create --force` upserts.
+#
+# Skip-with-NOTE when: dry-run, gh missing, yq missing, no GitHub
+# remote, or labels.yml absent. Per-label failures surface their gh
+# stderr in the warn line so partial-apply isn't silent.
+_apply_labels() {
+	local count=0 failed=0 names color desc args err
+	if [ "$DRY_RUN" = "1" ]; then
+		_log "[dry-run] would apply labels from .github/labels.yml via gh label create"
+		return 0
+	fi
+	if ! command -v gh >/dev/null 2>&1; then
+		_log "NOTE: gh CLI not on PATH — skipping label apply (run label-sync workflow after first push)"
+		return 0
+	fi
+	if ! command -v yq >/dev/null 2>&1; then
+		_log "NOTE: yq not on PATH — skipping label apply (run label-sync workflow after first push)"
+		return 0
+	fi
+	if [ ! -f "$TARGET/.github/labels.yml" ]; then
+		_log "NOTE: target has no .github/labels.yml — skipping label apply"
+		return 0
+	fi
+	if ! git -C "$TARGET" remote get-url origin 2>/dev/null | grep -q github.com; then
+		_log "NOTE: target has no GitHub remote yet — skipping label apply"
+		_log "      labels will sync on first push via .github/workflows/label-sync.yml"
+		return 0
+	fi
+	_log "applying labels from .github/labels.yml via gh label create --force..."
+	# Materialize names outside process subst so yq rc is checkable.
+	if ! names=$(yq -r '.[].name' "$TARGET/.github/labels.yml" 2>&1); then
+		_log "WARN: yq failed to parse .github/labels.yml: $(head -1 <<<"$names")"
+		return 0
+	fi
+	while IFS= read -r name; do
+		[ -z "$name" ] && continue
+		# --arg-style binding avoids shell-injection via label-name interpolation.
+		color=$(yq -r --arg n "$name" '.[] | select(.name == $n) | .color' "$TARGET/.github/labels.yml")
+		desc=$(yq -r --arg n "$name" '.[] | select(.name == $n) | .description // ""' "$TARGET/.github/labels.yml")
+		args=(label create "$name" --color "$color" --force)
+		[ -n "$desc" ] && [ "$desc" != "null" ] && args+=(--description "$desc")
+		# Capture stderr so failure cause is visible (auth, rate-limit, color, etc).
+		err=$(cd "$TARGET" && gh "${args[@]}" 2>&1 >/dev/null) && {
+			count=$((count + 1))
+			continue
+		}
+		_log "  ⚠ failed to create label: $name — $(head -1 <<<"$err")"
+		failed=$((failed + 1))
+	done <<<"$names"
+	if [ "$failed" -gt 0 ]; then
+		_log "  ✓ applied $count label(s), $failed failed"
+	else
+		_log "  ✓ applied $count label(s)"
+	fi
+}
+
+_apply_labels
 
 # --- Summary ---------------------------------------------------------
 _log ""
