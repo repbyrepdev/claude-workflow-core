@@ -342,13 +342,31 @@ else
 		area:?*) HAS_AREA=1 ;;
 		esac
 	done
-	if [ "$HAS_PRIORITY" = "0" ] || [ "$HAS_AREA" = "0" ]; then
-		echo "error: issue must have BOTH a priority:* and an area:* label at create time" >&2
-		echo "  passed labels: ${LABELS[*]:-(none)}" >&2
-		echo "  fix: add --label priority:p2 --label area:infrastructure (or similar)" >&2
-		echo "  context: server-side classification drops labels under ACTIONS_MODE=local" >&2
-		echo "  override (rare, audit-logged): ISSUE_LABELS_REQUIRED_SKIP=1" >&2
-		exit 2
+	# #120 dogfood-fix intent: never make the operator re-run with
+	# missing labels. Auto-apply safe defaults instead — priority:needs-triage
+	# signals 'human reclassifies' (matches ai-triage's fallback when
+	# confidence <0.7) and area:infrastructure is the most common bucket.
+	AUTO_APPLIED=()
+	if [ "$HAS_PRIORITY" = "0" ]; then
+		LABELS+=("priority:needs-triage")
+		AUTO_APPLIED+=("priority:needs-triage")
+	fi
+	if [ "$HAS_AREA" = "0" ]; then
+		LABELS+=("area:infrastructure")
+		AUTO_APPLIED+=("area:infrastructure")
+	fi
+	if [ "${#AUTO_APPLIED[@]}" -gt 0 ]; then
+		echo "info: auto-applied missing create-time labels: ${AUTO_APPLIED[*]}" >&2
+		_apply_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+		mkdir -p "$(dirname "$_apply_log")" 2>/dev/null || true
+		# shellcheck disable=SC2207
+		_applied_json=$(printf '%s\n' "${AUTO_APPLIED[@]}" | jq -R . | jq -sc .)
+		jq -nc --arg ts "$(date -u +%FT%TZ)" \
+			--arg env "ISSUE_LABELS_AUTO_APPLIED" \
+			--arg wrapper "github-issue-creation" \
+			--argjson labels "$_applied_json" \
+			'{ts:$ts, env:$env, wrapper:$wrapper, auto_applied:$labels}' \
+			>>"$_apply_log" 2>/dev/null || true
 	fi
 fi
 

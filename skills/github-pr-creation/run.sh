@@ -295,19 +295,42 @@ if [ -z "$MILESTONE" ]; then
 	ver=$(skc_extract_version_prefix)
 	if [ -n "$ver" ]; then
 		_milestone_err=$(mktemp -t milestone-err.XXXXXX)
+		# Compose with any existing EXIT trap (e.g., Copilot DRAFT_DIR
+		# cleanup) instead of clobbering it. Capture current trap body
+		# (if any) and append our cleanup commands.
+		_prev_trap=$(trap -p EXIT 2>/dev/null | sed -E "s/^trap -- '(.*)' EXIT$/\1/" | sed "s/'\\\\''/'/g")
+		_new_trap="rm -f '$_milestone_err' \"\${_create_out:-}\""
+		if [ -n "$_prev_trap" ] && [ "$_prev_trap" != "trap -- '' EXIT" ]; then
+			_new_trap="${_prev_trap}; ${_new_trap}"
+		fi
 		# shellcheck disable=SC2064
-		trap "rm -f '$_milestone_err'" EXIT
+		trap "$_new_trap" EXIT
 		_milestone_rc=0
 		MILESTONE=$(skc_match_milestone "$ver" 2>"$_milestone_err") || _milestone_rc=$?
 		if [ "$_milestone_rc" -ne 0 ]; then
+			# PR_MILESTONE_AUTO_CREATE_SKIP=1: audit-log + take the
+			# strict refuse path. Without the log, the skip leaves no
+			# trace (contract docs promise audit-log for all SKIP envs).
+			if [ "${PR_MILESTONE_AUTO_CREATE_SKIP:-0}" = "1" ]; then
+				echo "warn: PR_MILESTONE_AUTO_CREATE_SKIP=1 — milestone auto-create bypassed" >&2
+				_skip_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+				mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
+				jq -nc --arg ts "$(date -u +%FT%TZ)" \
+					--arg env "PR_MILESTONE_AUTO_CREATE_SKIP" \
+					--arg wrapper "github-pr-creation" \
+					--arg version "$ver" \
+					'{ts:$ts, env:$env, wrapper:$wrapper, version:$version}' \
+					>>"$_skip_log" 2>/dev/null || true
+				echo "milestone auto-resolve failed for prefix '$ver':" >&2
+				cat "$_milestone_err" >&2
+				echo "Re-run with explicit --milestone <title>." >&2
+				exit 2
+			fi
 			# Distinguish "no open milestone" (auto-creatable) from
 			# "ambiguous match" or "gh failure" (not safe to auto-fix).
-			if [ "${PR_MILESTONE_AUTO_CREATE_SKIP:-0}" != "1" ] &&
-				grep -q "no open milestone matches" "$_milestone_err"; then
+			if grep -q "no open milestone matches" "$_milestone_err"; then
 				echo "milestone '$ver' missing — auto-creating (PR_MILESTONE_AUTO_CREATE_SKIP=1 to disable)" >&2
 				_create_out=$(mktemp -t milestone-create.XXXXXX)
-				# shellcheck disable=SC2064
-				trap "rm -f '$_milestone_err' '$_create_out'" EXIT
 				_create_rc=0
 				gh api "repos/:owner/:repo/milestones" -f title="$ver" \
 					-f state="open" >"$_create_out" 2>>"$_milestone_err" || _create_rc=$?
@@ -345,9 +368,16 @@ if [ -z "$MILESTONE" ]; then
 				exit 2
 			fi
 		fi
-		# Trap handles cleanup; clear early for the success path.
-		trap - EXIT
+		# Restore previous trap state (if any) for the success path —
+		# the per-block cleanup below handles temp file removal so the
+		# downstream code still gets its original EXIT handler.
 		rm -f "$_milestone_err" "${_create_out:-}"
+		if [ -n "$_prev_trap" ] && [ "$_prev_trap" != "trap -- '' EXIT" ]; then
+			# shellcheck disable=SC2064
+			trap "$_prev_trap" EXIT
+		else
+			trap - EXIT
+		fi
 	fi
 fi
 
@@ -481,16 +511,30 @@ fi
 # closes the loop by verifying the full gate (body + issue link + area
 # label) that the remote pr-lint.yml would enforce. Warn-only — the PR
 # is already on GitHub; if it fails, a fix-up commit is the remedy.
-# Skip if pr-labeler failed: the area-label gate would fail for reasons
-# unrelated to body content, making the message misleading for the
-# operator debugging the failure.
-if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "1" ]; then
-	echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
-	if ! "$LINT" "$PR_NUM"; then
-		echo "⚠ pr-lint full gate failed on #$PR_NUM post-labeler — push a fix-up commit to satisfy the remote gate." >&2
+#
+# Run the full gate when EITHER pr-labeler succeeded OR the PR already
+# has an area:* label (manually applied via --label, see CR #134 r1).
+# Only skip when there's no area:* on the PR at all — that's the case
+# where the area-label gate would fail for unrelated reasons.
+if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
+	if [ "$LABELER_OK" = "1" ]; then
+		_pr_has_area=1
+	else
+		# Check whether the live PR already has an area:* label
+		# (manually applied at create time via --label).
+		_pr_has_area=0
+		if gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null | grep -qE '^area:'; then
+			_pr_has_area=1
+		fi
 	fi
-elif [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "0" ]; then
-	echo "⚠ skipping post-labeler pr-lint — labeler did not succeed, label check would fail for the wrong reason." >&2
+	if [ "$_pr_has_area" = "1" ]; then
+		echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
+		if ! "$LINT" "$PR_NUM"; then
+			echo "⚠ pr-lint full gate failed on #$PR_NUM — push a fix-up commit to satisfy the remote gate." >&2
+		fi
+	else
+		echo "⚠ skipping post-labeler pr-lint — no area:* label on PR (labeler failed AND none passed via --label)." >&2
+	fi
 fi
 
 # v4.24-A (#566) wire-in: fire project-board-sync.sh --on-pr-open so the

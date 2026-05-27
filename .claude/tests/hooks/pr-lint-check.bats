@@ -3,7 +3,14 @@
 
 setup() {
 	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
-	SCRIPT="${REPO_ROOT}/.claude/hooks/pr-lint-check.sh"
+	# Prefer the canonical `hooks/pr-lint-check.sh` path; fall back to the
+	# `.claude/hooks/` symlink alias for backward compat with older
+	# consumer-repo layouts where the symlink isn't present.
+	if [ -f "${REPO_ROOT}/hooks/pr-lint-check.sh" ]; then
+		SCRIPT="${REPO_ROOT}/hooks/pr-lint-check.sh"
+	else
+		SCRIPT="${REPO_ROOT}/.claude/hooks/pr-lint-check.sh"
+	fi
 	TEST_TMP=$(mktemp -d -t pr-lint-check.XXXXXX) || {
 		echo "FATAL: mktemp failed" >&2
 		return 1

@@ -32,7 +32,8 @@ set -euo pipefail
 #   3  internal failure (missing dep, malformed input)
 
 BODY_FILE=""
-LABELS_JSON="[]"
+LABELS_JSON=""
+LABELS_PROVIDED=0
 SKIP_LABEL_CHECK=0
 
 _usage() {
@@ -64,6 +65,7 @@ while [ $# -gt 0 ]; do
 			exit 2
 		fi
 		LABELS_JSON=$2
+		LABELS_PROVIDED=1
 		shift 2
 		;;
 	--skip-label-check)
@@ -86,18 +88,18 @@ if [ -z "$BODY_FILE" ]; then
 	echo "error: --body is required" >&2
 	exit 2
 fi
+# `--labels` is required unless `--skip-label-check` is set (pre-create
+# path). Defaulting to `[]` previously hid missing args as rc=1
+# violations instead of the documented rc=2 argparse contract.
+if [ "$LABELS_PROVIDED" = "0" ] && [ "$SKIP_LABEL_CHECK" = "0" ]; then
+	echo "error: --labels is required (or pass --skip-label-check for pre-create mode)" >&2
+	exit 2
+fi
 if [ ! -f "$BODY_FILE" ]; then
 	echo "error: --body file not found: $BODY_FILE" >&2
 	exit 3
 fi
-if ! command -v jq >/dev/null 2>&1; then
-	echo "error: jq required for label parsing" >&2
-	exit 3
-fi
-if ! command -v yq >/dev/null 2>&1; then
-	echo "error: yq required for SSOT area-label derivation" >&2
-	exit 3
-fi
+# jq/yq only needed when label check actually runs — see Check 3 below.
 
 rc=0
 
@@ -131,6 +133,16 @@ fi
 
 # Check 3: area:* label (skippable for pre-create when labeler hasn't fired yet).
 if [ "$SKIP_LABEL_CHECK" = "0" ]; then
+	# Tool prereqs — only required when label-check actually runs (avoids
+	# spurious rc=3 in --skip-label-check mode on machines lacking jq/yq).
+	if ! command -v jq >/dev/null 2>&1; then
+		echo "error: jq required for label parsing" >&2
+		exit 3
+	fi
+	if ! command -v yq >/dev/null 2>&1; then
+		echo "error: yq required for SSOT area-label derivation" >&2
+		exit 3
+	fi
 	# Validate LABELS_JSON shape up front so a malformed --labels arg
 	# (e.g., 'area:foo' instead of '["area:foo"]') gets a clear error
 	# instead of a misleading "no area:* label" finding.
