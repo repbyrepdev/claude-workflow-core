@@ -2265,7 +2265,7 @@ mirror-report)
 	_helper=$(_shipcycle_resolve scripts/cr/mirror-coverage.sh)
 	if [ ! -x "$_helper" ]; then
 		echo "ship-pr-cycle: mirror-coverage helper missing or non-exec: $_helper" >&2
-		exit 3
+		exit 2
 	fi
 	"$_helper" report "$@"
 	;;
