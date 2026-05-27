@@ -36,6 +36,8 @@ TARGET=""
 PIN_TAG="v0.8.5"
 DRY_RUN=0
 FORCE=0
+VERIFY=0
+VERIFY_SCOPE="both"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -54,6 +56,24 @@ while [ $# -gt 0 ]; do
 	--force)
 		FORCE=1
 		shift
+		;;
+	--verify)
+		VERIFY=1
+		shift
+		;;
+	--scope)
+		if [ $# -lt 2 ]; then
+			echo "error: --scope requires a value (plugin|consumer|both)" >&2
+			exit 2
+		fi
+		case "$2" in
+		plugin | consumer | both) VERIFY_SCOPE="$2" ;;
+		*)
+			echo "error: --scope must be one of: plugin, consumer, both (got: $2)" >&2
+			exit 2
+			;;
+		esac
+		shift 2
 		;;
 	-h | --help)
 		grep '^#' "$0" | head -35
@@ -77,7 +97,7 @@ done
 
 if [ -z "$TARGET" ]; then
 	echo "error: missing target directory" >&2
-	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force]" >&2
+	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--verify] [--scope plugin|consumer|both]" >&2
 	exit 2
 fi
 
@@ -133,6 +153,119 @@ else
 		fi
 	fi
 	[ -n "$PARSE_ERR" ] && rm -f "$PARSE_ERR"
+fi
+
+# Short-circuit early when --verify so the manifest-parity NOTE/WARN
+# lines above are the only setup noise verify mode emits. Anything
+# below this point is bootstrap (write/apply) territory.
+
+# --- --verify mode ---------------------------------------------------
+# Reads bootstrap-manifest.yml + .github/labels.yml, asserts each file
+# path exists in $TARGET and each label is present on the remote.
+# Idempotent: invokable repeatedly. Exits 0 on clean, non-zero with a
+# per-issue diff line on drift. Skips remote-label check when no gh or
+# no GitHub remote (target may be pre-push).
+_verify_target() {
+	local rc=0 missing_files=0 wrong_mode=0 missing_labels=0 verified_count=0
+	if [ ! -d "$TARGET" ]; then
+		_log "ERROR: --verify target $TARGET is not a directory"
+		return 2
+	fi
+	if [ ! -f "$MANIFEST_PATH" ]; then
+		_log "ERROR: bootstrap-manifest.yml not found at $MANIFEST_PATH — cannot verify"
+		return 2
+	fi
+	if ! command -v yq >/dev/null 2>&1; then
+		_log "ERROR: yq not on PATH — cannot verify"
+		return 2
+	fi
+	_log "verifying $TARGET against bootstrap-manifest.yml (scope=$VERIFY_SCOPE)..."
+	# Files: every manifest path must exist; mode must match.
+	# scope filter: entries without `scope:` default to "both" (visible in
+	# all scopes). Entries marked scope: consumer skip when --scope=plugin.
+	local count
+	count=$(yq -r '.files | length' "$MANIFEST_PATH")
+	local i=0
+	while [ "$i" -lt "$count" ]; do
+		local path mode actual_mode entry_scope
+		path=$(yq -r ".files[$i].path" "$MANIFEST_PATH")
+		mode=$(yq -r ".files[$i].mode" "$MANIFEST_PATH")
+		entry_scope=$(yq -r ".files[$i].scope // \"both\"" "$MANIFEST_PATH")
+		# Skip when current scope doesn't include this entry.
+		if [ "$VERIFY_SCOPE" = "plugin" ] && [ "$entry_scope" = "consumer" ]; then
+			i=$((i + 1))
+			continue
+		fi
+		if [ "$VERIFY_SCOPE" = "consumer" ] && [ "$entry_scope" = "plugin" ]; then
+			i=$((i + 1))
+			continue
+		fi
+		if [ ! -f "$TARGET/$path" ]; then
+			_log "  ✗ missing: $path"
+			missing_files=$((missing_files + 1))
+		else
+			# stat: GNU `-c '%a'` first (returns octal mode), then BSD `-f '%Lp'`
+			# fallback. Order matters: GNU stat's `-f` returns filesystem info
+			# (not a format string), so trying BSD first on Linux yields garbage
+			# instead of erroring.
+			actual_mode=$(stat -c '%a' "$TARGET/$path" 2>/dev/null || stat -f '%Lp' "$TARGET/$path" 2>/dev/null || echo "")
+			if [ -n "$actual_mode" ] && [ "$actual_mode" != "$mode" ]; then
+				_log "  ⚠ mode mismatch: $path expected=$mode actual=$actual_mode"
+				wrong_mode=$((wrong_mode + 1))
+			fi
+			verified_count=$((verified_count + 1))
+		fi
+		i=$((i + 1))
+	done
+	[ "$missing_files" -gt 0 ] && rc=1
+	# Labels: compare manifest.labels[].name against gh label list when
+	# remote available; otherwise verify labels.yml file is at least present.
+	if [ ! -f "$TARGET/.github/labels.yml" ]; then
+		_log "  ✗ missing: .github/labels.yml (labels SSOT)"
+		rc=1
+	elif command -v gh >/dev/null 2>&1 && git -C "$TARGET" remote get-url origin 2>/dev/null | grep -q github.com; then
+		local expected actual gh_err
+		expected=$(yq -r '.labels[].name' "$MANIFEST_PATH" | sort -u)
+		# --limit 500 per project gh-query-limits guidance (default 30 truncates silently).
+		# Capture stderr separately so auth/rate-limit/network errors are visible
+		# instead of being swallowed and indistinguishable from "0 labels exist".
+		gh_err=$(mktemp -t verify-gh-labels.XXXXXX 2>/dev/null || echo "")
+		if ! actual=$( (cd "$TARGET" && gh label list --limit 500 --json name --jq '.[].name' 2>"${gh_err:-/dev/null}") | sort -u); then
+			_log "  ✗ gh label list failed: $([ -n "$gh_err" ] && head -1 "$gh_err")"
+			rc=1
+		elif [ -z "$actual" ]; then
+			# Empty result on a real remote = auth/rate-limit/permission failure.
+			# Distinct from "remote unreachable" (the elif branch below).
+			_log "  ✗ gh label list returned empty (auth? rate-limit? permission?) — failing closed"
+			[ -n "$gh_err" ] && [ -s "$gh_err" ] && _log "      gh stderr: $(head -1 "$gh_err")"
+			rc=1
+		else
+			while IFS= read -r want; do
+				[ -z "$want" ] && continue
+				echo "$actual" | grep -qFx "$want" || {
+					_log "  ✗ label missing on remote: $want"
+					missing_labels=$((missing_labels + 1))
+				}
+			done <<<"$expected"
+		fi
+		[ -n "$gh_err" ] && rm -f "$gh_err"
+	else
+		_log "  NOTE: gh / GitHub remote unavailable — skipping label-remote check (run after first push)"
+	fi
+	[ "$missing_labels" -gt 0 ] && rc=1
+	if [ "$rc" -eq 0 ] && [ "$wrong_mode" -eq 0 ]; then
+		_log "  ✓ verify clean: $verified_count file(s) verified, labels match manifest"
+	elif [ "$rc" -eq 0 ]; then
+		_log "  ⚠ verify completed with $wrong_mode mode mismatch(es) — non-blocking"
+	else
+		_log "  ✗ verify FAILED: $missing_files missing file(s), $missing_labels missing label(s)"
+	fi
+	return "$rc"
+}
+
+if [ "$VERIFY" = "1" ]; then
+	_verify_target
+	exit $?
 fi
 
 # Create target if missing (always create in dry-run too so subsequent

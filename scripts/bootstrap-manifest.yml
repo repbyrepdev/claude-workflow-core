@@ -19,12 +19,20 @@ schema_version: 1
 files:
   - path: .pre-commit-config.yaml
     mode: "644"
+  # Consumer-only shims: the plugin itself doesn't need these because
+  # it IS the plugin (its real skills live under skills/ship-pr-cycle/).
+  # --verify --scope=both checks consumer paths; --verify --scope=plugin skips them.
   - path: .claude/skills/ship-pr-cycle/run.sh
     mode: "755"
+    scope: consumer
   - path: .claude/skills/ship-pr-cycle/SKILL.md
     mode: "644"
+    scope: consumer
+  # Consumer-only: gitignored in plugin repo (plugin uses its own
+  # hooks/review-log.sh at the top level).
   - path: .claude/hooks/review-log.sh
     mode: "755"
+    scope: consumer
   - path: .github/pull_request_template.md
     mode: "644"
   - path: .github/commit-template.yml
