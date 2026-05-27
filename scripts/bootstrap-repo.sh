@@ -444,9 +444,22 @@ description: Something broken
 labels: [bug]
 body:
   - type: input
+    id: parent
+    attributes:
+      label: Parent epic
+      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      placeholder: "#NNN"
+    validations:
+      required: true
+  - type: dropdown
     id: area
     attributes:
       label: Area
+      description: AI triage reads this and applies the matching area:* label automatically.
+      options:
+        - Infrastructure
+        - Docs
+        - Plugin-manifest
     validations:
       required: true
   - type: textarea
@@ -463,9 +476,22 @@ description: New capability
 labels: [enhancement]
 body:
   - type: input
+    id: parent
+    attributes:
+      label: Parent epic
+      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      placeholder: "#NNN"
+    validations:
+      required: true
+  - type: dropdown
     id: area
     attributes:
       label: Area
+      description: AI triage reads this and applies the matching area:* label automatically.
+      options:
+        - Infrastructure
+        - Docs
+        - Plugin-manifest
     validations:
       required: true
   - type: textarea
@@ -482,9 +508,22 @@ description: Sub-issue under an epic
 labels: []
 body:
   - type: input
+    id: parent
+    attributes:
+      label: Parent epic
+      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      placeholder: "#NNN"
+    validations:
+      required: true
+  - type: dropdown
     id: area
     attributes:
       label: Area
+      description: AI triage reads this and applies the matching area:* label automatically.
+      options:
+        - Infrastructure
+        - Docs
+        - Plugin-manifest
     validations:
       required: true
   - type: textarea
