@@ -359,14 +359,19 @@ else
 		echo "info: auto-applied missing create-time labels: ${AUTO_APPLIED[*]}" >&2
 		_apply_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
 		mkdir -p "$(dirname "$_apply_log")" 2>/dev/null || true
-		# shellcheck disable=SC2207
-		_applied_json=$(printf '%s\n' "${AUTO_APPLIED[@]}" | jq -R . | jq -sc .)
-		jq -nc --arg ts "$(date -u +%FT%TZ)" \
-			--arg env "ISSUE_LABELS_AUTO_APPLIED" \
-			--arg wrapper "github-issue-creation" \
-			--argjson labels "$_applied_json" \
-			'{ts:$ts, env:$env, wrapper:$wrapper, auto_applied:$labels}' \
-			>>"$_apply_log" 2>/dev/null || true
+		# Audit-log writes are best-effort — guard with `command -v jq`
+		# + `|| _applied_json='[]'` fallback so a jq parse failure or
+		# missing-jq env can't abort the wrapper under set -euo pipefail
+		# before gh issue create runs.
+		if command -v jq >/dev/null 2>&1; then
+			_applied_json=$(printf '%s\n' "${AUTO_APPLIED[@]}" | jq -R . | jq -sc . 2>/dev/null) || _applied_json='[]'
+			jq -nc --arg ts "$(date -u +%FT%TZ)" \
+				--arg env "ISSUE_LABELS_AUTO_APPLIED" \
+				--arg wrapper "github-issue-creation" \
+				--argjson labels "$_applied_json" \
+				'{ts:$ts, env:$env, wrapper:$wrapper, auto_applied:$labels}' \
+				>>"$_apply_log" 2>/dev/null || true
+		fi
 	fi
 fi
 

@@ -521,9 +521,17 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 		_pr_has_area=1
 	else
 		# Check whether the live PR already has an area:* label
-		# (manually applied at create time via --label).
+		# (manually applied at create time via --label). Capture gh
+		# rc separately so a gh API failure surfaces as a clear warn
+		# instead of being silently swallowed (`| grep` would treat
+		# both API failure and "no area label" as "skip").
 		_pr_has_area=0
-		if gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null | grep -qE '^area:'; then
+		_pr_labels=""
+		_pr_labels_rc=0
+		_pr_labels=$(gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null) || _pr_labels_rc=$?
+		if [ "$_pr_labels_rc" -ne 0 ]; then
+			echo "⚠ could not read PR labels for #$PR_NUM (gh rc=$_pr_labels_rc) — skipping post-labeler pr-lint probe." >&2
+		elif printf '%s\n' "$_pr_labels" | tr '[:upper:]' '[:lower:]' | grep -qE '^area:'; then
 			_pr_has_area=1
 		fi
 	fi
