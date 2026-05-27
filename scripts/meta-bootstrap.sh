@@ -319,8 +319,13 @@ _dispatch_machine() {
 		return 0
 	fi
 	_log "running bootstrap-machine.sh..."
-	if ! "$script_dir/bootstrap-machine.sh"; then
-		local bm_rc=$?
+	# `cmd || rc=$?` captures the real exit code under `set -e` — using
+	# `if ! cmd; then bm_rc=$?` would store the status of `! cmd` (always 0
+	# on failure), not bootstrap-machine.sh's actual exit code.
+	# See feedback_rc_capture_set_e: this is the project-blessed pattern.
+	local bm_rc=0
+	"$script_dir/bootstrap-machine.sh" || bm_rc=$?
+	if [ "$bm_rc" -ne 0 ]; then
 		_log "ERROR: bootstrap-machine.sh failed (rc=$bm_rc); aborting before verify"
 		return 1
 	fi
