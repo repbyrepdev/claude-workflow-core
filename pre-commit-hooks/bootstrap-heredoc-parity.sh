@@ -45,6 +45,11 @@ PARITY_PATHS=(
 # additions automatically widen the should_run trigger.
 STAGED=$(git diff --cached --name-only 2>/dev/null || true)
 should_run=0
+# Empty STAGED = manual invocation outside the pre-commit framework
+# (bats tests, ad-hoc audit, CI direct call). Real pre-commit only
+# invokes this hook when matching files are staged, so the empty
+# branch isn't the "nothing-to-check" case — it's the "manual run,
+# always check" case.
 if [ -z "$STAGED" ]; then
 	should_run=1
 else
