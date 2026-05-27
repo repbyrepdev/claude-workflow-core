@@ -1,0 +1,8 @@
+# .shellcheckrc — global shellcheck config for the plugin source.
+#
+# SC1091 (Not following: ...): we use dynamic `. "$VAR/path.sh"` for
+#   plugin-resolved helper sources. shellcheck-x would follow these
+#   but the pre-commit hook doesn't run -x.
+# SC2016 (Expressions don't expand in single quotes): legitimate
+#   usage in GraphQL query payloads (jq + gh api -f query='...').
+disable=SC1091,SC2016

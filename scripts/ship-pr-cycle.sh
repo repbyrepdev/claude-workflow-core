@@ -132,13 +132,12 @@ _phase1_directive_marker_file() {
 _write_phase1_directive_marker() {
 	# v4.28-W4 (#732): write phase1 directive text to marker so Claude
 	# sees it on next UserPromptSubmit even if the orchestrator ran
-	# detached (post-commit-ship-cycle.sh fires resume detached;
-	# stdout lands in a log Claude doesn't read by default).
-	# CR-in-CI #732 r2 major: mkdir best-effort under set -e —
-	# scm_warn + return 0 on failure so caller (cmd_next) doesn't
-	# abort the orchestrator if the marker dir can't be created
-	# (rare: read-only fs, permission, /tmp full); marker is an
-	# OPTIONAL context-injection surface, not critical state.
+	# detached.
+	# v0.10.0 (#92): NONCE-WRAPPED. Generates a UUID nonce, writes
+	# nonce on line 1 + directive text on line 2..N, and stores the
+	# nonce in the per-SHA state JSON under .phase1_directive_nonce.
+	# ship-cycle-guard.sh Agent path validates sentinel-content ==
+	# state-JSON-nonce to defeat touch-bypass of the empty sentinel.
 	local sha=$1
 	local text=$2
 	local marker
@@ -147,10 +146,73 @@ _write_phase1_directive_marker() {
 		scm_warn "phase1-directive marker dir create failed at $STATE_DIR — Claude may miss the hand-off; manual fire required"
 		return 0
 	}
-	printf '%s\n' "$text" >"$marker" || {
-		scm_warn "phase1-directive marker write failed at $marker — Claude may miss the hand-off; manual fire required"
+	# Generate a UUID nonce. Prefer uuidgen (Linux/macOS), fall back
+	# to /proc/sys/kernel/random/uuid (Linux), fall back to a
+	# python3 oneliner if both missing.
+	local nonce=""
+	if command -v uuidgen >/dev/null 2>&1; then
+		nonce=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')
+	fi
+	if [ -z "$nonce" ] && [ -r /proc/sys/kernel/random/uuid ]; then
+		nonce=$(tr -d '\n' </proc/sys/kernel/random/uuid 2>/dev/null)
+	fi
+	if [ -z "$nonce" ] && command -v python3 >/dev/null 2>&1; then
+		nonce=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+	fi
+	if [ -z "$nonce" ]; then
+		# CR PR #99 MAJOR: fallback used to write a text-only marker
+		# without a nonce, producing a sentinel the guard ALWAYS
+		# rejects ('sentinel empty' or 'no nonce on line 1'). That's
+		# silent degradation: the orchestrator returns 0 but every
+		# subsequent Agent call fails with a misleading 'touch-bypass'
+		# message. Fail loudly so operator knows to install a UUID
+		# source (uuidgen / python3 / /proc/sys/kernel/random/uuid).
+		scm_warn "phase1-directive: nonce generation failed (no uuidgen / /proc / python3) — emit aborted; install uuidgen via 'brew install util-linux' or 'apt install uuid-runtime'"
 		return 0
-	}
+	fi
+	# v0.10.0 (#92 r2): write STATE JSON FIRST, sentinel SECOND.
+	# Inverse order produced a window where guard saw new-sentinel-
+	# nonce vs old-state-nonce → false-positive 'touch-bypass' deny.
+	# With state-first ordering, between the two atomic renames the
+	# sentinel either doesn't exist or has the OLD nonce — both safe.
+	# Use mktemp (not $$) to avoid symlink-race with predictable
+	# tmp names.
+	local state_file="$STATE_DIR/$sha.json"
+	if [ ! -f "$state_file" ]; then
+		scm_warn "phase1-directive: state file $state_file missing — emit aborted (run 'ship-pr-cycle.sh start' to initialize)"
+		return 0
+	fi
+	local tmp_state
+	if ! tmp_state=$(mktemp "$state_file.XXXXXX" 2>/dev/null); then
+		scm_warn "phase1-directive: state-nonce mktemp failed (state dir not writable?) — emit aborted"
+		return 0
+	fi
+	if ! jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' "$state_file" >"$tmp_state" 2>/dev/null; then
+		scm_warn "phase1-directive state-nonce jq merge failed for $state_file"
+		rm -f "$tmp_state" 2>/dev/null || true
+		return 0
+	fi
+	if ! mv "$tmp_state" "$state_file"; then
+		scm_warn "phase1-directive state-nonce rename failed at $state_file"
+		rm -f "$tmp_state" 2>/dev/null || true
+		return 0
+	fi
+	# State JSON now has the new nonce. Write the sentinel.
+	local tmp_marker
+	if ! tmp_marker=$(mktemp "$marker.XXXXXX" 2>/dev/null); then
+		scm_warn "phase1-directive: marker mktemp failed — sentinel not written, Agent calls will be denied until next emit"
+		return 0
+	fi
+	if ! printf '%s\n%s\n' "$nonce" "$text" >"$tmp_marker"; then
+		scm_warn "phase1-directive marker write failed at $tmp_marker"
+		rm -f "$tmp_marker" 2>/dev/null || true
+		return 0
+	fi
+	if ! mv "$tmp_marker" "$marker"; then
+		scm_warn "phase1-directive marker rename failed at $marker"
+		rm -f "$tmp_marker" 2>/dev/null || true
+		return 0
+	fi
 }
 
 _clear_phase1_directive_marker() {
@@ -171,6 +233,12 @@ _clear_phase1_directive_marker() {
 	marker=$(_phase1_directive_marker_file "$sha")
 	rm -f "$marker" ||
 		scm_warn "phase1-directive marker cleanup failed at $marker — stale directive may persist until removed manually"
+	# CR PR #99 MAJOR (v0.10.1 r2): nonce deletion is now folded into
+	# _set_stage's atomic jq transaction (single-write commit of stage
+	# transition + nonce delete). Removed the prior second-write
+	# best-effort cleanup here — it was a race window where process
+	# death between stage-write and nonce-clear could carry a valid
+	# nonce past Phase 1.
 }
 
 _branch_name_safe_for_pointer() {
@@ -442,8 +510,15 @@ _set_stage() {
 	# Order: `2>&1 >"$tmp"` puts stderr into $jq_err and stdout into
 	# $tmp (the reverse `>"$tmp" 2>&1` would dump both into $tmp,
 	# leaving $jq_err empty — shellcheck SC2327/SC2328).
+	# CR PR #99 MAJOR: fold phase1_directive_nonce deletion into the
+	# SAME jq transaction as the stage transition. Previous design
+	# had nonce cleanup as a SECOND best-effort write after the
+	# atomic-mv stage commit — if the process died between them, the
+	# post-phase1 state could carry a valid nonce + sentinel, letting
+	# ship-cycle-guard.sh continue to authorize pr-review-toolkit
+	# Agent calls AFTER Phase 1 ended.
 	jq_err=$(jq --arg new "$new_stage" --arg ts "$ts" \
-		'.history += [{from: .stage, to: $new, ts: $ts}] | .stage = $new' \
+		'.history += [{from: .stage, to: $new, ts: $ts}] | .stage = $new | del(.phase1_directive_nonce)' \
 		"$sf" 2>&1 >"$tmp") || jq_rc=$?
 	if [ "$jq_rc" -ne 0 ]; then
 		rm -f "$tmp"
@@ -571,7 +646,7 @@ _phase1_clean_streak() {
 		# `0` and routes to scm_warn — DO NOT remove the regex thinking
 		# `|| true` covers the no-output case.
 		expected_agents=$(printf '%s\n' "$list_out" | grep -c . || true)
-		if ! [[ "$expected_agents" =~ ^[1-9][0-9]*$ ]]; then
+		if ! [[ $expected_agents =~ ^[1-9][0-9]*$ ]]; then
 			scm_warn "list-phase1-agents.sh produced no parseable lines (got '$expected_agents'); defaulting to 7. Output: $list_out"
 			expected_agents=7
 		fi
@@ -760,12 +835,12 @@ _phase2_run_cr_cli() {
 	if [ -z "$count" ]; then
 		# jq succeeded but produced no output → no `complete` event found.
 		# That's CR-CLI being interrupted / malformed stdout; don't advance.
-		echo "ship-pr-cycle: ERROR: CR-CLI emitted no {\"type\":\"complete\"} event — output incomplete" >&2
+		echo 'ship-pr-cycle: ERROR: CR-CLI emitted no {"type":"complete"} event — output incomplete' >&2
 		echo "  hint: re-run; if persistent, diagnose with: $cr_script | jq -s 'map(.type) | unique'" >&2
 		rm -f "$stdout_file" "$stderr_file"
 		return 2
 	fi
-	if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+	if ! [[ $count =~ ^[0-9]+$ ]]; then
 		echo "ship-pr-cycle: ERROR: CR-CLI complete event has non-numeric findings: $count" >&2
 		rm -f "$stdout_file" "$stderr_file"
 		return 2
@@ -786,7 +861,7 @@ _phase2_run_cr_cli() {
 # Returns: 0 on success, 2 on any failure (mirrors auto-triage stage semantics)
 _count_unresolved_threads() {
 	local pr_num="${1:-}"
-	if [ -z "$pr_num" ] || ! [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+	if [ -z "$pr_num" ] || ! [[ $pr_num =~ ^[0-9]+$ ]]; then
 		echo "_count_unresolved_threads: invalid PR number '$pr_num'" >&2
 		return 2
 	fi
@@ -874,7 +949,7 @@ _count_unresolved_threads() {
 		echo "_count_unresolved_threads: jq count parse failed (rc=$count_rc): ${count_err:-<no stderr>}; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
 		return 2
 	fi
-	if ! [[ "$unresolved_count" =~ ^[0-9]+$ ]]; then
+	if ! [[ $unresolved_count =~ ^[0-9]+$ ]]; then
 		echo "_count_unresolved_threads: unresolved-count non-numeric: '$unresolved_count'" >&2
 		return 2
 	fi
@@ -899,7 +974,7 @@ _scaler_rounds() {
 	# (the previous `grep -E ... | head -1 | cut` chain returned 1 on
 	# missing ROUNDS line, killing the script via set -e).
 	while IFS= read -r line; do
-		if [[ "$line" =~ ^ROUNDS=([1-9][0-9]*)$ ]]; then
+		if [[ $line =~ ^ROUNDS=([1-9][0-9]*)$ ]]; then
 			rounds="${BASH_REMATCH[1]}"
 			break
 		fi
@@ -968,7 +1043,7 @@ cmd_next() {
 			echo "ship-pr-cycle: ERROR: git rev-list --count failed: $commits" >&2
 			return 2
 		fi
-		if ! [[ "$commits" =~ ^[0-9]+$ ]]; then
+		if ! [[ $commits =~ ^[0-9]+$ ]]; then
 			echo "ship-pr-cycle: ERROR: git rev-list --count returned non-numeric: $commits" >&2
 			return 2
 		fi
@@ -1356,7 +1431,7 @@ EOF
 		if [ "$upstream_rc" -ne 0 ]; then
 			# rc=128 + "no upstream" = legitimate first-push (push -u
 			# will set it). Anything else = real corruption — fail loud.
-			if [[ "$upstream_stderr" == *"no upstream"* || "$upstream_stderr" == *"does not have an upstream"* ]]; then
+			if [[ $upstream_stderr == *"no upstream"* || $upstream_stderr == *"does not have an upstream"* ]]; then
 				upstream_sha=""
 			else
 				echo "ship-pr-cycle: ERROR: git rev-parse @{upstream} failed unexpectedly (rc=$upstream_rc): $upstream_stderr" >&2
@@ -1542,7 +1617,7 @@ EOF
 			echo "ship-pr-cycle: cr-in-ci-wait — no open PR for branch '$cur_branch' (run github-pr-creation skill first)" >&2
 			return 1
 		fi
-		if ! [[ "$pr_count" =~ ^[1-9][0-9]*$ ]]; then
+		if ! [[ $pr_count =~ ^[1-9][0-9]*$ ]]; then
 			echo "ship-pr-cycle: ERROR: gh pr list JSON has non-numeric count: $pr_count (raw: $pr_json)" >&2
 			return 2
 		fi
@@ -1557,7 +1632,7 @@ EOF
 			echo "  raw output: $pr_json" >&2
 			return 2
 		fi
-		if ! [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+		if ! [[ $pr_num =~ ^[0-9]+$ ]]; then
 			echo "ship-pr-cycle: ERROR: gh pr list JSON has non-numeric pr_num: $pr_num (raw: $pr_json)" >&2
 			return 2
 		fi
@@ -1893,7 +1968,7 @@ cmd_install_hook() {
 	fi
 	# rev-parse --git-path returns a path relative to cwd or absolute;
 	# normalize relative-to-cwd by prefixing with REPO_ROOT when relative.
-	[[ "$hooks_dir" = /* ]] || hooks_dir="$REPO_ROOT/$hooks_dir"
+	[[ $hooks_dir == /* ]] || hooks_dir="$REPO_ROOT/$hooks_dir"
 	mkdir -p "$hooks_dir" || scm_fail "cannot create hooks dir $hooks_dir"
 	hook_path="$hooks_dir/post-commit"
 	marker="# ship-pr-cycle: post-commit-ship-cycle.sh wiring (#735)"
@@ -1921,7 +1996,7 @@ cmd_install_hook() {
 			;;
 		esac
 		# Resolve relative target.
-		if [[ "$link_target" = /* ]]; then
+		if [[ $link_target == /* ]]; then
 			link_abs="$link_target"
 		else
 			link_abs="$hooks_dir/$link_target"
