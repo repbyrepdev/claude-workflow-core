@@ -2239,6 +2239,8 @@ Subcommands:
   resume        Auto-detect + advance until operator-input or terminal
   install-hook  Wire .git/hooks/post-commit to fire resume after commit
   mirror-report Show mirror coverage telemetry summary (text or --json)
+  epic          One-shot: cr-plan a brainstorm artifact → github-epic-creation
+                (operator runs the brainstorm step separately — disjoint by design)
 
 State file: .claude/.session-state/ship-cycle/<sha>.json
 Env:        BASE_BRANCH (default: main)
@@ -2269,13 +2271,84 @@ mirror-report)
 	fi
 	"$_helper" report "$@"
 	;;
+epic)
+	# #125 Option C — thin dispatch to the cr-plan skill (one entrypoint
+	# instead of operator memorizing which skill handles which step).
+	# The brainstorm itself stays operator-driven (inherently interactive
+	# A/B/C pick filed via brainstorm.yml issue template); this dispatch
+	# just sequences the post-brainstorm chain:
+	#
+	#   ship-pr-cycle.sh epic trigger <brainstorm-issue-num>
+	#     → cr-plan trigger: applies plan-me label + posts @coderabbitai
+	#       plan comment so CR Issue Planner generates the plan.
+	#
+	#   ship-pr-cycle.sh epic parse <brainstorm-issue-num>
+	#     → cr-plan parse: reads CR's plan comment, extracts Implementation
+	#       Steps, invokes github-epic-creation to create parent epic +
+	#       N sub-issues linked via addSubIssue GraphQL.
+	#
+	# Preserves "PARALLEL workflow, disjoint by design" doctrine — see the
+	# file header section "Relationship to cr-plan" — no auto-fire into the
+	# ship state machine. The --help/-h short-circuit below is the ONE
+	# exception where this dispatch adds semantics (workflow-level help);
+	# all other args pass through verbatim to cr-plan.
+	_epic_usage() {
+		cat <<'EOH'
+Usage: ship-pr-cycle.sh epic <subcommand> <brainstorm-issue-num>
+
+  trigger <num>   Apply plan-me label + post @coderabbitai plan comment.
+                  CR posts the plan as a comment (~minutes).
+                  (No APPROVE gate — idempotent.)
+  parse <num>     Read CR plan comment, extract Implementation Steps,
+                  invoke github-epic-creation to open parent + N subs.
+                  Requires APPROVE=1 (non-interactive guard, mirrors
+                  cr-plan's gate).
+
+Workflow:
+  1. Operator files brainstorm issue via brainstorm.yml template (manual,
+     inherently interactive — operator picks the approach).
+  2. ship-pr-cycle.sh epic trigger <num>  (this dispatch — kicks off CR plan)
+  3. Wait for CR Issue Planner to post the plan as a comment.
+  4. ship-pr-cycle.sh epic parse <num>    (this dispatch — creates epic+subs)
+  5. Operator picks a sub to start; ship-pr-cycle takes over at branch-ready.
+
+This is a thin dispatch — see skills/cr-plan/run.sh for the underlying
+behavior.
+EOH
+	}
+	# --help exits 0 (convention); empty args exits 2 (argparse error).
+	# NOTE: top-level dispatch treats no-args as help (exit 0); subcommand
+	# follows argparse-error convention (exit 2) since 'epic' alone is
+	# meaningless. ${1:-} keeps set -u quiet on the help-flag comparison
+	# even if the arity guard is ever reordered.
+	if [ "$#" -lt 1 ]; then
+		_epic_usage >&2
+		exit 2
+	fi
+	if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+		_epic_usage
+		exit 0
+	fi
+	_cr_plan=$(_shipcycle_resolve skills/cr-plan/run.sh)
+	if [ ! -x "$_cr_plan" ]; then
+		echo "ship-pr-cycle epic: cr-plan skill wrapper missing or non-exec: $_cr_plan" >&2
+		exit 2
+	fi
+	# Pass through verbatim — cr-plan owns argument validation (trigger/parse
+	# subcommands, issue-num arity, APPROVE=1 for parse). Wrapper layers on
+	# documentation + single-entrypoint convenience, not new semantics.
+	# `exec` makes the pass-through STRUCTURAL: kernel-enforced terminal call
+	# (impossible to append code after) + frees the shell frame. Also pins
+	# the contract — exit-code propagation is implicit instead of positional.
+	exec "$_cr_plan" "$@"
+	;;
 -h | --help)
 	_usage
 	exit 0
 	;;
 *)
 	echo "ship-pr-cycle: unknown subcommand: $SUBCMD" >&2
-	echo "Use one of: start, status, next, resume, install-hook, mirror-report" >&2
+	echo "Use one of: start, status, next, resume, install-hook, mirror-report, epic" >&2
 	exit 2
 	;;
 esac

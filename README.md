@@ -61,7 +61,7 @@ Per `scripts/ship-pr-cycle.sh` (lines 30-39), the current canonical state machin
 - **merge-gate** — operator approves here (the only interaction)
 - **merged** — terminal
 
-**Note on upstream chains:** `brainstorm` → `cr-plan` → `github-epic-creation` is a **parallel workflow that runs BEFORE ship-pr-cycle** (per `scripts/ship-pr-cycle.sh:9-14`: "cr-plan is a PARALLEL workflow... No auto-fire from ship-pr-cycle into cr-plan — they are disjoint by design"). Wiring this into ship-pr-cycle as nested phases is the deferred work of #125. Until #125 lands, operators run those skills separately, and ship-pr-cycle takes over once `branch-ready` is reached.
+**Note on upstream chains:** `brainstorm` → `cr-plan` → `github-epic-creation` is a **parallel workflow that runs BEFORE ship-pr-cycle** (per `scripts/ship-pr-cycle.sh:9-14`: "cr-plan is a PARALLEL workflow... No auto-fire from ship-pr-cycle into cr-plan — they are disjoint by design"). As of v0.17.0 (#125), `ship-pr-cycle.sh epic <trigger|parse> <num>` provides a thin single-entrypoint dispatch over `cr-plan trigger` + `cr-plan parse` — no new state machine stages, no auto-fire. The brainstorm step itself stays operator-interactive (operator files a `brainstorm.yml` issue, picks A/B/C), then the dispatch sequences the post-brainstorm chain.
 
 The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which stage" (#129). The mirror coverage telemetry helper landed in v0.16.0 (#131) — invoke via `scripts/ship-pr-cycle.sh mirror-report`.
 
