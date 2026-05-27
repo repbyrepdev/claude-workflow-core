@@ -12,7 +12,12 @@ setup() {
 	WORKFLOWS_DIR="${REPO_ROOT}/.github/workflows"
 	ORCHESTRATOR="${REPO_ROOT}/scripts/ship-pr-cycle.sh"
 	command -v yq >/dev/null 2>&1 || skip "yq required (mikefarah/yq v4+)"
-	yq --version 2>&1 | grep -qi "mikefarah" || skip "yq must be mikefarah/yq (Go), found: $(yq --version 2>&1)"
+	yq_ver=$(yq --version 2>&1)
+	echo "$yq_ver" | grep -qi "mikefarah" || skip "yq must be mikefarah/yq (Go), found: $yq_ver"
+	# Strict v4+ check — v3 uses incompatible subcommand syntax (`yq r ...`)
+	# vs v4's jq-like expression form. Later tests use v4-only syntax, so
+	# v3 produces noisy parse failures instead of clean skip without this.
+	echo "$yq_ver" | grep -Eq 'version v?([4-9]|[1-9][0-9])(\.|$)' || skip "yq v4+ required, found: $yq_ver"
 }
 
 @test "mirror-map file exists" {
