@@ -113,8 +113,37 @@ _dispatch_machine() {
 	return 69
 }
 _dispatch_repo() {
-	_log "ERROR: --target repo not yet implemented (tracking: meta-bootstrap repo flow, sub-issue of #78)"
-	return 69
+	# Repo bootstrap orchestrator. Delegates to bootstrap-repo.sh (writes
+	# files + applies labels) then runs --verify --scope plugin to
+	# confirm completeness. Optional --verify-only short-circuits the
+	# bootstrap step and just runs the verify pass.
+	#
+	# First positional arg from EXTRA_ARGS is the target directory.
+	if [ "$#" -lt 1 ] || [ -z "${1:-}" ]; then
+		_log "ERROR: --target repo requires a target directory"
+		_log "    usage: meta-bootstrap.sh --target repo <target-dir>"
+		return 2
+	fi
+	local target_dir=$1
+	local script_dir
+	script_dir=$(cd "$(dirname "$0")" && pwd)
+	if [ "$VERIFY_ONLY" = "1" ]; then
+		_log "running --verify --scope plugin against $target_dir (no mutation)"
+		"$script_dir/bootstrap-repo.sh" "$target_dir" --verify --scope plugin
+		return $?
+	fi
+	_log "running bootstrap-repo.sh against $target_dir..."
+	if ! "$script_dir/bootstrap-repo.sh" "$target_dir"; then
+		_log "ERROR: bootstrap-repo.sh failed; aborting before verify"
+		return 1
+	fi
+	_log "running --verify --scope plugin to confirm completeness..."
+	if ! "$script_dir/bootstrap-repo.sh" "$target_dir" --verify --scope plugin; then
+		_log "ERROR: post-bootstrap verify failed — files missing or labels not applied"
+		return 1
+	fi
+	_log "✓ --target repo complete: $target_dir bootstrapped + verified"
+	return 0
 }
 _dispatch_plugin() {
 	_log "ERROR: --target plugin not yet implemented (tracking: meta-bootstrap plugin flow, sub-issue of #78)"
@@ -227,7 +256,7 @@ _dispatch_feature_branch() {
 #     so silent mutation can't slip in when those subs ship.
 if [ "$VERIFY_ONLY" = "1" ]; then
 	case "$TARGET" in
-	feature-branch) ;;
+	feature-branch | repo) ;;
 	*)
 		_log "ERROR: --verify-only not yet wired for --target $TARGET (sub-issue of #78 adds per-target verify hooks)"
 		exit 69

@@ -56,10 +56,12 @@ setup() {
 	[[ $output == *"#78"* ]]
 }
 
-@test "--target repo returns rc=69 with tracking pointer" {
+@test "--target repo is now implemented (rc=2 without target-dir, not rc=69)" {
+	# As of #111 repo is wired. Detailed coverage in meta-bootstrap-repo.bats.
+	# Without a target-dir, rc=2 (argparse) — not rc=69 (unimplemented).
 	run "$SCRIPT" --target repo
-	[ "$status" -eq 69 ]
-	[[ $output == *"repo flow"* ]]
+	[ "$status" -eq 2 ]
+	[[ $output != *"not yet implemented"* ]]
 }
 
 @test "--target plugin returns rc=69 with tracking pointer" {
