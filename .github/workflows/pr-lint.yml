@@ -56,9 +56,11 @@ jobs:
       BODY: ${{ github.event.pull_request.body }}
     steps:
       # v4.4.A: checkout so the step can read `.github/labels.yml` as SSOT.
+      # CR PR #64 r2 suggested persist-credentials: false but it broke
+      # checkout on this workflow's first run (actions/checkout v6 +
+      # persist-credentials: false issue). Reverted; the credential-
+      # leak concern stays a documented residual.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
 
       - name: Require area label
         # First step — no `if: always()` needed; a failure here still aborts
