@@ -2287,16 +2287,22 @@ epic)
 	#       Steps, invokes github-epic-creation to create parent epic +
 	#       N sub-issues linked via addSubIssue GraphQL.
 	#
-	# Preserves "PARALLEL workflow, disjoint by design" doctrine
-	# (scripts/ship-pr-cycle.sh:9-14) — no auto-fire into ship cycle.
+	# Preserves "PARALLEL workflow, disjoint by design" doctrine — see the
+	# file header section "Relationship to cr-plan" — no auto-fire into the
+	# ship state machine. The --help/-h short-circuit below is the ONE
+	# exception where this dispatch adds semantics (workflow-level help);
+	# all other args pass through verbatim to cr-plan.
 	_epic_usage() {
 		cat <<'EOH'
 Usage: ship-pr-cycle.sh epic <subcommand> <brainstorm-issue-num>
 
   trigger <num>   Apply plan-me label + post @coderabbitai plan comment.
                   CR posts the plan as a comment (~minutes).
+                  (No APPROVE gate — idempotent.)
   parse <num>     Read CR plan comment, extract Implementation Steps,
                   invoke github-epic-creation to open parent + N subs.
+                  Requires APPROVE=1 (non-interactive guard, mirrors
+                  cr-plan's gate).
 
 Workflow:
   1. Operator files brainstorm issue via brainstorm.yml template (manual,
@@ -2307,11 +2313,14 @@ Workflow:
   5. Operator picks a sub to start; ship-pr-cycle takes over at branch-ready.
 
 This is a thin dispatch — see skills/cr-plan/run.sh for the underlying
-behavior. APPROVE=1 is required for `parse` (mirrors cr-plan's gate).
+behavior.
 EOH
 	}
 	# --help exits 0 (convention); empty args exits 2 (argparse error).
-	# Use `${1:-}` so the comparison is safe under set -u when $# == 0.
+	# NOTE: top-level dispatch treats no-args as help (exit 0); subcommand
+	# follows argparse-error convention (exit 2) since 'epic' alone is
+	# meaningless. ${1:-} keeps set -u quiet on the help-flag comparison
+	# even if the arity guard is ever reordered.
 	if [ "$#" -lt 1 ]; then
 		_epic_usage >&2
 		exit 2
@@ -2328,7 +2337,10 @@ EOH
 	# Pass through verbatim — cr-plan owns argument validation (trigger/parse
 	# subcommands, issue-num arity, APPROVE=1 for parse). Wrapper layers on
 	# documentation + single-entrypoint convenience, not new semantics.
-	"$_cr_plan" "$@"
+	# `exec` makes the pass-through STRUCTURAL: kernel-enforced terminal call
+	# (impossible to append code after) + frees the shell frame. Also pins
+	# the contract — exit-code propagation is implicit instead of positional.
+	exec "$_cr_plan" "$@"
 	;;
 -h | --help)
 	_usage
