@@ -1,0 +1,90 @@
+# ship-pr-cycle ↔ server-side workflow mirror map.
+#
+# SSOT for "every server-side workflow that exists on GitHub has a
+# locally-emulated mirror that runs BEFORE push". The orchestrator
+# (scripts/ship-pr-cycle.sh) reads this file to determine which local
+# command to invoke at each phase, and the mirror coverage report
+# (#131, deferred) consumes it to detect server-side workflows that
+# slipped past local enforcement.
+#
+# Schema:
+#   schema_version: int  — bump in lockstep with the consumer
+#   mirrors:
+#     - server_workflow: string  — basename of the .github/workflows/*.yml
+#       phase: string            — ship-pr-cycle phase the mirror runs in
+#                                  (one of: branch-ready, push, pr-create,
+#                                  cr-in-ci-wait)
+#       local_command: string    — shell command (cwd=repo root) that
+#                                  produces byte-identical pass/fail
+#                                  semantics to the server-side workflow
+#       refuse_on_fail: bool     — if true, ship-pr-cycle refuses to
+#                                  advance past this phase on non-zero
+#                                  exit. If false, warns + records to
+#                                  the coverage report and continues.
+#       bypass_env: string       — env var that bypasses this mirror
+#                                  (audit-logged to dogfood-gate-skip.jsonl)
+#       notes: string            — optional human-readable rationale
+
+schema_version: 1
+
+mirrors:
+  - server_workflow: pr-lint.yml
+    phase: pr-create
+    local_command: .claude/hooks/pr-lint-check.sh --body $BODY_FILE --labels $LABELS_JSON
+    refuse_on_fail: true
+    bypass_env: PR_LINT_MIRROR_SKIP
+    notes: |
+      Closes #119/#127. The github-pr-creation skill wrapper calls this
+      script as pre-create validation. Mirrors the 3 checks in
+      pr-lint.yml: Closes/Fixes/Resolves #N, ## Summary + ## Test plan
+      headings, area:* label from .github/labels.yml SSOT.
+
+  - server_workflow: pr-labeler.yml
+    phase: pr-create
+    local_command: .claude/hooks/pr-labeler.sh $PR_NUM
+    refuse_on_fail: false
+    bypass_env: ""
+    notes: |
+      Applies area:* labels from .github/labeler.yml glob matches on
+      the PR's changed files. Replaces the disabled pr-labeler.yml
+      workflow during Actions cap deferral. Warn-only because labeler
+      can race with manual --label assignment.
+
+  - server_workflow: gitleaks.yml
+    phase: branch-ready
+    local_command: pre-commit run gitleaks --all-files
+    refuse_on_fail: true
+    bypass_env: ""
+    notes: |
+      Gitleaks runs locally on every commit via pre-commit hook (already
+      gated). The phase=branch-ready listing here is for the coverage
+      report — the server-side gitleaks.yml is redundant with the local
+      pre-commit hook, by design.
+
+  - server_workflow: label-sync.yml
+    phase: branch-ready
+    local_command: .claude/hooks/_label-sync-dry-run.sh
+    refuse_on_fail: false
+    bypass_env: ""
+    notes: |
+      label-sync.yml fires on .github/labels.yml changes. The pre-commit
+      hook 'Preview label-sync --dry-run' runs the same logic locally on
+      labels.yml edits. Warn-only — no automation race surface.
+
+  - server_workflow: plugin-self-bootstrap-verify.yml
+    phase: push
+    local_command: scripts/bootstrap-repo.sh . --verify --scope plugin
+    refuse_on_fail: true
+    bypass_env: ""
+    notes: |
+      Plugin self-dogfood verify. Identical script invocation
+      server-side + local — same exit code semantics.
+
+# Phase aliases — the orchestrator uses these to derive which mirrors
+# run when. Useful for the coverage report (#131): "what mirrors should
+# have fired in phase X?".
+phase_aliases:
+  branch-ready: [gitleaks.yml, label-sync.yml]
+  push: [plugin-self-bootstrap-verify.yml]
+  pr-create: [pr-lint.yml, pr-labeler.yml]
+  cr-in-ci-wait: []

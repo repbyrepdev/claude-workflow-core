@@ -43,6 +43,26 @@ Damien Adams' Claude Code plugin — **portable workflow skills + session-resili
 
 All hooks use `git rev-parse --show-toplevel || pwd` so they work in any cwd.
 
+## ship-pr-cycle is the canonical entry point (#130)
+
+`scripts/ship-pr-cycle.sh` is the **single end-to-end orchestrator** from brainstorm → cr-plan → epic + sub-issue creation → branch → commits → lint → push → PR-create → CR-CLI → CR-in-CI → merge. Every other skill in this plugin (`github-issue-creation`, `github-pr-creation`, `github-pr-merge`, `git-commit`, `coderabbit:autofix`, etc.) is an **internal building block** that ship-pr-cycle invokes at the appropriate phase.
+
+Operators (and agents) should call `ship-pr-cycle.sh` as the entry point for ALL PR-bound work, not the individual skills directly. Each phase is mechanically guarded:
+
+- **brainstorm** — invokes brainstorm skill, asserts artifact emitted
+- **cr-plan** — parses brainstorm artifact into epic + sub-issue plan
+- **epic-create / sub-create** — invokes `github-epic-creation` + `github-issue-creation`, asserts `priority:*` + `area:*` labels at create (#120)
+- **branch-create** — verifies branch name + issue + labels via `meta-bootstrap.sh --target feature-branch` (#122)
+- **commit** — pre-commit hooks (existing)
+- **lint** — full local-lint suite (existing)
+- **push** — pre-push pipeline gate + local pr-lint mirror (#119, #127) — refuses on fail unless `PR_LINT_MIRROR_SKIP=1` (audit-logged)
+- **pr-create** — `github-pr-creation` derives body, auto-creates milestone (#121), validates labels (#118)
+- **cr-cli** — Phase 2 review locally
+- **cr-in-ci-wait** — wait for GitHub CR
+- **merge** — `github-pr-merge` with operator approval gate (the only interaction)
+
+The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which phase" (#129).
+
 ## Local-mirror-of-pr-lint chain (#118)
 
 Server-side workflow gates (`.github/workflows/pr-lint.yml`, `pr-labeler.yml`) have local mirrors that fire BEFORE the change reaches GitHub. The goal: when a PR lands in GitHub, the only remaining issues are CR findings — never label/body/branch-name regressions that should have been caught locally.
