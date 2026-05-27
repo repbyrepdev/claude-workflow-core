@@ -113,13 +113,37 @@ esac
 # declared; feature-branch keeps its inline-bash verifier (rules are
 # git-state-dependent, manifest can't express them cleanly).
 
+# Manifest schema version this script understands. Bump in lockstep with
+# scripts/meta-bootstrap-manifest.yml when removing/renaming a top-level
+# section. Mismatch fails closed (silent partial reads would defeat the
+# whole point of the version field).
+META_BOOTSTRAP_SCHEMA_VERSION=1
+# Known rule kinds. A target with NO known rule kinds AND no `inline: true`
+# sentinel fails the verify — vacuous-pass is the exact silent-failure
+# pattern the manifest exists to prevent.
+META_BOOTSTRAP_RULE_KINDS=(brew_packages commands keychain_entries paths json_fields)
+
+# Allow tests to point at a non-tracked manifest via env override so they
+# never have to mutate the real scripts/meta-bootstrap-manifest.yml. Empty
+# env var = use the tracked manifest (production behavior).
+_resolve_manifest_path() {
+	local script_dir=$1
+	if [ -n "${META_BOOTSTRAP_MANIFEST:-}" ]; then
+		echo "$META_BOOTSTRAP_MANIFEST"
+	else
+		echo "$script_dir/meta-bootstrap-manifest.yml"
+	fi
+}
+
 # Manifest-rule runner — consumed by _dispatch_machine + _dispatch_plugin.
 # Returns 0 if every declared rule passes; 1 with one log line per fail.
-# Skips a target silently (returns 0) when no rules are declared.
+# A target with no recognized rules and no `inline: true` sentinel fails
+# (refuses the vacuous-pass that would hide a missing-manifest-entry bug).
 _verify_target_manifest() {
 	local target=$1
 	local script_dir=$2
-	local manifest="$script_dir/meta-bootstrap-manifest.yml"
+	local manifest
+	manifest=$(_resolve_manifest_path "$script_dir")
 	if [ ! -f "$manifest" ]; then
 		_log "ERROR: manifest not found: $manifest"
 		return 1
@@ -128,9 +152,36 @@ _verify_target_manifest() {
 		_log "ERROR: yq required for manifest-driven verify (brew install yq)"
 		return 1
 	fi
+	# Refuse non-mikefarah yq forks — the rule-walk relies on v4 semantics
+	# (empty string on missing keys, [] no-op on null).
+	if ! yq --version 2>&1 | grep -qi "mikefarah"; then
+		_log "ERROR: yq must be mikefarah/yq v4+ (found: $(yq --version 2>&1))"
+		return 1
+	fi
+	# Schema version guard — fail closed on mismatch so a future v2 manifest
+	# can't silently partial-read against this v1 consumer.
+	local sv
+	sv=$(yq -r ".schema_version" "$manifest" 2>/dev/null)
+	if [ "$sv" != "$META_BOOTSTRAP_SCHEMA_VERSION" ]; then
+		_log "ERROR: manifest schema_version=$sv but this script supports $META_BOOTSTRAP_SCHEMA_VERSION (manifest: $manifest)"
+		return 1
+	fi
 	local rc=0
-	# yq v4 (mikefarah) returns empty string for missing keys + no-ops [] on null;
-	# no need for jq's `// empty` syntax.
+	# Count declared rule kinds for this target. Zero rules + no inline:true
+	# sentinel = vacuous-pass refusal.
+	local rules_declared=0
+	local kind
+	for kind in "${META_BOOTSTRAP_RULE_KINDS[@]}"; do
+		local has_key
+		has_key=$(yq -r ".targets.${target} | has(\"${kind}\")" "$manifest" 2>/dev/null)
+		[ "$has_key" = "true" ] && rules_declared=$((rules_declared + 1))
+	done
+	local inline_marker
+	inline_marker=$(yq -r ".targets.${target}.inline // \"\"" "$manifest" 2>/dev/null)
+	if [ "$rules_declared" -eq 0 ] && [ "$inline_marker" != "true" ]; then
+		_log "ERROR: target '$target' has no manifest rules and no 'inline: true' sentinel — refusing to fake-pass"
+		return 1
+	fi
 	# brew_packages
 	local pkgs
 	pkgs=$(yq -r ".targets.${target}.brew_packages[]" "$manifest" 2>/dev/null)
@@ -143,7 +194,9 @@ _verify_target_manifest() {
 			fi
 		done <<<"$pkgs"
 	elif [ -n "$pkgs" ]; then
-		_log "  ✗ Homebrew not on PATH — $target manifest declares brew packages"
+		# Enumerate which packages are unverifiable when brew is absent so
+		# the operator sees the full delta, not just "Homebrew missing".
+		_log "  ✗ Homebrew not on PATH — $target manifest declares: $(echo "$pkgs" | tr '\n' ' ')"
 		rc=1
 	fi
 	# commands (PATH-resolvable)
@@ -175,41 +228,54 @@ _verify_target_manifest() {
 			done <<<"$entries"
 		fi
 	fi
-	# paths
+	# paths (only leading ~/ is expanded; other forms must be absolute or
+	# resolved by the manifest author — documented in the schema header)
 	local paths
 	paths=$(yq -r ".targets.${target}.paths[]" "$manifest" 2>/dev/null)
 	if [ -n "$paths" ]; then
 		while IFS= read -r p; do
 			[ -z "$p" ] && continue
-			# Expand ~ via eval-free path expansion.
 			local resolved=${p/#\~/$HOME}
 			if [ ! -e "$resolved" ]; then
-				_log "  ✗ required path missing: $p"
+				_log "  ✗ required path missing: $p (resolved: $resolved)"
 				rc=1
 			fi
 		done <<<"$paths"
 	fi
-	# json_fields (file + jq + regex match)
+	# json_fields — accepts `match` (preferred) or `min` (deprecated
+	# alias kept for one schema_version cycle; the historic name was
+	# misleading since it's always been a regex, not a numeric floor).
 	local jcount
 	jcount=$(yq -r ".targets.${target}.json_fields | length" "$manifest" 2>/dev/null)
-	[ -z "$jcount" ] && jcount=0
+	case "$jcount" in '' | null) jcount=0 ;; esac
 	if [ "$jcount" != "0" ]; then
 		local i=0
 		while [ "$i" -lt "$jcount" ]; do
-			local jfile jjq jregex
+			local jfile jjq jregex jregex_legacy
 			jfile=$(yq -r ".targets.${target}.json_fields[$i].file" "$manifest")
 			jjq=$(yq -r ".targets.${target}.json_fields[$i].jq" "$manifest")
-			jregex=$(yq -r ".targets.${target}.json_fields[$i].min" "$manifest")
-			if [ ! -f "$jfile" ]; then
+			jregex=$(yq -r ".targets.${target}.json_fields[$i].match // \"\"" "$manifest")
+			jregex_legacy=$(yq -r ".targets.${target}.json_fields[$i].min // \"\"" "$manifest")
+			if [ -z "$jregex" ] && [ -n "$jregex_legacy" ]; then
+				jregex=$jregex_legacy
+			fi
+			if [ "$jfile" = "null" ] || [ "$jjq" = "null" ] || [ -z "$jregex" ]; then
+				_log "  ✗ json_fields[$i]: schema error — missing file/jq/match (manifest: $manifest)"
+				rc=1
+			elif [ ! -f "$jfile" ]; then
 				_log "  ✗ json_fields[$i]: file missing: $jfile"
 				rc=1
 			elif ! command -v jq >/dev/null 2>&1; then
 				_log "  ✗ json_fields[$i]: jq required but not on PATH"
 				rc=1
 			else
-				local val
-				val=$(jq -r "$jjq" "$jfile" 2>/dev/null || echo "")
-				if ! [[ $val =~ $jregex ]]; then
+				local val jq_err
+				# Distinguish 'field absent' from 'jq syntax/parse error'.
+				if ! val=$(jq -r "$jjq" "$jfile" 2>&1); then
+					jq_err=$val
+					_log "  ✗ json_fields[$i]: jq error on $jfile (query: $jjq): $jq_err"
+					rc=1
+				elif ! [[ $val =~ $jregex ]]; then
 					_log "  ✗ json_fields[$i]: $jfile:$jjq value '$val' does not match /$jregex/"
 					rc=1
 				fi
@@ -244,7 +310,8 @@ _dispatch_machine() {
 	fi
 	_log "running bootstrap-machine.sh..."
 	if ! "$script_dir/bootstrap-machine.sh"; then
-		_log "ERROR: bootstrap-machine.sh failed; aborting before verify"
+		local bm_rc=$?
+		_log "ERROR: bootstrap-machine.sh failed (rc=$bm_rc); aborting before verify"
 		return 1
 	fi
 	_log "running --verify against machine manifest to confirm completeness..."
@@ -347,6 +414,10 @@ _dispatch_feature_branch() {
 	# Rules 2+3 (issue + labels) require gh on PATH; when gh is absent
 	# they're skipped together AND the final verdict downgrades to
 	# PARTIAL so a green light can't slip past silently.
+	if [ "$#" -gt 0 ]; then
+		_log "ERROR: --target feature-branch accepts no positional arguments (got $#)"
+		return 2
+	fi
 	local rc=0 skipped=0
 	# Resolve repo + current branch.
 	local repo_root

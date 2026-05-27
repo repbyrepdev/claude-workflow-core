@@ -5,24 +5,32 @@
 # are read-only assertions; verify-only never mutates.
 #
 # Schema (consumers must encode the SAME shape):
-#   schema_version: int  — bump when removing/renaming a top-level section
+#   schema_version: int  — bump in lockstep with the consumer (the script
+#                          fails closed on mismatch — silent partial reads
+#                          would defeat the version field's purpose).
 #   targets:
 #     <target-name>:
 #       brew_packages:   [string]   — `brew list --formula --versions $pkg` must succeed
 #       commands:        [string]   — `command -v $cmd` must succeed
 #       keychain_entries: [string]  — `security find-generic-password -s $name` must succeed
 #                                      (presence only; never reads the value)
-#       paths:           [string]   — each path must exist (file or directory)
-#       json_fields:     [{file: path, jq: ".path.to.field", min: regex}]
-#                                    — `jq -r` on file must match `min` regex
-#       delegate:        string     — when present, this target's verify
-#                                      delegates to the named script (e.g.
-#                                      bootstrap-repo.sh for `repo` target).
-#                                      Other rules in the same target are
-#                                      additive — they run AFTER the delegate.
-#
-# Targets without a `verify_rules:` section (e.g. feature-branch) keep
-# their inline-bash verification — manifest-driven is opt-in per target.
+#       paths:           [string]   — each path must exist (file or directory).
+#                                      Only leading `~/` is expanded — other
+#                                      forms (`~user/`, `$HOME/...`, globs)
+#                                      are NOT expanded; use absolute paths.
+#       json_fields:     [{file, jq, match}]
+#                                    — `jq -r $jq $file` must match the
+#                                      `match` regex. `min` is accepted as a
+#                                      deprecated alias for one schema_version
+#                                      cycle (the original name was misleading
+#                                      since it's always been a regex).
+#       inline: true                 — sentinel for targets whose verify is
+#                                      git/network-state-dependent and lives
+#                                      in inline bash (feature-branch). A
+#                                      target with no rule kinds AND no
+#                                      `inline: true` fails verify — refusing
+#                                      the vacuous-pass that would hide a
+#                                      missing-manifest-entry bug.
 
 schema_version: 1
 
@@ -56,18 +64,9 @@ targets:
     json_fields:
       - file: .claude-plugin/plugin.json
         jq: .version
-        min: '^[0-9]+\.[0-9]+\.[0-9]+'
-    # bootstrap-repo.sh --verify --scope plugin runs the file/label manifest
-    # walk against the plugin's own checkout (we ARE the plugin).
-    delegate: bootstrap-repo.sh
-
-  repo:
-    # Delegates to bootstrap-repo.sh --verify --scope both (manifest at
-    # scripts/bootstrap-manifest.yml).
-    delegate: bootstrap-repo.sh
+        match: '^[0-9]+\.[0-9]+\.[0-9]+'
 
   feature-branch:
-    # No manifest rules — keeps its inline bash implementation since the
-    # checks are git-state-dependent (branch name, issue+labels via gh).
-    # Listed here for completeness so operators can grep.
+    # Verify is git/network-state-dependent; rules live in inline bash
+    # inside scripts/meta-bootstrap.sh's _dispatch_feature_branch.
     inline: true
