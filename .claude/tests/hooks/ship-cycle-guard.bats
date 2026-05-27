@@ -143,8 +143,8 @@ _run_guard() {
 	# must match state JSON's phase1_directive_nonce.
 	nonce="11111111-2222-3333-4444-555555555555"
 	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
-		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >/tmp/state.json
-	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	printf '%s\ndirective text\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
 	[ "$status" -eq 0 ]
@@ -342,8 +342,8 @@ _run_guard() {
 	# line 1 matches.
 	nonce="00000000-1111-2222-3333-444444444444"
 	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
-		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >/tmp/state.json
-	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	printf '%s\nfire phase 1 directive\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
@@ -356,8 +356,8 @@ _run_guard() {
 	# stale sentinel from a prior round or touch-bypass with guessed
 	# nonce. Deny.
 	jq '. + {phase1_directive_nonce: "real-nonce-aaaa"}' \
-		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >/tmp/state.json
-	mv /tmp/state.json "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	printf 'fake-nonce-bbbb\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"

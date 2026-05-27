@@ -11,7 +11,7 @@ setup() {
 		echo "FATAL: mktemp failed" >&2
 		return 1
 	}
-	export STATE_DIR="$TEST_TMP/.claude/.session-state/ship-pr-cycle"
+	export STATE_DIR="$TEST_TMP/.claude/.session-state/ship-cycle"
 	mkdir -p "$STATE_DIR"
 	SHA="aaaa0000bbbb1111cccc2222dddd3333eeee4444"
 	# Pre-create state JSON like the orchestrator would.
