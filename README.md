@@ -61,7 +61,7 @@ Per `scripts/ship-pr-cycle.sh` (lines 30-39), the current canonical state machin
 
 **Note on upstream chains:** `brainstorm` → `cr-plan` → `github-epic-creation` is a **parallel workflow that runs BEFORE ship-pr-cycle** (per `scripts/ship-pr-cycle.sh:9-14`: "cr-plan is a PARALLEL workflow... No auto-fire from ship-pr-cycle into cr-plan — they are disjoint by design"). Wiring this into ship-pr-cycle as nested phases is the deferred work of #125. Until #125 lands, operators run those skills separately, and ship-pr-cycle takes over once `branch-ready` is reached.
 
-The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which stage" (#129). The future coverage report consumer is tracked in #131 (not yet implemented as of v0.15.0).
+The mirror-map at `.github/ship-pr-cycle-mirror-map.yml` is the SSOT for "which server-side workflow has a local mirror at which stage" (#129). The mirror coverage telemetry helper landed in v0.16.0 (#131) — invoke via `scripts/ship-pr-cycle.sh mirror-report`.
 
 ## Local-mirror-of-pr-lint chain (#118)
 

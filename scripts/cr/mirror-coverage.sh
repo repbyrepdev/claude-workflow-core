@@ -67,8 +67,16 @@ log_mirror_event() {
 			shift 2
 			;;
 		*)
+			# Consume both flag + value when the unknown arg looks like
+			# `--flag value`; otherwise just shift 1 (lone bare arg).
+			# Single-shift on `--unknown VALUE` would leave VALUE as
+			# next $1 and corrupt subsequent parsing.
 			_log "WARN: unknown log_mirror_event arg: $1"
-			shift
+			if [ "$#" -ge 2 ] && [[ $1 == --* ]] && [[ $2 != -* ]]; then
+				shift 2
+			else
+				shift
+			fi
 			;;
 		esac
 	done
