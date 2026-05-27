@@ -71,14 +71,17 @@ EOF
 	[ -z "$output" ]
 }
 
-@test "settings newer than cache (downgrade scenario) → silent" {
-	# Defensive: if settings somehow refs a version newer than cache
-	# (e.g., manual edit), the hook doesn't pester operator.
+@test "settings newer than cache → inverse drift warning (#89 r1)" {
+	# Phase 1 r1 finding: settings > cache is broken state (hooks
+	# reference paths that don't exist). Surface as 'inverse drift'
+	# warning, not silent pass.
 	_write_settings_with_version "0.10.0"
 	mkdir -p "$CACHE_DIR/0.9.7"
 	run bash "$SCRIPT" 2>&1
 	[ "$status" -eq 0 ]
-	[ -z "$output" ]
+	[[ $output == *"inverse plugin-cache drift"* ]]
+	[[ $output == *"v0.10.0"* ]]
+	[[ $output == *"v0.9.7"* ]]
 }
 
 @test "semver-aware: v0.9.5 vs v0.10.0 → drift (10 > 9 numerically)" {
@@ -133,6 +136,44 @@ EOF
 	run bash "$SCRIPT" 2>&1
 	[ "$status" -eq 0 ]
 	[[ $output == *"v0.9.0"* ]]
+}
+
+@test "malformed settings.json → warn + silent pass (#89 r1)" {
+	# Phase 1 r1: corrupt JSON should not look like 'no refs'. Pre-
+	# validate via jq empty + warn operator.
+	echo "{ broken json" >"$SETTINGS"
+	mkdir -p "$CACHE_DIR/0.9.7"
+	run bash "$SCRIPT" 2>&1
+	[ "$status" -eq 0 ]
+	[[ $output == *"not valid JSON"* ]]
+}
+
+@test "cache dir empty (no subdirs at all) → warn corrupt-cache (#89 r1)" {
+	# Phase 1 r1: nullglob + empty-dir detection. Previously silent;
+	# now surfaces as corrupt-cache warning.
+	_write_settings_with_version "0.9.7"
+	# CACHE_DIR exists (from setup), no subdirs created.
+	run bash "$SCRIPT" 2>&1
+	[ "$status" -eq 0 ]
+	[[ $output == *"may be corrupt or partially installed"* ]]
+}
+
+@test "cache dir has only non-semver subdirs → warn unexpected-layout (#89 r1)" {
+	_write_settings_with_version "0.9.7"
+	mkdir -p "$CACHE_DIR/.Trash" "$CACHE_DIR/extract-tmp"
+	run bash "$SCRIPT" 2>&1
+	[ "$status" -eq 0 ]
+	[[ $output == *"layout unexpected"* ]]
+}
+
+@test "stderr-only output (drift goes to stderr, not stdout) (#89 r1)" {
+	_write_settings_with_version "0.8.5"
+	mkdir -p "$CACHE_DIR/0.9.7"
+	# Capture stdout and stderr separately
+	stdout=$(bash "$SCRIPT" 2>/dev/null)
+	stderr=$(bash "$SCRIPT" 2>&1 >/dev/null)
+	[ -z "$stdout" ]
+	[[ $stderr == *"drift detected"* ]]
 }
 
 @test "multiple refs in settings → picks max version" {
