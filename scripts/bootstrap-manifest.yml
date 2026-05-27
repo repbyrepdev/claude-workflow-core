@@ -7,10 +7,12 @@
 #   labels[].name:  string  — must match .github/labels.yml `name:`
 #   labels[].color: string  — 6-hex-digit, lowercase, no leading #
 #   labels[].description: string — optional; absent means "no description"
-#   workflows / issue_templates: basename-only string arrays — derived view
-#     over files[] entries with .github/workflows/ or .github/ISSUE_TEMPLATE/
-#     prefixes. Kept explicit for consumer scripts that don't want to encode
-#     the prefix-filter logic.
+#   workflows / issue_templates: basename-only convenience arrays,
+#     hand-maintained alongside files[] entries under .github/workflows/
+#     and .github/ISSUE_TEMPLATE/. Kept explicit so consumer scripts
+#     can iterate them without encoding the path-prefix filter.
+#     Drift between these arrays and files[] is caught by the bats
+#     "derived-view" parity tests.
 
 schema_version: 1
 

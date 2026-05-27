@@ -93,29 +93,46 @@ if [ ! -f "$MANIFEST_PATH" ]; then
 elif ! command -v yq >/dev/null 2>&1; then
 	_log "NOTE: yq not on PATH — manifest parity check skipped"
 else
-	# `|| true` guards: yq parse error / zero grep matches abort under set -e.
-	manifest_count=$(yq -r '.files | length' "$MANIFEST_PATH" 2>/dev/null || echo "")
+	# `|| echo` fallbacks preserve a parseable value when yq parse-errors or
+	# grep matches zero — set -e would otherwise abort the whole script.
+	# yq stderr captured to PARSE_ERR so failures land in a WARN line with
+	# context instead of disappearing into /dev/null.
+	PARSE_ERR=$(mktemp -t bootstrap-manifest-yq.XXXXXX 2>/dev/null || echo "")
+	manifest_count=$(yq -r '.files | length' "$MANIFEST_PATH" 2>"${PARSE_ERR:-/dev/null}" || echo "")
 	heredoc_count=$(grep -cE '^_write ' "$0" || echo 0)
-	if [ -z "$manifest_count" ] || ! [ "$manifest_count" -eq "$manifest_count" ] 2>/dev/null; then
+	if [ "$heredoc_count" -eq 0 ]; then
+		_log "WARN: bootstrap-repo.sh contains zero _write calls — script malformed?"
+	elif [ -z "$manifest_count" ] || ! [ "$manifest_count" -eq "$manifest_count" ] 2>/dev/null; then
 		_log "WARN: bootstrap-manifest.yml unparseable (yq -r '.files | length' failed) — parity check inconclusive"
+		if [ -n "$PARSE_ERR" ] && [ -s "$PARSE_ERR" ]; then
+			_log "      yq error: $(head -1 "$PARSE_ERR")"
+		fi
 	elif [ "$manifest_count" -ne "$heredoc_count" ]; then
 		_log "WARN: manifest drift — bootstrap-manifest.yml lists $manifest_count files, this script has $heredoc_count _write calls"
 		_log "      reconcile scripts/bootstrap-manifest.yml + heredocs in $0 before relying on output"
 	else
-		# Counts match — verify each manifest path appears as a literal _write target.
-		# grep -F to avoid regex metachar matching (dots in paths are common).
-		drift_paths=""
+		# Counts match — verify each manifest path appears as a literal _write
+		# target. Materialize paths first so yq rc is checkable (process
+		# substitution swallows rc). grep -F -- to avoid regex metachar
+		# matching AND ugrep dash-prefix flag misinterpretation.
+		if ! manifest_paths=$(yq -r '.files[] | select(.path != null) | .path' "$MANIFEST_PATH" 2>"${PARSE_ERR:-/dev/null}"); then
+			_log "WARN: yq path enumeration failed — parity check inconclusive"
+			[ -n "$PARSE_ERR" ] && [ -s "$PARSE_ERR" ] && _log "      yq error: $(head -1 "$PARSE_ERR")"
+			manifest_paths=""
+		fi
+		drift_paths=()
 		while IFS= read -r p; do
 			[ -z "$p" ] && continue
-			grep -F -- "_write $p " "$0" >/dev/null || drift_paths="${drift_paths}${p}\n"
-		done < <(yq -r '.files[].path' "$MANIFEST_PATH" 2>/dev/null)
-		if [ -n "$drift_paths" ]; then
+			grep -F -- "_write $p " "$0" >/dev/null || drift_paths+=("$p")
+		done <<<"$manifest_paths"
+		if [ "${#drift_paths[@]}" -gt 0 ]; then
 			_log "WARN: manifest path(s) not found in any _write call:"
-			printf "%b" "$drift_paths" | while IFS= read -r line; do
-				[ -n "$line" ] && _log "        - $line"
+			for p in "${drift_paths[@]}"; do
+				_log "        - $p"
 			done
 		fi
 	fi
+	[ -n "$PARSE_ERR" ] && rm -f "$PARSE_ERR"
 fi
 
 # Create target if missing (always create in dry-run too so subsequent

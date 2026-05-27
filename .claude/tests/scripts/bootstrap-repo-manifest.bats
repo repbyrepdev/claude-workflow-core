@@ -165,11 +165,61 @@ teardown() {
 	chmod +x "$TEST_TMP/sandbox-bad-manifest/bootstrap-repo.sh"
 	run bash -c "\"$TEST_TMP/sandbox-bad-manifest/bootstrap-repo.sh\" \"$TEST_TMP/target-bad\" --dry-run 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"unparseable"* ]] || [[ $output == *"manifest drift"* ]]
+	[[ $output == *"unparseable"* ]]
+}
+
+@test "parity-check NOTEs (skipped) when yq missing from PATH" {
+	mkdir -p "$TEST_TMP/sandbox-no-yq"
+	cp "$SCRIPT" "$TEST_TMP/sandbox-no-yq/bootstrap-repo.sh"
+	cp "$MANIFEST" "$TEST_TMP/sandbox-no-yq/bootstrap-manifest.yml"
+	chmod +x "$TEST_TMP/sandbox-no-yq/bootstrap-repo.sh"
+	# Strip yq from PATH by running with a minimal PATH
+	run env PATH="/usr/bin:/bin" bash -c "\"$TEST_TMP/sandbox-no-yq/bootstrap-repo.sh\" \"$TEST_TMP/target-no-yq\" --dry-run 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"NOTE: yq not on PATH"* ]]
+	[[ $output != *"WARN: manifest"* ]]
 }
 
 @test "parity-check stays silent (no WARN) on canonical manifest" {
 	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-clean\" --dry-run 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output != *"WARN: manifest"* ]]
+}
+
+@test "manifest mode matches the mode passed to _write for each path" {
+	while IFS= read -r path; do
+		[ -z "$path" ] && continue
+		expected=$(yq -r ".files[] | select(.path == \"$path\") | .mode" "$MANIFEST")
+		# Extract second whitespace-token after _write <path> from bootstrap-repo.sh
+		actual=$(grep -F -- "_write $path " "$SCRIPT" | head -1 | awk '{print $3}')
+		[ "$expected" = "$actual" ]
+	done < <(yq -r '.files[].path' "$MANIFEST")
+}
+
+@test "manifest files[].path entries are unique" {
+	count_total=$(yq -r '.files | length' "$MANIFEST")
+	count_unique=$(yq -r '.files[].path' "$MANIFEST" | sort -u | wc -l)
+	[ "$count_total" -eq "$count_unique" ]
+}
+
+@test "workflows[] equals basenames of files[] under .github/workflows/" {
+	declared=$(yq -r '.workflows[]' "$MANIFEST" | sort -u)
+	derived=$(yq -r '.files[] | select(.path | test("^\\.github/workflows/")) | .path' "$MANIFEST" | xargs -n1 basename | sort -u)
+	[ "$declared" = "$derived" ]
+}
+
+@test "issue_templates[] equals basenames of files[] under .github/ISSUE_TEMPLATE/" {
+	declared=$(yq -r '.issue_templates[]' "$MANIFEST" | sort -u)
+	derived=$(yq -r '.files[] | select(.path | test("^\\.github/ISSUE_TEMPLATE/")) | .path' "$MANIFEST" | xargs -n1 basename | sort -u)
+	[ "$declared" = "$derived" ]
+}
+
+@test "label descriptions in manifest match labels.yml heredoc" {
+	while IFS= read -r name; do
+		[ -z "$name" ] && continue
+		desc=$(yq -r ".labels[] | select(.name == \"$name\") | .description // \"\"" "$MANIFEST")
+		[ -z "$desc" ] || [ "$desc" = "null" ] && continue
+		run bash -c "grep -A2 -F -- '- name: $name' \"$SCRIPT\" | grep -F -- 'description: $desc'"
+		[ "$status" -eq 0 ]
+	done < <(yq -r '.labels[].name' "$MANIFEST")
 }
