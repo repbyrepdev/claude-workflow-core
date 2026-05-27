@@ -132,13 +132,12 @@ _phase1_directive_marker_file() {
 _write_phase1_directive_marker() {
 	# v4.28-W4 (#732): write phase1 directive text to marker so Claude
 	# sees it on next UserPromptSubmit even if the orchestrator ran
-	# detached (post-commit-ship-cycle.sh fires resume detached;
-	# stdout lands in a log Claude doesn't read by default).
-	# CR-in-CI #732 r2 major: mkdir best-effort under set -e —
-	# scm_warn + return 0 on failure so caller (cmd_next) doesn't
-	# abort the orchestrator if the marker dir can't be created
-	# (rare: read-only fs, permission, /tmp full); marker is an
-	# OPTIONAL context-injection surface, not critical state.
+	# detached.
+	# v0.10.0 (#92): NONCE-WRAPPED. Generates a UUID nonce, writes
+	# nonce on line 1 + directive text on line 2..N, and stores the
+	# nonce in the per-SHA state JSON under .phase1_directive_nonce.
+	# ship-cycle-guard.sh Agent path validates sentinel-content ==
+	# state-JSON-nonce to defeat touch-bypass of the empty sentinel.
 	local sha=$1
 	local text=$2
 	local marker
@@ -147,10 +146,56 @@ _write_phase1_directive_marker() {
 		scm_warn "phase1-directive marker dir create failed at $STATE_DIR — Claude may miss the hand-off; manual fire required"
 		return 0
 	}
-	printf '%s\n' "$text" >"$marker" || {
-		scm_warn "phase1-directive marker write failed at $marker — Claude may miss the hand-off; manual fire required"
+	# Generate a UUID nonce. Prefer uuidgen (Linux/macOS), fall back
+	# to /proc/sys/kernel/random/uuid (Linux), fall back to a
+	# python3 oneliner if both missing.
+	local nonce=""
+	if command -v uuidgen >/dev/null 2>&1; then
+		nonce=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')
+	fi
+	if [ -z "$nonce" ] && [ -r /proc/sys/kernel/random/uuid ]; then
+		nonce=$(tr -d '\n' </proc/sys/kernel/random/uuid 2>/dev/null)
+	fi
+	if [ -z "$nonce" ] && command -v python3 >/dev/null 2>&1; then
+		nonce=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+	fi
+	if [ -z "$nonce" ]; then
+		scm_warn "phase1-directive nonce generation failed — sentinel will be touch-bypassable for this round"
+		# Fall back to writing without nonce — preserves prior
+		# behavior under environments missing all UUID sources.
+		printf '%s\n' "$text" >"$marker" || {
+			scm_warn "phase1-directive marker write failed at $marker"
+			return 0
+		}
 		return 0
-	}
+	fi
+	# Write nonce on line 1, directive on line 2..N. Atomic via
+	# rename(2) to avoid partial-write race with the guard's read.
+	local tmp_marker="$marker.tmp.$$"
+	if ! {
+		printf '%s\n%s\n' "$nonce" "$text" >"$tmp_marker"
+		mv "$tmp_marker" "$marker"
+	}; then
+		scm_warn "phase1-directive marker write failed at $marker — Claude may miss the hand-off; manual fire required"
+		rm -f "$tmp_marker" 2>/dev/null || true
+		return 0
+	fi
+	# Persist nonce to state JSON. Atomic via jq + tmp + mv. Failure
+	# here is recoverable (guard will deny until next emit), but
+	# scm_warn so operator can debug.
+	local state_file="$STATE_DIR/$sha.json"
+	if [ -f "$state_file" ]; then
+		local tmp_state="$state_file.tmp.$$"
+		if jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' "$state_file" >"$tmp_state" 2>/dev/null; then
+			mv "$tmp_state" "$state_file" || {
+				scm_warn "phase1-directive state-nonce write failed at $state_file"
+				rm -f "$tmp_state" 2>/dev/null || true
+			}
+		else
+			scm_warn "phase1-directive state-nonce jq merge failed for $state_file"
+			rm -f "$tmp_state" 2>/dev/null || true
+		fi
+	fi
 }
 
 _clear_phase1_directive_marker() {
@@ -571,7 +616,7 @@ _phase1_clean_streak() {
 		# `0` and routes to scm_warn — DO NOT remove the regex thinking
 		# `|| true` covers the no-output case.
 		expected_agents=$(printf '%s\n' "$list_out" | grep -c . || true)
-		if ! [[ "$expected_agents" =~ ^[1-9][0-9]*$ ]]; then
+		if ! [[ $expected_agents =~ ^[1-9][0-9]*$ ]]; then
 			scm_warn "list-phase1-agents.sh produced no parseable lines (got '$expected_agents'); defaulting to 7. Output: $list_out"
 			expected_agents=7
 		fi
@@ -760,12 +805,12 @@ _phase2_run_cr_cli() {
 	if [ -z "$count" ]; then
 		# jq succeeded but produced no output → no `complete` event found.
 		# That's CR-CLI being interrupted / malformed stdout; don't advance.
-		echo "ship-pr-cycle: ERROR: CR-CLI emitted no {\"type\":\"complete\"} event — output incomplete" >&2
+		echo 'ship-pr-cycle: ERROR: CR-CLI emitted no {"type":"complete"} event — output incomplete' >&2
 		echo "  hint: re-run; if persistent, diagnose with: $cr_script | jq -s 'map(.type) | unique'" >&2
 		rm -f "$stdout_file" "$stderr_file"
 		return 2
 	fi
-	if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+	if ! [[ $count =~ ^[0-9]+$ ]]; then
 		echo "ship-pr-cycle: ERROR: CR-CLI complete event has non-numeric findings: $count" >&2
 		rm -f "$stdout_file" "$stderr_file"
 		return 2
@@ -786,7 +831,7 @@ _phase2_run_cr_cli() {
 # Returns: 0 on success, 2 on any failure (mirrors auto-triage stage semantics)
 _count_unresolved_threads() {
 	local pr_num="${1:-}"
-	if [ -z "$pr_num" ] || ! [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+	if [ -z "$pr_num" ] || ! [[ $pr_num =~ ^[0-9]+$ ]]; then
 		echo "_count_unresolved_threads: invalid PR number '$pr_num'" >&2
 		return 2
 	fi
@@ -874,7 +919,7 @@ _count_unresolved_threads() {
 		echo "_count_unresolved_threads: jq count parse failed (rc=$count_rc): ${count_err:-<no stderr>}; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
 		return 2
 	fi
-	if ! [[ "$unresolved_count" =~ ^[0-9]+$ ]]; then
+	if ! [[ $unresolved_count =~ ^[0-9]+$ ]]; then
 		echo "_count_unresolved_threads: unresolved-count non-numeric: '$unresolved_count'" >&2
 		return 2
 	fi
@@ -899,7 +944,7 @@ _scaler_rounds() {
 	# (the previous `grep -E ... | head -1 | cut` chain returned 1 on
 	# missing ROUNDS line, killing the script via set -e).
 	while IFS= read -r line; do
-		if [[ "$line" =~ ^ROUNDS=([1-9][0-9]*)$ ]]; then
+		if [[ $line =~ ^ROUNDS=([1-9][0-9]*)$ ]]; then
 			rounds="${BASH_REMATCH[1]}"
 			break
 		fi
@@ -968,7 +1013,7 @@ cmd_next() {
 			echo "ship-pr-cycle: ERROR: git rev-list --count failed: $commits" >&2
 			return 2
 		fi
-		if ! [[ "$commits" =~ ^[0-9]+$ ]]; then
+		if ! [[ $commits =~ ^[0-9]+$ ]]; then
 			echo "ship-pr-cycle: ERROR: git rev-list --count returned non-numeric: $commits" >&2
 			return 2
 		fi
@@ -1356,7 +1401,7 @@ EOF
 		if [ "$upstream_rc" -ne 0 ]; then
 			# rc=128 + "no upstream" = legitimate first-push (push -u
 			# will set it). Anything else = real corruption — fail loud.
-			if [[ "$upstream_stderr" == *"no upstream"* || "$upstream_stderr" == *"does not have an upstream"* ]]; then
+			if [[ $upstream_stderr == *"no upstream"* || $upstream_stderr == *"does not have an upstream"* ]]; then
 				upstream_sha=""
 			else
 				echo "ship-pr-cycle: ERROR: git rev-parse @{upstream} failed unexpectedly (rc=$upstream_rc): $upstream_stderr" >&2
@@ -1542,7 +1587,7 @@ EOF
 			echo "ship-pr-cycle: cr-in-ci-wait — no open PR for branch '$cur_branch' (run github-pr-creation skill first)" >&2
 			return 1
 		fi
-		if ! [[ "$pr_count" =~ ^[1-9][0-9]*$ ]]; then
+		if ! [[ $pr_count =~ ^[1-9][0-9]*$ ]]; then
 			echo "ship-pr-cycle: ERROR: gh pr list JSON has non-numeric count: $pr_count (raw: $pr_json)" >&2
 			return 2
 		fi
@@ -1557,7 +1602,7 @@ EOF
 			echo "  raw output: $pr_json" >&2
 			return 2
 		fi
-		if ! [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+		if ! [[ $pr_num =~ ^[0-9]+$ ]]; then
 			echo "ship-pr-cycle: ERROR: gh pr list JSON has non-numeric pr_num: $pr_num (raw: $pr_json)" >&2
 			return 2
 		fi
@@ -1893,7 +1938,7 @@ cmd_install_hook() {
 	fi
 	# rev-parse --git-path returns a path relative to cwd or absolute;
 	# normalize relative-to-cwd by prefixing with REPO_ROOT when relative.
-	[[ "$hooks_dir" = /* ]] || hooks_dir="$REPO_ROOT/$hooks_dir"
+	[[ $hooks_dir == /* ]] || hooks_dir="$REPO_ROOT/$hooks_dir"
 	mkdir -p "$hooks_dir" || scm_fail "cannot create hooks dir $hooks_dir"
 	hook_path="$hooks_dir/post-commit"
 	marker="# ship-pr-cycle: post-commit-ship-cycle.sh wiring (#735)"
@@ -1921,7 +1966,7 @@ cmd_install_hook() {
 			;;
 		esac
 		# Resolve relative target.
-		if [[ "$link_target" = /* ]]; then
+		if [[ $link_target == /* ]]; then
 			link_abs="$link_target"
 		else
 			link_abs="$hooks_dir/$link_target"
