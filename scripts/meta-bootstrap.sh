@@ -6,14 +6,23 @@ set -euo pipefail
 # every target through one verified pipeline.
 #
 # Targets:
-#   machine         — new dev machine setup (subs 2 #110)
-#   repo            — new consumer repo setup (sub 3 #111)
-#   plugin          — plugin release / cache prep (sub 4 #112)
-#   feature-branch  — pre-work SSOT prereq check (sub 5 #113)
+#   machine         — new dev machine setup
+#   repo            — new consumer repo setup
+#   plugin          — plugin release / cache prep
+#   feature-branch  — pre-work SSOT prereq check
 #
-# Per-target logic lands in sub-issues; this skeleton handles flag
-# parsing + dispatch. Unimplemented targets return rc=3 with a
-# helpful "not yet implemented in sub-N" pointer.
+# Per-target logic lands in follow-up sub-issues; this skeleton handles
+# flag parsing + dispatch. Unimplemented targets return rc=69 (per
+# sysexits EX_UNAVAILABLE) with a tracking-issue pointer.
+#
+# Exit codes (stable contract):
+#   0   success
+#   2   argparse error (missing/invalid --target, unknown flag)
+#   69  unimplemented target (matches sysexits EX_UNAVAILABLE; distinct
+#       from the repo's rc=3 "refused due to malformed precondition"
+#       used by register-hook.sh / ship-pr-cycle.sh / etc.)
+#   70  internal dispatch-table bug (should be unreachable; defense in
+#       depth in case a future TARGET addition skips the case statement)
 #
 # Usage:
 #   scripts/meta-bootstrap.sh --target <machine|repo|plugin|feature-branch> [args...]
@@ -94,34 +103,51 @@ machine | repo | plugin | feature-branch) ;;
 	;;
 esac
 
-# Dispatch — per-target functions land in sub-issues #110-#113.
-# Skeleton returns rc=3 (unimplemented) with the tracking sub-issue.
+# Dispatch — per-target functions land in follow-up sub-issues. While
+# unimplemented, each target returns rc=69 (EX_UNAVAILABLE) with a
+# tracking-issue pointer in the log line so a caller can grep the
+# tracker if they hit it. Tracking refs are intentional in the
+# user-facing message (operators need to know where the work is).
 _dispatch_machine() {
-	_log "ERROR: --target machine not yet implemented (tracking: sub-issue #110)"
-	return 3
+	_log "ERROR: --target machine not yet implemented (tracking: meta-bootstrap machine flow, sub-issue of #78)"
+	return 69
 }
 _dispatch_repo() {
-	_log "ERROR: --target repo not yet implemented (tracking: sub-issue #111)"
-	return 3
+	_log "ERROR: --target repo not yet implemented (tracking: meta-bootstrap repo flow, sub-issue of #78)"
+	return 69
 }
 _dispatch_plugin() {
-	_log "ERROR: --target plugin not yet implemented (tracking: sub-issue #112)"
-	return 3
+	_log "ERROR: --target plugin not yet implemented (tracking: meta-bootstrap plugin flow, sub-issue of #78)"
+	return 69
 }
 _dispatch_feature_branch() {
-	_log "ERROR: --target feature-branch not yet implemented (tracking: sub-issue #113)"
-	return 3
+	_log "ERROR: --target feature-branch not yet implemented (tracking: meta-bootstrap feature-branch flow, sub-issue of #78)"
+	return 69
 }
 
+# --verify-only currently has no per-target hook — refuse explicitly
+# so callers don't get silent mutation when sub-issues land mutating
+# logic without honoring the flag. When a target wires verify-only,
+# replace this guard with the per-target verify dispatch.
 if [ "$VERIFY_ONLY" = "1" ]; then
-	_log "verify-only mode: $TARGET"
-else
-	_log "running target: $TARGET"
+	_log "ERROR: --verify-only not yet wired for any target (skeleton; sub-issue of #78 implements per-target verify hooks)"
+	exit 69
 fi
 
+_log "running target: $TARGET"
+
+# set -u-safe expansion: when EXTRA_ARGS is empty pass zero args, not
+# one empty-string. Future dispatchers will rely on arg-count accuracy.
 case "$TARGET" in
-machine) _dispatch_machine "${EXTRA_ARGS[@]:-}" ;;
-repo) _dispatch_repo "${EXTRA_ARGS[@]:-}" ;;
-plugin) _dispatch_plugin "${EXTRA_ARGS[@]:-}" ;;
-feature-branch) _dispatch_feature_branch "${EXTRA_ARGS[@]:-}" ;;
+machine) _dispatch_machine ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} ;;
+repo) _dispatch_repo ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} ;;
+plugin) _dispatch_plugin ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} ;;
+feature-branch) _dispatch_feature_branch ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} ;;
+*)
+	# Defense in depth — unreachable given the validator above, but
+	# catches a future case-label drift that skipped the validator
+	# update.
+	_log "ERROR: dispatch table missing case for $TARGET (internal bug)"
+	exit 70
+	;;
 esac
