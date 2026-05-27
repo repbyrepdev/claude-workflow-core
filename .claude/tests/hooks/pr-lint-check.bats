@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: .claude/hooks/pr-lint-check.sh
+# covers: hooks/pr-lint-check.sh
 
 setup() {
 	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
