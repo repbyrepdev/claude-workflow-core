@@ -37,6 +37,10 @@ jobs:
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
       - name: Run bootstrap-repo.sh --verify --scope plugin
+        env:
+          # Required for the label-remote check (gh label list) inside _verify_target.
+          # Without GH_TOKEN, gh CLI errors and the script fails closed.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           scripts/bootstrap-repo.sh . --verify --scope plugin

@@ -204,8 +204,11 @@ _verify_target() {
 			_log "  ✗ missing: $path"
 			missing_files=$((missing_files + 1))
 		else
-			# stat is GNU vs BSD — try BSD first (macOS), fall back to GNU.
-			actual_mode=$(stat -f '%Lp' "$TARGET/$path" 2>/dev/null || stat -c '%a' "$TARGET/$path" 2>/dev/null || echo "")
+			# stat: GNU `-c '%a'` first (returns octal mode), then BSD `-f '%Lp'`
+			# fallback. Order matters: GNU stat's `-f` returns filesystem info
+			# (not a format string), so trying BSD first on Linux yields garbage
+			# instead of erroring.
+			actual_mode=$(stat -c '%a' "$TARGET/$path" 2>/dev/null || stat -f '%Lp' "$TARGET/$path" 2>/dev/null || echo "")
 			if [ -n "$actual_mode" ] && [ "$actual_mode" != "$mode" ]; then
 				_log "  ⚠ mode mismatch: $path expected=$mode actual=$actual_mode"
 				wrong_mode=$((wrong_mode + 1))
