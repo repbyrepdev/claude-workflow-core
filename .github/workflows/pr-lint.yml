@@ -31,6 +31,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  contents: read  # actions/checkout needs this — setting any perm defaults the rest to none
   pull-requests: read
 
 # v4.3.E (#371): consolidated from 3 parallel jobs into 1 job with 3 steps.
@@ -56,11 +57,13 @@ jobs:
       BODY: ${{ github.event.pull_request.body }}
     steps:
       # v4.4.A: checkout so the step can read `.github/labels.yml` as SSOT.
-      # CR PR #64 r2 suggested persist-credentials: false but it broke
-      # checkout on this workflow's first run (actions/checkout v6 +
-      # persist-credentials: false issue). Reverted; the credential-
-      # leak concern stays a documented residual.
+      # Earlier debug detour: thought persist-credentials: false was breaking
+      # checkout — was actually missing `contents: read` in the permissions
+      # block above (any explicit permission defaults the rest to none).
+      # Now with contents: read granted, persist-credentials: false is safe.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Require area label
         # First step — no `if: always()` needed; a failure here still aborts
