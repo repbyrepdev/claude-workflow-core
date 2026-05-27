@@ -97,7 +97,7 @@ done
 
 if [ -z "$TARGET" ]; then
 	echo "error: missing target directory" >&2
-	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--verify]" >&2
+	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--verify] [--scope plugin|consumer|both]" >&2
 	exit 2
 fi
 
@@ -166,7 +166,7 @@ fi
 # per-issue diff line on drift. Skips remote-label check when no gh or
 # no GitHub remote (target may be pre-push).
 _verify_target() {
-	local rc=0 missing_files=0 wrong_mode=0 missing_labels=0
+	local rc=0 missing_files=0 wrong_mode=0 missing_labels=0 verified_count=0
 	if [ ! -d "$TARGET" ]; then
 		_log "ERROR: --verify target $TARGET is not a directory"
 		return 2
@@ -213,6 +213,7 @@ _verify_target() {
 				_log "  ⚠ mode mismatch: $path expected=$mode actual=$actual_mode"
 				wrong_mode=$((wrong_mode + 1))
 			fi
+			verified_count=$((verified_count + 1))
 		fi
 		i=$((i + 1))
 	done
@@ -253,7 +254,7 @@ _verify_target() {
 	fi
 	[ "$missing_labels" -gt 0 ] && rc=1
 	if [ "$rc" -eq 0 ] && [ "$wrong_mode" -eq 0 ]; then
-		_log "  ✓ verify clean: $count files present, labels match manifest"
+		_log "  ✓ verify clean: $verified_count file(s) verified, labels match manifest"
 	elif [ "$rc" -eq 0 ]; then
 		_log "  ⚠ verify completed with $wrong_mode mode mismatch(es) — non-blocking"
 	else
