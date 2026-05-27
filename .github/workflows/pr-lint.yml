@@ -57,14 +57,21 @@ jobs:
     steps:
       # v4.4.A: checkout so the step can read `.github/labels.yml` as SSOT.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Require area label
         # First step — no `if: always()` needed; a failure here still aborts
         # the job correctly. Steps 2+3 use `if: always()` to preserve the
         # pre-v4.3.E behavior where the parallel-job layout surfaced ALL
         # failures per run, not just the first.
+        env:
+          # CR PR #64 r2 MAJOR: pass labels via env (not inline shell
+          # interpolation) to defeat label-name injection (a label with
+          # a single-quote would break the inline `LABELS='...'` form).
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+          LABELS="$LABELS_JSON"
           # v4.4.A: area label names derived from `.github/labels.yml` at
           # run-time — SINGLE source of truth. Adding a new area:* label
           # in labels.yml is immediately accepted without editing this
