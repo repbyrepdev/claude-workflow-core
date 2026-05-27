@@ -56,7 +56,10 @@ teardown() {
 
 @test "repo --verify-only on bootstrapped tree is identical across runs" {
 	mkdir -p "$TEST_TMP/target"
-	"$SCRIPT" --target repo -- "$TEST_TMP/target" >/dev/null 2>&1
+	# Assert bootstrap succeeded explicitly — without `run`, a silent
+	# bootstrap failure would misattribute downstream assertion failures.
+	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
+	[ "$status" -eq 0 ]
 	run "$SCRIPT" --target repo --verify-only -- "$TEST_TMP/target"
 	[ "$status" -eq 0 ]
 	first=$output
@@ -67,7 +70,8 @@ teardown() {
 
 @test "repo: re-bootstrap after deleting a single file restores it (recovery path)" {
 	mkdir -p "$TEST_TMP/target"
-	"$SCRIPT" --target repo -- "$TEST_TMP/target" >/dev/null 2>&1
+	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
+	[ "$status" -eq 0 ]
 	rm "$TEST_TMP/target/.pre-commit-config.yaml"
 	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
 	[ "$status" -eq 0 ]

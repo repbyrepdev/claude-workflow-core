@@ -79,13 +79,18 @@ setup() {
 }
 
 @test "--verify-only is accepted for every target with the right concrete exit code" {
-	# Per-target expected status: repo without --dir exits 2 (argparse);
-	# machine/plugin/feature-branch exit 0 (verify pass). None exit 69.
-	for t in machine plugin feature-branch; do
+	# machine + plugin: rc=0 (verify pass — both work against the tracked
+	# manifest with no host coupling beyond yq).
+	for t in machine plugin; do
 		run "$SCRIPT" --target "$t" --verify-only
 		[ "$status" -eq 0 ]
 		[[ $output != *"not yet wired"* ]]
 	done
+	# feature-branch: env-coupled (git state, gh labels) — pin wiring
+	# only, not the success rc. Detailed coverage in feature-branch.bats.
+	run "$SCRIPT" --target feature-branch --verify-only
+	[ "$status" -ne 69 ]
+	[[ $output != *"not yet wired"* ]]
 	# repo: --verify-only without target-dir is rc=2 (argparse), NOT 69.
 	run "$SCRIPT" --target repo --verify-only
 	[ "$status" -eq 2 ]
@@ -107,14 +112,17 @@ setup() {
 	[[ $output != *"not yet implemented"* ]]
 }
 
-@test "--target feature-branch is implemented (rc=0 on this branch)" {
+@test "--target feature-branch is implemented (no rc=69 / not-yet-wired)" {
 	# feature-branch was wired as of #113. Detailed coverage lives in
-	# meta-bootstrap-feature-branch.bats. This branch is well-formed
-	# (per convention + has labeled #110 issue), so feature-branch
-	# verify returns rc=0.
+	# meta-bootstrap-feature-branch.bats. Skeleton coverage validates
+	# WIRING (no rc=69, no stub strings) — not repo-specific success,
+	# which would couple to current git state (detached HEAD, missing
+	# hook, unlabeled issue would all flip rc to 1 even though the
+	# dispatcher is wired correctly).
 	run "$SCRIPT" --target feature-branch
-	[ "$status" -eq 0 ]
+	[ "$status" -ne 69 ]
 	[[ $output != *"not yet implemented"* ]]
+	[[ $output != *"not yet wired"* ]]
 }
 
 @test "--verify-only --target X order accepted (flag order independence)" {

@@ -61,10 +61,11 @@ targets:
 
   plugin:
     # Plugin manifest version field must be non-empty + look like SemVer.
+    # `$` anchor required — without it, `1.2.3abc` passes via prefix match.
     json_fields:
       - file: .claude-plugin/plugin.json
         jq: .version
-        match: '^[0-9]+\.[0-9]+\.[0-9]+'
+        match: '^[0-9]+\.[0-9]+\.[0-9]+$'
 
   feature-branch:
     # Verify is git/network-state-dependent; rules live in inline bash

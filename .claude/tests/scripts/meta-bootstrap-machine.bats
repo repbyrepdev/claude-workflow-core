@@ -33,13 +33,18 @@ _stub_manifest() {
 	[[ $output == *"accepts no positional arguments"* ]]
 }
 
-@test "--target machine --verify-only against this machine passes the manifest" {
-	# Use the tracked manifest. This machine ran bootstrap-machine.sh
-	# historically, so the brew/commands/keychain_entries rules should
-	# already be satisfied. Failure here = either (a) missing dev setup,
-	# or (b) manifest declares packages bootstrap-machine.sh doesn't
-	# install (real drift). Disambiguate before blaming the manifest.
-	run "$SCRIPT" --target machine --verify-only
+@test "--target machine --verify-only happy path uses a host-independent stub manifest" {
+	# Stub manifest decoupled from host state — CI / fresh dev machines
+	# won't have bootstrap-machine.sh's brew packages installed yet, so
+	# coupling to the tracked manifest produced nondeterministic failures.
+	# A stub with `commands: [sh, ls]` is satisfied on every POSIX host.
+	_stub_manifest <<'YAML'
+schema_version: 1
+targets:
+  machine:
+    commands: [sh, ls]
+YAML
+	run env META_BOOTSTRAP_MANIFEST="$TEST_TMP/manifest.yml" "$SCRIPT" --target machine --verify-only
 	[ "$status" -eq 0 ]
 	[[ $output == *"all manifest rules pass"* ]]
 }

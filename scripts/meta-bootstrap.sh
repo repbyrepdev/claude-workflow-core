@@ -235,7 +235,17 @@ _verify_target_manifest() {
 	if [ -n "$paths" ]; then
 		while IFS= read -r p; do
 			[ -z "$p" ] && continue
-			local resolved=${p/#\~/$HOME}
+			# Restrict expansion to leading `~/` — the bash pattern
+			# `${p/#\~/$HOME}` would also rewrite `~user/...` to
+			# `$HOME-user/...` (incorrect for other-user homes).
+			# `${p:2}` strips the 2-char `~/` prefix; `${p#~/}` doesn't
+			# work because bash tilde-expands the pattern position.
+			# shellcheck disable=SC2088 # literal '~/' is what we match for, not expand
+			local resolved=$p
+			# shellcheck disable=SC2088
+			if [[ $p == '~/'* ]]; then
+				resolved="${HOME}/${p:2}"
+			fi
 			if [ ! -e "$resolved" ]; then
 				_log "  ✗ required path missing: $p (resolved: $resolved)"
 				rc=1
