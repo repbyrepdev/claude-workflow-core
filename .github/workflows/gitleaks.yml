@@ -26,4 +26,6 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+          # GITLEAKS_CONFIG omitted — claude-workflow-core has no
+          # .gitleaks.toml. Default rules apply. Follow-up: backport
+          # .gitleaks.toml from homelab + flip env back on.

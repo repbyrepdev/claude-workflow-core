@@ -116,7 +116,7 @@ jobs:
         if: always() && !cancelled()
         run: |
           MISSING=""
-          for heading in "## Summary" "## Changes" "## Testing" "## Encryption" "## Pre-merge" "## Rollback"; do
+          for heading in "## Summary" "## Test plan"; do
             if ! echo "$BODY" | grep -qF "$heading"; then
               MISSING="$MISSING $heading"
             fi

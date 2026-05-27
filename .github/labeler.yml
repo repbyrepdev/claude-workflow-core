@@ -1,6 +1,10 @@
 ---
 # Path → label rules consumed by pr-labeler.yml workflow.
 # See https://github.com/actions/labeler for syntax.
+#
+# Every plausible changed path must map to at least one area:* label,
+# otherwise pr-lint never runs (no labeled event fires → required
+# check stays pending → merge blocked).
 area:infrastructure:
   - changed-files:
       - any-glob-to-any-file:
@@ -8,3 +12,19 @@ area:infrastructure:
           - .github/**
           - .claude/**
           - .pre-commit-config.yaml
+          - .pre-commit-hooks.yaml
+          - .shellcheckrc
+          - hooks/**
+          - pre-commit-hooks/**
+          - skills/**
+          - _lib/**
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.md"
+          - "**/*.md"
+          - LICENSE
+area:plugin-manifest:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .claude-plugin/**
