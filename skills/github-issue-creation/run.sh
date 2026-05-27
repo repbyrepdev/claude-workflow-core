@@ -165,7 +165,7 @@ bug | feature | task)
 		echo "Sub-issues must link to their parent epic. If this is genuinely standalone (no epic exists yet), file an epic first via --template epic." >&2
 		exit 2
 	fi
-	if ! [[ "$PARENT" =~ ^[0-9]+$ ]]; then
+	if ! [[ $PARENT =~ ^[0-9]+$ ]]; then
 		echo "error: --parent must be a numeric issue number (got: $PARENT)" >&2
 		exit 2
 	fi
@@ -314,6 +314,67 @@ if [ -n "$REQUIRED" ]; then
 	fi
 fi
 
+# #120: enforce priority:* + area:* labels at create time. The original
+# convention deferred this to server-side label classification, but it
+# regex-misclassifies on ACTIONS_MODE=local and silently drops labels —
+# operator-set labels at create are the correct enforcement point.
+# Override: ISSUE_LABELS_REQUIRED_SKIP=1 (audit-logged to
+# .claude/logs/dogfood-gate-skip.jsonl).
+if [ "${ISSUE_LABELS_REQUIRED_SKIP:-0}" = "1" ]; then
+	echo "warn: ISSUE_LABELS_REQUIRED_SKIP=1 — issue label gate bypassed" >&2
+	_skip_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+	mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
+	jq -nc --arg ts "$(date -u +%FT%TZ)" --arg env "ISSUE_LABELS_REQUIRED_SKIP" \
+		--arg wrapper "github-issue-creation" \
+		'{ts:$ts, env:$env, wrapper:$wrapper}' >>"$_skip_log" 2>/dev/null || true
+else
+	HAS_PRIORITY=0
+	HAS_AREA=0
+	for l in "${LABELS[@]+"${LABELS[@]}"}"; do
+		# Normalize to lowercase + strip surrounding whitespace so
+		# 'Priority:P2' / ' priority:p2 ' both match. GitHub label names
+		# are case-insensitive at the matching layer.
+		lower_l=$(printf '%s' "$l" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+		# `priority:?*` requires at least one char after the colon
+		# (rejects malformed 'priority:' with empty value).
+		case "$lower_l" in
+		priority:?*) HAS_PRIORITY=1 ;;
+		area:?*) HAS_AREA=1 ;;
+		esac
+	done
+	# #120 dogfood-fix intent: never make the operator re-run with
+	# missing labels. Auto-apply safe defaults instead — priority:needs-triage
+	# signals 'human reclassifies' (matches ai-triage's fallback when
+	# confidence <0.7) and area:infrastructure is the most common bucket.
+	AUTO_APPLIED=()
+	if [ "$HAS_PRIORITY" = "0" ]; then
+		LABELS+=("priority:needs-triage")
+		AUTO_APPLIED+=("priority:needs-triage")
+	fi
+	if [ "$HAS_AREA" = "0" ]; then
+		LABELS+=("area:infrastructure")
+		AUTO_APPLIED+=("area:infrastructure")
+	fi
+	if [ "${#AUTO_APPLIED[@]}" -gt 0 ]; then
+		echo "info: auto-applied missing create-time labels: ${AUTO_APPLIED[*]}" >&2
+		_apply_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+		mkdir -p "$(dirname "$_apply_log")" 2>/dev/null || true
+		# Audit-log writes are best-effort — guard with `command -v jq`
+		# + `|| _applied_json='[]'` fallback so a jq parse failure or
+		# missing-jq env can't abort the wrapper under set -euo pipefail
+		# before gh issue create runs.
+		if command -v jq >/dev/null 2>&1; then
+			_applied_json=$(printf '%s\n' "${AUTO_APPLIED[@]}" | jq -R . | jq -sc . 2>/dev/null) || _applied_json='[]'
+			jq -nc --arg ts "$(date -u +%FT%TZ)" \
+				--arg env "ISSUE_LABELS_AUTO_APPLIED" \
+				--arg wrapper "github-issue-creation" \
+				--argjson labels "$_applied_json" \
+				'{ts:$ts, env:$env, wrapper:$wrapper, auto_applied:$labels}' \
+				>>"$_apply_log" 2>/dev/null || true
+		fi
+	fi
+fi
+
 # Auto-resolve milestone from active branch's version prefix if not given.
 # Loud-fail on resolution errors: "no version on branch" is fine, but
 # "version present, resolution failed" is hidden silent-failure we don't want.
@@ -349,7 +410,7 @@ for l in "${LABELS[@]+"${LABELS[@]}"}"; do GH_ARGS+=(--label "$l"); done
 # Create — set SKILL_WRAPPER=1 so skill-bypass-guard allows the call.
 URL=$(SKILL_WRAPPER=1 gh "${GH_ARGS[@]}")
 NEW_NUM=$(printf '%s' "$URL" | grep -oE '[0-9]+$')
-if ! [[ "$NEW_NUM" =~ ^[0-9]+$ ]]; then
+if ! [[ $NEW_NUM =~ ^[0-9]+$ ]]; then
 	echo "Failed to parse issue number from: $URL" >&2
 	exit 2
 fi

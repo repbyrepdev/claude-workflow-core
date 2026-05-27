@@ -125,6 +125,43 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# #122: feature-branch SSOT prereqs (branch name + issue exists + issue
+# has priority:* + area:* labels) verified at PR-creation time. The
+# delegate is `meta-bootstrap.sh --target feature-branch` — same rules
+# the operator should have hit at branch-create time, re-fired here so
+# a non-conventional branch can't reach GitHub. PR_BRANCH_VERIFY_SKIP=1
+# bypasses + audit-logs (e.g., hotfix branches with non-standard names).
+#
+# Fail-closed when meta-bootstrap.sh is missing/non-exec: silently
+# skipping would defeat the gate. Per feedback_build_infra_dont_skip:
+# missing infra fails-closed and forces install.
+if [ "${PR_BRANCH_VERIFY_SKIP:-0}" = "1" ]; then
+	echo "warn: PR_BRANCH_VERIFY_SKIP=1 — feature-branch SSOT verify bypassed" >&2
+	_skip_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+	mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
+	jq -nc --arg ts "$(date -u +%FT%TZ)" --arg env "PR_BRANCH_VERIFY_SKIP" \
+		--arg wrapper "github-pr-creation" \
+		'{ts:$ts, env:$env, wrapper:$wrapper}' >>"$_skip_log" 2>/dev/null || true
+else
+	if [ ! -x "$REPO_ROOT/scripts/meta-bootstrap.sh" ]; then
+		echo "error: scripts/meta-bootstrap.sh missing/non-exec — cannot verify branch convention" >&2
+		echo "  fix: install plugin meta-bootstrap, or set PR_BRANCH_VERIFY_SKIP=1 (audit-logged)" >&2
+		exit 3
+	fi
+	_verify_err=$(mktemp -t feature-branch-verify-err.XXXXXX) || _verify_err=""
+	if ! "$REPO_ROOT/scripts/meta-bootstrap.sh" --target feature-branch >/dev/null 2>"${_verify_err:-/dev/null}"; then
+		echo "error: feature-branch SSOT verify failed — refusing to open PR" >&2
+		if [ -n "$_verify_err" ] && [ -s "$_verify_err" ]; then
+			echo "  details:" >&2
+			head -20 "$_verify_err" | sed 's/^/    /' >&2
+		fi
+		echo "  override: PR_BRANCH_VERIFY_SKIP=1 (audit-logged)" >&2
+		[ -n "$_verify_err" ] && rm -f "$_verify_err"
+		exit 2
+	fi
+	[ -n "$_verify_err" ] && rm -f "$_verify_err"
+fi
+
 # v4.28-W3-C (#662): no-arg auto-fill for title (derive from latest
 # commit subject) so `run.sh` matches SKILL.md's auto-flow promise.
 if [ -z "$TITLE" ]; then
@@ -247,14 +284,99 @@ fi
 # Auto-resolve milestone from current branch's version prefix. Loud-fail
 # on resolution errors (ambiguity, gh failure) — silent-swallow of these
 # is the bug that creates issues/PRs with no milestone attached.
+#
+# #121: when no milestone matches the version prefix, AUTO-CREATE one
+# instead of refusing — the previous behavior forced operators to either
+# pass --milestone explicitly OR pre-create via the GitHub UI mid-flow,
+# both of which add friction the wrapper can eliminate.
+# Override path: PR_MILESTONE_AUTO_CREATE_SKIP=1 keeps strict refuse
+# behavior (polarity consistent with the other dogfood-gate SKIP envs).
 if [ -z "$MILESTONE" ]; then
 	ver=$(skc_extract_version_prefix)
 	if [ -n "$ver" ]; then
-		if ! MILESTONE=$(skc_match_milestone "$ver" 2>&1); then
-			echo "milestone auto-resolve failed for prefix '$ver':" >&2
-			echo "$MILESTONE" >&2
-			echo "Re-run with explicit --milestone <title>." >&2
-			exit 2
+		_milestone_err=$(mktemp -t milestone-err.XXXXXX)
+		# Compose with any existing EXIT trap (e.g., Copilot DRAFT_DIR
+		# cleanup) instead of clobbering it. Capture current trap body
+		# (if any) and append our cleanup commands.
+		_prev_trap=$(trap -p EXIT 2>/dev/null | sed -E "s/^trap -- '(.*)' EXIT$/\1/" | sed "s/'\\\\''/'/g")
+		_new_trap="rm -f '$_milestone_err' \"\${_create_out:-}\""
+		if [ -n "$_prev_trap" ] && [ "$_prev_trap" != "trap -- '' EXIT" ]; then
+			_new_trap="${_prev_trap}; ${_new_trap}"
+		fi
+		# shellcheck disable=SC2064
+		trap "$_new_trap" EXIT
+		_milestone_rc=0
+		MILESTONE=$(skc_match_milestone "$ver" 2>"$_milestone_err") || _milestone_rc=$?
+		if [ "$_milestone_rc" -ne 0 ]; then
+			# PR_MILESTONE_AUTO_CREATE_SKIP=1: audit-log + take the
+			# strict refuse path. Without the log, the skip leaves no
+			# trace (contract docs promise audit-log for all SKIP envs).
+			if [ "${PR_MILESTONE_AUTO_CREATE_SKIP:-0}" = "1" ]; then
+				echo "warn: PR_MILESTONE_AUTO_CREATE_SKIP=1 — milestone auto-create bypassed" >&2
+				_skip_log="$REPO_ROOT/.claude/logs/dogfood-gate-skip.jsonl"
+				mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
+				jq -nc --arg ts "$(date -u +%FT%TZ)" \
+					--arg env "PR_MILESTONE_AUTO_CREATE_SKIP" \
+					--arg wrapper "github-pr-creation" \
+					--arg version "$ver" \
+					'{ts:$ts, env:$env, wrapper:$wrapper, version:$version}' \
+					>>"$_skip_log" 2>/dev/null || true
+				echo "milestone auto-resolve failed for prefix '$ver':" >&2
+				cat "$_milestone_err" >&2
+				echo "Re-run with explicit --milestone <title>." >&2
+				exit 2
+			fi
+			# Distinguish "no open milestone" (auto-creatable) from
+			# "ambiguous match" or "gh failure" (not safe to auto-fix).
+			if grep -q "no open milestone matches" "$_milestone_err"; then
+				echo "milestone '$ver' missing — auto-creating (PR_MILESTONE_AUTO_CREATE_SKIP=1 to disable)" >&2
+				_create_out=$(mktemp -t milestone-create.XXXXXX)
+				_create_rc=0
+				gh api "repos/:owner/:repo/milestones" -f title="$ver" \
+					-f state="open" >"$_create_out" 2>>"$_milestone_err" || _create_rc=$?
+				if [ "$_create_rc" -ne 0 ]; then
+					# 422 already_exists = race (concurrent run created
+					# the milestone). Re-resolve via skc_match_milestone
+					# to confirm + obtain canonical title.
+					if grep -qE "already_exists|already_taken" "$_milestone_err"; then
+						echo "milestone race: another run created '$ver' — re-resolving" >&2
+						_milestone_rc2=0
+						MILESTONE=$(skc_match_milestone "$ver" 2>>"$_milestone_err") || _milestone_rc2=$?
+						if [ "$_milestone_rc2" -ne 0 ]; then
+							echo "milestone re-resolve failed after 422:" >&2
+							cat "$_milestone_err" >&2
+							exit 2
+						fi
+					else
+						echo "milestone auto-create failed:" >&2
+						cat "$_milestone_err" >&2
+						echo "Re-run with explicit --milestone <title>." >&2
+						exit 2
+					fi
+				else
+					# Use canonical title from response (handles
+					# GitHub title normalization e.g. whitespace strip).
+					if command -v jq >/dev/null 2>&1; then
+						MILESTONE=$(jq -r '.title // empty' "$_create_out")
+					fi
+					[ -z "$MILESTONE" ] && MILESTONE=$ver
+				fi
+			else
+				echo "milestone auto-resolve failed for prefix '$ver':" >&2
+				cat "$_milestone_err" >&2
+				echo "Re-run with explicit --milestone <title>." >&2
+				exit 2
+			fi
+		fi
+		# Restore previous trap state (if any) for the success path —
+		# the per-block cleanup below handles temp file removal so the
+		# downstream code still gets its original EXIT handler.
+		rm -f "$_milestone_err" "${_create_out:-}"
+		if [ -n "$_prev_trap" ] && [ "$_prev_trap" != "trap -- '' EXIT" ]; then
+			# shellcheck disable=SC2064
+			trap "$_prev_trap" EXIT
+		else
+			trap - EXIT
 		fi
 	fi
 fi
@@ -368,7 +490,7 @@ fi
 # the disabled pr-labeler.yml workflow during Actions cap.
 LABELER="$REPO_ROOT/.claude/hooks/pr-labeler.sh"
 LABELER_OK=0
-if [ -x "$LABELER" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+if [ -x "$LABELER" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 	echo "=== Applying area labels via pr-labeler ==="
 	# Capture exit code immediately via `|| labeler_rc=$?`. The previous
 	# `if cmd; then ... else echo "... $?"` form happened to work today
@@ -389,16 +511,38 @@ fi
 # closes the loop by verifying the full gate (body + issue link + area
 # label) that the remote pr-lint.yml would enforce. Warn-only — the PR
 # is already on GitHub; if it fails, a fix-up commit is the remedy.
-# Skip if pr-labeler failed: the area-label gate would fail for reasons
-# unrelated to body content, making the message misleading for the
-# operator debugging the failure.
-if [ -x "$LINT" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "1" ]; then
-	echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
-	if ! "$LINT" "$PR_NUM"; then
-		echo "⚠ pr-lint full gate failed on #$PR_NUM post-labeler — push a fix-up commit to satisfy the remote gate." >&2
+#
+# Run the full gate when EITHER pr-labeler succeeded OR the PR already
+# has an area:* label (manually applied via --label, see CR #134 r1).
+# Only skip when there's no area:* on the PR at all — that's the case
+# where the area-label gate would fail for unrelated reasons.
+if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
+	if [ "$LABELER_OK" = "1" ]; then
+		_pr_has_area=1
+	else
+		# Check whether the live PR already has an area:* label
+		# (manually applied at create time via --label). Capture gh
+		# rc separately so a gh API failure surfaces as a clear warn
+		# instead of being silently swallowed (`| grep` would treat
+		# both API failure and "no area label" as "skip").
+		_pr_has_area=0
+		_pr_labels=""
+		_pr_labels_rc=0
+		_pr_labels=$(gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null) || _pr_labels_rc=$?
+		if [ "$_pr_labels_rc" -ne 0 ]; then
+			echo "⚠ could not read PR labels for #$PR_NUM (gh rc=$_pr_labels_rc) — skipping post-labeler pr-lint probe." >&2
+		elif printf '%s\n' "$_pr_labels" | tr '[:upper:]' '[:lower:]' | grep -qE '^area:'; then
+			_pr_has_area=1
+		fi
 	fi
-elif [ -x "$LINT" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]] && [ "$LABELER_OK" = "0" ]; then
-	echo "⚠ skipping post-labeler pr-lint — labeler did not succeed, label check would fail for the wrong reason." >&2
+	if [ "$_pr_has_area" = "1" ]; then
+		echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
+		if ! "$LINT" "$PR_NUM"; then
+			echo "⚠ pr-lint full gate failed on #$PR_NUM — push a fix-up commit to satisfy the remote gate." >&2
+		fi
+	else
+		echo "⚠ skipping post-labeler pr-lint — no area:* label on PR (labeler failed AND none passed via --label)." >&2
+	fi
 fi
 
 # v4.24-A (#566) wire-in: fire project-board-sync.sh --on-pr-open so the
@@ -407,7 +551,7 @@ fi
 # broke — this closes the loop. Idempotent + state-aware (refuses if PR
 # is already merged/closed).
 BOARD_SYNC="$REPO_ROOT/.claude/local-backups/project-board-sync.sh"
-if [ -x "$BOARD_SYNC" ] && [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+if [ -x "$BOARD_SYNC" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 	echo "=== Firing project-board-sync --on-pr-open #$PR_NUM ==="
 	if ! "$BOARD_SYNC" --on-pr-open "$PR_NUM" 2>&1; then
 		echo "⚠ project-board-sync --on-pr-open #$PR_NUM failed — board Status may not reflect the PR." >&2
