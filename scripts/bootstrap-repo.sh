@@ -83,6 +83,22 @@ fi
 
 _log() { echo "[bootstrap-repo] $*" >&2; }
 
+# Parity check: scripts/bootstrap-manifest.yml is the declarative SSOT for
+# every file/label/workflow/template this script produces. If yq is on the
+# PATH, assert the manifest's `files:` count matches the number of _write
+# calls in this script. Any drift between the manifest and the heredocs
+# below is a P1 bug — fix both in the same PR. Soft-warn when yq is missing
+# or the manifest is absent; hard enforcement lives in --verify mode (#59).
+MANIFEST_PATH="$(dirname "$0")/bootstrap-manifest.yml"
+if [ -f "$MANIFEST_PATH" ] && command -v yq >/dev/null 2>&1; then
+	manifest_count=$(yq -r '.files | length' "$MANIFEST_PATH")
+	heredoc_count=$(grep -cE '^_write ' "$0")
+	if [ "$manifest_count" -ne "$heredoc_count" ]; then
+		_log "WARN: manifest drift — bootstrap-manifest.yml lists $manifest_count files, this script has $heredoc_count _write calls"
+		_log "      reconcile scripts/bootstrap-manifest.yml + heredocs in $0 before relying on output"
+	fi
+fi
+
 # Create target if missing (always create in dry-run too so subsequent
 # cd + relative-path checks work; we tear down at end if empty).
 TARGET_PREEXISTED=1

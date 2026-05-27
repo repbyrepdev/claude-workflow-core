@@ -1,0 +1,91 @@
+# Declarative SSOT for what bootstrap-repo.sh produces in a new consumer repo.
+#
+# Consumed by:
+#   - bootstrap-repo.sh (asserts heredocs match this manifest at start-of-run)
+#   - bootstrap-repo.sh --verify  (#59)  walks files: + labels: + workflows: +
+#     issue_templates: against the target repo and reports drift
+#   - cross-repo parity gate  (#63)  compares manifest ≡ heredocs ≡ plugin
+#     .github/* so all three stay in lockstep
+#   - plugin self-bootstrap CI  (#61)  bootstraps the plugin repo into a
+#     scratch dir and asserts file-set parity with this manifest
+#
+# Fields:
+#   files:           every path bootstrap-repo.sh writes, with octal mode
+#   labels:          every label bootstrap-repo.sh declares in .github/labels.yml
+#   workflows:       workflow file basenames bootstrap-repo.sh writes
+#   issue_templates: template file basenames bootstrap-repo.sh writes
+#
+# Drift between this manifest and the bootstrap-repo.sh heredocs is a P1 bug.
+# Update both in the same PR.
+
+files:
+  - path: .pre-commit-config.yaml
+    mode: "644"
+  - path: .claude/skills/ship-pr-cycle/run.sh
+    mode: "755"
+  - path: .claude/skills/ship-pr-cycle/SKILL.md
+    mode: "644"
+  - path: .claude/hooks/review-log.sh
+    mode: "755"
+  - path: .github/pull_request_template.md
+    mode: "644"
+  - path: .github/commit-template.yml
+    mode: "644"
+  - path: .github/labels.yml
+    mode: "644"
+  - path: .github/required-checks-list.yml
+    mode: "644"
+  - path: .github/labeler.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/bug.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/feature.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/task.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/epic.yml
+    mode: "644"
+  - path: .github/ISSUE_TEMPLATE/brainstorm.yml
+    mode: "644"
+  - path: .github/workflows/gitleaks.yml
+    mode: "644"
+  - path: .github/workflows/pr-lint.yml
+    mode: "644"
+  - path: .github/workflows/pr-labeler.yml
+    mode: "644"
+
+labels:
+  - name: bug
+    color: d73a4a
+    description: Something broken
+  - name: enhancement
+    color: a2eeef
+    description: New capability
+  - name: epic
+    color: 7057ff
+    description: Parent of sub-issues
+  - name: brainstorm
+    color: c5def5
+    description: Discussion-style ideation
+  - name: priority:p1
+    color: b60205
+  - name: priority:p2
+    color: d93f0b
+  - name: priority:p3
+    color: fbca04
+  - name: priority:needs-triage
+    color: 5319e7
+  - name: area:infrastructure
+    color: 0e8a16
+
+workflows:
+  - gitleaks.yml
+  - pr-lint.yml
+  - pr-labeler.yml
+
+issue_templates:
+  - bug.yml
+  - feature.yml
+  - task.yml
+  - epic.yml
+  - brainstorm.yml
