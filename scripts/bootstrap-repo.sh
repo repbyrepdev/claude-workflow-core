@@ -83,19 +83,38 @@ fi
 
 _log() { echo "[bootstrap-repo] $*" >&2; }
 
-# Parity check: scripts/bootstrap-manifest.yml is the declarative SSOT for
-# every file/label/workflow/template this script produces. If yq is on the
-# PATH, assert the manifest's `files:` count matches the number of _write
-# calls in this script. Any drift between the manifest and the heredocs
-# below is a P1 bug — fix both in the same PR. Soft-warn when yq is missing
-# or the manifest is absent; hard enforcement lives in --verify mode (#59).
+# Parity check: bootstrap-manifest.yml is the declarative SSOT for every
+# file this script produces. Soft-warn on drift (count or path mismatch).
+# Visible bypasses: yq missing OR manifest missing emits a NOTE so a quiet
+# skip can't hide regressions.
 MANIFEST_PATH="$(dirname "$0")/bootstrap-manifest.yml"
-if [ -f "$MANIFEST_PATH" ] && command -v yq >/dev/null 2>&1; then
-	manifest_count=$(yq -r '.files | length' "$MANIFEST_PATH")
-	heredoc_count=$(grep -cE '^_write ' "$0")
-	if [ "$manifest_count" -ne "$heredoc_count" ]; then
+if [ ! -f "$MANIFEST_PATH" ]; then
+	_log "NOTE: bootstrap-manifest.yml not found at $MANIFEST_PATH — parity check skipped"
+elif ! command -v yq >/dev/null 2>&1; then
+	_log "NOTE: yq not on PATH — manifest parity check skipped"
+else
+	# `|| true` guards: yq parse error / zero grep matches abort under set -e.
+	manifest_count=$(yq -r '.files | length' "$MANIFEST_PATH" 2>/dev/null || echo "")
+	heredoc_count=$(grep -cE '^_write ' "$0" || echo 0)
+	if [ -z "$manifest_count" ] || ! [ "$manifest_count" -eq "$manifest_count" ] 2>/dev/null; then
+		_log "WARN: bootstrap-manifest.yml unparseable (yq -r '.files | length' failed) — parity check inconclusive"
+	elif [ "$manifest_count" -ne "$heredoc_count" ]; then
 		_log "WARN: manifest drift — bootstrap-manifest.yml lists $manifest_count files, this script has $heredoc_count _write calls"
 		_log "      reconcile scripts/bootstrap-manifest.yml + heredocs in $0 before relying on output"
+	else
+		# Counts match — verify each manifest path appears as a literal _write target.
+		# grep -F to avoid regex metachar matching (dots in paths are common).
+		drift_paths=""
+		while IFS= read -r p; do
+			[ -z "$p" ] && continue
+			grep -F -- "_write $p " "$0" >/dev/null || drift_paths="${drift_paths}${p}\n"
+		done < <(yq -r '.files[].path' "$MANIFEST_PATH" 2>/dev/null)
+		if [ -n "$drift_paths" ]; then
+			_log "WARN: manifest path(s) not found in any _write call:"
+			printf "%b" "$drift_paths" | while IFS= read -r line; do
+				[ -n "$line" ] && _log "        - $line"
+			done
+		fi
 	fi
 fi
 

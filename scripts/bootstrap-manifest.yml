@@ -1,22 +1,18 @@
-# Declarative SSOT for what bootstrap-repo.sh produces in a new consumer repo.
+# Declarative SSOT for what bootstrap-repo.sh produces.
 #
-# Consumed by:
-#   - bootstrap-repo.sh (asserts heredocs match this manifest at start-of-run)
-#   - bootstrap-repo.sh --verify  (#59)  walks files: + labels: + workflows: +
-#     issue_templates: against the target repo and reports drift
-#   - cross-repo parity gate  (#63)  compares manifest ≡ heredocs ≡ plugin
-#     .github/* so all three stay in lockstep
-#   - plugin self-bootstrap CI  (#61)  bootstraps the plugin repo into a
-#     scratch dir and asserts file-set parity with this manifest
-#
-# Fields:
-#   files:           every path bootstrap-repo.sh writes, with octal mode
-#   labels:          every label bootstrap-repo.sh declares in .github/labels.yml
-#   workflows:       workflow file basenames bootstrap-repo.sh writes
-#   issue_templates: template file basenames bootstrap-repo.sh writes
-#
-# Drift between this manifest and the bootstrap-repo.sh heredocs is a P1 bug.
-# Update both in the same PR.
+# Field types (consumers must encode the SAME shape):
+#   schema_version: int — bump when removing/renaming a top-level section
+#   files[].path:   string  — relative to target repo root
+#   files[].mode:   string  — octal-as-string ("644", "755") — NOT decimal
+#   labels[].name:  string  — must match .github/labels.yml `name:`
+#   labels[].color: string  — 6-hex-digit, lowercase, no leading #
+#   labels[].description: string — optional; absent means "no description"
+#   workflows / issue_templates: basename-only string arrays — derived view
+#     over files[] entries with .github/workflows/ or .github/ISSUE_TEMPLATE/
+#     prefixes. Kept explicit for consumer scripts that don't want to encode
+#     the prefix-filter logic.
+
+schema_version: 1
 
 files:
   - path: .pre-commit-config.yaml
