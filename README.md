@@ -79,6 +79,115 @@ See FCP toolkit issue [#22](https://github.com/FCP-Euro-Pricing-Team/pricing-tea
 
 Plugin versions are tagged: `v0.1.0`, `v0.2.0`, `v0.3.0`. See `ROLLBACK.md` for recovery if a release breaks a consumer.
 
+## Release runbook (closes #77)
+
+Cutting a new plugin release. Five mechanical gates from epic #86
+enforce the version-bump discipline + drift surface — follow this
+runbook and the gates do the rest:
+
+### 1. Bump `.claude-plugin/plugin.json`
+
+```bash
+tmp=$(mktemp) && jq '.version = "X.Y.Z"' .claude-plugin/plugin.json > "$tmp" && mv "$tmp" .claude-plugin/plugin.json
+```
+
+The mechanical gates that fire on commit:
+
+- **`commit-subject-version-gate`** (#74) — `commit-msg`-stage gate.
+  If your commit subject uses `feat(vX.Y.Z): …` scope syntax, the
+  X.Y.Z **must not exceed** `plugin.json.version`. Bump first, then
+  commit. Bypass: `COMMIT_SUBJECT_VERSION_SKIP=1` (audit-trail
+  stderr only).
+
+- **`plugin-version-bump-gate`** (#87) — pre-commit gate. Any
+  staged change under `hooks/` requires a matching `plugin.json`
+  version bump. Bypass: `PLUGIN_VERSION_BUMP_SKIP=1`.
+
+### 2. Commit
+
+Use the conventional-commits subject form. Squash-merge to main.
+
+```bash
+git commit -m "feat(vX.Y.Z): <one-line summary>"
+```
+
+The pre-commit hooks validate the subject + plugin.json + bats
+coverage as one atomic step.
+
+### 3. Cache packaging — auto on merge
+
+Once the bump merges to main:
+
+- **`post-merge-release-fire` hook** (#88) — git post-merge hook.
+  Detects `plugin.json.version` change vs first-parent baseline.
+  Auto-fires `scripts/release.sh` detached (setsid+nohup on Linux,
+  nohup on macOS), logs to `.claude/logs/release-auto-fire.jsonl`
+  with status (`fired` / `fired-first-introduction` /
+  `no-version-change` / `missing-release-sh`).
+  When `ACTIONS_MODE=remote` (configured in `.claude/mode.conf` —
+  defaults to `local` if absent, set explicitly to opt out of the
+  local hook), the hook no-ops; a `.github/workflows/release.yml`
+  is **not yet implemented** (tracked as a follow-up under epic
+  #86). Remote-mode operators today must use the manual fallback
+  (step 6 below) until that workflow ships.
+
+The post-merge hook wiring is **NOT** auto-installed today. Add the
+snippet from the header of `hooks/post-merge-release-fire.sh` to
+`.git/hooks/post-merge` manually (one-time per checkout). Auto-wire
+via `install-machine.sh` is tracked as a follow-up.
+
+### 4. Verify cache populated
+
+```bash
+# Tail the audit log first — looks for a "fired" status on the merge SHA.
+tail -1 .claude/logs/release-auto-fire.jsonl | jq .
+
+# Then verify the cache dir appeared.
+ls ~/.claude/plugins/cache/claude-workflow-core/claude-workflow-core/X.Y.Z/
+```
+
+Runtime depends on `scripts/release.sh` (tag creation + cache copy
++ optional GitHub release upload) — typically seconds to a minute,
+but no SLA. If the cache dir is missing after a few minutes:
+
+- Confirm a `fired` (or `fired-first-introduction`) JSONL entry
+  exists for the merge SHA
+- Check `.claude/logs/release-auto-fire-X.Y.Z.log` for the
+  detached `scripts/release.sh` output
+
+### 5. Session-start drift detector (#89)
+
+After the cache update, your next Claude Code session triggers
+`session-start-stale-pin.sh` if `~/.claude/settings.json` still
+references the old version. Run the suggested
+`scripts/migrate-settings.sh` to update settings to the new cache
+dir.
+
+### 6. Manual fallback
+
+If the post-merge hook didn't fire (operator on a fresh clone
+without `install-machine.sh` run yet):
+
+```bash
+scripts/release.sh
+```
+
+`scripts/release.sh` is idempotent — re-runs skip tag/cache/release
+when each is already in place. See `scripts/release.sh --help`.
+
+### Content-drift check (#90)
+
+After ship, run on a consumer repo:
+
+```bash
+scripts/hash-drift.sh --verify
+```
+
+Compares `.claude/hooks/*.sh` + `.claude/_lib/*.sh` against the
+plugin's `.source-hashes.json`. Drift → exit 1 with per-file
+report + remediation pointer to refresh-from-source OR add to
+`.claude/local-overrides.yml`.
+
 ## Consumers
 
 | Repo | Status |
