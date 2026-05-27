@@ -100,19 +100,20 @@ setup() {
 	[[ $output != *"not yet implemented"* ]]
 }
 
-@test "--target plugin is implemented (no rc=69)" {
+@test "--target plugin is implemented (rc=0 on verify-only)" {
 	# As of #112 plugin is wired. Detailed coverage in meta-bootstrap-plugin.bats.
 	run "$SCRIPT" --target plugin --verify-only
-	[ "$status" -ne 69 ]
+	[ "$status" -eq 0 ]
 	[[ $output != *"not yet implemented"* ]]
 }
 
-@test "--target feature-branch is implemented (no rc=69)" {
+@test "--target feature-branch is implemented (rc=0 on this branch)" {
 	# feature-branch was wired as of #113. Detailed coverage lives in
-	# meta-bootstrap-feature-branch.bats — this test just guards that
-	# the unimplemented stub didn't accidentally come back.
+	# meta-bootstrap-feature-branch.bats. This branch is well-formed
+	# (per convention + has labeled #110 issue), so feature-branch
+	# verify returns rc=0.
 	run "$SCRIPT" --target feature-branch
-	[ "$status" -ne 69 ]
+	[ "$status" -eq 0 ]
 	[[ $output != *"not yet implemented"* ]]
 }
 
