@@ -81,20 +81,19 @@ Plugin versions are tagged: `v0.1.0`, `v0.2.0`, `v0.3.0`. See `ROLLBACK.md` for 
 
 ## Release runbook (closes #77)
 
-Cutting a new plugin release. Three mechanical gates enforce the
-version-bump discipline — follow this runbook and the gates do the
-rest:
+Cutting a new plugin release. Five mechanical gates from epic #86
+enforce the version-bump discipline + drift surface — follow this
+runbook and the gates do the rest:
 
 ### 1. Bump `.claude-plugin/plugin.json`
 
 ```bash
-jq '.version = "X.Y.Z"' .claude-plugin/plugin.json > /tmp/pj.json
-mv /tmp/pj.json .claude-plugin/plugin.json
+tmp=$(mktemp) && jq '.version = "X.Y.Z"' .claude-plugin/plugin.json > "$tmp" && mv "$tmp" .claude-plugin/plugin.json
 ```
 
 The mechanical gates that fire on commit:
 
-- **`commit-subject-version-gate`** (#74) — pre-commit-msg gate.
+- **`commit-subject-version-gate`** (#74) — `commit-msg`-stage gate.
   If your commit subject uses `feat(vX.Y.Z): …` scope syntax, the
   X.Y.Z **must not exceed** `plugin.json.version`. Bump first, then
   commit. Bypass: `COMMIT_SUBJECT_VERSION_SKIP=1` (audit-trail
@@ -123,25 +122,36 @@ Once the bump merges to main:
   Detects `plugin.json.version` change vs first-parent baseline.
   Auto-fires `scripts/release.sh` detached (setsid+nohup on Linux,
   nohup on macOS), logs to `.claude/logs/release-auto-fire.jsonl`
-  with status (`fired` / `no-version-change` / `missing-release-sh`).
-  When `ACTIONS_MODE=remote` (configured in `.claude/mode.conf`),
-  the hook no-ops — `.github/workflows/release.yml` handles the
-  release on tag push instead.
+  with status (`fired` / `fired-first-introduction` /
+  `no-version-change` / `missing-release-sh`).
+  When `ACTIONS_MODE=remote` (configured in `.claude/mode.conf` —
+  defaults to `local` if absent, set explicitly to opt out of the
+  local hook), the hook no-ops; a `.github/workflows/release.yml`
+  is **not yet implemented** (tracked as a follow-up under epic
+  #86). Remote-mode operators today must use the manual fallback
+  (step 6 below) until that workflow ships.
 
-The release wiring is installed per-clone via
-`scripts/install-machine.sh` (see #71/#95) which appends the hook
-invocation to `.git/hooks/post-merge`. Installation is one-time
-per checkout.
+The post-merge hook wiring is **NOT** auto-installed today. Add the
+snippet from the header of `hooks/post-merge-release-fire.sh` to
+`.git/hooks/post-merge` manually (one-time per checkout). Auto-wire
+via `install-machine.sh` is tracked as a follow-up.
 
 ### 4. Verify cache populated
 
 ```bash
+# Tail the audit log first — looks for a "fired" status on the merge SHA.
+tail -1 .claude/logs/release-auto-fire.jsonl | jq .
+
+# Then verify the cache dir appeared.
 ls ~/.claude/plugins/cache/claude-workflow-core/claude-workflow-core/X.Y.Z/
 ```
 
-Should exist within ~60s of merge. If not:
+Runtime depends on `scripts/release.sh` (tag creation + cache copy
++ optional GitHub release upload) — typically seconds to a minute,
+but no SLA. If the cache dir is missing after a few minutes:
 
-- Tail `.claude/logs/release-auto-fire.jsonl` for the latest entry
+- Confirm a `fired` (or `fired-first-introduction`) JSONL entry
+  exists for the merge SHA
 - Check `.claude/logs/release-auto-fire-X.Y.Z.log` for the
   detached `scripts/release.sh` output
 
