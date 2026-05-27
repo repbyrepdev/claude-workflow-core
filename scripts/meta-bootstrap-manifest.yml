@@ -1,0 +1,73 @@
+# Declarative per-target verification manifest for meta-bootstrap.sh.
+#
+# Each top-level key under `targets:` lists the "what good looks like"
+# rules consumed by `meta-bootstrap.sh --target X --verify-only`. Rules
+# are read-only assertions; verify-only never mutates.
+#
+# Schema (consumers must encode the SAME shape):
+#   schema_version: int  — bump when removing/renaming a top-level section
+#   targets:
+#     <target-name>:
+#       brew_packages:   [string]   — `brew list --formula --versions $pkg` must succeed
+#       commands:        [string]   — `command -v $cmd` must succeed
+#       keychain_entries: [string]  — `security find-generic-password -s $name` must succeed
+#                                      (presence only; never reads the value)
+#       paths:           [string]   — each path must exist (file or directory)
+#       json_fields:     [{file: path, jq: ".path.to.field", min: regex}]
+#                                    — `jq -r` on file must match `min` regex
+#       delegate:        string     — when present, this target's verify
+#                                      delegates to the named script (e.g.
+#                                      bootstrap-repo.sh for `repo` target).
+#                                      Other rules in the same target are
+#                                      additive — they run AFTER the delegate.
+#
+# Targets without a `verify_rules:` section (e.g. feature-branch) keep
+# their inline-bash verification — manifest-driven is opt-in per target.
+
+schema_version: 1
+
+targets:
+  machine:
+    # Tooling installed via Homebrew per bootstrap-machine.sh's brew_packages list.
+    brew_packages:
+      - gh
+      - jq
+      - yq
+      - pre-commit
+      - shellcheck
+      - shfmt
+      - actionlint
+      - gitleaks
+      - age
+      - sops
+    # PATH-resolvable commands (covers non-brew installs: gh-copilot extension, npm-installed CLIs).
+    commands:
+      - gh
+      - jq
+      - yq
+      - pre-commit
+      - git
+    # Keychain entries — presence check only; never reads the value.
+    keychain_entries:
+      - sops-age-key
+
+  plugin:
+    # Plugin manifest version field must be non-empty + look like SemVer.
+    json_fields:
+      - file: .claude-plugin/plugin.json
+        jq: .version
+        min: '^[0-9]+\.[0-9]+\.[0-9]+'
+    # bootstrap-repo.sh --verify --scope plugin runs the file/label manifest
+    # walk against the plugin's own checkout (we ARE the plugin).
+    delegate: bootstrap-repo.sh
+
+  repo:
+    # Delegates to bootstrap-repo.sh --verify --scope both (manifest at
+    # scripts/bootstrap-manifest.yml).
+    delegate: bootstrap-repo.sh
+
+  feature-branch:
+    # No manifest rules — keeps its inline bash implementation since the
+    # checks are git-state-dependent (branch name, issue+labels via gh).
+    # Listed here for completeness so operators can grep.
+    inline: true
