@@ -19,6 +19,9 @@ concurrency:
 
 permissions:
   contents: read
+  # issues:read grants access to repository.labels via GraphQL (required by
+  # `gh label list` inside _verify_target's label-remote check).
+  issues: read
 
 jobs:
   verify:
