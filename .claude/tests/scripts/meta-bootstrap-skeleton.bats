@@ -49,46 +49,47 @@ setup() {
 	[[ $output == *"invalid --target"* ]]
 }
 
-@test "--target machine is implemented (no rc=69)" {
+@test "--target machine is implemented (rc=0 on verify-only)" {
 	# As of #110 machine is wired. Detailed coverage lives in
 	# meta-bootstrap-machine.bats. Use --verify-only so the test doesn't
 	# trigger an actual brew install.
 	run "$SCRIPT" --target machine --verify-only
-	[ "$status" -ne 69 ]
+	[ "$status" -eq 0 ]
 	[[ $output != *"not yet implemented"* ]]
 	[[ $output != *"not yet wired"* ]]
 	[[ $output == *"running target: machine"* ]]
 }
 
-@test "--target machine reaches the manifest-driven verify path" {
+@test "--target machine reaches the manifest-driven verify path (rc=0)" {
 	# Marker log line emitted only by the new dispatcher; absence would
 	# mean either the skeleton stub came back or argparse short-circuited.
 	run "$SCRIPT" --target machine --verify-only
+	[ "$status" -eq 0 ]
 	[[ $output == *"machine manifest"* ]]
 }
 
-@test "--target plugin reaches the manifest+files verify path" {
+@test "--target plugin reaches the manifest+files verify path (rc=0)" {
 	# Plugin dispatcher emits both the manifest-fields log and the
 	# bootstrap-repo.sh delegation log. Asserting both pins the
 	# two-step verify shape against silent collapse to one step.
 	run "$SCRIPT" --target plugin --verify-only
+	[ "$status" -eq 0 ]
 	[[ $output == *"plugin manifest fields"* ]]
 	[[ $output == *"bootstrap-manifest.yml"* ]]
 }
 
-@test "--verify-only is accepted for every target (no rc=69 anywhere)" {
-	for t in machine repo plugin feature-branch; do
-		# repo needs a target-dir to even reach verify; the others don't.
-		if [ "$t" = "repo" ]; then
-			run "$SCRIPT" --target "$t" --verify-only
-			# Without -- <dir> repo exits rc=2, but it is NOT rc=69.
-			[ "$status" -ne 69 ]
-		else
-			run "$SCRIPT" --target "$t" --verify-only
-			[ "$status" -ne 69 ]
-		fi
+@test "--verify-only is accepted for every target with the right concrete exit code" {
+	# Per-target expected status: repo without --dir exits 2 (argparse);
+	# machine/plugin/feature-branch exit 0 (verify pass). None exit 69.
+	for t in machine plugin feature-branch; do
+		run "$SCRIPT" --target "$t" --verify-only
+		[ "$status" -eq 0 ]
 		[[ $output != *"not yet wired"* ]]
 	done
+	# repo: --verify-only without target-dir is rc=2 (argparse), NOT 69.
+	run "$SCRIPT" --target repo --verify-only
+	[ "$status" -eq 2 ]
+	[[ $output != *"not yet wired"* ]]
 }
 
 @test "--target repo is implemented (rc=2 without target-dir, not rc=69)" {
@@ -117,9 +118,11 @@ setup() {
 
 @test "--verify-only --target X order accepted (flag order independence)" {
 	# Flag order should not affect parsing; --verify-only before --target
-	# must still set VERIFY_ONLY=1 before dispatch.
+	# must still set VERIFY_ONLY=1 before dispatch. plugin --verify-only
+	# returns rc=0 when the plugin manifest + files verify clean.
 	run "$SCRIPT" --verify-only --target plugin
-	[ "$status" -ne 69 ]
+	[ "$status" -eq 0 ]
+	[[ $output == *"manifest + files verified"* ]]
 }
 
 @test "unknown flag exits 2" {

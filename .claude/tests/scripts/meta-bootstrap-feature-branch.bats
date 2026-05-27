@@ -205,10 +205,9 @@ _minimal_repo() {
 }
 
 @test "--target machine --verify-only is now implemented (covered by meta-bootstrap-machine.bats)" {
-	# As of #110 machine --verify-only is wired against the manifest. This
-	# test pins that the rc=69 stub doesn't accidentally come back; detailed
-	# coverage lives in the per-flow bats file.
+	# As of #110 machine --verify-only is wired against the manifest.
+	# Detailed coverage lives in the per-flow bats file.
 	run "$SCRIPT" --target machine --verify-only
-	[ "$status" -ne 69 ]
+	[ "$status" -eq 0 ]
 	[[ $output != *"not yet wired"* ]]
 }
