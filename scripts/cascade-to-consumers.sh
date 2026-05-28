@@ -334,7 +334,7 @@ for ((i = 0; i < n; i++)); do
 	# won't find). Common cause: gh token lacks `repo` write scope on
 	# the consumer.
 	if ! gh label create auto:plugin-release-cascade \
-		--color "0e8a16" \
+		--color "1a7f37" \
 		--description "Auto-opened cascade tracker — consumer should refresh from plugin source" \
 		--force \
 		--repo "$repo" 2>"$yq_err"; then
