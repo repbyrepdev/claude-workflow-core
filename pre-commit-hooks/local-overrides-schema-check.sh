@@ -43,10 +43,23 @@ if [ -z "$STAGED" ]; then
 	exit 0
 fi
 
-if [ ! -f "$OVERRIDES" ]; then
-	# Staged for deletion — operator removing the overrides file is fine
-	# (consumer might have eliminated all divergences). Allow.
+# Detect staged deletion explicitly (covers both `git rm` and
+# `git rm --cached` — the latter leaves the file on disk but removes
+# the index entry, so a worktree-only `[ ! -f ]` check would miss it
+# and then `git show :path` would fail with a confusing error).
+STAGED_D=$(git diff --cached --name-only --diff-filter=D 2>/dev/null |
+	grep -Fx "$OVERRIDES" || true)
+if [ -n "$STAGED_D" ]; then
+	# Operator removed overrides — consumer might have eliminated all
+	# divergences. Allow.
 	exit 0
+fi
+
+if [ ! -f "$OVERRIDES" ]; then
+	# Worktree-only staging anomaly (e.g. file removed locally but not
+	# staged). Treat as precondition error — distinct from staged delete.
+	echo "local-overrides-schema-check: $OVERRIDES staged but missing on disk" >&2
+	exit 2
 fi
 
 command -v yq >/dev/null 2>&1 || {
