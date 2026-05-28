@@ -60,44 +60,46 @@ fi
 CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || true)
 [ -z "$CMD" ] && exit 0
 
-# Recognized skip-style env-var name patterns. Matches:
-#   <prefix>_SKIP=<anything>     workflow gate skips
-#   <prefix>_BYPASS=<anything>   alternate naming
-#   HOOK_ACK_CLEAR=<anything>    bare form (no prefix required) — orphan cleanup
-# All must be at command START, optionally preceded by other env-vars.
-# CR fix #1: HOOK_ACK_CLEAR as a bare identifier did NOT match prior
-# regex because suffix-alternation required a non-empty prefix.
+# CR fix #2: removed SKIP_RE pre-check — always run the token walk so we
+# catch any KEY=VAL prefix whose KEY ends in _SKIP/_BYPASS or is exactly
+# HOOK_ACK_CLEAR. The case-glob in the loop body is the authoritative
+# detector; the prior regex was a hash-table-style fast-path that turned
+# out to miss cases the loop would catch (and added an inconsistency
+# surface). Token walk is cheap (O(prefix-length)).
 SKIP_VAR=""
-SKIP_RE='^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*([A-Z_][A-Z0-9_]*(_SKIP|_BYPASS)|HOOK_ACK_CLEAR)=[^[:space:]]+'
-if [[ $CMD =~ $SKIP_RE ]]; then
-	# Walk through env-prefix tokens to find which one is the skip-var.
-	for tok in $CMD; do
-		case "$tok" in
-		HOOK_ACK_CLEAR=* | *_SKIP=* | *_BYPASS=*)
-			SKIP_VAR="${tok%%=*}"
-			break
-			;;
-		*=*) continue ;;
-		*) break ;;
-		esac
-	done
-fi
+for tok in $CMD; do
+	case "$tok" in
+	HOOK_ACK_CLEAR=* | *_SKIP=* | *_BYPASS=*)
+		SKIP_VAR="${tok%%=*}"
+		break
+		;;
+	*=*) continue ;;
+	*) break ;;
+	esac
+done
 
 # No skip detected — let it through.
 [ -z "$SKIP_VAR" ] && exit 0
 
-# Approval-state machinery.
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT="$PWD"
+# Approval-state machinery. CR fix #3: fail-CLOSED when REPO_ROOT can't
+# be resolved via git. Falling back to $PWD writes approval state to an
+# arbitrary cwd — could be a peer repo or non-repo entirely, breaking
+# the "per-call approval, consumed-on-use" contract.
+if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || [ -z "$REPO_ROOT" ]; then
+	echo "skip-env-approval-gate: ERROR cannot resolve REPO_ROOT (not in a git work tree) — refusing skip rather than write approval state to ambiguous location" >&2
+	exit 2
+fi
 APPROVAL_DIR="$REPO_ROOT/.claude/.session-state/skip-approvals"
 LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG_FILE="$LOG_DIR/skip-approvals.jsonl"
 mkdir -p "$APPROVAL_DIR" "$LOG_DIR" 2>/dev/null || true
 
-# Hash the skip-var + first 50 chars of cmd → approval-state filename.
-# Per-invocation: operator approving SKIP_X for cmd-A doesn't grant
-# approval for SKIP_X on cmd-B.
+# CR fix #4: hash the FULL CMD (not just first 50 chars). Prior 50-char
+# preview window let two commands sharing a prefix collide on the same
+# approval file — approving X granted approval for Y. CMD_PREVIEW stays
+# for logging/display only.
 CMD_PREVIEW=$(printf '%s' "$CMD" | head -c 50)
-HASH_INPUT="${SKIP_VAR}|${CMD_PREVIEW}"
+HASH_INPUT="${SKIP_VAR}|${CMD}"
 if command -v sha256sum >/dev/null 2>&1; then
 	HASH=$(printf '%s' "$HASH_INPUT" | sha256sum | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then
@@ -110,16 +112,26 @@ fi
 APPROVAL_FILE="$APPROVAL_DIR/$HASH.txt"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# If a per-call approval file exists, consume it + let through.
+# If a per-call approval file exists, consume it + let through. CR fix #5:
+# use atomic rename for consumption — `rm -f ... || true` swallowed
+# failures, letting an undeletable approval file persist (effectively
+# session-wide grant). Atomic mv either succeeds (file gone) or fails
+# (file claimed by another concurrent fire). Only treat approval as
+# consumed when the mv succeeds.
 if [ -f "$APPROVAL_FILE" ]; then
-	rm -f "$APPROVAL_FILE" 2>/dev/null || true
-	if command -v jq >/dev/null 2>&1; then
-		jq -nc --arg ts "$TS" --arg var "$SKIP_VAR" --arg cmd "$CMD_PREVIEW" \
-			'{ts:$ts, event:"approval-used", skip_var:$var, cmd_preview:$cmd}' \
-			>>"$LOG_FILE" 2>/dev/null || true
+	_consumed="${APPROVAL_FILE}.consumed.$$"
+	if mv "$APPROVAL_FILE" "$_consumed" 2>/dev/null; then
+		rm -f "$_consumed" 2>/dev/null || true
+		if command -v jq >/dev/null 2>&1; then
+			jq -nc --arg ts "$TS" --arg var "$SKIP_VAR" --arg cmd "$CMD_PREVIEW" \
+				'{ts:$ts, event:"approval-used", skip_var:$var, cmd_preview:$cmd}' \
+				>>"$LOG_FILE" 2>/dev/null || true
+		fi
+		echo "skip-env-approval-gate: approval consumed for $SKIP_VAR" >&2
+		exit 0
 	fi
-	echo "skip-env-approval-gate: approval consumed for $SKIP_VAR" >&2
-	exit 0
+	# mv failed — either undeletable (permission, immutable) OR another
+	# concurrent hook fire already claimed it. Don't treat as consumed.
 fi
 
 # No approval — refuse with a structured deny so the operator sees what
