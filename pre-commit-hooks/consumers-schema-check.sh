@@ -23,8 +23,8 @@ set -euo pipefail
 # Exit codes:
 #   0 — passed (no consumers.yml staged, OR staged + schema valid)
 #   1 — schema violation (in-file content invalid, or registry deleted)
-#   2 — precondition error (yq/jq missing, staging anomaly, mktemp failure,
-#       yq parse failure — distinguishes infrastructure from content bugs)
+#   2 — precondition error (yq missing, mktemp failure, yq parse failure
+#       — distinguishes infrastructure from content bugs)
 
 if [ "${CONSUMERS_SCHEMA_SKIP:-0}" = "1" ]; then
 	echo "consumers-schema-check: CONSUMERS_SCHEMA_SKIP=1 — bypassing" >&2
@@ -105,22 +105,18 @@ if { [ -n "$STAGED_DELETE" ] || [ -n "$STAGED_RENAME_AWAY" ]; } && [ -z "$STAGED
 	exit 1
 fi
 
-if [ ! -f "$REGISTRY" ]; then
-	# Staged in ACMR but not on disk = staging anomaly (e.g. post-rebase
-	# index/worktree skew). That's infrastructure, not content — exit 2.
-	# (Phase 1 comment-analyzer #10: prior code returned exit 1 here,
-	# conflating staging anomalies with schema violations.)
-	echo "consumers-schema-check: $REGISTRY staged but missing on disk" >&2
-	echo "  Staging anomaly (post-rebase skew?). Reset index or restore file." >&2
-	exit 2
-fi
+# CR-in-CI r1: on-disk presence check removed — the validator reads the
+# STAGED blob via `git show :path` (line 144), so worktree absence is
+# irrelevant. A `git mv` to a different name followed by `git mv` back
+# (or any sequence that leaves the index correct but worktree stale)
+# is still a valid commit; the prior `[ -f "$REGISTRY" ]` reject was
+# false-positive infrastructure noise.
 
-for cmd in yq jq; do
-	command -v "$cmd" >/dev/null 2>&1 || {
-		echo "consumers-schema-check: $cmd required" >&2
-		exit 2
-	}
-done
+# yq is required; jq is NOT used in this hook (CR-in-CI r1: dropped).
+command -v yq >/dev/null 2>&1 || {
+	echo "consumers-schema-check: yq required" >&2
+	exit 2
+}
 
 # Parse the staged content (not on-disk — staged may differ). Materialize
 # to a temp file before parsing; yq's stdin path is unreliable under set -e

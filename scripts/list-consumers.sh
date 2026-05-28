@@ -133,6 +133,18 @@ if [ "$consumers_json" = "null" ] || [ -z "$consumers_json" ]; then
 	exit 2
 fi
 
+# CR-in-CI r1: also reject non-array shapes (e.g. `consumers: {foo: 1}`
+# or `consumers: "x"`). Without this, jq -r '.[]' below errors with
+# "Cannot iterate over <type>" under set -e instead of the documented
+# rc=2 precondition error. The schema validator gate prevents this at
+# commit-time, but list-consumers runs against arbitrary working-copy
+# or fetched-branch state — it must self-guard.
+if ! jq -e 'type == "array"' >/dev/null <<<"$consumers_json"; then
+	consumers_type=$(jq -r 'type' <<<"$consumers_json")
+	echo "list-consumers: $REGISTRY .consumers must be an array (got '$consumers_type')" >&2
+	exit 2
+fi
+
 # --behind filter — keep entries whose pinned_version sorts strictly less
 # than the requested version (semver-aware via sort -V).
 if [ -n "$BEHIND_VERSION" ]; then

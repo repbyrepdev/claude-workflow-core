@@ -149,6 +149,32 @@ YAML
 	[[ $output == *"null or empty"* ]]
 }
 
+# CR-in-CI r1: non-array .consumers (object/string) must exit 2 with
+# clear array-required message, not "Cannot iterate over object" from
+# jq under set -e.
+@test "object .consumers exits 2 with array-required message" {
+	cd "$TEST_TMP" || return 1
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers:
+  some_key: some_value
+YAML
+	run scripts/list-consumers.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"must be an array"* ]]
+}
+
+@test "string .consumers exits 2 with array-required message" {
+	cd "$TEST_TMP" || return 1
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers: "not-a-list"
+YAML
+	run scripts/list-consumers.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"must be an array"* ]]
+}
+
 # Phase 1 silent-failure-hunter SF-005: corrupt YAML must exit 2 with
 # the yq parse error surfaced — NOT a misleading "schema_version not
 # supported" message.
