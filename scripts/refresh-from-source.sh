@@ -116,7 +116,7 @@ HASHES="$PLUGIN_ROOT/.claude/.source-hashes.json"
 	exit 2
 }
 
-for cmd in yq jq; do
+for cmd in yq jq shasum; do
 	command -v "$cmd" >/dev/null 2>&1 || {
 		echo "refresh-from-source: $cmd required" >&2
 		exit 2
@@ -140,10 +140,22 @@ _resolve_consumer_path() {
 		cat "$yq_err" >&2
 		exit 2
 	fi
-	local found
-	found=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .local_path' <<<"$consumers_json")
+	local found match_count
+	if ! found=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .local_path' <<<"$consumers_json" 2>"$yq_err"); then
+		echo "refresh-from-source: jq failed querying consumers.yml:" >&2
+		cat "$yq_err" >&2
+		exit 2
+	fi
 	if [ -z "$found" ] || [ "$found" = "null" ]; then
 		echo "refresh-from-source: consumer '$name' not found in $REGISTRY" >&2
+		exit 2
+	fi
+	# r1 silent-failure-hunter MEDIUM: defend against duplicate-name
+	# scenarios. consumers-schema-check already blocks duplicates, but
+	# this gate doesn't run on remote/fetched consumers.yml.
+	match_count=$(echo "$found" | wc -l | tr -d ' ')
+	if [ "$match_count" -gt 1 ]; then
+		echo "refresh-from-source: consumer '$name' has $match_count entries in $REGISTRY — refusing to guess" >&2
 		exit 2
 	fi
 	# Expand leading ~. shellcheck flags SC2088 (tilde doesn't expand
@@ -159,21 +171,33 @@ _resolve_consumer_path() {
 }
 
 _list_all_consumer_paths() {
-	# Emit one consumer-path per line (expanded).
-	local consumers_json
+	# Emit one consumer-path per line (expanded). r1 code-reviewer +
+	# silent-failure-hunter dup: capture jq output explicitly before
+	# iterating, so a jq pipeline failure surfaces (not gets swallowed
+	# by while-read's rc).
+	local consumers_json paths
 	if ! consumers_json=$(yq -o=json '.consumers' "$REGISTRY" 2>"$yq_err"); then
 		echo "refresh-from-source: yq failed parsing $REGISTRY:" >&2
 		cat "$yq_err" >&2
 		exit 2
 	fi
+	if ! paths=$(jq -r '.[].local_path' <<<"$consumers_json" 2>"$yq_err"); then
+		echo "refresh-from-source: jq failed enumerating consumers.yml:" >&2
+		cat "$yq_err" >&2
+		exit 2
+	fi
+	[ -n "$paths" ] || {
+		echo "refresh-from-source: $REGISTRY .consumers is empty" >&2
+		exit 2
+	}
 	# shellcheck disable=SC2088
-	jq -r '.[].local_path' <<<"$consumers_json" | while read -r p; do
+	while IFS= read -r p; do
 		case "$p" in
 		"~/"*) p="$HOME/${p#"~/"}" ;;
 		"~") p="$HOME" ;;
 		esac
 		printf '%s\n' "$p"
-	done
+	done <<<"$paths"
 }
 
 _load_overrides_paths() {
@@ -209,13 +233,28 @@ _refresh_one_consumer() {
 		cat "$yq_err" >&2
 		return 2
 	fi
+	# r1 silent-failure-hunter HIGH: empty .files would silent-pass.
+	[ -n "$ssot_paths" ] || {
+		echo "refresh-from-source: $HASHES has empty file list — refusing" >&2
+		return 2
+	}
 
 	local n_clean=0 n_replaced=0 n_overridden=0 n_failed=0
-	local files_replaced_list=""
 	local now
 	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	local plugin_version
 	plugin_version=$(jq -r '.version' "$PLUGIN_ROOT/.claude-plugin/plugin.json")
+	# r1 silent-failure-hunter HIGH: track per-cascade .new files so a
+	# signal/yq-fail mid-loop cleans up partial artifacts. Per-consumer
+	# scope (each call to _refresh_one_consumer rebuilds).
+	local _in_flight_new=()
+	# shellcheck disable=SC2329,SC2317
+	_cleanup_new() {
+		local f
+		for f in "${_in_flight_new[@]:-}"; do
+			[ -n "$f" ] && [ -f "$f" ] && rm -f "$f"
+		done
+	}
 
 	# Filter to --files subset if requested.
 	local filter_arr=()
@@ -256,10 +295,23 @@ _refresh_one_consumer() {
 		fi
 
 		# Existing consumer copy hash vs plugin source hash.
+		# r1 silent-failure-hunter CRITICAL: validate hash-shape — a
+		# missing/broken shasum returning empty string would compare
+		# `"" = ""` as TRUE and silently report "clean" on every drift.
 		local src_hash dst_hash
 		src_hash=$(shasum -a 256 "$src" | awk '{print $1}')
+		[[ $src_hash =~ ^[0-9a-f]{64}$ ]] || {
+			echo "refresh-from-source: shasum produced malformed output for src $src ('$src_hash')" >&2
+			n_failed=$((n_failed + 1))
+			continue
+		}
 		if [ -f "$dst" ]; then
 			dst_hash=$(shasum -a 256 "$dst" | awk '{print $1}')
+			[[ $dst_hash =~ ^[0-9a-f]{64}$ ]] || {
+				echo "refresh-from-source: shasum produced malformed output for dst $dst ('$dst_hash')" >&2
+				n_failed=$((n_failed + 1))
+				continue
+			}
 		else
 			dst_hash="(missing)"
 		fi
@@ -277,8 +329,11 @@ _refresh_one_consumer() {
 		fi
 
 		mkdir -p "$(dirname "$dst")"
+		_in_flight_new+=("$dst.new")
 		if ! cp "$src" "$dst.new"; then
 			echo "  [FAIL] $relpath (cp source → .new failed)" >&2
+			# r1 code-reviewer Important: clean up partial .new before continue.
+			rm -f "$dst.new"
 			n_failed=$((n_failed + 1))
 			continue
 		fi
@@ -292,23 +347,32 @@ _refresh_one_consumer() {
 		[ -x "$src" ] && chmod +x "$dst"
 		echo "  [REPLACED] $relpath (dst=${dst_hash:0:8} → src=${src_hash:0:8})"
 		n_replaced=$((n_replaced + 1))
-		files_replaced_list="${files_replaced_list}${relpath}\\n"
 	done <<<"$ssot_paths"
 
 	# Audit log to consumer.
+	# r1 silent-failure-hunter MEDIUM: explicit jq failure check; if
+	# audit-log construction fails, refuse to silently exit with
+	# success — operator must know there's no record.
 	if [ "$DRY_RUN" -eq 0 ]; then
 		local audit_dir="$cpath/.claude/logs"
 		mkdir -p "$audit_dir"
 		local audit_file="$audit_dir/refresh-from-source.jsonl"
 		local entry
-		entry=$(jq -cn --arg ts "$now" --arg pv "$plugin_version" \
+		if ! entry=$(jq -cn --arg ts "$now" --arg pv "$plugin_version" \
 			--argjson clean "$n_clean" \
 			--argjson replaced "$n_replaced" \
 			--argjson overridden "$n_overridden" \
 			--argjson failed "$n_failed" \
 			--arg cpath "$cpath" \
-			'{ts: $ts, plugin_version: $pv, consumer_path: $cpath, files_clean: $clean, files_replaced: $replaced, files_overridden: $overridden, files_failed: $failed}')
-		printf '%s\n' "$entry" >>"$audit_file"
+			'{ts: $ts, plugin_version: $pv, consumer_path: $cpath, files_clean: $clean, files_replaced: $replaced, files_overridden: $overridden, files_failed: $failed}' 2>"$yq_err"); then
+			echo "refresh-from-source: jq audit-log entry construction failed:" >&2
+			cat "$yq_err" >&2
+			return 3
+		fi
+		if ! printf '%s\n' "$entry" >>"$audit_file"; then
+			echo "refresh-from-source: failed to write audit log $audit_file" >&2
+			return 3
+		fi
 	fi
 
 	echo "  Summary: clean=$n_clean replaced=$n_replaced overridden=$n_overridden failed=$n_failed"
@@ -337,11 +401,23 @@ elif [ "$ALL_CONSUMERS" -eq 1 ]; then
 	done < <(_list_all_consumer_paths)
 fi
 
+# r1 silent-failure-hunter MEDIUM: refuse zero-target runs (e.g. empty
+# consumers.yml under --all-consumers). Without this, the for-loop
+# iterates zero times, overall_rc stays 0, script reports success.
+if [ "${#target_paths[@]}" -eq 0 ]; then
+	echo "refresh-from-source: no target consumers resolved — nothing to do" >&2
+	exit 2
+fi
+
+# r1 code-reviewer Important: propagate WORST rc across consumers, not
+# LAST. Prior code overwrote on every non-zero, so consumer-A=3 then
+# consumer-B=2 would exit 2 (mis-classifying partial-failure as
+# precondition-error).
 overall_rc=0
 for p in "${target_paths[@]}"; do
 	rc=0
 	_refresh_one_consumer "$p" || rc=$?
-	if [ "$rc" -ne 0 ]; then
+	if [ "$rc" -gt "$overall_rc" ]; then
 		overall_rc=$rc
 	fi
 done
