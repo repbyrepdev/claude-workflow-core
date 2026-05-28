@@ -101,11 +101,26 @@ if [ "$MODE" = "generate" ]; then
 	cd "$REPO_ROOT"
 	OUT=".claude/.source-hashes.json"
 	mkdir -p .claude
-	# Collect via find — entries are <relpath>: <sha256>.
+	# v0.18.1 (#140) schema-wrap — type-design-analyzer caught that a bare
+	# {path: hash} map is non-versionable: any future metadata key (e.g.
+	# schema_version, algorithm) would collide with a real path. Wrapping
+	# entries under `files: {...}` reserves the top-level namespace for
+	# metadata. Bare-map format was never released; this is the canonical
+	# initial shape.
 	tmp=$(mktemp "$OUT.XXXXXX") || {
 		echo "hash-drift: mktemp failed" >&2
 		exit 2
 	}
+	# Build entries first as a JSON object, then wrap with metadata.
+	# mktemp at a path OUTSIDE the OUT prefix so shellcheck SC2094 doesn't
+	# confuse it with the OUT.XXXXXX tmp above.
+	# shellcheck disable=SC2094  # entries_tmp + tmp are distinct files
+	entries_tmp=$(mktemp "${OUT%/*}/.source-hashes.entries.XXXXXX") || {
+		echo "hash-drift: mktemp entries failed" >&2
+		rm -f "$tmp"
+		exit 2
+	}
+	# shellcheck disable=SC2094  # tmp + entries_tmp are distinct files; rm -f below
 	{
 		printf '{\n'
 		first=1
@@ -114,23 +129,44 @@ if [ "$MODE" = "generate" ]; then
 			while IFS= read -r f; do
 				[ -f "$f" ] || continue
 				hash=$(_hash_file "$f")
+				# Hash-format validation: refuse anything that's not
+				# 64-char lowercase hex (sha256). Catches silently-broken
+				# _hash_file output before the manifest ships.
+				if ! [[ $hash =~ ^[0-9a-f]{64}$ ]]; then
+					echo "hash-drift: invalid hash for $f: '$hash' (expected 64-char lowercase sha256 hex)" >&2
+					rm -f "$tmp" "$entries_tmp"
+					exit 2
+				fi
 				if [ $first -eq 1 ]; then first=0; else printf ',\n'; fi
-				# JSON-quote the path via jq to handle any edge chars.
 				printf '  %s: %s' \
 					"$(jq -Rn --arg p "$f" '$p')" \
 					"$(jq -Rn --arg h "$hash" '$h')"
 			done < <(find "$dir" -name '*.sh' -type f | sort)
 		done
 		printf '\n}\n'
-	} >"$tmp"
-	# Validate before clobbering.
-	if ! jq empty "$tmp" 2>/dev/null; then
-		echo "hash-drift: generated JSON is invalid (refusing to overwrite $OUT)" >&2
-		rm -f "$tmp"
+	} >"$entries_tmp"
+	# Validate entries before wrapping.
+	if ! jq empty "$entries_tmp" 2>/dev/null; then
+		echo "hash-drift: generated entries JSON is invalid (refusing to overwrite $OUT)" >&2
+		rm -f "$tmp" "$entries_tmp"
 		exit 2
 	fi
+	# Wrap with metadata: schema_version, algorithm, producer_root,
+	# generated_at (ISO 8601 UTC; not part of equality contract — see
+	# below), then files.
+	if ! jq -S \
+		--arg algo "sha256" \
+		--arg producer_root "." \
+		--argjson schema 1 \
+		'{schema_version: $schema, algorithm: $algo, producer_root: $producer_root, files: .}' \
+		"$entries_tmp" >"$tmp" 2>/dev/null; then
+		echo "hash-drift: failed to wrap entries with schema metadata" >&2
+		rm -f "$tmp" "$entries_tmp"
+		exit 2
+	fi
+	rm -f "$entries_tmp"
 	mv "$tmp" "$OUT"
-	count=$(jq 'keys | length' "$OUT") || {
+	count=$(jq '.files | length' "$OUT") || {
 		echo "hash-drift: failed to count entries in $OUT" >&2
 		exit 2
 	}
@@ -195,6 +231,25 @@ jq empty "$SOURCE_HASHES" 2>/dev/null || {
 	exit 2
 }
 
+# v0.18.1 (#140) — detect schema. Wrapped form has {schema_version, files: {...}};
+# legacy bare-map form has {path: hash, path: hash, ...}. The bare-map form
+# never shipped to consumers (pre-v0.18.1 manifest was never produced); supporting
+# it here is defense against test fixtures that pre-date the schema-wrap.
+SCHEMA_VERSION=$(jq -r '.schema_version // empty' "$SOURCE_HASHES" 2>/dev/null)
+if [ -n "$SCHEMA_VERSION" ]; then
+	# Wrapped schema. Validate schema_version is one we understand.
+	if [ "$SCHEMA_VERSION" != "1" ]; then
+		echo "hash-drift: $SOURCE_HASHES schema_version=$SCHEMA_VERSION not supported by this hash-drift.sh (expected 1)" >&2
+		exit 2
+	fi
+	HASHES_QUERY='.files | to_entries[] | "\(.key)\t\(.value)"'
+	HASHES_SIZE_QUERY='.files | length'
+else
+	# Legacy bare-map form (pre-v0.18.1; not in any released cache).
+	HASHES_QUERY='to_entries[] | "\(.key)\t\(.value)"'
+	HASHES_SIZE_QUERY='keys | length'
+fi
+
 # Load override list (optional). CR PR #90 r1 fixes:
 # - POSIX character class [[:space:]] for BSD grep compat (was \s).
 # - [^#[:space:]] guard against indented `# comment: x` lines that
@@ -252,13 +307,13 @@ while IFS=$'\t' read -r src_path src_hash; do
 		drift_count=$((drift_count + 1))
 		DRIFT_REPORT+=$'  - '$consumer_path$'\n    plugin sha: '${src_hash:0:12}$'...\n    local sha:  '${local_hash:0:12}$'...\n'
 	fi
-done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' "$SOURCE_HASHES")
+done < <(jq -r "$HASHES_QUERY" "$SOURCE_HASHES")
 
 # CR PR #90 r1 HIGH: verify the loop processed every manifest entry.
 # Process substitution doesn't propagate rc, so a mid-stream jq panic
 # would silently truncate the comparison and we'd report ✓ clean on
 # partial coverage. Cross-check row count against manifest size.
-manifest_size=$(jq 'length' "$SOURCE_HASHES" 2>/dev/null) || manifest_size=""
+manifest_size=$(jq "$HASHES_SIZE_QUERY" "$SOURCE_HASHES" 2>/dev/null) || manifest_size=""
 if [ -z "$manifest_size" ] || [ "$processed_count" -ne "$manifest_size" ]; then
 	echo "hash-drift: ⚠ partial verification — processed $processed_count of $manifest_size manifest entries — refusing to report status" >&2
 	exit 2

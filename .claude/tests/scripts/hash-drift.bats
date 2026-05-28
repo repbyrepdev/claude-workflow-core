@@ -53,17 +53,20 @@ _make_consumer() {
 	[ -x "$SCRIPT" ]
 }
 
-@test "--generate writes valid JSON with hook + _lib entries" {
+@test "--generate writes valid JSON with hook + _lib entries (schema_version:1)" {
 	PRODUCER="$TEST_TMP/producer"
 	mkdir -p "$PRODUCER"
 	_make_producer "$PRODUCER"
 	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
 	[ -f "$PRODUCER/.claude/.source-hashes.json" ]
 	jq empty "$PRODUCER/.claude/.source-hashes.json"
-	# 3 entries: hooks/foo.sh, hooks/bar.sh, _lib/baz.sh.
-	[ "$(jq 'keys | length' "$PRODUCER/.claude/.source-hashes.json")" -eq 3 ]
+	# v0.18.1 (#140): schema-wrapped manifest with metadata + .files entries.
+	[ "$(jq -r '.schema_version' "$PRODUCER/.claude/.source-hashes.json")" = "1" ]
+	[ "$(jq -r '.algorithm' "$PRODUCER/.claude/.source-hashes.json")" = "sha256" ]
+	# 3 file entries: hooks/foo.sh, hooks/bar.sh, _lib/baz.sh.
+	[ "$(jq '.files | length' "$PRODUCER/.claude/.source-hashes.json")" -eq 3 ]
 	# Each value is a 64-char hex hash.
-	jq -r '.[] | length' "$PRODUCER/.claude/.source-hashes.json" | sort -u | grep -q '^64$'
+	jq -r '.files[] | length' "$PRODUCER/.claude/.source-hashes.json" | sort -u | grep -q '^64$'
 }
 
 @test "--verify clean: identical files → exit 0 + clean message" {

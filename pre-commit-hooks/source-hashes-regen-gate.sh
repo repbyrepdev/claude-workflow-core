@@ -47,8 +47,9 @@ fi
 
 MANIFEST=".claude/.source-hashes.json"
 
-# 1. Any tracked file staged?
-TRACKED_STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null |
+# 1. Any tracked file staged? --diff-filter=ACMRD includes deletions
+# (code-reviewer #140 r1: `git rm hooks/foo.sh` left manifest stale).
+TRACKED_STAGED=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null |
 	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh)$' || true)
 
 if [ -z "$TRACKED_STAGED" ]; then
@@ -56,9 +57,10 @@ if [ -z "$TRACKED_STAGED" ]; then
 	exit 0
 fi
 
-# 2. Is the manifest also staged?
-MANIFEST_STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null |
-	grep -F "$MANIFEST" || true)
+# 2. Is the manifest also staged? grep -Fx for line-exact match (code-reviewer #140 r1:
+# loose -F substring would false-positive on `.claude/.source-hashes.json.bak`).
+MANIFEST_STAGED=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null |
+	grep -Fx "$MANIFEST" || true)
 
 if [ -z "$MANIFEST_STAGED" ]; then
 	echo "source-hashes-regen-gate: SSOT-tracked file(s) staged but $MANIFEST is NOT:" >&2
