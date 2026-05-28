@@ -89,6 +89,14 @@ while IFS= read -r -d '' f; do
 		rm -f "$f"
 		continue
 	fi
+	# v0.28.0 #174: also drop markers whose sha is no longer reachable
+	# from ANY local ref (abandoned commits — branch deleted, commit
+	# rebased away). Without this, every interim commit-attempt leaves
+	# an orphan marker; 2026-05-28 observed 34 accumulating in one session.
+	if ! git for-each-ref --contains "$sha" --format='%(refname)' 2>/dev/null | grep -q .; then
+		rm -f "$f"
+		continue
+	fi
 	pending_count=$((pending_count + 1))
 	pending_list="${pending_list}  - sha=$sha (directive emitted; agents not yet fired)
 "

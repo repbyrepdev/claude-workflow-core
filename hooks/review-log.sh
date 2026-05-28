@@ -108,7 +108,7 @@ phase1)
 		fi
 		if ! echo "$expected" | grep -qx "$AGENT"; then
 			echo "ERROR: unknown Phase 1 agent '$AGENT'. Expected one of:" >&2
-			echo "$expected" | sed 's/^/  - /' >&2
+			printf '  - %s\n' "$expected" | sed 's/  - $//' >&2
 			echo "(Source: $LIST_SCRIPT / .claude/review-config.yml)" >&2
 			exit 2
 		fi
@@ -230,6 +230,17 @@ phase1)
 			LOGGED=$(jq -r --arg r "$ROUND" 'select(.phase==1 and (.round|tostring)==$r) | .agent' "$LOG" | sort -u)
 			MISSING=$(comm -23 <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$LOGGED"))
 			if [ -z "$MISSING" ]; then
+				# v0.28.0 #174: round-complete clears the directive marker
+				# for THIS sha. Without this, the marker leaks every time
+				# Phase 1 fires — accumulates across the session until the
+				# phase1-directive-pending-guard locks every tool call.
+				# 2026-05-28 dogfood: 34 markers accumulated within a
+				# single session, requiring user-authorized override.
+				_directive_marker="$REPO_ROOT/.claude/.session-state/ship-cycle/${SHA}.phase1-directive.txt"
+				if [ -f "$_directive_marker" ]; then
+					rm -f "$_directive_marker" ||
+						echo "review-log: WARN: round-complete cleanup of $_directive_marker failed" >&2
+				fi
 				TOTAL_FIND=$(jq -r --arg r "$ROUND" 'select(.phase==1 and (.round|tostring)==$r and (.findings // null) != null) | .findings' "$LOG" | awk '{s+=$1} END {print s+0}')
 				ANY_ERR=$(jq -r --arg r "$ROUND" 'select(.phase==1 and (.round|tostring)==$r) | .status' "$LOG" | awk '/errored/{c++} END{print c+0}')
 				# v4.15.N #498: render pre-designed dashboard (per-agent
@@ -250,7 +261,7 @@ phase1)
 					echo "    1. Apply ALL actionable findings to the source files NOW." >&2
 					echo "    2. Re-commit the fixes (changes the HEAD sha — new review-log)." >&2
 					echo "    3. Launch Round $NEXT_ROUND: ALL expected agents in ONE parallel Agent block" >&2
-					echo "       scoped to the whole \`git diff main..HEAD\` — NOT just fixed files." >&2
+					echo '       scoped to the whole `git diff main..HEAD` — NOT just fixed files.' >&2
 					echo "       Helper: .claude/hooks/phase1-launcher.sh $NEXT_ROUND" >&2
 				else
 					# v4.29 #792: graduation — first clean Phase 1 round means

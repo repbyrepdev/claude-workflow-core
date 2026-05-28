@@ -50,6 +50,27 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || BRANCH="<unresolved>"
 jq -nc --arg ts "$TS" --arg sha "$SHA" --arg branch "$BRANCH" \
 	'{ts:$ts, sha:$sha, branch:$branch, action:"fire-resume"}' >>"$LOG"
 
+# v0.28.0 #174: post-commit sweep of phase1-directive markers whose SHA is
+# NOT the current HEAD and is not reachable from any local ref. Each
+# commit creates a new HEAD sha; markers for the prior sha are stranded
+# (the prior sha may still exist as a danglable commit but no longer
+# matches an active phase1 round). Sweep proactively to prevent
+# accumulation. 2026-05-28: 34 markers accumulated in one session.
+DIRECTIVE_DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
+if [ -d "$DIRECTIVE_DIR" ]; then
+	for f in "$DIRECTIVE_DIR"/*.phase1-directive.txt; do
+		[ -f "$f" ] || continue
+		_sha=$(basename "$f" .phase1-directive.txt)
+		# Keep current HEAD's marker — it's the active phase1 round.
+		[ "$_sha" = "$SHA" ] && continue
+		# Keep markers whose sha is reachable from any local ref (commit
+		# is still active work, e.g. a branch tip we haven't visited).
+		if ! git for-each-ref --contains "$_sha" --format='%(refname)' 2>/dev/null | grep -q .; then
+			rm -f "$f" 2>/dev/null || true
+		fi
+	done
+fi
+
 # Detach: setsid + nohup so the resume call survives the commit's parent
 # shell exit. stdout/stderr → log file for post-mortem inspection.
 DETACH_LOG="$LOG_DIR/ship-cycle-resume-$(printf '%s' "$SHA" | head -c 8).log"
