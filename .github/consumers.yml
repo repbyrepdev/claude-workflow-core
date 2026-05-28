@@ -1,0 +1,52 @@
+# Sub 3 (#141 of #138) — Consumer registry SSOT.
+#
+# Single source of truth for every repo that consumes this plugin. Used by:
+#   * scripts/list-consumers.sh — operator-facing inventory
+#   * meta-bootstrap.sh --target plugin --verify-only — confirms registry exists + parses
+#   * scripts/refresh-from-source.sh (#151) — iterates targets for cascade
+#   * scripts/cascade-to-consumers.sh (#152) — opens release-cascade issues
+#
+# Schema (validated by pre-commit-hooks/consumers-schema-check.sh):
+#   schema_version: int      — bump in lockstep with the validator
+#   consumers:               — list of consumer records
+#     - name: kebab-case      — operator-readable identifier (matches local-path basename
+#                               where practical; not a hard requirement)
+#       repo: owner/name      — GitHub coordinate (used by cascade for `gh issue create --repo`)
+#       local_path: ~/path    — operator machine path (used by refresh-from-source.sh)
+#       pinned_version: X.Y.Z — the plugin version this consumer's settings.json + cache pin
+#       overrides_file: path  — relative to local_path; where .claude/local-overrides.yml lives
+#       bootstrap_date: YYYY-MM-DD — first onboarded date (informational; never gates behavior)
+#       contact: @handle      — who pings on plugin breaking change
+#       notes: free-form      — short context — domain, idiosyncrasies, deferred-cleanup pointers
+#
+# Adding a consumer: edit this file + `gh issue create --repo <consumer>` is now in
+# the cascade scope; nothing else needs touching.
+
+schema_version: 1
+
+consumers:
+  - name: media-server
+    repo: repbyrepdev/plex_arr_media_stack
+    local_path: ~/media-server
+    pinned_version: "0.8.5"
+    overrides_file: .claude/local-overrides.yml
+    bootstrap_date: 2026-04-21
+    contact: "@damien"
+    notes: |
+      Domain: homelab (Docker compose, Plex/Sonarr/Radarr, Grafana/Loki).
+      Has 81 .claude/hooks/ entries — most should be deduplicated post-Sub-8 (#146).
+      Has 19 .github/workflows/ — most domain-specific (dr-test, encrypt-corpus, etc.)
+      plus 4 duplicated with plugin (pr-lint, gitleaks, pr-labeler, label-sync).
+
+  - name: pricing-team-toolkit
+    repo: FCP-Euro-Pricing-Team/pricing-team-toolkit
+    local_path: ~/pricing-team-toolkit
+    pinned_version: "0.6.4"
+    overrides_file: .claude/local-overrides.yml
+    bootstrap_date: 2026-05-15
+    contact: "@damien"
+    notes: |
+      Domain: data engineering (Coalesce, Snowflake, Sigma, Hex).
+      Thin consumer — 3 unique .claude/hooks/ (coalesce-gracie-only-gate + deps).
+      10 .github/workflows/; 4 duplicated with plugin. Domain-specific labels:
+      area:coalesce, area:hex, area:sigma, upstream:coalesce/pricing-docs.
