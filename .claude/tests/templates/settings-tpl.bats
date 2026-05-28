@@ -36,8 +36,13 @@ setup() {
 	# render-time substitution is total (no half-rendered settings).
 	run jq -r '.hooks | .. | objects | select(.command) | .command' "$TPL"
 	[ "$status" -eq 0 ]
-	# Every line must contain <VERSION>
+	# r2 silent-failure-hunter LOW: assert non-empty BEFORE per-line check
+	# so an empty template fails LOUDLY (was passing vacuously via
+	# single-empty-line while-read iteration).
+	cmd_count=$(printf '%s\n' "$output" | grep -c '^/\|<VERSION>' || true)
+	[ "$cmd_count" -ge 6 ]
 	while IFS= read -r cmd; do
+		[ -n "$cmd" ] || continue
 		[[ $cmd == *"<VERSION>"* ]]
 	done <<<"$output"
 }

@@ -266,8 +266,11 @@ EOF
 	fake=$(_install_fake_layout success no)
 	run "$fake" --from 0.8.5 --to 0.8.8
 	[ "$status" -eq 0 ]
-	[[ $output == *"none of the"* ]]
-	[[ $output == *"expected hook files exist"* ]]
+	# r2 silent-failure-hunter CRITICAL: post-data-driven warning text
+	# changed from "none of the N expected hook files exist" to
+	# "no '# auto-register: true' hooks found".
+	[[ $output == *"no '# auto-register: true' hooks found"* ]]
+	[[ $output == *"plugin layout has changed"* ]]
 	# register-hook stub was NOT invoked (no log file)
 	[ ! -f "$TEST_TMP/register-hook.log" ]
 }

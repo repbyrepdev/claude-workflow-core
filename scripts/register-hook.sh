@@ -156,9 +156,9 @@ _parse_frontmatter() {
 			[ -z "$matcher" ] && matcher=$(printf '%s' "$line" | sed -E 's/^# matcher:[[:space:]]*//; s/[[:space:]]+$//')
 			;;
 		esac
-	done < <(head -15 "$path")
+	done <"$path"
 	if [ -z "$event" ]; then
-		echo "register-hook.sh: $path has no '# event:' frontmatter line in first 15 lines" >&2
+		echo "register-hook.sh: $path has no '# event:' frontmatter line" >&2
 		return 1
 	fi
 	# Some hooks pack matcher into the event line (e.g. "PreToolUse Bash"
@@ -300,7 +300,10 @@ if [ "$ALL_AUTO" = "1" ]; then
 	done < <(
 		for f in "$REPO_ROOT"/hooks/*.sh; do
 			[ -f "$f" ] || continue
-			head -15 "$f" | grep -q '^# auto-register: true' && printf '%s\n' "$f"
+			# Full-file scan (SSOT semantic shared with discover-orphan-hooks.sh
+			# + migrate-settings.sh). Hooks with long license/provenance
+			# headers can push the directive past any line cap.
+			grep -q '^# auto-register: true' "$f" && printf '%s\n' "$f"
 		done
 	)
 fi
@@ -318,20 +321,19 @@ if [ "$CHECK" = "1" ]; then
 	# Hooks on disk with frontmatter — separately track sentinel hooks
 	# (those declaring `# auto-register: true`) so the reverse-direction
 	# check only flags hooks that SHOULD be registered.
-	# Frontmatter-window-restricted discovery (matches _parse_frontmatter's
-	# 15-line contract): a later heredoc/comment doesn't accidentally
-	# pull a hook into either list.
+	# Full-file scan: SSOT semantic shared with discover-orphan-hooks.sh
+	# + migrate-settings.sh (v0.24.0 #150). Prior head -15 cap could miss
+	# directives placed after long license/provenance headers.
 	hook_files=""
 	sentinel_files=""
 	if [ -d "$REPO_ROOT/hooks" ]; then
 		for f in "$REPO_ROOT"/hooks/*.sh; do
 			[ -f "$f" ] || continue
 			bn=$(basename "$f")
-			window=$(head -15 "$f")
-			if printf '%s\n' "$window" | grep -qE '^# event:'; then
+			if grep -qE '^# event:' "$f"; then
 				hook_files=$(printf '%s\n%s' "${hook_files}" "$bn")
 			fi
-			if printf '%s\n' "$window" | grep -qE '^# auto-register: true'; then
+			if grep -qE '^# auto-register: true' "$f"; then
 				sentinel_files=$(printf '%s\n%s' "${sentinel_files}" "$bn")
 			fi
 		done

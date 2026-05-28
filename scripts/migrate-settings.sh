@@ -7,10 +7,11 @@ set -euo pipefail
 #      from --from <ver> to --to <ver>. Defaults: most-referenced semver
 #      segment in settings.json → highest installed cache dir under
 #      ~/.claude/plugins/cache/claude-workflow-core/.
-#   2. Registers the three plugin-v0.8.8 hooks via the sibling
-#      register-hook.sh wrapper (cr-auto-parse-poll, phase1-directive-
-#      pending-guard, ship-cycle-director-gate). Idempotent — already-
-#      present entries are no-ops.
+#   2. Registers every plugin hook declaring `# auto-register: true` in
+#      its header (data-driven discovery — v0.24.0 #150). Replaces the
+#      prior hardcoded 3-element list which drifted as new hooks were
+#      added. Delegates to sibling register-hook.sh per hook; idempotent
+#      — already-present entries are no-ops.
 #
 # Why this script exists:
 # Plugin version bumps that add new hooks or move hook paths require
@@ -168,14 +169,25 @@ fi
 # eliminate the drift class.
 PLUGIN_HOOKS_DIR=$(cd "$SCRIPT_DIR/.." && pwd)/hooks
 present_hooks=()
-if [ -d "$PLUGIN_HOOKS_DIR" ]; then
+if [ ! -d "$PLUGIN_HOOKS_DIR" ]; then
+	echo "migrate-settings.sh: WARNING: plugin hooks dir not found: $PLUGIN_HOOKS_DIR" >&2
+	echo "  Script may be running outside the plugin checkout. Step 2 skipped." >&2
+else
 	for h in "$PLUGIN_HOOKS_DIR"/*.sh; do
 		[ -f "$h" ] || continue
 		base=$(basename "$h")
 		# Skip helpers (filename convention) before reading file.
 		[[ $base == _* ]] && continue
+		# r2 silent-failure-hunter MEDIUM: guard awk against unreadable
+		# hook (broken perms / immutable bit) — set -e would otherwise
+		# abort the whole loop with no diagnostic naming the offender.
+		if [ ! -r "$h" ]; then
+			echo "migrate-settings.sh: WARNING: $h unreadable, skipping" >&2
+			continue
+		fi
 		# First-match auto-register check (mirrors register-hook.sh +
-		# discover-orphan-hooks.sh — single SSOT semantic).
+		# discover-orphan-hooks.sh — single SSOT semantic, all three now
+		# use full-file scan per v0.24.0 #150).
 		auto=$(awk '
 			/^# auto-register: / {
 				sub(/^# auto-register: /, "")
@@ -184,15 +196,24 @@ if [ -d "$PLUGIN_HOOKS_DIR" ]; then
 				exit
 			}
 		' "$h")
+		# r2 silent-failure-hunter HIGH: also require `# event:` to be
+		# declared — register-hook.sh fails downstream if event is
+		# missing, after Step 1 has already committed the version bump.
+		# Pre-check here lets us warn + skip instead of leaving the
+		# operator with a partial-migration state.
 		if [ "$auto" = "true" ]; then
+			event=$(awk '/^# event: / { sub(/^# event: /, ""); sub(/[[:space:]]+$/, ""); print; exit }' "$h")
+			if [ -z "$event" ]; then
+				echo "migrate-settings.sh: WARNING: $h declares '# auto-register: true' but no '# event:' — skipping (would fail register-hook.sh)" >&2
+				continue
+			fi
 			present_hooks+=("$h")
 		fi
 	done
 fi
-if [ "${#present_hooks[@]}" -eq 0 ]; then
+if [ "${#present_hooks[@]}" -eq 0 ] && [ -d "$PLUGIN_HOOKS_DIR" ]; then
 	echo "migrate-settings.sh: WARNING: no '# auto-register: true' hooks found under $PLUGIN_HOOKS_DIR" >&2
-	echo "  Either the plugin layout has changed, this script lives outside the plugin," >&2
-	echo "  or no hooks declare the directive. Step 2 (hook registration) will be skipped." >&2
+	echo "  plugin layout has changed or no hooks declare the directive. Step 2 (hook registration) will be skipped." >&2
 fi
 
 echo "=== Migration plan ==="
