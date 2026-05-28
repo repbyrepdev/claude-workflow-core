@@ -113,7 +113,7 @@ setup() {
 		# Area (generic only)
 		area:infrastructure area:docs area:plugin-manifest
 		# Auto (generic only)
-		auto:renovate auto:trivy-scan auto:trivy-post-merge
+		auto:renovate auto:trivy-scan auto:trivy-post-merge auto:plugin-release-cascade
 		# Renovate semver
 		patch minor major
 		# CR Issue Planner

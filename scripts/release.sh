@@ -345,7 +345,7 @@ elif [ "$NO_GITHUB" = "1" ]; then
 elif [ ! -x "$CASCADE_SH" ]; then
 	echo "  ⊘ $CASCADE_SH missing or not executable — skipping consumer cascade" >&2
 elif [ "$DRY_RUN" = "1" ]; then
-	echo "  [dry-run] would: $CASCADE_SH --version $VERSION"
+	echo "  [dry-run] would: $CASCADE_SH --dry-run --version $VERSION"
 	# r2 code-reviewer HIGH: rc captured via `||` (preserves cascade's
 	# actual exit code); `if ! cmd; then ... rc=$?` would always show 0.
 	cascade_rc=0
