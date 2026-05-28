@@ -7,10 +7,11 @@ set -euo pipefail
 #      from --from <ver> to --to <ver>. Defaults: most-referenced semver
 #      segment in settings.json → highest installed cache dir under
 #      ~/.claude/plugins/cache/claude-workflow-core/.
-#   2. Registers the three plugin-v0.8.8 hooks via the sibling
-#      register-hook.sh wrapper (cr-auto-parse-poll, phase1-directive-
-#      pending-guard, ship-cycle-director-gate). Idempotent — already-
-#      present entries are no-ops.
+#   2. Registers every plugin hook declaring `# auto-register: true` in
+#      its header (data-driven discovery — v0.24.0 #150). Replaces the
+#      prior hardcoded 3-element list which drifted as new hooks were
+#      added. Delegates to sibling register-hook.sh per hook; idempotent
+#      — already-present entries are no-ops.
 #
 # Why this script exists:
 # Plugin version bumps that add new hooks or move hook paths require
@@ -159,31 +160,60 @@ if [ -z "$FROM_VER" ]; then
 	fi
 fi
 
-# The three hooks introduced in plugin v0.8.8 that need explicit
-# registration in settings.json. NEW_HOOKS is version-pinned data — if a
-# future plugin version adds different hooks, edit this list.
-NEW_HOOKS=(
-	"$SCRIPT_DIR/../hooks/cr-auto-parse-poll.sh"
-	"$SCRIPT_DIR/../hooks/phase1-directive-pending-guard.sh"
-	"$SCRIPT_DIR/../hooks/ship-cycle-director-gate.sh"
-)
-
-# Filter to existing files. Partial-missing is OK (forward-compat: a
-# future plugin version may drop one of these in favor of a different
-# mechanism). ALL-missing is NOT ok — it likely means $SCRIPT_DIR/../hooks
-# doesn't resolve to the plugin's hooks dir (wrong checkout, broken
-# symlink, plugin layout changed). Surface that loudly.
+# v0.24.0 (#150): hook registration is data-driven via the SSOT signal
+# `# auto-register: true` in each hook's header. Prior version hardcoded
+# 3 specific hooks (cr-auto-parse-poll, phase1-directive-pending-guard,
+# ship-cycle-director-gate) which drifted: the actual auto-register set
+# expanded to include monitor-misuse-block.sh, session-start-stale-pin.sh,
+# ship-cycle-guard.sh as well. We discover them dynamically below to
+# eliminate the drift class.
+PLUGIN_HOOKS_DIR=$(cd "$SCRIPT_DIR/.." && pwd)/hooks
 present_hooks=()
-for h in "${NEW_HOOKS[@]}"; do
-	if [ -f "$h" ]; then
-		present_hooks+=("$h")
-	fi
-done
-if [ "${#present_hooks[@]}" -eq 0 ]; then
-	echo "migrate-settings.sh: WARNING: none of the ${#NEW_HOOKS[@]} expected hook files exist" >&2
-	echo "  Expected under: $(cd "$SCRIPT_DIR/.." && pwd)/hooks/" >&2
-	echo "  Either the plugin layout has changed, this script lives outside the plugin," >&2
-	echo "  or the operator deleted them. Step 2 (hook registration) will be skipped." >&2
+if [ ! -d "$PLUGIN_HOOKS_DIR" ]; then
+	echo "migrate-settings.sh: WARNING: plugin hooks dir not found: $PLUGIN_HOOKS_DIR" >&2
+	echo "  Script may be running outside the plugin checkout. Step 2 skipped." >&2
+else
+	for h in "$PLUGIN_HOOKS_DIR"/*.sh; do
+		[ -f "$h" ] || continue
+		base=$(basename "$h")
+		# Skip helpers (filename convention) before reading file.
+		[[ $base == _* ]] && continue
+		# r2 silent-failure-hunter MEDIUM: guard awk against unreadable
+		# hook (broken perms / immutable bit) — set -e would otherwise
+		# abort the whole loop with no diagnostic naming the offender.
+		if [ ! -r "$h" ]; then
+			echo "migrate-settings.sh: WARNING: $h unreadable, skipping" >&2
+			continue
+		fi
+		# First-match auto-register check (mirrors register-hook.sh +
+		# discover-orphan-hooks.sh — single SSOT semantic, all three now
+		# use full-file scan per v0.24.0 #150).
+		auto=$(awk '
+			/^# auto-register: / {
+				sub(/^# auto-register: /, "")
+				sub(/[[:space:]]+$/, "")
+				print
+				exit
+			}
+		' "$h")
+		# r2 silent-failure-hunter HIGH: also require `# event:` to be
+		# declared — register-hook.sh fails downstream if event is
+		# missing, after Step 1 has already committed the version bump.
+		# Pre-check here lets us warn + skip instead of leaving the
+		# operator with a partial-migration state.
+		if [ "$auto" = "true" ]; then
+			event=$(awk '/^# event: / { sub(/^# event: /, ""); sub(/[[:space:]]+$/, ""); print; exit }' "$h")
+			if [ -z "$event" ]; then
+				echo "migrate-settings.sh: WARNING: $h declares '# auto-register: true' but no '# event:' — skipping (would fail register-hook.sh)" >&2
+				continue
+			fi
+			present_hooks+=("$h")
+		fi
+	done
+fi
+if [ "${#present_hooks[@]}" -eq 0 ] && [ -d "$PLUGIN_HOOKS_DIR" ]; then
+	echo "migrate-settings.sh: WARNING: no '# auto-register: true' hooks found under $PLUGIN_HOOKS_DIR" >&2
+	echo "  plugin layout has changed or no hooks declare the directive. Step 2 (hook registration) will be skipped." >&2
 fi
 
 echo "=== Migration plan ==="
@@ -198,7 +228,7 @@ else
 			| select(contains("/claude-workflow-core/" + $from + "/"))] | length
 	' "$SETTINGS")
 fi
-echo "  New hooks:        ${#present_hooks[@]} of ${#NEW_HOOKS[@]} present"
+echo "  Auto-register hooks: ${#present_hooks[@]} discovered"
 # Empty-array iteration under `set -u` errors on bash 3.2 — guard with
 # length check rather than the `${arr[@]+"${arr[@]}"}` idiom (clearer
 # and avoids shellcheck's SC2068 warnings).

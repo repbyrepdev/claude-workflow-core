@@ -196,12 +196,16 @@ EOF
 	fi
 	if [ "$hooks_present" = "yes" ]; then
 		mkdir -p "$TEST_TMP/fakerepo/hooks"
+		# v0.24.0 (#150) — migrate-settings.sh now data-discovers hooks
+		# via `# auto-register: true` header (was a hardcoded 3-element
+		# array). Fixture hooks must declare the directive to be picked
+		# up by the new discovery loop.
 		for h in cr-auto-parse-poll phase1-directive-pending-guard ship-cycle-director-gate; do
-			# Real hook frontmatter — needed by register-hook.sh
 			cat >"$TEST_TMP/fakerepo/hooks/$h.sh" <<EOF
 #!/bin/bash
 # event: PreToolUse
 # matcher: Bash
+# auto-register: true
 echo "stub-hook"
 EOF
 			chmod +x "$TEST_TMP/fakerepo/hooks/$h.sh"
@@ -262,8 +266,11 @@ EOF
 	fake=$(_install_fake_layout success no)
 	run "$fake" --from 0.8.5 --to 0.8.8
 	[ "$status" -eq 0 ]
-	[[ $output == *"none of the"* ]]
-	[[ $output == *"expected hook files exist"* ]]
+	# r2 silent-failure-hunter CRITICAL: post-data-driven warning text
+	# changed from "none of the N expected hook files exist" to
+	# "no '# auto-register: true' hooks found".
+	[[ $output == *"no '# auto-register: true' hooks found"* ]]
+	[[ $output == *"plugin layout has changed"* ]]
 	# register-hook stub was NOT invoked (no log file)
 	[ ! -f "$TEST_TMP/register-hook.log" ]
 }

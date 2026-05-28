@@ -136,14 +136,26 @@ teardown() {
 # --- --all-auto-register ----------------------------------------------
 
 @test "--all-auto-register registers only hooks with the sentinel" {
-	# Only ship-cycle-director-gate.sh has the # auto-register: true sentinel today
+	# v0.24.0 #150: data-driven discovery expanded the set; multiple
+	# hooks now declare `# auto-register: true` — assert each lands AND
+	# that hooks lacking the sentinel (e.g. install-hooks.sh which has
+	# only doc-mention of the directive in a comment, monitor-misuse-
+	# block.sh which has the directive at the top) behave as expected.
 	run "$SCRIPT" --all-auto-register
 	[ "$status" -eq 0 ]
+	# At least ship-cycle-director-gate must register (longest-tenured
+	# sentinel hook).
 	[[ $output == *"ship-cycle-director-gate.sh"* ]]
-	# Verify ONLY that one landed (cr-auto-parse-poll lacks the sentinel)
 	commands=$(jq -r '[.hooks // {} | to_entries[] | .value[] | (.hooks // [])[] | .command] | join(" ")' "$CLAUDE_SETTINGS_FILE")
 	[[ $commands == *"ship-cycle-director-gate.sh"* ]]
-	[[ $commands != *"cr-auto-parse-poll.sh"* ]]
+	# v0.24.0: assert ALL 6 expected sentinel hooks land (data-driven
+	# expansion replaces the old hardcoded 3-element set). Test now
+	# enforces the full SSOT set rather than just asserting one.
+	[[ $commands == *"cr-auto-parse-poll.sh"* ]]
+	[[ $commands == *"phase1-directive-pending-guard.sh"* ]]
+	[[ $commands == *"monitor-misuse-block.sh"* ]]
+	[[ $commands == *"session-start-stale-pin.sh"* ]]
+	[[ $commands == *"ship-cycle-guard.sh"* ]]
 }
 
 # --- --dry-run --------------------------------------------------------

@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # event: SessionStart
+# auto-register: true
 # v0.7.1 (#23): fire scripts/cr/auto-parse-plans.sh on session start so the
 # plan-me → CR plan → epic+subs chain advances without operator manual
 # `cr-plan parse <N>` invocation. The script is idempotent (label-gated) +

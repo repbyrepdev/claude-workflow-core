@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PreToolUse
 # matcher: Bash|Edit|Write|MultiEdit|NotebookEdit
+# auto-register: true
 # v0.7.1 (#23): stricter Phase 1 directive enforcement (partial #732 fix).
 #
 # WHY this exists: ship-pr-cycle.sh emits a Phase 1 directive ("fire 5
