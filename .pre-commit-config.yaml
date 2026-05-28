@@ -93,6 +93,12 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: source-hashes-regen-gate
+        name: source-hashes-regen — SSOT-tracked file changes require .source-hashes.json refresh (#140)
+        entry: pre-commit-hooks/source-hashes-regen-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: commit-subject-version-gate
         name: commit-subject-version — scope vX.Y.Z must not exceed plugin.json (#74)
         entry: pre-commit-hooks/commit-subject-version-gate.sh

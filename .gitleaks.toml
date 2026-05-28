@@ -1,0 +1,19 @@
+# v0.18.1 (#140) — gitleaks config for plugin repo.
+#
+# The .claude/.source-hashes.json baseline contains SHA-256 hashes of
+# tracked source files. Some of those hashes happen to match gitleaks'
+# generic-api-key entropy regex by coincidence (the entropy of a SHA-256
+# digest is by design ~256 bits). Allowlist the manifest entirely.
+#
+# Future maintenance: if other SHA-only manifests are added (e.g. for
+# workflows or templates), append their paths to the allowlist.paths
+# array below.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Files with content that legitimately matches secret patterns by coincidence"
+paths = [
+  "\\.claude/\\.source-hashes\\.json",
+]

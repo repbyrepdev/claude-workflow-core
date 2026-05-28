@@ -103,6 +103,39 @@ if [ -n "$DIRTY" ]; then
 	exit 2
 fi
 
+# 1a. (#140) `.claude/.source-hashes.json` must exist + be in sync with
+# current source content. The pre-commit gate enforces freshness at
+# commit time; release.sh re-verifies at release time so an out-of-band
+# edit (manual file shuffle on main, e.g.) can't ship without matching
+# hashes. Refusing here means the release ALWAYS pins a verifiable
+# baseline that consumers can run --verify against.
+SOURCE_HASHES_PATH="$REPO_ROOT/.claude/.source-hashes.json"
+HASH_DRIFT_SH="$REPO_ROOT/scripts/hash-drift.sh"
+if [ -x "$HASH_DRIFT_SH" ]; then
+	if [ ! -f "$SOURCE_HASHES_PATH" ]; then
+		echo "release.sh: $SOURCE_HASHES_PATH missing — run scripts/hash-drift.sh --generate + commit first" >&2
+		exit 2
+	fi
+	# Snapshot + regen + compare + restore (must not mutate during a
+	# clean-tree assertion). Worktree was certified clean above, so we
+	# can compute the diff safely without git stash.
+	_snap=$(mktemp -t source-hashes-release.XXXXXX)
+	cp "$SOURCE_HASHES_PATH" "$_snap"
+	if ! "$HASH_DRIFT_SH" --generate >/dev/null 2>&1; then
+		mv "$_snap" "$SOURCE_HASHES_PATH"
+		echo "release.sh: hash-drift.sh --generate failed during release-time verification" >&2
+		exit 2
+	fi
+	if ! diff -q "$_snap" "$SOURCE_HASHES_PATH" >/dev/null 2>&1; then
+		# Restore committed version + bail
+		mv "$_snap" "$SOURCE_HASHES_PATH"
+		echo "release.sh: $SOURCE_HASHES_PATH is stale vs current source — regenerate + commit before release" >&2
+		exit 2
+	fi
+	# In sync — restore (same content; defensive)
+	mv "$_snap" "$SOURCE_HASHES_PATH"
+fi
+
 # 2. Read version from plugin.json
 PLUGIN_JSON=".claude-plugin/plugin.json"
 if [ ! -f "$PLUGIN_JSON" ]; then

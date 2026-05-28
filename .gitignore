@@ -28,3 +28,8 @@ node_modules/
 # the tests dir while leaving the rest of .claude/ ignored.
 !.claude/tests/
 !.claude/tests/**
+
+# Re-include .claude/.source-hashes.json — SSOT manifest for consumer
+# hash-drift.sh --verify (Sub 2 of #138). Must be committed alongside
+# source so each release pins a verifiable content baseline.
+!.claude/.source-hashes.json
