@@ -185,7 +185,51 @@ else
 	rm -f "$_tmp_expected"
 fi
 
-# --- 3. Summary ----------------------------------------------------------
+# --- 3. exec-bit self-heal on all hook directories ---------------------
+# v0.27.0 #173 Layer 5: re-assert chmod +x on every *.sh under hooks/ AND
+# .claude/hooks/. The 2026-05-28 session bug was phase1-directive-
+# pending-guard.sh in .claude/hooks/ losing its +x bit (cause unknown —
+# possibly a stale file-mode entry from a worktree migration). Both
+# directories are scanned so the self-heal covers the directory the bug
+# actually struck (comment-analyzer Phase 1 r1 caught the mismatch
+# between cited motivation and original Layer 5 scope).
+shopt -s nullglob
+HOOK_DIRS=(hooks .claude/hooks)
+if [ "$CHECK_ONLY" = "1" ]; then
+	non_exec=()
+	for d in "${HOOK_DIRS[@]}"; do
+		[ -d "$d" ] || continue
+		for h in "$d"/*.sh; do
+			[ -f "$h" ] || continue
+			[ -x "$h" ] || non_exec+=("$h")
+		done
+	done
+	if [ "${#non_exec[@]}" -gt 0 ]; then
+		_log "DRIFT: hooks missing +x bit (cannot fire as PreToolUse handlers):"
+		printf '  %s\n' "${non_exec[@]}" >&2
+		_log "  Re-run 'scripts/install-hooks.sh' to fix."
+		exit 1
+	fi
+else
+	_log "asserting chmod +x on every *.sh under hooks/ + .claude/hooks/..."
+	fixed=0
+	scanned=0
+	for d in "${HOOK_DIRS[@]}"; do
+		[ -d "$d" ] || continue
+		for h in "$d"/*.sh; do
+			[ -f "$h" ] || continue
+			scanned=$((scanned + 1))
+			if [ ! -x "$h" ]; then
+				chmod +x "$h"
+				fixed=$((fixed + 1))
+			fi
+		done
+	done
+	_log "  scanned $scanned hook(s); +x restored on $fixed"
+fi
+shopt -u nullglob
+
+# --- 4. Summary ----------------------------------------------------------
 if [ "$CHECK_ONLY" = "1" ]; then
 	_log "✓ all hooks installed + match expected layout"
 else

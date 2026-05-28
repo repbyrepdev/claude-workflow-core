@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
-# event: PreToolUse Bash
+# event: PreToolUse
+# matcher: Bash
 # auto-register: true
 # v0.8.4 (#63) — ship-pr-cycle director-gate.
 #
@@ -92,19 +93,29 @@ if [ "${SKILL_WRAPPER:-0}" = "1" ]; then
 	exit 0
 fi
 
-# Detect command category.
-case "$CMD" in
-*"coderabbit review"* | *"scripts/cr/local-review.sh"*)
+# Detect command category. v0.27.0 #173 Layer 4 (Phase 1 r1 fix): use
+# bash `[[ =~ ]]` (string-anchor) instead of `grep -qE` (line-anchor).
+# Grep's `^` matches start-of-LINE, so heredoc bodies containing a
+# workflow command name on an interior line tripped the gate as a
+# false positive. Bash regex matches against the whole string, so `^`
+# binds to the actual start of the command text only.
+_cmd_starts_with() {
+	local cmd=$1 needle=$2
+	# Anchored against WHOLE string; optional `K=V` env-var prefixes;
+	# `[^[:space:]]*` stops at whitespace (env-var values with quoted
+	# internal spaces should be invoked via the matching skill wrapper).
+	[[ $cmd =~ ^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*$needle ]]
+}
+CATEGORY=""
+if _cmd_starts_with "$CMD" "coderabbit review" || _cmd_starts_with "$CMD" "scripts/cr/local-review\.sh" || _cmd_starts_with "$CMD" "\\./scripts/cr/local-review\.sh"; then
 	CATEGORY="cr-cli"
-	;;
-*"gh pr merge"*)
+elif _cmd_starts_with "$CMD" "gh pr merge"; then
 	CATEGORY="merge"
-	;;
-*"git push"*)
+elif _cmd_starts_with "$CMD" "git push"; then
 	CATEGORY="push"
-	;;
-*) exit 0 ;;
-esac
+else
+	exit 0
+fi
 
 # Stderr-capture helper used across all subsequent calls. tmpfile fallback
 # to /dev/null + audible WARN on mktemp failure (F6 fix — was silently

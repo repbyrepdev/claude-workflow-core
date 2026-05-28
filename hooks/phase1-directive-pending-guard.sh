@@ -75,8 +75,21 @@ rm -f "$find_err"
 pending_count=0
 pending_list=""
 while IFS= read -r -d '' f; do
-	pending_count=$((pending_count + 1))
 	sha=$(basename "$f" .phase1-directive.txt)
+	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now
+	# reachable from origin/main. Catches merge-commit / fast-forward /
+	# rebase-and-push-retaining-SHA flows. Squash-merge writes a NEW
+	# commit on main, so the ORIGINAL topic-branch HEAD sha is NOT a
+	# direct ancestor of main — Layer 1 will NOT clean those; Layer 2
+	# (skill-side rm in github-pr-merge) catches squash-merges by
+	# capturing the pre-merge HEAD sha + removing the marker before the
+	# branch is deleted. Layer 3 (post-merge hook) provides cross-clone
+	# coverage for non-squash paths the operator pulled from main.
+	if git merge-base --is-ancestor "$sha" origin/main 2>/dev/null; then
+		rm -f "$f"
+		continue
+	fi
+	pending_count=$((pending_count + 1))
 	pending_list="${pending_list}  - sha=$sha (directive emitted; agents not yet fired)
 "
 done <"$find_out"

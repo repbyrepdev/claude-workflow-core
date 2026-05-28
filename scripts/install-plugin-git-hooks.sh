@@ -77,6 +77,10 @@ if [ ! -x "$SOURCE_HOOK" ]; then
 	echo "install-plugin-git-hooks: source hook missing or non-exec: $SOURCE_HOOK" >&2
 	exit 2
 fi
+# v0.27.0 #173 Layer 3: the wrapper also invokes hooks/post-merge-clean-
+# phase1-markers.sh — wrapper resolves its path at runtime via REPO_ROOT
+# and exits 0 if the script is missing (older clones), so no install-time
+# precondition needed here.
 
 # Single-target wrapper. Use a wrapper (not a symlink) so the operator can
 # add other post-merge handlers later without losing release-fire.
@@ -173,6 +177,20 @@ if [ -x "$TARGET" ]; then
 		printf '{"ts":"%s","hook":"post-merge-release-fire","rc":%d}\n' \
 			"$_ts" "$_rc" >>"$_log" 2>/dev/null || true
 		echo "post-merge-wrapper: release-fire exited rc=$_rc — see .claude/logs/post-merge-wrapper-failures.jsonl" >&2
+	fi
+fi
+# v0.27.0 #173 Layer 3: phase1-directive marker self-heal on git pull bringing main commits.
+PHASE1_CLEAN="$REPO_ROOT/hooks/post-merge-clean-phase1-markers.sh"
+if [ -x "$PHASE1_CLEAN" ]; then
+	_rc=0
+	"$PHASE1_CLEAN" || _rc=$?
+	if [ "$_rc" -ne 0 ]; then
+		_ts=$(date -u +%FT%TZ)
+		_log="$REPO_ROOT/.claude/logs/post-merge-wrapper-failures.jsonl"
+		mkdir -p "$(dirname "$_log")" 2>/dev/null || true
+		printf '{"ts":"%s","hook":"post-merge-clean-phase1-markers","rc":%d}\n' \
+			"$_ts" "$_rc" >>"$_log" 2>/dev/null || true
+		echo "post-merge-wrapper: clean-phase1-markers exited rc=$_rc — see .claude/logs/post-merge-wrapper-failures.jsonl" >&2
 	fi
 fi
 WRAPPER
