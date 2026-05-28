@@ -3,7 +3,7 @@ set -euo pipefail
 # v0.9.5 (#71) — operator-time machine setup wrapper.
 #
 # Single entry point for setting up a machine after plugin install or
-# upgrade. Composes the three existing pieces:
+# upgrade. Composes the four existing pieces:
 #   1. install-register-hook-permissions.sh — verifies the classifier
 #      allowlist is in place (operator pastes the snippet once if not)
 #   2. hooks/install-hooks.sh — frontmatter-scanning installer that
@@ -13,6 +13,9 @@ set -euo pipefail
 #   3. (optional) scripts/migrate-settings.sh — bumps existing
 #      version-pinned paths to the current plugin version. Skipped
 #      when --no-migrate is passed.
+#   4. (v0.18.0 #139) plugin-repo git hooks via
+#      scripts/install-plugin-git-hooks.sh — fires only when running
+#      inside the plugin checkout; auto-detects via plugin.json.
 #
 # Usage:
 #   scripts/install-machine.sh                  # full setup
@@ -27,7 +30,7 @@ set -euo pipefail
 #
 # Exit codes:
 #   0 — full setup succeeded (or --check found everything in place
-#       across all 3 steps)
+#       across all 4 steps)
 #   1 — --check found drift in Step 1 (allowlist patterns missing)
 #       OR Step 2 (register-hook --check reported settings/hook-file
 #       mismatch)
