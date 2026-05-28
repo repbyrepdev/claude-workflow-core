@@ -78,6 +78,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 PERMS_SCRIPT="$SCRIPT_DIR/install-register-hook-permissions.sh"
 HOOKS_INSTALLER="$REPO_ROOT/hooks/install-hooks.sh"
 MIGRATE_SCRIPT="$SCRIPT_DIR/migrate-settings.sh"
+PLUGIN_GIT_HOOKS="$SCRIPT_DIR/install-plugin-git-hooks.sh"
 
 for sibling in "$PERMS_SCRIPT" "$HOOKS_INSTALLER"; do
 	if [ ! -x "$sibling" ]; then
@@ -175,6 +176,29 @@ else
 	echo "  ✗ migrate-settings.sh not found at $MIGRATE_SCRIPT — failing closed." >&2
 	echo "  Reinstall the plugin, or skip Step 3 explicitly via --no-migrate." >&2
 	exit 2
+fi
+
+echo ""
+# Step 4 (v0.18.0 #139): plugin-repo git hooks. Auto-fires only when
+# install-machine.sh runs INSIDE the plugin checkout — detected by the
+# installer itself via .claude-plugin/plugin.json presence (exits 2 +
+# silently no-ops here in any other repo). Required to wire
+# .git/hooks/post-merge → hooks/post-merge-release-fire.sh so plugin.json
+# version bumps cascade to tag + cache + consumer cascade.
+if [ -f "$REPO_ROOT/.claude-plugin/plugin.json" ]; then
+	echo "=== Step 4: plugin git-hooks (#139, plugin-repo only) ==="
+	if [ ! -x "$PLUGIN_GIT_HOOKS" ]; then
+		echo "  ✗ install-plugin-git-hooks.sh missing or non-exec: $PLUGIN_GIT_HOOKS" >&2
+		echo "  Reinstall the plugin." >&2
+		exit 2
+	fi
+	if [ "$CHECK_ONLY" = "1" ]; then
+		"$PLUGIN_GIT_HOOKS" --check
+	else
+		"$PLUGIN_GIT_HOOKS"
+	fi
+else
+	echo "=== Step 4: SKIPPED (not in plugin checkout) ==="
 fi
 
 echo ""
