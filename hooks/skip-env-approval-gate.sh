@@ -57,26 +57,31 @@ if ! command -v jq >/dev/null 2>&1; then
 	echo "skip-env-approval-gate: ERROR jq missing — refusing skip (gate cannot evaluate payload)" >&2
 	exit 2
 fi
-CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || true)
+# CR fix #6: jq exit status checked explicitly; on parse failure fail-CLOSED.
+_jq_err=$(mktemp)
+_jq_rc=0
+CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>"$_jq_err") || _jq_rc=$?
+if [ "$_jq_rc" -ne 0 ]; then
+	echo "skip-env-approval-gate: ERROR jq failed to parse PAYLOAD (rc=$_jq_rc): $(head -c 200 "$_jq_err") — refusing skip" >&2
+	rm -f "$_jq_err"
+	exit 2
+fi
+rm -f "$_jq_err"
 [ -z "$CMD" ] && exit 0
 
-# CR fix #2: removed SKIP_RE pre-check — always run the token walk so we
-# catch any KEY=VAL prefix whose KEY ends in _SKIP/_BYPASS or is exactly
-# HOOK_ACK_CLEAR. The case-glob in the loop body is the authoritative
-# detector; the prior regex was a hash-table-style fast-path that turned
-# out to miss cases the loop would catch (and added an inconsistency
-# surface). Token walk is cheap (O(prefix-length)).
+# CR fix #7: quote-aware detection via bash regex on the WHOLE string.
+# Prior `for tok in $CMD` word-split on IFS, breaking quoted values:
+# `FOO="bar baz" LINT_GATE_SKIP=1 cmd` → tokens FOO="bar / baz" /
+# LINT_GATE_SKIP=1 / cmd. The case-glob saw `baz"` (no `=`) before
+# reaching LINT_GATE_SKIP=1, breaking out of the loop. Regex below
+# matches env-prefix tokens where the value is either non-quote-non-space,
+# OR a double-quoted string, OR a single-quoted string. Skip-var name is
+# captured in BASH_REMATCH[3] without needing a post-walk.
+SKIP_RE='^([A-Z_][A-Z0-9_]*=([^[:space:]"'\'']+|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
 SKIP_VAR=""
-for tok in $CMD; do
-	case "$tok" in
-	HOOK_ACK_CLEAR=* | *_SKIP=* | *_BYPASS=*)
-		SKIP_VAR="${tok%%=*}"
-		break
-		;;
-	*=*) continue ;;
-	*) break ;;
-	esac
-done
+if [[ $CMD =~ $SKIP_RE ]]; then
+	SKIP_VAR="${BASH_REMATCH[3]}"
+fi
 
 # No skip detected — let it through.
 [ -z "$SKIP_VAR" ] && exit 0
