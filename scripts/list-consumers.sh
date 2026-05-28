@@ -17,8 +17,11 @@ set -euo pipefail
 #   scripts/list-consumers.sh --help
 #
 # Exit codes:
-#   0 — listed (or --behind found no laggards = clean)
-#   2 — precondition error (consumers.yml missing, yq/jq missing, schema invalid)
+#   0 — listed (or --behind found no laggards = clean; the absence-of-output
+#       does NOT mean "all consumers current" — pipe --json to `jq length`
+#       for a programmatic count if you need that signal)
+#   2 — precondition error (consumers.yml missing, yq/jq missing, schema
+#       invalid, yq parse failure, --behind arg not X.Y.Z, unknown arg)
 
 FORMAT=text
 BEHIND_VERSION=""
@@ -35,12 +38,28 @@ while [ "$#" -gt 0 ]; do
 			exit 2
 		}
 		BEHIND_VERSION=$2
+		# Validate same X.Y.Z shape the schema gate enforces on stored
+		# pinned_version — otherwise typos like `--behind v0.18.2` or
+		# `--behind latest` get treated as a version that sorts after
+		# every numeric pin (digits < letters under sort -V), so every
+		# consumer reports as "behind" — silent miscompare, not error.
+		# Code-reviewer Phase 1 finding + type-design-analyzer dup.
+		if ! [[ $BEHIND_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+			echo "list-consumers: --behind requires X.Y.Z semver (got: '$BEHIND_VERSION')" >&2
+			exit 2
+		fi
 		shift 2
 		;;
 	-h | --help)
+		# Emit the leading comment header as usage text. Skips shebang
+		# + the `set -euo pipefail` line + the loader-frontmatter
+		# directives (event:, auto-register:) which are framework
+		# metadata, not user-facing help. Code-reviewer + type-design-
+		# analyzer dup finding: prior awk leaked the directives.
 		awk '
 			NR == 1 { next }
 			/^set / { next }
+			/^# (event|auto-register):/ { next }
 			/^#/ { in_header = 1; sub(/^# ?/, ""); print; next }
 			NF == 0 && in_header { print; next }
 			in_header { exit }
@@ -59,7 +78,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 REGISTRY="$REPO_ROOT/.github/consumers.yml"
 
 if [ ! -f "$REGISTRY" ]; then
-	echo "list-consumers: $REGISTRY missing — Sub 3 (#141) hasn't shipped yet?" >&2
+	echo "list-consumers: $REGISTRY missing — check cwd or restore from git history" >&2
 	exit 2
 fi
 
@@ -70,21 +89,49 @@ for cmd in yq jq; do
 	}
 done
 
+# Fail-loud yq parse pattern — mirrors check-ssot-drift.sh:56-62 and the
+# pre-commit-hooks/consumers-schema-check.sh helper. The prior
+# `2>/dev/null` swallowed yq errors as "schema_version=$schema_version
+# not supported" — a corrupt YAML file blamed operator content instead
+# of surfacing parse failure. Capture stderr explicitly.
+yq_err=$(mktemp -t list-cons-yq.XXXXXX) || {
+	echo "list-consumers: mktemp failed — cannot stage yq error buffer" >&2
+	exit 2
+}
+# shellcheck disable=SC2329,SC2317
+_cleanup() { rm -f "$yq_err"; }
+trap _cleanup EXIT INT TERM HUP
+
 # Validate schema_version. The validator pre-commit hook owns the full
 # schema check; here we just ensure we're parsing a version we understand.
 # mikefarah yq v4: `// empty` is path-alt not value-default; use direct
 # path + null check below.
-schema_version=$(yq -r '.schema_version' "$REGISTRY" 2>/dev/null)
+if ! schema_version=$(yq -r '.schema_version' "$REGISTRY" 2>"$yq_err"); then
+	echo "list-consumers: yq failed parsing $REGISTRY:" >&2
+	cat "$yq_err" >&2
+	exit 2
+fi
 if [ "$schema_version" != "1" ]; then
 	echo "list-consumers: $REGISTRY schema_version=$schema_version not supported (expected 1)" >&2
 	exit 2
 fi
 
 # Convert YAML → JSON once; everything downstream is jq.
-consumers_json=$(yq -o=json '.consumers' "$REGISTRY" 2>/dev/null) || {
-	echo "list-consumers: failed to parse consumers list from $REGISTRY" >&2
+if ! consumers_json=$(yq -o=json '.consumers' "$REGISTRY" 2>"$yq_err"); then
+	echo "list-consumers: yq failed extracting .consumers from $REGISTRY:" >&2
+	cat "$yq_err" >&2
 	exit 2
-}
+fi
+
+# Guard against `consumers: null` or absent .consumers — yq emits the
+# literal string "null" in that case; downstream `jq -r '.[]'` would
+# throw "Cannot iterate over null" under set -e + exit with rc=1 +
+# SIGPIPE noise instead of the documented rc=2 precondition error.
+# Code-reviewer Phase 1 finding #2.
+if [ "$consumers_json" = "null" ] || [ -z "$consumers_json" ]; then
+	echo "list-consumers: $REGISTRY .consumers is null or empty" >&2
+	exit 2
+fi
 
 # --behind filter — keep entries whose pinned_version sorts strictly less
 # than the requested version (semver-aware via sort -V).

@@ -47,6 +47,26 @@ consumers:
 YAML
 }
 
+# Block-scalar notes match the production .github/consumers.yml shape.
+# Phase 1 comment-analyzer #12: minimal fixture doesn't exercise block-
+# scalar form; this helper does for at least one test.
+_write_valid_consumers_block_scalar() {
+	cat >"$TEST_TMP/.github/consumers.yml" <<'YAML'
+schema_version: 1
+consumers:
+  - name: media-server
+    repo: repbyrepdev/plex_arr_media_stack
+    local_path: ~/media-server
+    pinned_version: "0.8.5"
+    overrides_file: .claude/local-overrides.yml
+    bootstrap_date: 2026-04-21
+    contact: "@damien"
+    notes: |
+      Multi-line block-scalar notes
+      with several lines of context.
+YAML
+}
+
 @test "passes when consumers.yml not staged" {
 	cd "$TEST_TMP" || return 1
 	echo "unrelated" >README.md
@@ -58,6 +78,14 @@ YAML
 @test "passes on valid schema_version:1 consumers.yml" {
 	cd "$TEST_TMP" || return 1
 	_write_valid_consumers
+	git add .github/consumers.yml
+	run pre-commit-hooks/consumers-schema-check.sh
+	[ "$status" -eq 0 ]
+}
+
+@test "passes on valid consumers.yml with block-scalar notes" {
+	cd "$TEST_TMP" || return 1
+	_write_valid_consumers_block_scalar
 	git add .github/consumers.yml
 	run pre-commit-hooks/consumers-schema-check.sh
 	[ "$status" -eq 0 ]
@@ -184,6 +212,37 @@ YAML
 	run pre-commit-hooks/consumers-schema-check.sh
 	[ "$status" -eq 1 ]
 	[[ $output == *"must be YYYY-MM-DD"* ]]
+}
+
+# Phase 1 type-design-analyzer #9: registry deletion silently passed
+# under diff-filter=ACMR. Acceptance #4 says cascade tools depend on
+# the file existing — block deletion at the gate.
+@test "fails on staged deletion of consumers.yml (registry SSOT)" {
+	cd "$TEST_TMP" || return 1
+	_write_valid_consumers
+	git add .github/consumers.yml
+	git commit -q -m "add consumers.yml"
+	git rm -q .github/consumers.yml
+	run pre-commit-hooks/consumers-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"staged for DELETION"* ]]
+}
+
+# Phase 1 silent-failure-hunter SF-001/002/003: a corrupt YAML must
+# exit 2 (parse failure / precondition error), NOT 1 (schema violation).
+# Distinguishes "operator wrote bad content" from "parser can't read it".
+@test "fails with exit 2 on corrupt YAML (yq parse failure)" {
+	cd "$TEST_TMP" || return 1
+	# Unclosed bracket — guarantees yq parse failure.
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers: [
+  - name: incomplete
+YAML
+	git add .github/consumers.yml
+	run pre-commit-hooks/consumers-schema-check.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"yq failed parsing"* ]]
 }
 
 @test "bypass env CONSUMERS_SCHEMA_SKIP=1 lets bad schema through" {

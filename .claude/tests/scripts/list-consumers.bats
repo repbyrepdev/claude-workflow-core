@@ -54,6 +54,16 @@ teardown() {
 	[[ $output == *"Usage"* ]]
 }
 
+# Phase 1 code-reviewer + type-design-analyzer dup: --help must NOT
+# leak loader-framework directives (event:, auto-register:) as
+# user-facing help text. Awk filter explicitly skips them.
+@test "--help does not leak loader frontmatter directives" {
+	run "$SCRIPT" --help
+	[ "$status" -eq 0 ]
+	[[ $output != *"event: none"* ]]
+	[[ $output != *"auto-register: false"* ]]
+}
+
 @test "text format lists both consumers" {
 	cd "$TEST_TMP" || return 1
 	run scripts/list-consumers.sh
@@ -72,10 +82,13 @@ teardown() {
 	echo "$output" | jq -e '.[0].name == "alpha"'
 }
 
+# Both pinned versions (0.8.5, 0.18.1) sort below 1.0.0 under sort -V.
+# Verify the --behind header path renders + both consumers listed.
 @test "--behind 1.0.0 returns both (both pre-1.0)" {
 	cd "$TEST_TMP" || return 1
 	run scripts/list-consumers.sh --behind 1.0.0
 	[ "$status" -eq 0 ]
+	[[ $output == *"behind v1.0.0"* ]]
 	[[ $output == *"alpha"* ]]
 	[[ $output == *"beta"* ]]
 }
@@ -86,6 +99,22 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"alpha"* ]]
 	[[ $output != *"beta"* ]]
+}
+
+# Phase 1 code-reviewer + type-design-analyzer dup: --behind must
+# reject non-semver args. Prior behavior treated `--behind foo` as a
+# version that sorts after every numeric pin (digits < letters under
+# sort -V), reporting every consumer as "behind vfoo".
+@test "--behind rejects non-semver argument" {
+	run "$SCRIPT" --behind "not-a-version"
+	[ "$status" -eq 2 ]
+	[[ $output == *"requires X.Y.Z semver"* ]]
+}
+
+@test "--behind rejects v-prefixed version" {
+	run "$SCRIPT" --behind "v1.0.0"
+	[ "$status" -eq 2 ]
+	[[ $output == *"requires X.Y.Z semver"* ]]
 }
 
 @test "missing consumers.yml exits 2" {
@@ -104,7 +133,35 @@ consumers: []
 YAML
 	run scripts/list-consumers.sh
 	[ "$status" -eq 2 ]
-	[[ $output == *"schema_version=99 not supported"* ]]
+	[[ $output == *"not supported"* ]]
+}
+
+# Phase 1 code-reviewer #2: .consumers: null must exit 2 with a clear
+# message — not throw "Cannot iterate over null" under set -e.
+@test "null .consumers exits 2 cleanly" {
+	cd "$TEST_TMP" || return 1
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers:
+YAML
+	run scripts/list-consumers.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"null or empty"* ]]
+}
+
+# Phase 1 silent-failure-hunter SF-005: corrupt YAML must exit 2 with
+# the yq parse error surfaced — NOT a misleading "schema_version not
+# supported" message.
+@test "corrupt YAML exits 2 with yq error surfaced" {
+	cd "$TEST_TMP" || return 1
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers: [
+  - name: incomplete
+YAML
+	run scripts/list-consumers.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"yq failed parsing"* ]]
 }
 
 @test "unknown arg exits 2" {
