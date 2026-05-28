@@ -195,17 +195,30 @@ done <<<"$cascade_workflows"
 # r1 code-reviewer F2: surface orphan workflows in workflows-source/ —
 # any *.yml file there must be classified in cascade[]/no_cascade[]/
 # planned[]. Unclassified file = silent SSOT growth.
+#
+# r2 silent-failure-hunter MEDIUM: filter blank lines from the allowed
+# set (empty no_cascade/planned would otherwise inject empty entries
+# that `grep -Fxq ""` matches — defense-in-depth, not exploitable
+# today since basename(src_file) is never empty). Use `find` + nullglob
+# subshell instead of bare globs so missing-extension or unreadable-
+# dir produces a real error path, not a silent vacuous loop.
 if [ -d "$SOURCE_DIR" ]; then
-	# Build the allowed-entry set from all three lists.
-	allowed=$(printf '%s\n%s\n%s\n' "$cascade_workflows" "$no_cascade_workflows" "$planned_workflows" | sort -u)
-	for src_file in "$SOURCE_DIR"/*.yml "$SOURCE_DIR"/*.yaml; do
+	allowed=$(printf '%s\n%s\n%s\n' "$cascade_workflows" "$no_cascade_workflows" "$planned_workflows" | grep -v '^$' | sort -u)
+	# shopt -s nullglob in a subshell so empty glob expands to nothing
+	# instead of leaking the literal pattern into the loop.
+	src_files=$(
+		shopt -s nullglob
+		printf '%s\n' "$SOURCE_DIR"/*.yml "$SOURCE_DIR"/*.yaml
+	)
+	while IFS= read -r src_file; do
+		[ -z "$src_file" ] && continue
 		[ -f "$src_file" ] || continue
 		bn=$(basename "$src_file")
 		if ! echo "$allowed" | grep -Fxq "$bn"; then
 			err_lines="${err_lines}  - orphan workflow ${SOURCE_DIR}/${bn} (must be listed in cascade/no_cascade/planned in ${CASCADE_FILE})"$'\n'
 			errs=$((errs + 1))
 		fi
-	done
+	done <<<"$src_files"
 fi
 
 if [ "$errs" -gt 0 ]; then
