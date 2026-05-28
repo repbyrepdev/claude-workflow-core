@@ -67,7 +67,12 @@ When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE 
 
 ## Auto-fire after commit
 
-Wire one-time per clone:
+**Prerequisite:** the post-commit dispatcher must exist at `.claude/hooks/post-commit-ship-cycle.sh` in the consuming repo. The canonical implementation lives in the plugin at `hooks/post-commit-ship-cycle.sh`; consumer repos either:
+
+- Install a shim via `scripts/bootstrap-repo.sh` (current shim coverage is partial — Sub 13 #151 expands the bootstrap to install this dispatcher).
+- Or symlink / copy the plugin's `hooks/post-commit-ship-cycle.sh` to `.claude/hooks/post-commit-ship-cycle.sh` manually.
+
+Once that's in place, wire the git post-commit hook one-time per clone:
 
 ```bash
 # If .git/hooks/post-commit is new, write the file with shebang first.
@@ -82,7 +87,7 @@ EOF
 chmod +x .git/hooks/post-commit
 ```
 
-After wiring, every `git commit` fires `ship-pr-cycle.sh resume` detached. Logs to `.claude/logs/ship-cycle-resume.jsonl` + `.claude/logs/ship-cycle-resume-<sha-prefix-8>.log` (SHA truncated to 8 chars via `head -c 8` in post-commit-ship-cycle.sh — chosen for log-filename brevity, not the `--short` default of 7).
+The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher is absent — so the git post-commit hook is safe to install even before the dispatcher shim lands. Once the shim is in place, every `git commit` fires `ship-pr-cycle.sh resume` detached. Logs to `.claude/logs/ship-cycle-resume.jsonl` + `.claude/logs/ship-cycle-resume-<sha-prefix-8>.log` (SHA truncated to 8 chars via `head -c 8` in post-commit-ship-cycle.sh — chosen for log-filename brevity, not the `--short` default of 7).
 
 ## Convergence cap
 
