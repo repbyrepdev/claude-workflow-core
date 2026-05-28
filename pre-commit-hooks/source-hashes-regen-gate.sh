@@ -72,19 +72,38 @@ if [ -z "$MANIFEST_STAGED" ]; then
 	exit 1
 fi
 
-# 3. Is the staged manifest STALE? Run regen to a tmp file + compare.
-# Note: --generate writes to the working-tree path, so we capture +
-# restore the on-disk state to avoid mutating during a pre-commit check.
+# 3. Is the staged manifest STALE? Snapshot the on-disk manifest, run
+# --generate (which OVERWRITES the working-tree manifest), capture the
+# fresh output, compare staged-version vs fresh-version, then restore
+# the working tree to its pre-gate state. Restoration MUST handle the
+# manifest-didn't-exist-before case to avoid silent mutation.
+# CR-in-CI #156 r1 MAJOR + silent-failure-hunter #140 r1 HIGH.
 SNAPSHOT=$(mktemp -t source-hashes-snapshot.XXXXXX)
-trap 'rm -f "$SNAPSHOT"' EXIT
+MANIFEST_EXISTED=0
 if [ -f "$MANIFEST" ]; then
 	cp "$MANIFEST" "$SNAPSHOT"
+	MANIFEST_EXISTED=1
 fi
+
+# Comprehensive cleanup: restore pre-existing manifest content OR delete
+# the regen-leaked file if manifest didn't exist on entry. Fires on EVERY
+# exit path (success / failure / signal) so a Ctrl-C between regen and
+# the explicit restore doesn't leave the working tree mutated.
+# shellcheck disable=SC2329,SC2317  # invoked via trap registered below
+_restore_manifest_state() {
+	if [ "$MANIFEST_EXISTED" -eq 1 ] && [ -s "$SNAPSHOT" ]; then
+		mv "$SNAPSHOT" "$MANIFEST" 2>/dev/null || true
+	else
+		# Manifest didn't pre-exist — remove any regen leak.
+		rm -f "$MANIFEST" 2>/dev/null || true
+	fi
+	rm -f "$SNAPSHOT" 2>/dev/null || true
+}
+# shellcheck disable=SC2329  # invoked via trap below
+trap _restore_manifest_state EXIT INT TERM HUP
 
 # Regenerate fresh
 if ! "$HASH_DRIFT" --generate >/dev/null 2>&1; then
-	# Restore + bail
-	if [ -f "$SNAPSHOT" ]; then mv "$SNAPSHOT" "$MANIFEST"; fi
 	echo "source-hashes-regen-gate: hash-drift.sh --generate failed" >&2
 	exit 2
 fi
@@ -93,12 +112,7 @@ fi
 STAGED_CONTENT=$(git show ":${MANIFEST}" 2>/dev/null || echo "")
 FRESH_CONTENT=$(cat "$MANIFEST" 2>/dev/null || echo "")
 
-# Restore on-disk state (revert our regen)
-if [ -f "$SNAPSHOT" ] && [ -s "$SNAPSHOT" ]; then
-	mv "$SNAPSHOT" "$MANIFEST"
-fi
-trap - EXIT
-rm -f "$SNAPSHOT"
+# Trap fires on EXIT — no need for inline restore here.
 
 if [ "$STAGED_CONTENT" != "$FRESH_CONTENT" ]; then
 	echo "source-hashes-regen-gate: $MANIFEST is staged but STALE — diverges from current source content" >&2
