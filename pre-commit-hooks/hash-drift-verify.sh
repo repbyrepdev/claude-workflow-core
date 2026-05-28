@@ -35,16 +35,28 @@ if [ "${HASH_DRIFT_VERIFY_SKIP:-0}" = "1" ]; then
 	# r2 silent-failure-hunter HIGH: pre-commit captures stderr only on
 	# failure. Bypass exits 0, so stderr is swallowed. Persist to JSONL
 	# so the bypass is recoverable post-hoc.
+	# CR Phase 2 MAJOR: the prior version silence-failed mkdir + jq with
+	# `|| true` then unconditionally printed "audit-logged" — misleading
+	# if the write actually failed. Now we track success explicitly +
+	# emit the accurate message.
 	_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 	_log_dir="${HOME}/.claude/logs"
-	mkdir -p "$_log_dir" 2>/dev/null || true
-	if command -v jq >/dev/null 2>&1; then
-		jq -cn --arg ts "$_ts" --arg sha "$_sha" --arg actor "${USER:-unknown}" --arg pwd "$PWD" \
-			'{ts:$ts,sha:$sha,actor:$actor,pwd:$pwd,event:"hash-drift-verify-skip"}' \
-			>>"$_log_dir/hash-drift-verify-bypass.jsonl" 2>/dev/null || true
+	_audit_logged=0
+	if mkdir -p "$_log_dir" 2>/dev/null; then
+		if command -v jq >/dev/null 2>&1; then
+			if jq -cn --arg ts "$_ts" --arg sha "$_sha" --arg actor "${USER:-unknown}" --arg pwd "$PWD" \
+				'{ts:$ts,sha:$sha,actor:$actor,pwd:$pwd,event:"hash-drift-verify-skip"}' \
+				>>"$_log_dir/hash-drift-verify-bypass.jsonl" 2>/dev/null; then
+				_audit_logged=1
+			fi
+		fi
 	fi
-	echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 — BYPASS (audit-logged to $_log_dir/hash-drift-verify-bypass.jsonl)" >&2
+	if [ "$_audit_logged" -eq 1 ]; then
+		echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 — BYPASS (audit-logged to $_log_dir/hash-drift-verify-bypass.jsonl)" >&2
+	else
+		echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 — BYPASS (audit log write FAILED at $_log_dir; jq may be unavailable or perms denied)" >&2
+	fi
 	exit 0
 fi
 
