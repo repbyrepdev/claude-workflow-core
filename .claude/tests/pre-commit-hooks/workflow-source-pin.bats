@@ -133,20 +133,87 @@ jobs:
 	[[ $output == *"missing on disk"* ]]
 }
 
-@test "passes with empty cascade list" {
+# Phase 1 r1 silent-failure-hunter HIGH: empty cascade[] is refused so
+# operators can't accidentally silent-disable the gate. Use the
+# `planned:` list to track future-to-cascade workflows, not an empty
+# `cascade:`.
+@test "fails on empty cascade list (no silent-disable)" {
 	cd "$TEST_TMP" || return 1
-	# Overwrite cascade.yml with empty list
 	cat >.github/workflows-cascade.yml <<'YAML'
 schema_version: 1
 cascade: []
 no_cascade: []
 planned: []
 YAML
-	# Stage a workflow change to trigger the hook
 	echo "name: foo" >.github/workflows/foo.yml
 	git add .github/
 	run pre-commit-hooks/workflow-source-pin.sh
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 1 ]
+	[[ $output == *"empty cascade"* ]]
+}
+
+# Phase 1 r1 dup-HIGH (code-reviewer + silent-failure-hunter): path-
+# traversal cascade entries must be rejected before path-join.
+@test "fails on cascade entry with path-traversal '..'" {
+	cd "$TEST_TMP" || return 1
+	cat >.github/workflows-cascade.yml <<'YAML'
+schema_version: 1
+cascade:
+  - "../../etc/passwd"
+no_cascade: []
+planned: []
+YAML
+	echo "name: foo" >.github/workflows/foo.yml
+	git add .github/
+	run pre-commit-hooks/workflow-source-pin.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"path traversal"* || $output == *"unsafe shape"* || $output == *"bare filename"* ]]
+}
+
+@test "fails on cascade entry with slash" {
+	cd "$TEST_TMP" || return 1
+	cat >.github/workflows-cascade.yml <<'YAML'
+schema_version: 1
+cascade:
+  - "subdir/pr-lint.yml"
+no_cascade: []
+planned: []
+YAML
+	echo "name: foo" >.github/workflows/foo.yml
+	git add .github/
+	run pre-commit-hooks/workflow-source-pin.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"unsafe shape"* ]]
+}
+
+# Phase 1 r1 code-reviewer F2: orphan workflows in workflows-source/
+# (not listed in any of cascade/no_cascade/planned) must surface.
+@test "fails on orphan workflow in workflows-source/" {
+	cd "$TEST_TMP" || return 1
+	_write_all_valid_pairs
+	# Add an orphan source-only file not declared in cascade.yml
+	echo "name: orphan" >.github/workflows-source/orphan.yml
+	git add .github/
+	run pre-commit-hooks/workflow-source-pin.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"orphan"* ]]
+	[[ $output == *"orphan.yml"* ]]
+}
+
+# Phase 1 r1 silent-failure-hunter CRITICAL: shasum missing would
+# return empty hash + rc=0 → vacuous pass. The hook now probes
+# `command -v shasum` and exits 2 if absent. Static-grep test to
+# lock in the probe — a runtime shasum-strip test is too env-
+# dependent (shasum + yq + git often share PATH dirs on macOS).
+@test "hook source declares shasum-required probe (CRITICAL silent-failure guard)" {
+	grep -qE 'command -v shasum.*\|\| \{' "$HOOK"
+	grep -qE 'shasum required' "$HOOK"
+}
+
+# Lock in the 64-char hex hash-shape validation (defense against
+# shasum producing unexpected output on degraded systems).
+@test "hook source declares 64-hex-char hash shape validator" {
+	grep -qE '\[0-9a-f\]\{64\}' "$HOOK"
 }
 
 @test "exits 2 on missing cascade.yml" {
