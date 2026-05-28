@@ -570,7 +570,7 @@ required:
 advisory: []
 EOF
 
-# --- .github/ISSUE_TEMPLATE stubs (v0.19.1 #143 — rich SSOT) ---------
+# --- .github/ISSUE_TEMPLATE stubs (bug/feature/task/epic/brainstorm) -
 _write .github/ISSUE_TEMPLATE/bug.yml 644 <<'EOF'
 name: Bug / Issue
 description: Something is broken or not working as expected
@@ -588,7 +588,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Generic plugin areas. Consumer repos may extend via local-overrides (Sub 9 #147). AI triage applies the matching area:* label + board Area field.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -649,7 +649,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Generic plugin areas. Consumer repos may extend via local-overrides (Sub 9 #147). AI triage applies the matching area:* label + board Area field.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -698,7 +698,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Generic plugin areas. Consumer repos may extend via local-overrides (Sub 9 #147). AI triage applies the matching area:* label + board Area field.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -737,7 +737,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Primary plugin area this epic covers. Consumer repos may extend via local-overrides (Sub 9 #147). AI triage applies the matching area:* label + board Area field.
+      description: Primary plugin area this epic covers. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -766,7 +766,7 @@ body:
     id: sub_issues
     attributes:
       label: Sub-issues
-      description: Checklist. Link each with `- [ ] #NNN` once filed. AI triage auto-applies `epic` label when ≥3 entries present.
+      description: Checklist. Link each with `- [ ] #NNN` once filed. The `epic` label is applied automatically by this template's `labels:` field at issue open.
       value: |
         - [ ] #
         - [ ] #
@@ -805,7 +805,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Primary plugin area this discussion covers. Consumer repos may extend via local-overrides (Sub 9 #147). AI triage applies the matching area:* label + board Area field.
+      description: Primary plugin area this discussion covers. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)

@@ -1,10 +1,8 @@
 #!/bin/bash
 set -euo pipefail
-# v0.19.1 (#143) — pre-commit validator for .github/ISSUE_TEMPLATE/*.yml.
-#
-# Successor to v3.23.G #314's epic-structure.sh (epic.yml-only). Extends
-# coverage to all 5 issue templates (bug, feature, task, epic, brainstorm)
-# driven by the SSOT spec at .github/ISSUE_TEMPLATE/_spec.yml.
+# Pre-commit validator for .github/ISSUE_TEMPLATE/*.yml. Drives required-
+# id + required-label checks per template from the SSOT spec at
+# .github/ISSUE_TEMPLATE/_spec.yml.
 #
 # If any template drifts (someone removes `id: area`, changes the label
 # auto-apply, deletes a required section), ai-triage's heuristics + the
@@ -42,6 +40,15 @@ STAGED=$(git diff --cached --name-only --diff-filter=ACMRD |
 	grep -E "^${TEMPLATE_DIR}/.+\.ya?ml$" || true)
 if [ -z "$STAGED" ]; then
 	exit 0
+fi
+
+# Detect staged deletion of the spec explicitly so the operator sees a
+# clear "unstage" hint instead of the generic "spec file missing" path.
+# Phase 1 r1 silent-failure-hunter F5.
+if git diff --cached --name-only --diff-filter=D | grep -Fxq "$SPEC"; then
+	echo "issue-template-schema-check: $SPEC is staged for deletion — refusing" >&2
+	echo "  Unstage: git reset HEAD $SPEC" >&2
+	exit 2
 fi
 
 if [ ! -f "$SPEC" ]; then
@@ -84,11 +91,35 @@ fi
 
 # Iterate every template declared in the spec.
 template_names=$(_yq_or_die '.templates | keys | .[]' "$SPEC" 'template name list')
+
+# Phase 1 r1 silent-failure-hunter F2 (HIGH): assert non-empty list to
+# catch empty / corrupt-but-yq-parseable spec. An empty `templates:` map
+# would otherwise vacuous-pass.
+if [ -z "$template_names" ]; then
+	echo "issue-template-schema-check: $SPEC declares zero templates — refusing to vacuous-pass" >&2
+	exit 2
+fi
+
 errs=0
 err_lines=""
 
 while IFS= read -r tname; do
 	[ -n "$tname" ] || continue
+
+	# Phase 1 r1 silent-failure-hunter F3 (MEDIUM): validate template-name
+	# charset to defend against regex injection in id matching below.
+	case "$tname" in *[^a-zA-Z0-9_-]*)
+		echo "issue-template-schema-check: invalid template name '$tname' in spec (alphanumeric + _- only)" >&2
+		exit 2
+		;;
+	esac
+
+	# Phase 1 r1 silent-failure-hunter F1 (CRITICAL): drop the `|| ="" `
+	# guard. `_yq_or_die` `exit 2` inside $(...) only exits the subshell,
+	# so the guard previously swallowed the failure and treated the
+	# template as having zero required ids — vacuous pass on yq error.
+	# Bare call lets the inner exit 2 propagate via set -e + return-from-
+	# command-substitution semantics.
 	tfile=$(_yq_or_die ".templates.${tname}.file" "$SPEC" "${tname}.file")
 	tpath="${TEMPLATE_DIR}/${tfile}"
 
@@ -100,33 +131,44 @@ while IFS= read -r tname; do
 		continue
 	fi
 
-	# Required ids: each must appear as `^  - type: ...` followed (within a
-	# few lines) by `id: <name>`. Simpler invariant: every required id
-	# appears as a literal `id: NAME` line in the file.
-	required_ids=$(_yq_or_die ".templates.${tname}.required_ids[]" "$SPEC" "${tname}.required_ids") || required_ids=""
+	# Required ids: each must appear as `id: <name>` on its own line.
+	# yq query may legitimately return empty (when required_ids: []) —
+	# in that case the while-read loop simply doesn't iterate. Capture
+	# rc explicitly: empty output with rc=0 is fine, non-zero rc = die
+	# (handled by _yq_or_die internally).
+	required_ids=$(yq -r ".templates.${tname}.required_ids[]" "$SPEC" 2>"$yq_err" || true)
 	while IFS= read -r req_id; do
 		[ -n "$req_id" ] || continue
+		# Validate id charset same as template name — regex injection guard.
+		case "$req_id" in *[^a-zA-Z0-9_-]*)
+			echo "issue-template-schema-check: invalid required_id '$req_id' for $tname (alphanumeric + _- only)" >&2
+			exit 2
+			;;
+		esac
 		if ! grep -Eq "^[[:space:]]*id:[[:space:]]*${req_id}[[:space:]]*\$" "$tpath"; then
 			err_lines="${err_lines}  - ${tfile}: missing 'id: ${req_id}'"$'\n'
 			errs=$((errs + 1))
 		fi
 	done <<<"$required_ids"
 
-	# Required labels: each must appear in the top-level `labels: [...]`.
-	# Spec allows empty list (task.yml is intentionally label-less at open).
-	required_labels=$(_yq_or_die ".templates.${tname}.required_labels[]" "$SPEC" "${tname}.required_labels") || required_labels=""
+	# Required labels: parse via yq instead of grep on the labels-line.
+	# Phase 1 r1 code-reviewer F1+F2: grep-based check was substring-
+	# match (false-passes 'bug' inside 'debug'/'bug-followup') AND was
+	# form-specific (only matched inline-array `labels: [...]`, missed
+	# block-list form). yq parses the actual list — set-comparison.
+	required_labels=$(yq -r ".templates.${tname}.required_labels[]" "$SPEC" 2>"$yq_err" || true)
 	if [ -n "$required_labels" ]; then
-		# Extract the labels line from the template.
-		labels_line=$(grep -E '^[[:space:]]*labels:[[:space:]]*\[' "$tpath" || true)
-		if [ -z "$labels_line" ]; then
-			err_lines="${err_lines}  - ${tfile}: missing top-level 'labels: [...]'"$'\n'
+		# Extract actual labels[] from the template — form-agnostic.
+		actual_labels=$(_yq_or_die '.labels[]' "$tpath" "${tfile}.labels")
+		if [ -z "$actual_labels" ]; then
+			err_lines="${err_lines}  - ${tfile}: missing top-level 'labels:' list"$'\n'
 			errs=$((errs + 1))
 		else
 			while IFS= read -r req_lbl; do
 				[ -n "$req_lbl" ] || continue
-				# Match either "label" or 'label' or bare label inside the brackets.
-				if ! echo "$labels_line" | grep -Eq "[\"']?${req_lbl}[\"']?"; then
-					err_lines="${err_lines}  - ${tfile}: labels line missing '${req_lbl}'"$'\n'
+				# Line-exact match against the yq-extracted label list.
+				if ! echo "$actual_labels" | grep -Fxq "$req_lbl"; then
+					err_lines="${err_lines}  - ${tfile}: labels list missing '${req_lbl}'"$'\n'
 					errs=$((errs + 1))
 				fi
 			done <<<"$required_labels"

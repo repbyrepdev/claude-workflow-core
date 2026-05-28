@@ -1,9 +1,9 @@
-# Schema spec for .github/ISSUE_TEMPLATE/*.yml. v0.19.1 (#143) — SSOT
-# for the pre-commit hook `issue-template-schema-check.sh` (the renamed +
-# extended epic-structure.sh).
+# Schema spec for .github/ISSUE_TEMPLATE/*.yml. SSOT for the pre-commit
+# hook issue-template-schema-check.sh.
 #
-# This file is NOT a GitHub issue template — the underscore prefix excludes
-# it from the "New issue" picker. It's consumed only by the schema gate.
+# This file is NOT a GitHub issue template — the underscore prefix
+# excludes it from the "New issue" picker. It's consumed only by the
+# schema gate.
 #
 # Per template: list of REQUIRED ids that MUST appear as `id: <name>` in
 # the template's body, AND the required top-level labels (auto-applied).
