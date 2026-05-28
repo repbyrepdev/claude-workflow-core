@@ -83,9 +83,32 @@ jobs:
           # workflow. Uses yq (install step added to this step to avoid a
           # whole-job dependency).
           if ! command -v yq >/dev/null 2>&1; then
-            sudo wget -q -O /usr/local/bin/yq \
-              https://github.com/mikefarah/yq/releases/download/v4.52.5/yq_linux_amd64
-            sudo chmod +x /usr/local/bin/yq
+            # Supply-chain hardening: download yq + the release's
+            # checksums file + extract-checksum.sh, then verify sha256
+            # before installing. Mirrors the pattern in
+            # .github/workflows-source/plugin-self-bootstrap-verify.yml.
+            YQ_VERSION=v4.52.5
+            YQ_ASSET=yq_linux_amd64
+            curl -fsSL --retry 3 -o /tmp/yq \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${YQ_ASSET}"
+            curl -fsSL --retry 3 -o /tmp/yq.checksums \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/checksums"
+            # Field 19 is sha256 per mikefarah/yq checksums_hashes_order
+            # (sha-1, sha-224, sha-256, ... in 18 hash columns + asset name).
+            # Operator dogfood: curl checksums_hashes_order for that release
+            # to verify the column index if it ever changes upstream.
+            expected_line=$(awk -v a="${YQ_ASSET}" '$1==a{print; exit}' /tmp/yq.checksums)
+            expected=$(echo "$expected_line" | awk '{print $19}')
+            if ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::yq install: extracted sha256 has unexpected shape ('$expected')"
+              exit 1
+            fi
+            actual=$(sha256sum /tmp/yq | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::yq install: checksum mismatch (expected $expected, got $actual)"
+              exit 1
+            fi
+            sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           fi
           AREA_LABELS=$(yq -r '.[] | select(.name | test("^area:")) | .name' .github/labels.yml | tr '\n' ' ')
           if [ -z "$AREA_LABELS" ]; then
