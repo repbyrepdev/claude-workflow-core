@@ -456,6 +456,10 @@ for ((i = 0; i < n; i++)); do
 		echo "  [supersede-skip] $name — gh issue list failed; superseded cleanup not attempted" >&2
 		cat "$yq_err" >&2
 		_log "$name" "$repo" "$old_ver" "fail-supersede-list" "" "$(cat "$yq_err")"
+		# CR Phase 2 minor: count list-failure as a supersede failure
+		# so summary doesn't under-report (counter was previously only
+		# incremented on close-failures).
+		supersede_failed=$((supersede_failed + 1))
 		continue
 	fi
 	# r2 silent-failure-hunter HIGH: trim whitespace-only output that
