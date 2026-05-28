@@ -222,10 +222,26 @@ for pair in "${PAIRS[@]}"; do
 	tag="v$version"
 
 	if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+		# CR-in-CI #154 r1 MAJOR: verify the existing tag points at the
+		# correct commit BEFORE treating it as healthy. A mispointed tag
+		# from a prior partial backfill would otherwise be silently kept
+		# at the wrong sha forever.
+		existing_sha=$(git rev-parse "$tag^{commit}")
+		if [ "$existing_sha" != "$sha" ]; then
+			echo "  ✗ $tag exists but points to ${existing_sha:0:7}, expected ${sha:0:7}" >&2
+			jq -nc --arg ts "$(date -u +%FT%TZ)" --arg ver "$version" --arg sha "$sha" \
+				--arg existing_sha "$existing_sha" --argjson schema 1 --arg status "failed-tag-mismatch" \
+				'{schema_version:$schema, ts:$ts, version:$ver, sha:$sha, existing_sha:$existing_sha, status:$status, dry_run:false}' \
+				>>"$LOG_FILE" 2>/dev/null || true
+			failures=$((failures + 1))
+			continue
+		fi
 		echo "  ⊙ $tag already exists at $(git rev-parse --short "$tag") — skipping"
+		# CR-in-CI #154 r1 MAJOR: was missing schema_version in this
+		# branch (every other branch had it; this one slipped).
 		jq -nc --arg ts "$(date -u +%FT%TZ)" --arg ver "$version" --arg sha "$sha" --argjson schema 1 \
 			--arg status "skipped-exists" --arg dry "$DRY_RUN" \
-			'{ts:$ts, version:$ver, sha:$sha, status:$status, dry_run:($dry=="1")}' \
+			'{schema_version:$schema, ts:$ts, version:$ver, sha:$sha, status:$status, dry_run:($dry=="1")}' \
 			>>"$LOG_FILE" 2>/dev/null || true
 		skipped=$((skipped + 1))
 		continue

@@ -65,8 +65,10 @@ if [ ! -f "$REPO_ROOT/.claude-plugin/plugin.json" ]; then
 	exit 2
 fi
 
-if [ ! -d "$REPO_ROOT/.git" ]; then
-	echo "install-plugin-git-hooks: $REPO_ROOT/.git not found (git not initialized?)" >&2
+# CR-in-CI #154 r1 MAJOR: `.git` is a FILE (not directory) in linked
+# worktrees. Using `git rev-parse --git-dir` is the portable check.
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+	echo "install-plugin-git-hooks: $REPO_ROOT is not inside a git repository" >&2
 	exit 2
 fi
 
