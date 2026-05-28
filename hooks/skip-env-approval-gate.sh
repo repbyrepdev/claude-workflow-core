@@ -24,9 +24,9 @@ set -euo pipefail
 # the operator can't accidentally grant a session-wide bypass.
 #
 # Approval state: $REPO_ROOT/.claude/.session-state/skip-approvals/${HASH}.txt
-#   HASH = sha256(skip_var_name + cmd_first-50chars)
-#   File contains: timestamp + skip-var + 50-char cmd preview
-#   File is consumed (rm) on first hook fire that matches.
+#   HASH = sha256(skip_var_name + "|" + full_cmd)
+#   File is a sentinel (empty); presence == approval granted.
+#   File is consumed via atomic rename on first hook fire that matches.
 #
 # Audit log: $REPO_ROOT/.claude/logs/skip-approvals.jsonl
 #   Every approval grant, denial, and use is logged.

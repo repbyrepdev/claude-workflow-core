@@ -99,7 +99,7 @@
     "hooks/ship-cycle-director-gate.sh": "7277d5489aaa2fc084ffcbcc3ac1b17b0df99fc4b0de19890af5257d74bd163e",
     "hooks/ship-cycle-guard.sh": "fcaa6382b89225fb79ac771154da35db1f6063c4f78903d79b662e07d2d2183a",
     "hooks/skill-bypass-guard.sh": "3715c3040c35077f899afc670a21cf17ea3de049bb4bfd21ff6ce79129743b66",
-    "hooks/skip-env-approval-gate.sh": "53f91688e034d629e9a04ea3d51949a664f02677e915bc1dbe0144f18a5149db",
+    "hooks/skip-env-approval-gate.sh": "dd8db3877bea267a97110197cc6b2d8275a4157b9339440a5b1c9d7e47054c0c",
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
