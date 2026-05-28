@@ -92,7 +92,7 @@
     "hooks/restore-session-state.sh": "2a0b2bce980a7a6cf85fcbccfec1ac30c29f61ac2a3b9fe0ccf88515e0da2da8",
     "hooks/review-log.sh": "0a31a0ce1a8b9097b7ed8fa4069061d8d6f4f9538b68643b1605ec92de4d83a5",
     "hooks/security-reminder.sh": "600177ab885313a35737291bf527823441cb897af48b670b47d7448ecdefea4d",
-    "hooks/session-start-report.sh": "168b49a2f3086eeaf2acf1ff510da6cee03cec94990c1d3c58ee3292f96e7a3a",
+    "hooks/session-start-report.sh": "94ba7c9aafc906fb91f70c0b55df3fd0f8cc4f2730ad830d30927c16b1005f7d",
     "hooks/session-start-stale-pin.sh": "d0d36698d4d8576af32371edd55e4703bb9fe6d458f98268a586c61c874b3c22",
     "hooks/ship-cycle-director-gate.sh": "0ecb71eb9165d06cb8b55a6ec526d171326af9e4b19ecc7acd1aef0f95dafa9b",
     "hooks/ship-cycle-guard.sh": "fcaa6382b89225fb79ac771154da35db1f6063c4f78903d79b662e07d2d2183a",

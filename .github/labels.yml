@@ -96,6 +96,9 @@
 - name: auto:trivy-post-merge
   color: "cf222e"
   description: Post-merge Trivy scan on newly-landed image SHAs
+- name: auto:plugin-release-cascade
+  color: "1a7f37"
+  description: Auto-opened cascade tracker — consumer should refresh from plugin source
 
 # ---- Renovate update-type ----
 - name: patch

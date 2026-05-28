@@ -19,6 +19,7 @@ set -euo pipefail
 #   scripts/release.sh                   # release plugin.json's version
 #   scripts/release.sh --dry-run         # print what would happen, exit 0
 #   scripts/release.sh --no-github       # skip `gh release create` step
+#   scripts/release.sh --no-cascade      # skip cascade-to-consumers.sh
 #   scripts/release.sh --notes <file>    # release-notes body file
 #
 # Exit codes:
@@ -35,6 +36,7 @@ set -euo pipefail
 
 DRY_RUN=0
 NO_GITHUB=0
+NO_CASCADE=0
 NOTES_FILE=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -44,6 +46,10 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--no-github)
 		NO_GITHUB=1
+		shift
+		;;
+	--no-cascade)
+		NO_CASCADE=1
 		shift
 		;;
 	--notes)
@@ -320,6 +326,41 @@ elif command -v gh >/dev/null 2>&1; then
 	fi
 else
 	echo "  ⊘ gh not installed — skipping GitHub release creation"
+fi
+
+# --- Consumer cascade ------------------------------------------------
+# After a successful release, fire scripts/cascade-to-consumers.sh to
+# open tracking issues in each consumer repo. Best-effort: cascade
+# failure does NOT fail the release (tag + cache + GH release are
+# already in place; cascade can be re-run manually). Skipped when:
+#   - --no-cascade flag set
+#   - --dry-run (cascade itself supports --dry-run, fire it for parity)
+#   - --no-github (cascade depends on gh; consistent opt-out)
+#   - cascade-to-consumers.sh missing or not executable (logged + skip)
+CASCADE_SH="$REPO_ROOT/scripts/cascade-to-consumers.sh"
+if [ "$NO_CASCADE" = "1" ]; then
+	echo "  ⊘ --no-cascade — skipping consumer cascade"
+elif [ "$NO_GITHUB" = "1" ]; then
+	echo "  ⊘ --no-github implies --no-cascade (gh required for issue creation)"
+elif [ ! -x "$CASCADE_SH" ]; then
+	echo "  ⊘ $CASCADE_SH missing or not executable — skipping consumer cascade" >&2
+elif [ "$DRY_RUN" = "1" ]; then
+	echo "  [dry-run] would: $CASCADE_SH --dry-run --version $VERSION"
+	# r2 code-reviewer HIGH: rc captured via `||` (preserves cascade's
+	# actual exit code); `if ! cmd; then ... rc=$?` would always show 0.
+	cascade_rc=0
+	"$CASCADE_SH" --dry-run --version "$VERSION" || cascade_rc=$?
+	if [ "$cascade_rc" -ne 0 ]; then
+		echo "release.sh: cascade-to-consumers.sh --dry-run failed (rc=$cascade_rc) — release itself succeeded" >&2
+	fi
+else
+	echo "  cascading to consumers..."
+	cascade_rc=0
+	"$CASCADE_SH" --version "$VERSION" || cascade_rc=$?
+	if [ "$cascade_rc" -ne 0 ]; then
+		echo "release.sh: cascade-to-consumers.sh failed (rc=$cascade_rc) — release itself succeeded; re-run cascade manually:" >&2
+		echo "  $CASCADE_SH --version $VERSION" >&2
+	fi
 fi
 
 echo "release.sh: $TAG release complete"

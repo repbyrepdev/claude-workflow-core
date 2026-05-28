@@ -113,7 +113,7 @@ setup() {
 		# Area (generic only)
 		area:infrastructure area:docs area:plugin-manifest
 		# Auto (generic only)
-		auto:renovate auto:trivy-scan auto:trivy-post-merge
+		auto:renovate auto:trivy-scan auto:trivy-post-merge auto:plugin-release-cascade
 		# Renovate semver
 		patch minor major
 		# CR Issue Planner
@@ -146,7 +146,7 @@ setup() {
 # Adjust EXPECTED_COUNT when intentionally promoting/dropping labels +
 # update spec table in the same commit.
 @test "labels.yml total count matches spec" {
-	EXPECTED_COUNT=25
+	EXPECTED_COUNT=26
 	actual=$(yq -r '. | length' "$LABELS")
 	[ "$actual" -eq "$EXPECTED_COUNT" ] || {
 		echo "FAIL: labels.yml has $actual labels, expected $EXPECTED_COUNT" >&2
