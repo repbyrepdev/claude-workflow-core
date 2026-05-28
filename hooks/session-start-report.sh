@@ -209,7 +209,7 @@ if [ -x .claude/hooks/detect-actions-cap.sh ]; then
 	.claude/hooks/detect-actions-cap.sh --quiet || cap_rc=$?
 fi
 if [ "$cap_rc" = "1" ]; then
-	cap_msg="• ⚠ GitHub Actions capped/deferred (#366). Local gating via \`.claude/hooks/run-required-checks.sh\`; run stale workflows via \`.claude/local-backups/run-workflow.sh <name>\`"
+	cap_msg='• ⚠ GitHub Actions capped/deferred (#366). Local gating via `.claude/hooks/run-required-checks.sh`; run stale workflows via `.claude/local-backups/run-workflow.sh <name>`'
 	# v4.4.B: auto-discover disabled workflows (NOT hardcoded 5). Query
 	# gh workflow list, iterate, check staleness via two signals:
 	#   - timestamp > cadence derived from `on.schedule` cron
@@ -561,6 +561,29 @@ if [ -f "$BATS_LOG" ] && command -v jq >/dev/null 2>&1; then
 			fi
 		fi
 	fi
+fi
+
+# 14. v0.22.0 (#152) — flag consumers behind plugin version. Plugin-side
+# only; consumer repos don't ship scripts/cascade-status.sh so the guard
+# silently skips for them. Suppresses output when all consumers current
+# (--quiet). Best-effort: any cascade-status failure (gh auth, network)
+# falls through with a hint rather than aborting session-start.
+CASCADE_STATUS_SH="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/cascade-status.sh"
+if [ -x "$CASCADE_STATUS_SH" ]; then
+	# --quiet: exit 0 if all current, exit 1 if any behind (with a
+	# stderr summary line). 2 = precondition error → surface as warning.
+	cascade_out=$("$CASCADE_STATUS_SH" --quiet 2>&1) && cascade_rc=0 || cascade_rc=$?
+	case "$cascade_rc" in
+	0) : ;; # all current
+	1)
+		[ -n "$cascade_out" ] && bits="$bits
+• $cascade_out"
+		;;
+	*)
+		bits="$bits
+• ⚠ cascade-status check failed (rc=$cascade_rc): ${cascade_out:-no output}"
+		;;
+	esac
 fi
 
 # Only emit if we have something to say
