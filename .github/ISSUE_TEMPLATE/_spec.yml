@@ -1,0 +1,64 @@
+# Schema spec for .github/ISSUE_TEMPLATE/*.yml. SSOT for the pre-commit
+# hook issue-template-schema-check.sh.
+#
+# This file is NOT a GitHub issue template — the underscore prefix
+# excludes it from the "New issue" picker. It's consumed only by the
+# schema gate.
+#
+# Per template: list of REQUIRED ids that MUST appear as `id: <name>` in
+# the template's body, AND the required top-level labels (auto-applied).
+
+schema_version: 1
+
+templates:
+  bug:
+    file: bug.yml
+    required_ids:
+      - parent
+      - area
+      - description
+    required_labels:
+      - bug
+
+  feature:
+    file: feature.yml
+    required_ids:
+      - parent
+      - area
+      - description
+      - context
+    required_labels:
+      - enhancement
+
+  task:
+    file: task.yml
+    required_ids:
+      - parent
+      - area
+      - description
+    # task is intentionally label-less at open — ai-triage applies
+    # area:* + priority:* server-side based on content.
+    required_labels: []
+
+  epic:
+    file: epic.yml
+    required_ids:
+      - area
+      - goal
+      - scope
+      - sub_issues
+      - acceptance
+      - rollout
+      - rollback
+    required_labels:
+      - epic
+      - enhancement
+
+  brainstorm:
+    file: brainstorm.yml
+    required_ids:
+      - area
+      - topic
+      - context
+    required_labels:
+      - brainstorm

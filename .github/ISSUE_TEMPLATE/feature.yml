@@ -1,12 +1,12 @@
-name: Feature request
-description: New capability
-labels: [enhancement]
+name: Feature / Change
+description: Request a new feature or configuration change
+labels: ["enhancement"]
 body:
   - type: input
     id: parent
     attributes:
       label: Parent epic
-      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      description: "Issue number of the parent epic that tracks this work (e.g. `#42`). Sub-issues without a parent orphan in Backlog with no epic-progress correlation. If genuinely standalone, file an epic first."
       placeholder: "#NNN"
     validations:
       required: true
@@ -14,16 +14,33 @@ body:
     id: area
     attributes:
       label: Area
-      description: AI triage reads this and applies the matching area:* label automatically.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
-        - Infrastructure
-        - Docs
-        - Plugin-manifest
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
-    id: goal
+    id: description
     attributes:
-      label: What's the goal?
+      label: What do you want?
+      placeholder: Describe the change or feature.
     validations:
       required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Why?
+      placeholder: What problem does this solve? What triggered it?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: Testable statements that mark this feature as done.

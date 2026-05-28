@@ -1,46 +1,65 @@
 name: Epic
-description: Parent of sub-issues
+description: Tracking issue for a multi-sub-issue effort (3+ sub-issues, multi-PR scope)
 labels: ["epic", "enhancement"]
 body:
-  - type: input
+  - type: dropdown
     id: area
     attributes:
       label: Area
+      description: Primary plugin area this epic covers. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
+      options:
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
     id: goal
     attributes:
       label: Goal
+      description: One sentence — what outcome does closing this epic produce?
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
       label: Scope
+      placeholder: "In: ... Out: ..."
     validations:
       required: true
   - type: textarea
     id: sub_issues
     attributes:
       label: Sub-issues
+      description: Checklist. Link each with `- [ ] #NNN` once filed. The `epic` label is applied automatically by this template's `labels:` field at issue open.
+      value: |
+        - [ ] #
+        - [ ] #
+        - [ ] #
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Acceptance criteria
+      description: Testable statements only.
     validations:
       required: true
   - type: textarea
     id: rollout
     attributes:
       label: Rollout plan
+      description: Order of PRs, gates between them, human checkpoints.
     validations:
       required: true
   - type: textarea
     id: rollback
     attributes:
       label: Rollback plan
+      description: How to revert if something goes wrong mid-rollout.
     validations:
       required: true

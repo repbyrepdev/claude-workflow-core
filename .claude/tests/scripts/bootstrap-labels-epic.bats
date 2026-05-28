@@ -36,9 +36,10 @@ _extract_heredoc() {
 	grep -qF 'labels: ["epic", "enhancement"]' "$live"
 }
 
-@test "epic.yml passes epic-structure.sh validator on quoted labels" {
+@test "epic.yml passes issue-template-schema-check.sh validator (v0.19.1 #143)" {
 	# Validator reads from staged area / repo; we just check the validator
-	# parser recognizes the heredoc body as valid.
+	# parser recognizes the heredoc body as valid (labels line is the
+	# tightest invariant — required-id list is in _spec.yml).
 	body=$(_extract_heredoc '.github/ISSUE_TEMPLATE/epic.yml')
 	echo "$body" | grep -qE '^labels:[[:space:]]*\[.*\]'
 	echo "$body" | grep -q '"epic"'

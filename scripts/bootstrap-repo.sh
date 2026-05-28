@@ -570,17 +570,17 @@ required:
 advisory: []
 EOF
 
-# --- .github/ISSUE_TEMPLATE stubs ------------------------------------
+# --- .github/ISSUE_TEMPLATE rich forms (bug/feature/task/epic/brainstorm) ---
 _write .github/ISSUE_TEMPLATE/bug.yml 644 <<'EOF'
-name: Bug report
-description: Something broken
-labels: [bug]
+name: Bug / Issue
+description: Something is broken or not working as expected
+labels: ["bug"]
 body:
   - type: input
     id: parent
     attributes:
       label: Parent epic
-      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      description: "Issue number of the parent epic that tracks this work (e.g. `#42`). Sub-issues without a parent orphan in Backlog with no epic-progress correlation. If genuinely standalone, file an epic first."
       placeholder: "#NNN"
     validations:
       required: true
@@ -588,63 +588,60 @@ body:
     id: area
     attributes:
       label: Area
-      description: AI triage reads this and applies the matching area:* label automatically.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
-        - Infrastructure
-        - Docs
-        - Plugin-manifest
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
     id: description
     attributes:
       label: What's happening?
-    validations:
-      required: true
-EOF
-
-_write .github/ISSUE_TEMPLATE/feature.yml 644 <<'EOF'
-name: Feature request
-description: New capability
-labels: [enhancement]
-body:
-  - type: input
-    id: parent
-    attributes:
-      label: Parent epic
-      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
-      placeholder: "#NNN"
-    validations:
-      required: true
-  - type: dropdown
-    id: area
-    attributes:
-      label: Area
-      description: AI triage reads this and applies the matching area:* label automatically.
-      options:
-        - Infrastructure
-        - Docs
-        - Plugin-manifest
+      placeholder: Describe the bug — observed behavior, error messages, when it started.
     validations:
       required: true
   - type: textarea
-    id: goal
+    id: expected
     attributes:
-      label: What's the goal?
-    validations:
-      required: true
+      label: What should happen?
+      placeholder: Expected behavior.
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `…`
+        2. Observe `…`
+        3. Expected `…`, got `…`
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      placeholder: Related issues / PRs / commits. Recent changes nearby. Environment specifics (OS, plugin version).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      placeholder: Paste any error output, hook stderr, or test failures here.
+      render: shell
 EOF
 
-_write .github/ISSUE_TEMPLATE/task.yml 644 <<'EOF'
-name: Task
-description: Sub-issue under an epic
-labels: []
+_write .github/ISSUE_TEMPLATE/feature.yml 644 <<'EOF'
+name: Feature / Change
+description: Request a new feature or configuration change
+labels: ["enhancement"]
 body:
   - type: input
     id: parent
     attributes:
       label: Parent epic
-      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      description: "Issue number of the parent epic that tracks this work (e.g. `#42`). Sub-issues without a parent orphan in Backlog with no epic-progress correlation. If genuinely standalone, file an epic first."
       placeholder: "#NNN"
     validations:
       required: true
@@ -652,87 +649,207 @@ body:
     id: area
     attributes:
       label: Area
-      description: AI triage reads this and applies the matching area:* label automatically.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
-        - Infrastructure
-        - Docs
-        - Plugin-manifest
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
     id: description
     attributes:
-      label: What needs to be done?
-    validations:
-      required: true
-EOF
-
-_write .github/ISSUE_TEMPLATE/epic.yml 644 <<'EOF'
-name: Epic
-description: Parent of sub-issues
-labels: ["epic", "enhancement"]
-body:
-  - type: input
-    id: area
-    attributes:
-      label: Area
+      label: What do you want?
+      placeholder: Describe the change or feature.
     validations:
       required: true
   - type: textarea
-    id: goal
+    id: context
     attributes:
-      label: Goal
-    validations:
-      required: true
-  - type: textarea
-    id: scope
-    attributes:
-      label: Scope
-    validations:
-      required: true
-  - type: textarea
-    id: sub_issues
-    attributes:
-      label: Sub-issues
+      label: Why?
+      placeholder: What problem does this solve? What triggered it?
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Acceptance criteria
+      placeholder: Testable statements that mark this feature as done.
+EOF
+
+_write .github/ISSUE_TEMPLATE/task.yml 644 <<'EOF'
+name: Task / Maintenance
+description: Infrastructure work, research, maintenance, or cleanup
+labels: []
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: Parent epic
+      description: "Issue number of the parent epic that tracks this work (e.g. `#42`). Sub-issues without a parent orphan in Backlog with no epic-progress correlation. If genuinely standalone, file an epic first."
+      placeholder: "#NNN"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
+      options:
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs to be done?
+      placeholder: Describe the task.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      placeholder: Why is this needed? What triggered it? Related issues / PRs.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: Testable statements that mark this task as done.
+EOF
+
+_write .github/ISSUE_TEMPLATE/epic.yml 644 <<'EOF'
+name: Epic
+description: Tracking issue for a multi-sub-issue effort (3+ sub-issues, multi-PR scope)
+labels: ["epic", "enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Primary plugin area this epic covers. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
+      options:
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One sentence — what outcome does closing this epic produce?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      placeholder: "In: ... Out: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: sub_issues
+    attributes:
+      label: Sub-issues
+      description: Checklist. Link each with `- [ ] #NNN` once filed. The `epic` label is applied automatically by this template's `labels:` field at issue open.
+      value: |
+        - [ ] #
+        - [ ] #
+        - [ ] #
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Testable statements only.
     validations:
       required: true
   - type: textarea
     id: rollout
     attributes:
       label: Rollout plan
+      description: Order of PRs, gates between them, human checkpoints.
     validations:
       required: true
   - type: textarea
     id: rollback
     attributes:
       label: Rollback plan
+      description: How to revert if something goes wrong mid-rollout.
     validations:
       required: true
 EOF
 
 _write .github/ISSUE_TEMPLATE/brainstorm.yml 644 <<'EOF'
-name: Brainstorm
-description: Discussion-style issue
-labels: [brainstorm]
+name: Brainstorm / Discussion
+description: Open-ended discussion, ideation, or architectural exploration — not ready to implement
+labels: ["brainstorm"]
 body:
-  - type: input
+  - type: dropdown
     id: area
     attributes:
       label: Area
+      description: Primary plugin area this discussion covers. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
+      options:
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
     id: topic
     attributes:
       label: Topic
+      placeholder: One-sentence framing of what we're thinking about.
     validations:
       required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      placeholder: What triggered this? Constraints? Prior attempts? Related issues / PRs.
+    validations:
+      required: true
+  - type: textarea
+    id: ideas
+    attributes:
+      label: Ideas so far
+      placeholder: |
+        - Option A: ...
+        - Option B: ...
+        - Option C: ...
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Tradeoffs / open questions
+      placeholder: What's unresolved? What do we need to decide before acting?
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision or next steps
+      placeholder: |
+        Once the brainstorm reaches a conclusion, fill this in. Then convert to a task/bug/feature issue
+        (or close as "won't do" with rationale) and link the follow-up issue here.
 EOF
 
 # --- .github/labeler.yml ---------------------------------------------

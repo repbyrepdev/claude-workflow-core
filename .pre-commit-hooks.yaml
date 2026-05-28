@@ -4,7 +4,7 @@
 #   - repo: https://github.com/repbyrepdev/claude-workflow-core
 #     rev: v0.4.0   (or later)
 #     hooks:
-#       - id: epic-structure
+#       - id: issue-template-schema-check
 #       - id: prove-yourself-gate
 #       # ...
 #
@@ -91,9 +91,9 @@
   pass_filenames: false
   stages: [pre-commit]
 
-- id: epic-structure
-  name: Validate epic.yml template structure
-  entry: pre-commit-hooks/epic-structure.sh
+- id: issue-template-schema-check
+  name: Validate all .github/ISSUE_TEMPLATE/*.yml against _spec.yml (v0.19.1 #143)
+  entry: pre-commit-hooks/issue-template-schema-check.sh
   language: script
   pass_filenames: false
   stages: [pre-commit]

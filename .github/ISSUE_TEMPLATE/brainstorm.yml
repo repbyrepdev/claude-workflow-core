@@ -1,16 +1,53 @@
-name: Brainstorm
-description: Discussion-style issue
-labels: [brainstorm]
+name: Brainstorm / Discussion
+description: Open-ended discussion, ideation, or architectural exploration — not ready to implement
+labels: ["brainstorm"]
 body:
-  - type: input
+  - type: dropdown
     id: area
     attributes:
       label: Area
+      description: Primary plugin area this discussion covers. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
+      options:
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
     id: topic
     attributes:
       label: Topic
+      placeholder: One-sentence framing of what we're thinking about.
     validations:
       required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      placeholder: What triggered this? Constraints? Prior attempts? Related issues / PRs.
+    validations:
+      required: true
+  - type: textarea
+    id: ideas
+    attributes:
+      label: Ideas so far
+      placeholder: |
+        - Option A: ...
+        - Option B: ...
+        - Option C: ...
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Tradeoffs / open questions
+      placeholder: What's unresolved? What do we need to decide before acting?
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision or next steps
+      placeholder: |
+        Once the brainstorm reaches a conclusion, fill this in. Then convert to a task/bug/feature issue
+        (or close as "won't do" with rationale) and link the follow-up issue here.

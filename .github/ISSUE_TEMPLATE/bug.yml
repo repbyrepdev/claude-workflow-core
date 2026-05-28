@@ -1,12 +1,12 @@
-name: Bug report
-description: Something broken
-labels: [bug]
+name: Bug / Issue
+description: Something is broken or not working as expected
+labels: ["bug"]
 body:
   - type: input
     id: parent
     attributes:
       label: Parent epic
-      description: "Required — link the parent epic this work rolls up to (`#NNN`)."
+      description: "Issue number of the parent epic that tracks this work (e.g. `#42`). Sub-issues without a parent orphan in Backlog with no epic-progress correlation. If genuinely standalone, file an epic first."
       placeholder: "#NNN"
     validations:
       required: true
@@ -14,16 +14,45 @@ body:
     id: area
     attributes:
       label: Area
-      description: AI triage reads this and applies the matching area:* label automatically.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
-        - Infrastructure
-        - Docs
-        - Plugin-manifest
+        - Skills (.claude/skills/*)
+        - Hooks (.claude/hooks/*, pre-commit-hooks/*)
+        - Workflows (.github/workflows/*)
+        - Plugin manifest (.claude-plugin/plugin.json, marketplace)
+        - Docs (README.md, docs/)
+        - Infrastructure (config, gates, _lib, scripts)
+        - Other
     validations:
       required: true
   - type: textarea
     id: description
     attributes:
       label: What's happening?
+      placeholder: Describe the bug — observed behavior, error messages, when it started.
     validations:
       required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen?
+      placeholder: Expected behavior.
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `…`
+        2. Observe `…`
+        3. Expected `…`, got `…`
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      placeholder: Related issues / PRs / commits. Recent changes nearby. Environment specifics (OS, plugin version).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      placeholder: Paste any error output, hook stderr, or test failures here.
+      render: shell
