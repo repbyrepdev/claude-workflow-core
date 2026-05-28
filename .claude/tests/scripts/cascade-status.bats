@@ -42,11 +42,18 @@ consumers:
     contact: "@dev"
     notes: "current"
 YAML
-		# Stub gh — return empty issue list (no open cascade issues).
+		# Stub gh — emit empty JSON array for issue list calls so the
+		# downstream `| jq -r '.[0].number // empty'` parses cleanly.
 		mkdir -p "$TEST_TMP/bin"
 		cat >"$TEST_TMP/bin/gh" <<'GHSCRIPT'
 #!/usr/bin/env bash
-# Just emit empty for issue list calls.
+case "$1" in
+  issue)
+    case "$2" in
+      list) printf '[]\n'; exit 0 ;;
+    esac
+    ;;
+esac
 exit 0
 GHSCRIPT
 		chmod +x "$TEST_TMP/bin/gh"
@@ -155,4 +162,23 @@ YAML
 	run scripts/cascade-status.sh
 	[ "$status" -eq 2 ]
 	[[ $output == *"schema_version=99"* ]]
+}
+
+@test "zero consumers yields clean empty snapshot, not exit 2" {
+	cd "$TEST_TMP/plugin" || return 1
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers:
+YAML
+	# r2 silent-failure-hunter LOW: empty registry is operationally valid.
+	run scripts/cascade-status.sh
+	[ "$status" -eq 0 ]
+	[[ $output == *"no consumers registered"* ]]
+
+	run scripts/cascade-status.sh --json
+	[ "$status" -eq 0 ]
+	echo "$output" | jq -e 'type == "array" and length == 0'
+
+	run scripts/cascade-status.sh --quiet
+	[ "$status" -eq 0 ]
 }

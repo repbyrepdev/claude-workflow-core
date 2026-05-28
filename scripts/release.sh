@@ -19,7 +19,7 @@ set -euo pipefail
 #   scripts/release.sh                   # release plugin.json's version
 #   scripts/release.sh --dry-run         # print what would happen, exit 0
 #   scripts/release.sh --no-github       # skip `gh release create` step
-#   scripts/release.sh --no-cascade      # skip cascade-to-consumers.sh (Sub 14 #152)
+#   scripts/release.sh --no-cascade      # skip cascade-to-consumers.sh
 #   scripts/release.sh --notes <file>    # release-notes body file
 #
 # Exit codes:
@@ -328,7 +328,7 @@ else
 	echo "  ⊘ gh not installed — skipping GitHub release creation"
 fi
 
-# --- Consumer cascade (Sub 14 #152) ----------------------------------
+# --- Consumer cascade ------------------------------------------------
 # After a successful release, fire scripts/cascade-to-consumers.sh to
 # open tracking issues in each consumer repo. Best-effort: cascade
 # failure does NOT fail the release (tag + cache + GH release are
@@ -346,13 +346,19 @@ elif [ ! -x "$CASCADE_SH" ]; then
 	echo "  ⊘ $CASCADE_SH missing or not executable — skipping consumer cascade" >&2
 elif [ "$DRY_RUN" = "1" ]; then
 	echo "  [dry-run] would: $CASCADE_SH --version $VERSION"
-	"$CASCADE_SH" --dry-run --version "$VERSION" || {
-		echo "release.sh: cascade-to-consumers.sh --dry-run failed (rc=$?) — release itself succeeded" >&2
-	}
+	# r2 code-reviewer HIGH: rc captured via `||` (preserves cascade's
+	# actual exit code); `if ! cmd; then ... rc=$?` would always show 0.
+	cascade_rc=0
+	"$CASCADE_SH" --dry-run --version "$VERSION" || cascade_rc=$?
+	if [ "$cascade_rc" -ne 0 ]; then
+		echo "release.sh: cascade-to-consumers.sh --dry-run failed (rc=$cascade_rc) — release itself succeeded" >&2
+	fi
 else
 	echo "  cascading to consumers..."
-	if ! "$CASCADE_SH" --version "$VERSION"; then
-		echo "release.sh: cascade-to-consumers.sh failed (rc=$?) — release itself succeeded; re-run cascade manually:" >&2
+	cascade_rc=0
+	"$CASCADE_SH" --version "$VERSION" || cascade_rc=$?
+	if [ "$cascade_rc" -ne 0 ]; then
+		echo "release.sh: cascade-to-consumers.sh failed (rc=$cascade_rc) — release itself succeeded; re-run cascade manually:" >&2
 		echo "  $CASCADE_SH --version $VERSION" >&2
 	fi
 fi

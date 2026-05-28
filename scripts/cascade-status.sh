@@ -115,9 +115,18 @@ if ! consumers_json=$(yq -o=json '.consumers' "$REGISTRY" 2>"$yq_err"); then
 	cat "$yq_err" >&2
 	exit 2
 fi
+# r2 silent-failure-hunter LOW: zero consumers is operationally valid
+# (fresh plugin, no consumers yet) — don't crash the session-start hook
+# on every boot. cascade-to-consumers.sh treats it as an error (operator
+# explicitly asked to cascade an empty set = mistake); cascade-status.sh
+# is a passive read so empty is fine.
 if [ "$consumers_json" = "null" ] || [ -z "$consumers_json" ]; then
-	echo "cascade-status: $REGISTRY .consumers is null or empty" >&2
-	exit 2
+	# Render zero-consumer empty snapshot per requested format and exit clean.
+	case "$FORMAT" in
+	json) printf '[]\n' ;;
+	text) [ "$QUIET" != "1" ] && echo "=== Cascade status (plugin v$current_ver) === (no consumers registered)" ;;
+	esac
+	exit 0
 fi
 if ! jq -e 'type == "array"' >/dev/null <<<"$consumers_json"; then
 	consumers_type=$(jq -r 'type' <<<"$consumers_json")
@@ -127,41 +136,67 @@ fi
 
 # Build status records per consumer. Output is an array of:
 #   { name, repo, pinned, current, is_behind, open_cascade_issue }
+# r2 silent-failure-hunter MEDIUM: every jq call guarded with explicit
+# error capture; partial gh failures tracked separately so --quiet can
+# surface a "detection unreliable" stderr signal.
 status_json='[]'
-n=$(jq 'length' <<<"$consumers_json")
+gh_failures=0
+if ! n=$(jq 'length' <<<"$consumers_json" 2>"$yq_err"); then
+	echo "cascade-status: jq failed counting consumers:" >&2
+	cat "$yq_err" >&2
+	exit 2
+fi
 for ((i = 0; i < n; i++)); do
-	entry=$(jq -c ".[$i]" <<<"$consumers_json")
-	name=$(jq -r '.name' <<<"$entry")
-	repo=$(jq -r '.repo' <<<"$entry")
-	pinned=$(jq -r '.pinned_version' <<<"$entry")
-	is_behind=$([ "$pinned" != "$current_ver" ] && echo true || echo false)
+	if ! entry=$(jq -c ".[$i]" <<<"$consumers_json" 2>"$yq_err"); then
+		echo "cascade-status: jq failed extracting consumer[$i]:" >&2
+		cat "$yq_err" >&2
+		continue
+	fi
+	name=$(jq -r '.name // empty' <<<"$entry")
+	repo=$(jq -r '.repo // empty' <<<"$entry")
+	pinned=$(jq -r '.pinned_version // empty' <<<"$entry")
+	if [ -z "$name" ] || [ -z "$repo" ] || [ -z "$pinned" ]; then
+		echo "cascade-status: consumer[$i] missing required field — skipping" >&2
+		continue
+	fi
 
-	# Query open cascade issue. Surface gh errors via 2>&1 so they end
-	# up in the issue_num value rather than truncating output silently.
-	# Network/auth failures get caught + reported as "?" — operator
-	# session-start sees the gap, retries manually.
+	# r2 code-simplifier LOW: compute is_behind inside jq instead of via
+	# bash ternary intermediate ($([ A != B ] && echo true || echo false)
+	# is a known footgun + extra subshell per consumer).
+
+	# Query open cascade issue. Drop --search (GitHub tokenizer
+	# fragments colons/parens/dots and may false-miss). Use --label
+	# filter + take first open — cascade-to-consumers.sh creates ONE
+	# per version per consumer so "any open" is the right semantic.
 	issue_num=""
-	if [ "$is_behind" = "true" ]; then
+	if [ "$pinned" != "$current_ver" ]; then
 		if ! issue_num=$(gh issue list --repo "$repo" \
 			--state open \
 			--label auto:plugin-release-cascade \
-			--search "in:title v$current_ver" \
-			--json number,title \
-			--jq "map(select(.title | test(\"v$current_ver\"))) | .[0].number // empty" 2>"$yq_err"); then
-			# Don't abort the whole status sweep on one consumer's gh
-			# failure — set "?" + keep going. session-start needs the
-			# best-effort snapshot, not a hard fail.
+			--json number 2>"$yq_err" |
+			jq -r '.[0].number // empty' 2>>"$yq_err"); then
+			# Best-effort: track gh failure count so --quiet can warn,
+			# but don't abort the whole sweep on one consumer's failure.
 			issue_num="?"
+			gh_failures=$((gh_failures + 1))
 		fi
 	fi
 
-	status_json=$(jq --arg n "$name" --arg r "$repo" --arg p "$pinned" \
-		--arg c "$current_ver" --argjson b "$is_behind" --arg i "$issue_num" \
-		'. + [{name:$n, repo:$r, pinned:$p, current:$c, is_behind:$b, open_cascade_issue:$i}]' \
-		<<<"$status_json")
+	if ! status_json=$(jq --arg n "$name" --arg r "$repo" --arg p "$pinned" \
+		--arg c "$current_ver" --arg i "$issue_num" \
+		'. + [{name:$n, repo:$r, pinned:$p, current:$c, is_behind:($p != $c), open_cascade_issue:$i}]' \
+		<<<"$status_json" 2>"$yq_err"); then
+		echo "cascade-status: jq failed appending status for consumer[$i]:" >&2
+		cat "$yq_err" >&2
+		continue
+	fi
 done
 
-behind=$(jq '[.[] | select(.is_behind == true)] | length' <<<"$status_json")
+if ! behind=$(jq '[.[] | select(.is_behind == true)] | length' <<<"$status_json" 2>"$yq_err"); then
+	echo "cascade-status: jq failed counting behind consumers:" >&2
+	cat "$yq_err" >&2
+	exit 2
+fi
 
 case "$FORMAT" in
 json)
@@ -173,6 +208,14 @@ text)
 	fi
 	if [ "$QUIET" = "1" ]; then
 		echo "cascade-status: $behind consumer(s) behind plugin v$current_ver (run 'scripts/cascade-status.sh' for details)" >&2
+		# r2 silent-failure-hunter MEDIUM: surface gh detection failures
+		# so operator knows the issue-existence side of the count is
+		# unreliable. Without this, an operator firing cascade-to-
+		# consumers.sh based on the laggard count would create duplicates
+		# when the idempotency check there hits the same gh failure.
+		if [ "$gh_failures" -gt 0 ]; then
+			echo "cascade-status: WARNING: $gh_failures consumer(s) had gh failures — issue-detection unreliable; recheck before cascading" >&2
+		fi
 		exit 1
 	fi
 	echo "=== Cascade status (plugin v$current_ver) ==="
@@ -185,5 +228,10 @@ text)
 		done
 	echo
 	echo "$behind consumer(s) behind."
+	# Use `if` not `[ A ] && B` — under set -e, the test returning rc=1
+	# would propagate as the script's final exit code (false-fail).
+	if [ "$gh_failures" -gt 0 ]; then
+		echo "WARNING: $gh_failures consumer(s) had gh failures — issue-detection unreliable" >&2
+	fi
 	;;
 esac

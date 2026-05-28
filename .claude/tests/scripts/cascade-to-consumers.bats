@@ -46,19 +46,29 @@ consumers:
 YAML
 
 		# Stub gh that records calls + returns scripted output.
-		# `gh issue list ... --jq ...` returns empty (no existing issue).
-		# `gh issue create ...` writes a URL to stdout + records the call.
+		# `gh issue list ... --json number,title` returns JSON; the
+		# downstream `| jq ...` extracts the number. GH_STUB_EXISTING_<repo>
+		# (with title) lets a test mark an issue as already existing.
+		# `gh label create ...` always succeeds (idempotency-friendly).
+		# `gh issue create ...` writes a URL to stdout.
 		mkdir -p "$TEST_TMP/bin"
 		cat >"$TEST_TMP/bin/gh" <<'GHSCRIPT'
 #!/usr/bin/env bash
 LOG="${GH_STUB_LOG:-/tmp/gh-stub.log}"
 echo "gh-stub: $*" >>"$LOG"
 case "$1" in
+  label)
+    # gh label create --force is idempotent in the real CLI; stub is no-op.
+    if [ "${GH_STUB_FAIL_LABEL:-0}" = "1" ]; then
+      echo "gh: stubbed label-create failure" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
   issue)
     case "$2" in
       list)
-        # Honor GH_STUB_EXISTING_<repo>=<num> env to return a stub issue number.
-        # repo arg is in $3 if --repo wasn't first; iterate args to find --repo.
+        # Locate --repo for env lookup.
         repo=""
         for ((i=3;i<=$#;i++)); do
           if [ "${!i}" = "--repo" ]; then
@@ -66,21 +76,25 @@ case "$1" in
           fi
         done
         env_name="GH_STUB_EXISTING_$(printf '%s' "$repo" | tr '/-' '__')"
-        existing=$(printenv "$env_name" 2>/dev/null || echo "")
-        if [ -n "$existing" ]; then
-          printf '%s\n' "$existing"
+        existing_num=$(printenv "$env_name" 2>/dev/null || echo "")
+        # Title-aware env: GH_STUB_EXISTING_TITLE_<repo>=<full title>
+        title_env="GH_STUB_EXISTING_TITLE_$(printf '%s' "$repo" | tr '/-' '__')"
+        existing_title=$(printenv "$title_env" 2>/dev/null || echo "")
+        # Emit one element when existing_num is set; else empty array.
+        if [ -n "$existing_num" ]; then
+          printf '[{"number":%s,"title":"%s"}]\n' "$existing_num" "${existing_title:-feat: refresh from plugin v1.2.3 (was v1.0.0)}"
+        else
+          printf '[]\n'
         fi
         exit 0
         ;;
       create)
-        # Extract --repo for URL synthesis.
         repo=""
         for ((i=3;i<=$#;i++)); do
           if [ "${!i}" = "--repo" ]; then
             j=$((i+1)); repo="${!j}"; break
           fi
         done
-        # Fail if GH_STUB_FAIL_CREATE=1 set.
         if [ "${GH_STUB_FAIL_CREATE:-0}" = "1" ]; then
           echo "gh: stubbed create failure" >&2
           exit 1
@@ -169,11 +183,40 @@ teardown() {
 
 @test "idempotency: existing issue skips creation" {
 	cd "$TEST_TMP/plugin" || return 1
-	# Stub: org/alpha already has open cascade issue #555.
-	GH_STUB_EXISTING_org_alpha=555 run scripts/cascade-to-consumers.sh --consumer alpha
+	# Stub: org/alpha already has open cascade issue #555 with matching title.
+	GH_STUB_EXISTING_org_alpha=555 \
+		GH_STUB_EXISTING_TITLE_org_alpha="feat: refresh from plugin v1.2.3 (was v1.0.0)" \
+		run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
 	[[ $output == *"[EXISTS] alpha"* ]]
 	[[ $output == *"#555"* ]]
+}
+
+@test "label-create failure halts cascade for that consumer (rc=3)" {
+	cd "$TEST_TMP/plugin" || return 1
+	GH_STUB_FAIL_LABEL=1 run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 3 ]
+	[[ $output == *"fail-label-create"* ]] || [[ $output == *"failed to ensure"* ]]
+	[[ $output == *"failed:          1"* ]]
+}
+
+@test "malformed consumer entry (missing fields) rc=3 + audit logs fail-malformed-entry" {
+	cd "$TEST_TMP/plugin" || return 1
+	# Replace consumers.yml with one missing the `repo` field.
+	cat >.github/consumers.yml <<'YAML'
+schema_version: 1
+consumers:
+  - name: bogus
+    local_path: /tmp/bogus
+    pinned_version: "0.1.0"
+    overrides_file: .claude/local-overrides.yml
+    bootstrap_date: 2026-01-15
+    contact: "@dev"
+    notes: "missing repo"
+YAML
+	run scripts/cascade-to-consumers.sh
+	[ "$status" -eq 3 ]
+	[[ $output == *"missing required field"* ]]
 }
 
 @test "version override creates for both" {

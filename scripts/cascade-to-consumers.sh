@@ -116,8 +116,10 @@ for cmd in yq jq gh; do
 done
 
 # Initialize trap state BEFORE mktemp so a mktemp failure under set -u
-# doesn't crash the cleanup with unbound-array. Same hardening pattern
-# as refresh-from-source.sh r3 silent-failure-hunter finding.
+# doesn't crash the EXIT trap with unbound-variable when _cleanup
+# dereferences $yq_err. r2 comment-analyzer: refresh-from-source.sh r3
+# hardened the same pattern for an array; here yq_err is a scalar so
+# the failure mode is unbound-scalar, not unbound-array.
 yq_err=""
 
 # shellcheck disable=SC2329,SC2317
@@ -187,24 +189,31 @@ if [ -n "$SINGLE_CONSUMER" ]; then
 fi
 
 LOG_DIR="$REPO_ROOT/.claude/logs"
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" || {
+	echo "cascade-to-consumers: failed to create $LOG_DIR" >&2
+	exit 2
+}
 LOG_FILE="$LOG_DIR/cascade.jsonl"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 _log() {
-	# JSONL via jq for proper escaping. Args: consumer repo old_ver action [issue_num] [err].
-	local consumer=$1 repo=$2 old_ver=$3 action=$4 issue_num=${5:-} err=${6:-}
+	# JSONL via jq for proper escaping. Args: consumer repo old_ver action [issue_num] [detail].
+	# `detail` carries free-form supplemental text — error message on failure
+	# branches, raw URL on the rare numeric-parse-fallback success branch.
+	# r2: renamed from `err` so a successful created-url-only record isn't
+	# tagged as an error in the JSONL audit log.
+	local consumer=$1 repo=$2 old_ver=$3 action=$4 issue_num=${5:-} detail=${6:-}
 	if [ -n "$issue_num" ]; then
 		jq -cn --arg ts "$TS" --arg consumer "$consumer" --arg repo "$repo" \
 			--arg from "$old_ver" --arg to "$NEW_VER" --arg action "$action" \
 			--argjson issue "$issue_num" \
 			'{ts:$ts,consumer:$consumer,repo:$repo,from:$from,to:$to,action:$action,issue:$issue}' \
 			>>"$LOG_FILE"
-	elif [ -n "$err" ]; then
+	elif [ -n "$detail" ]; then
 		jq -cn --arg ts "$TS" --arg consumer "$consumer" --arg repo "$repo" \
 			--arg from "$old_ver" --arg to "$NEW_VER" --arg action "$action" \
-			--arg err "$err" \
-			'{ts:$ts,consumer:$consumer,repo:$repo,from:$from,to:$to,action:$action,error:$err}' \
+			--arg detail "$detail" \
+			'{ts:$ts,consumer:$consumer,repo:$repo,from:$from,to:$to,action:$action,detail:$detail}' \
 			>>"$LOG_FILE"
 	else
 		jq -cn --arg ts "$TS" --arg consumer "$consumer" --arg repo "$repo" \
@@ -258,14 +267,38 @@ failed=0
 
 # Iterate via length+index — set -e + jq -c output safer than process
 # substitution + while-read which silently swallows the last line if
-# it lacks a trailing newline.
-n=$(jq 'length' <<<"$consumers_json")
+# it lacks a trailing newline. Guard every jq call so a corrupted
+# consumers_json doesn't silently abort mid-sweep with no diagnostic
+# (r2 silent-failure-hunter MEDIUM).
+if ! n=$(jq 'length' <<<"$consumers_json" 2>"$yq_err"); then
+	echo "cascade-to-consumers: jq failed counting consumers:" >&2
+	cat "$yq_err" >&2
+	exit 2
+fi
 for ((i = 0; i < n; i++)); do
-	entry=$(jq -c ".[$i]" <<<"$consumers_json")
-	name=$(jq -r '.name' <<<"$entry")
-	repo=$(jq -r '.repo' <<<"$entry")
-	old_ver=$(jq -r '.pinned_version' <<<"$entry")
+	if ! entry=$(jq -c ".[$i]" <<<"$consumers_json" 2>"$yq_err"); then
+		echo "cascade-to-consumers: jq failed extracting consumer[$i]:" >&2
+		cat "$yq_err" >&2
+		failed=$((failed + 1))
+		worst_rc=3
+		continue
+	fi
+	name=$(jq -r '.name // empty' <<<"$entry")
+	repo=$(jq -r '.repo // empty' <<<"$entry")
+	old_ver=$(jq -r '.pinned_version // empty' <<<"$entry")
 	total=$((total + 1))
+
+	# r2 silent-failure-hunter HIGH: jq -r on null field emits 'null' (or
+	# now `empty` → empty string with the // empty guard); reject malformed
+	# entries explicitly rather than letting `--repo ''` or `--consumer null`
+	# leak into the gh call + audit log.
+	if [ -z "$name" ] || [ -z "$repo" ] || [ -z "$old_ver" ]; then
+		echo "[FAIL] consumer[$i] missing required field (name='$name' repo='$repo' pinned_version='$old_ver')" >&2
+		_log "${name:-<missing>}" "${repo:-<missing>}" "${old_ver:-<missing>}" "fail-malformed-entry" "" "consumer[$i] missing required field"
+		failed=$((failed + 1))
+		worst_rc=3
+		continue
+	fi
 
 	# Skip consumers already on the new version.
 	if [ "$old_ver" = "$NEW_VER" ]; then
@@ -277,17 +310,41 @@ for ((i = 0; i < n; i++)); do
 
 	title="feat: refresh from plugin v$NEW_VER (was v$old_ver)"
 
-	# Idempotency: check for existing open cascade issue with the same
-	# title. gh issue list --search uses a "in:title" filter so we don't
-	# false-match on issues that reference the title in their body.
-	# Quote the title in the search query so multi-word titles match
-	# the full string, not OR'd individual words.
+	# r2 fix (code-reviewer HIGH + silent-failure-hunter MEDIUM):
+	# Idempotency MUST be label-based to survive future title-format drift.
+	# Ensure the auto:plugin-release-cascade label exists in the consumer
+	# repo before creation (idempotent — `gh label create --force` no-ops
+	# when present). Then both the idempotency query AND the issue creation
+	# use --label, so a re-cascade detects its own prior issue.
+	#
+	# We do this on EVERY consumer to handle the "newly-onboarded" case
+	# where the label hasn't been registered yet; gh label create is
+	# cheap (a no-op when the label exists). Failure to create the label
+	# halts cascade for this consumer (no point creating an unlabeled
+	# issue that future idempotency checks won't find).
+	if ! gh label create auto:plugin-release-cascade \
+		--color "0e8a16" \
+		--description "Auto-opened cascade tracker — consumer should refresh from plugin source" \
+		--force \
+		--repo "$repo" 2>"$yq_err"; then
+		echo "[FAIL] $name ($repo) — failed to ensure auto:plugin-release-cascade label:" >&2
+		cat "$yq_err" >&2
+		_log "$name" "$repo" "$old_ver" "fail-label-create" "" "$(cat "$yq_err")"
+		failed=$((failed + 1))
+		worst_rc=3
+		continue
+	fi
+
+	# Idempotency: search by --label + --state open only (no --search;
+	# GitHub's search tokenizer fragments colons/parens/dots so a quoted-
+	# phrase search can false-miss a real match and create a duplicate).
+	# Title-exact match happens in jq with --arg, avoiding shell-into-jq
+	# string interpolation.
 	if ! existing=$(gh issue list --repo "$repo" \
 		--state open \
 		--label auto:plugin-release-cascade \
-		--search "\"$title\" in:title" \
-		--json number,title \
-		--jq "map(select(.title == \"$title\")) | .[0].number // empty" 2>"$yq_err"); then
+		--json number,title 2>"$yq_err" |
+		jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty' 2>>"$yq_err"); then
 		echo "[FAIL] $name ($repo) — gh issue list idempotency check failed:" >&2
 		cat "$yq_err" >&2
 		_log "$name" "$repo" "$old_ver" "fail-idempotency-check" "" "$(cat "$yq_err")"
@@ -308,14 +365,24 @@ for ((i = 0; i < n; i++)); do
 		continue
 	fi
 
-	# Create the issue. Pipe the body so we don't leak tmp files on
-	# signals. --label intentionally NOT passed — consumer repos may
-	# not have the auto:plugin-release-cascade label yet (and label-
-	# creation is out of scope here; consumers register it via their
-	# own labels.yml). If the label is missing, gh create still
-	# succeeds; ai-triage / label-sync handle classification after.
-	if ! issue_url=$(_render_body "$name" "$old_ver" |
-		gh issue create --repo "$repo" --title "$title" --body-file - 2>"$yq_err"); then
+	# r2 silent-failure-hunter MEDIUM: render body to a variable BEFORE
+	# piping so a body-render failure produces a distinct error path
+	# rather than masquerading as a gh-create failure.
+	if ! body=$(_render_body "$name" "$old_ver" 2>"$yq_err"); then
+		echo "[FAIL] $name ($repo) — failed to render issue body:" >&2
+		cat "$yq_err" >&2
+		_log "$name" "$repo" "$old_ver" "fail-body-render" "" "$(cat "$yq_err")"
+		failed=$((failed + 1))
+		worst_rc=3
+		continue
+	fi
+	# Create the issue with --label so future idempotency checks can find
+	# it (label is now guaranteed to exist in the consumer repo).
+	if ! issue_url=$(printf '%s' "$body" |
+		gh issue create --repo "$repo" \
+			--title "$title" \
+			--label auto:plugin-release-cascade \
+			--body-file - 2>"$yq_err"); then
 		echo "[FAIL] $name ($repo) — gh issue create failed:" >&2
 		cat "$yq_err" >&2
 		_log "$name" "$repo" "$old_ver" "fail-create" "" "$(cat "$yq_err")"
@@ -326,7 +393,9 @@ for ((i = 0; i < n; i++)); do
 	# gh issue create prints the URL; extract the trailing /N to log.
 	issue_num=$(printf '%s' "$issue_url" | awk -F/ '{print $NF}' | tr -d '[:space:]')
 	if ! [[ $issue_num =~ ^[0-9]+$ ]]; then
-		# Numeric extraction failed — log raw URL but don't fail the cascade.
+		# Numeric extraction failed — log raw URL via .detail (not .error,
+		# r2 code-simplifier LOW: the create itself succeeded). Don't fail
+		# the cascade — the issue is created, just unparseable.
 		echo "[CREATED] $name ($repo) — $issue_url (issue number parse failed)"
 		_log "$name" "$repo" "$old_ver" "created-url-only" "" "$issue_url"
 		created=$((created + 1))
