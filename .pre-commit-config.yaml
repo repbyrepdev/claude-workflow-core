@@ -111,6 +111,12 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: local-overrides-schema-check
+        name: local-overrides-schema — .claude/local-overrides.yml schema (#147)
+        entry: pre-commit-hooks/local-overrides-schema-check.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: commit-subject-version-gate
         name: commit-subject-version — scope vX.Y.Z must not exceed plugin.json (#74)
         entry: pre-commit-hooks/commit-subject-version-gate.sh

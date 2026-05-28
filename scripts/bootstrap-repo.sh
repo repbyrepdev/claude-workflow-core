@@ -466,6 +466,21 @@ fi
 exec "$TARGET_HOOK" "$@"
 EOF
 
+# --- .claude/local-overrides.yml (v0.20.1 #147) -----------------------
+# Empty-stub by default; populate per-consumer after audit. Schema
+# validated by pre-commit-hooks/local-overrides-schema-check.sh.
+_write .claude/local-overrides.yml 644 <<'EOF'
+# Operator-declared divergence ledger. Anything in here is INTENTIONAL
+# drift from plugin SSOT — skipped from hash-drift checks.
+#
+# See templates/local-overrides.yml.tpl in the plugin source for the
+# canonical schema + example entries.
+
+schema_version: 1
+
+overrides: []
+EOF
+
 # --- .github/pull_request_template.md --------------------------------
 _write .github/pull_request_template.md 644 <<'EOF'
 ## Summary
