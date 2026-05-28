@@ -1,0 +1,198 @@
+#!/usr/bin/env bats
+# covers: scripts/refresh-from-source.sh
+
+setup() {
+	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." 2>&1 && pwd) || {
+		echo "FATAL: cd failed: $REPO_ROOT" >&2
+		return 1
+	}
+	SCRIPT="${REPO_ROOT}/scripts/refresh-from-source.sh"
+	TEST_TMP=$(mktemp -d -t rfs.XXXXXX) || {
+		echo "FATAL: mktemp failed" >&2
+		return 1
+	}
+	# Build a self-contained mini plugin-tree under TEST_TMP/plugin and a
+	# consumer-tree under TEST_TMP/consumer so we can exercise the script
+	# in isolation.
+	(
+		set -e
+		PLUGIN="$TEST_TMP/plugin"
+		mkdir -p "$PLUGIN/scripts" "$PLUGIN/.claude" "$PLUGIN/.github" \
+			"$PLUGIN/.claude-plugin" "$PLUGIN/_lib"
+		cp "$SCRIPT" "$PLUGIN/scripts/refresh-from-source.sh"
+		chmod +x "$PLUGIN/scripts/refresh-from-source.sh"
+		# Minimal plugin.json for version lookup
+		cat >"$PLUGIN/.claude-plugin/plugin.json" <<'JSON'
+{"name":"test","version":"9.9.9"}
+JSON
+		# Minimal consumers.yml
+		cat >"$PLUGIN/.github/consumers.yml" <<YAML
+schema_version: 1
+consumers:
+  - name: alpha
+    repo: org/alpha
+    local_path: $TEST_TMP/consumer
+    pinned_version: "9.9.9"
+    overrides_file: .claude/local-overrides.yml
+    bootstrap_date: 2026-05-28
+    contact: "@t"
+    notes: "test fixture"
+YAML
+		# Two source files for the cascade test.
+		echo "echo source-A" >"$PLUGIN/_lib/file-a.sh"
+		echo "echo source-B" >"$PLUGIN/_lib/file-b.sh"
+		# Compute hashes for .source-hashes.json
+		hash_a=$(shasum -a 256 "$PLUGIN/_lib/file-a.sh" | awk '{print $1}')
+		hash_b=$(shasum -a 256 "$PLUGIN/_lib/file-b.sh" | awk '{print $1}')
+		cat >"$PLUGIN/.claude/.source-hashes.json" <<JSON
+{
+  "algorithm": "sha256",
+  "files": {
+    "_lib/file-a.sh": "$hash_a",
+    "_lib/file-b.sh": "$hash_b"
+  }
+}
+JSON
+		# Consumer dir — no copies yet (all-missing initial state).
+		mkdir -p "$TEST_TMP/consumer/.claude"
+	) || {
+		echo "FATAL: fixture init failed" >&2
+		return 1
+	}
+}
+
+teardown() {
+	# shellcheck disable=SC2164
+	cd /tmp 2>/dev/null || cd "${BATS_TEST_DIRNAME:-/}" 2>/dev/null || true
+	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */rfs.* ]]; then
+		rm -rf "$TEST_TMP"
+	fi
+}
+
+@test "--help emits usage" {
+	run "$SCRIPT" --help
+	[ "$status" -eq 0 ]
+	[[ $output == *"Usage"* ]]
+	[[ $output == *"--consumer"* ]]
+	[[ $output == *"--all-consumers"* ]]
+	[[ $output == *"--dry-run"* ]]
+}
+
+@test "fails when no target arg given" {
+	run "$SCRIPT"
+	[ "$status" -eq 2 ]
+	[[ $output == *"must specify ONE of"* ]]
+}
+
+@test "fails when multiple target args given (mutually exclusive)" {
+	run "$SCRIPT" --consumer alpha --all-consumers
+	[ "$status" -eq 2 ]
+	[[ $output == *"mutually exclusive"* ]]
+}
+
+@test "fails on unknown consumer name" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/refresh-from-source.sh --consumer nonexistent --dry-run
+	[ "$status" -eq 2 ]
+	[[ $output == *"not found"* ]]
+}
+
+@test "dry-run copies 2 missing files (DIFF + would-copy)" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/refresh-from-source.sh --consumer alpha --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output == *"DIFF"* ]]
+	[[ $output == *"file-a.sh"* ]]
+	[[ $output == *"file-b.sh"* ]]
+	[[ $output == *"replaced=2"* ]]
+	# No files actually copied — dry-run.
+	[ ! -f "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
+}
+
+@test "real run copies 2 missing files atomically" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"REPLACED"* ]]
+	[ -f "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
+	[ -f "$TEST_TMP/consumer/.claude/_lib/file-b.sh" ]
+	# Content matches source.
+	[ "$(cat "$TEST_TMP/consumer/.claude/_lib/file-a.sh")" = "echo source-A" ]
+}
+
+@test "second run is idempotent (zero replacements)" {
+	cd "$TEST_TMP/plugin" || return 1
+	scripts/refresh-from-source.sh --consumer alpha >/dev/null 2>&1
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean=2"* ]]
+	[[ $output == *"replaced=0"* ]]
+}
+
+@test "honors local-overrides skip-list" {
+	cd "$TEST_TMP/plugin" || return 1
+	# Add an override skipping file-a.
+	cat >"$TEST_TMP/consumer/.claude/local-overrides.yml" <<'YAML'
+schema_version: 1
+overrides:
+  - path: .claude/_lib/file-a.sh
+    category: domain-extension
+    reason: "Test override; consumer keeps its own copy"
+    added: "2026-05-28"
+YAML
+	run scripts/refresh-from-source.sh --consumer alpha --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output == *"OVERRIDE"* ]]
+	[[ $output == *"file-a.sh"* ]]
+	[[ $output == *"overridden=1"* ]]
+	# file-b not overridden — still appears in DIFF.
+	[[ $output == *"DIFF"* ]]
+	[[ $output == *"file-b.sh"* ]]
+}
+
+@test "--consumer-path bypasses consumers.yml lookup" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/refresh-from-source.sh --consumer-path "$TEST_TMP/consumer" --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output == *"replaced=2"* ]]
+}
+
+@test "--files filters to subset" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/refresh-from-source.sh --consumer alpha --files _lib/file-a.sh --dry-run
+	[ "$status" -eq 0 ]
+	# file-a in subset → DIFF; file-b filtered out (no DIFF for it).
+	[[ $output == *"file-a.sh"* ]]
+	[[ $output == *"replaced=1"* ]]
+}
+
+@test "writes audit log on real run" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[ -f "$TEST_TMP/consumer/.claude/logs/refresh-from-source.jsonl" ]
+	# Latest entry has the expected counts.
+	last=$(tail -1 "$TEST_TMP/consumer/.claude/logs/refresh-from-source.jsonl")
+	echo "$last" | jq -e '.files_replaced == 2'
+	echo "$last" | jq -e '.plugin_version == "9.9.9"'
+}
+
+@test "preserves executable bit when source is executable" {
+	cd "$TEST_TMP/plugin" || return 1
+	chmod +x "$TEST_TMP/plugin/_lib/file-a.sh"
+	# Re-hash after chmod (shasum is content-only; should match).
+	hash_a=$(shasum -a 256 "$TEST_TMP/plugin/_lib/file-a.sh" | awk '{print $1}')
+	hash_b=$(shasum -a 256 "$TEST_TMP/plugin/_lib/file-b.sh" | awk '{print $1}')
+	cat >"$TEST_TMP/plugin/.claude/.source-hashes.json" <<JSON
+{
+  "algorithm": "sha256",
+  "files": {
+    "_lib/file-a.sh": "$hash_a",
+    "_lib/file-b.sh": "$hash_b"
+  }
+}
+JSON
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[ -x "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
+}
