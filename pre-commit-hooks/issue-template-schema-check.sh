@@ -44,8 +44,15 @@ fi
 
 # Detect staged deletion of the spec explicitly so the operator sees a
 # clear "unstage" hint instead of the generic "spec file missing" path.
-# Phase 1 r1 silent-failure-hunter F5.
-if git diff --cached --name-only --diff-filter=D | grep -Fxq "$SPEC"; then
+# r2 silent-failure-hunter HIGH: capture git output to var BEFORE grep
+# so a real git failure (corrupt index, lock contention) doesn't get
+# masked by grep's "no match" exit 1 in the pipeline. set -e + bare
+# command substitution surfaces git's failure code directly.
+deleted_paths=$(git diff --cached --name-only --diff-filter=D) || {
+	echo "issue-template-schema-check: git diff failed reading deleted-files set" >&2
+	exit 2
+}
+if printf '%s\n' "$deleted_paths" | grep -Fxq "$SPEC"; then
 	echo "issue-template-schema-check: $SPEC is staged for deletion — refusing" >&2
 	echo "  Unstage: git reset HEAD $SPEC" >&2
 	exit 2
@@ -74,6 +81,9 @@ trap _cleanup EXIT INT TERM HUP
 _yq_or_die() {
 	local expr=$1 file=$2 desc=$3
 	local out
+	# r2 silent-failure-hunter HIGH: truncate yq_err at start so a prior
+	# call's stale stderr can't surface as this call's diagnostic.
+	: >"$yq_err"
 	if ! out=$(yq -r "$expr" "$file" 2>"$yq_err"); then
 		echo "issue-template-schema-check: yq failed parsing $file ($desc):" >&2
 		cat "$yq_err" >&2
@@ -132,11 +142,12 @@ while IFS= read -r tname; do
 	fi
 
 	# Required ids: each must appear as `id: <name>` on its own line.
-	# yq query may legitimately return empty (when required_ids: []) —
-	# in that case the while-read loop simply doesn't iterate. Capture
-	# rc explicitly: empty output with rc=0 is fine, non-zero rc = die
-	# (handled by _yq_or_die internally).
-	required_ids=$(yq -r ".templates.${tname}.required_ids[]" "$SPEC" 2>"$yq_err" || true)
+	# r2 silent-failure-hunter F1-regression (CRITICAL): use _yq_or_die
+	# with `// []` null-default so absent/empty required_ids returns rc=0
+	# with empty output (legitimate), but actual yq parse failures still
+	# propagate exit 2. Prior `|| true` reintroduced the vacuous-pass
+	# pattern that r1 fixed elsewhere.
+	required_ids=$(_yq_or_die ".templates.${tname}.required_ids // [] | .[]" "$SPEC" "${tname}.required_ids")
 	while IFS= read -r req_id; do
 		[ -n "$req_id" ] || continue
 		# Validate id charset same as template name — regex injection guard.
@@ -151,12 +162,12 @@ while IFS= read -r tname; do
 		fi
 	done <<<"$required_ids"
 
-	# Required labels: parse via yq instead of grep on the labels-line.
-	# Phase 1 r1 code-reviewer F1+F2: grep-based check was substring-
-	# match (false-passes 'bug' inside 'debug'/'bug-followup') AND was
-	# form-specific (only matched inline-array `labels: [...]`, missed
-	# block-list form). yq parses the actual list — set-comparison.
-	required_labels=$(yq -r ".templates.${tname}.required_labels[]" "$SPEC" 2>"$yq_err" || true)
+	# Required labels: parse via yq, set-compare via grep -Fxq line-exact.
+	# Form-agnostic (inline-array OR block-list) + substring-safe.
+	# r2 silent-failure-hunter F1-regression: use _yq_or_die with `// []`
+	# null-default so absent/empty required_labels returns rc=0, but real
+	# parse failures still die loudly.
+	required_labels=$(_yq_or_die ".templates.${tname}.required_labels // [] | .[]" "$SPEC" "${tname}.required_labels")
 	if [ -n "$required_labels" ]; then
 		# Extract actual labels[] from the template — form-agnostic.
 		actual_labels=$(_yq_or_die '.labels[]' "$tpath" "${tfile}.labels")
