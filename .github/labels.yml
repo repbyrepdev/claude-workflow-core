@@ -1,18 +1,26 @@
-# Label catalog — SINGLE SOURCE OF TRUTH for this repo.
+# Label catalog — SINGLE SOURCE OF TRUTH for this repo + plugin-consumer
+# SSOT for the GENERIC label set shared across all consumer repos.
+# See .github/labels-spec.md for the two-tier promotion rule.
 #
-# Synced to GitHub by .github/workflows/label-sync.yml on push to main that
-# changes this file (workflow landing in a follow-up sub-issue of the v0.9.5
-# epic). Manual one-shot today: `gh label create <name> --color <hex>`.
+# Sync to GitHub:
+#   * Today (Sub 6 #144 unshipped): `scripts/bootstrap-repo.sh --apply-labels`
+#     or `gh label create <name> --color <hex> --description "..."` manually.
+#   * Once Sub 6 #144 ships: `.github/workflows/label-sync.yml` will run on
+#     push to main that changes this file.
 #
-# 8-color Primer palette (kept in sync across plugin / homelab / FCP):
-#   Red     cf222e  priority:p0 · priority:p1 · bug
+# 8-color Primer palette (every label below uses ONE of these 8 hex codes;
+# bats test .claude/tests/github/labels-yml.bats asserts the mapping):
+#   Red     cf222e  priority:p0 · priority:p1 · bug · major
+#                   · auto:trivy-scan · auto:trivy-post-merge
 #   Orange  bc4c00  priority:p0-proposed · status:in-review
-#   Yellow  bf8700  priority:p2
-#   Green   1a7f37  priority:p3
+#   Yellow  bf8700  priority:p2 · minor · plan-me
+#   Green   1a7f37  priority:p3 · auto:renovate · patch
 #   Blue    0969da  documentation
-#   Purple  8250df  area:infrastructure · epic · brainstorm
+#   Purple  8250df  area:infrastructure · area:docs · area:plugin-manifest
+#                   · epic · brainstorm
 #   Pink    bf3989  question
 #   Gray    6e7681  priority:needs-triage · status:blocked · enhancement
+#                   · no-plan
 # -----------------------------------------------------------------------------
 
 # ---- Type ----
@@ -63,7 +71,9 @@
   color: "6e7681"
   description: Waiting on dependency / external blocker
 
-# ---- Area ----
+# ---- Area — generic cross-domain only ----
+# Consumer repos declare their own domain `area:*` in local-overrides.yml
+# (Sub 9 #147).
 - name: area:infrastructure
   color: "8250df"
   description: Skills, hooks, scripts, workflows, repo infrastructure
@@ -72,4 +82,38 @@
   description: README + markdown documentation
 - name: area:plugin-manifest
   color: "8250df"
-  description: .claude-plugin/plugin.json + marketplace metadata
+  description: .claude-plugin/plugin.json + marketplace metadata (plugin-domain)
+
+# ---- Auto ----
+# Domain-specific auto labels (auto:dr-test, auto:restore-sanity, etc.)
+# live in each consumer's local-overrides.yml.
+- name: auto:renovate
+  color: "1a7f37"
+  description: Renovate-generated PRs + dashboard
+- name: auto:trivy-scan
+  color: "cf222e"
+  description: Weekly Trivy CVE scan findings
+- name: auto:trivy-post-merge
+  color: "cf222e"
+  description: Post-merge Trivy scan on newly-landed image SHAs
+
+# ---- Renovate update-type ----
+- name: patch
+  color: "1a7f37"
+  description: Patch-level dependency update
+- name: minor
+  color: "bf8700"
+  description: Minor-level dependency update
+- name: major
+  color: "cf222e"
+  description: Major-level dependency update (manual approval via dashboard)
+
+# ---- CR Issue Planner ----
+# Required by the cr-plan skill that ships in this plugin. See labels-spec.md
+# for why these are plugin-tier.
+- name: plan-me
+  color: "bf8700"
+  description: Apply to issue to invoke @coderabbitai Issue Planner
+- name: no-plan
+  color: "6e7681"
+  description: "Operator opt-out: do not run cr-plan trigger on this issue"
