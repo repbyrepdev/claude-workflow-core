@@ -5,9 +5,9 @@ description: Drive the local PR review pipeline (Phase 0.5 → Phase 1 → Phase
 
 # ship-pr-cycle
 
-Mechanical driver for the v4.28-W4 PR review pipeline. Operator interaction goal: ONE gate (approve-to-ship at merge time). Everything else autonomous.
+Mechanical driver for the staged local PR review pipeline. Operator interaction goal: ONE gate (approve-to-ship at merge time). Everything else autonomous.
 
-Consumer repos that need domain-specific overlays (FCP's auto-triage deferral until project board lands; homelab's post-merge deploy step) declare them in `.claude/skills/ship-pr-cycle/domain-extension.md` next to their `local-overrides.yml`. The plugin's SKILL.md is the SSOT for everything not consumer-specific.
+Consumer repos that need domain-specific overlays (e.g. deferring a stage until a dependency lands; adding a post-merge deploy step) declare them in `.claude/skills/ship-pr-cycle/domain-extension.md` next to their `local-overrides.yml`. The plugin's SKILL.md is the SSOT for everything not consumer-specific.
 
 ## Quick start
 
@@ -40,7 +40,7 @@ Consumer repos that need domain-specific overlays (FCP's auto-triage deferral un
     ↓ next
 [cr-in-ci-wait]   gh pr list + watch-until-done.sh
     ↓ next (gate-checked: CR-in-CI terminal state)
-[auto-triage]     classify findings — sub-issue #733 wires the classifier
+[auto-triage]     (pending #733) classify findings — currently a passthrough; future classifier wires here
     ↓ next
 [merge-gate]      OPERATOR APPROVES HERE
     ↓ next (after explicit user "go")
@@ -63,7 +63,7 @@ When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE 
 5. Log security-review
 6. Re-run `next` — orchestrator detects 2-streak clean and advances to phase2
 
-**Why operator-driven:** bash can't fire Claude agents. Sub-issue #732 wires a UserPromptSubmit hook that emits the directive into Claude's context after a post-commit cascade.
+**Why operator-driven:** bash can't fire Claude agents. A future enhancement (#732) would wire a UserPromptSubmit hook that emits the directive into Claude's context after a post-commit cascade; until then, the operator runs the agent calls.
 
 ## Auto-fire after commit
 
