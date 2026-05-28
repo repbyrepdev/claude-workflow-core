@@ -1,0 +1,35 @@
+name: Gitleaks Secret Scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    # CR PR #64 r3: push events have no .pull_request.labels — the
+    # previous single-condition `!contains(...)` evaluates to false-
+    # in-context and skips the job entirely on push. Split per event:
+    # push always runs; pull_request skips for Renovate/rollback.
+    if: "github.event_name == 'push' || (!contains(github.event.pull_request.labels.*.name, 'auto:renovate') && !contains(github.event.pull_request.labels.*.name, 'auto:rollback'))"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_CONFIG omitted — claude-workflow-core has no
+          # .gitleaks.toml. Default rules apply. Follow-up: backport
+          # .gitleaks.toml from homelab + flip env back on.

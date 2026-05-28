@@ -1,0 +1,38 @@
+name: Sync labels
+
+# v3.23.A #308 — labels-as-code. Single source of truth is .github/labels.yml.
+# Edit/add/remove labels there only; never via `gh label` or the web UI
+# (those changes drift back on next sync).
+#
+# v3.23.C #310 flipped delete-other-labels: true — labels.yml is now the
+# full authoritative source. Any label present on GitHub but not declared
+# in labels.yml gets pruned on the next sync run. Add intentionally-
+# external labels (e.g. manually-applied ad-hoc tags) to labels.yml, or
+# they disappear.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read  # actions/checkout needs this — setting any perm defaults the rest to none
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: EndBug/label-sync@52074158190acb45f3077f9099fea818aa43f97a  # v2.3.3
+        with:
+          config-file: .github/labels.yml
+          delete-other-labels: true
