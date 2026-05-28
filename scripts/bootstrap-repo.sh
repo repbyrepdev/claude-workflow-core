@@ -570,7 +570,7 @@ required:
 advisory: []
 EOF
 
-# --- .github/ISSUE_TEMPLATE stubs (bug/feature/task/epic/brainstorm) -
+# --- .github/ISSUE_TEMPLATE rich forms (bug/feature/task/epic/brainstorm) ---
 _write .github/ISSUE_TEMPLATE/bug.yml 644 <<'EOF'
 name: Bug / Issue
 description: Something is broken or not working as expected

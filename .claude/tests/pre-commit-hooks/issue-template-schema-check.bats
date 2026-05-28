@@ -363,7 +363,7 @@ YAML
 	git add .github/ISSUE_TEMPLATE/bug.yml .github/ISSUE_TEMPLATE/epic.yml
 	run pre-commit-hooks/issue-template-schema-check.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"missing 'id: parent'"* ]]
+	[[ $output == *"missing '.body[].id == parent'"* ]]
 }
 
 @test "fails on bug.yml missing required label 'bug'" {
@@ -432,7 +432,7 @@ YAML
 	git add .github/ISSUE_TEMPLATE/bug.yml .github/ISSUE_TEMPLATE/epic.yml
 	run pre-commit-hooks/issue-template-schema-check.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"missing 'id: rollback'"* ]]
+	[[ $output == *"missing '.body[].id == rollback'"* ]]
 }
 
 # Phase 1 r1 silent-failure-hunter F4: renamed for clarity — hook

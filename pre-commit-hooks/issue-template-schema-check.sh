@@ -141,23 +141,24 @@ while IFS= read -r tname; do
 		continue
 	fi
 
-	# Required ids: each must appear as `id: <name>` on its own line.
-	# r2 silent-failure-hunter F1-regression (CRITICAL): use _yq_or_die
-	# with `// []` null-default so absent/empty required_ids returns rc=0
-	# with empty output (legitimate), but actual yq parse failures still
-	# propagate exit 2. Prior `|| true` reintroduced the vacuous-pass
-	# pattern that r1 fixed elsewhere.
+	# Required ids: each must appear in .body[].id via yq parse, not as
+	# a literal `id: <name>` line. CR-in-CI r1: raw-text grep would falsely
+	# satisfy the contract if an `id: <name>` appeared OUTSIDE .body (e.g.
+	# inside a description value or a stale `id:` reference).
 	required_ids=$(_yq_or_die ".templates.${tname}.required_ids // [] | .[]" "$SPEC" "${tname}.required_ids")
+	body_ids=$(_yq_or_die '.body[] | select(.id != null) | .id' "$tpath" "${tfile}.body[].id")
 	while IFS= read -r req_id; do
 		[ -n "$req_id" ] || continue
 		# Validate id charset same as template name — regex injection guard.
+		# (Charset check stays even though we no longer use req_id in regex —
+		# defensive depth + reserves charset for future regex use.)
 		case "$req_id" in *[^a-zA-Z0-9_-]*)
 			echo "issue-template-schema-check: invalid required_id '$req_id' for $tname (alphanumeric + _- only)" >&2
 			exit 2
 			;;
 		esac
-		if ! grep -Eq "^[[:space:]]*id:[[:space:]]*${req_id}[[:space:]]*\$" "$tpath"; then
-			err_lines="${err_lines}  - ${tfile}: missing 'id: ${req_id}'"$'\n'
+		if ! echo "$body_ids" | grep -Fxq "$req_id"; then
+			err_lines="${err_lines}  - ${tfile}: missing '.body[].id == ${req_id}'"$'\n'
 			errs=$((errs + 1))
 		fi
 	done <<<"$required_ids"

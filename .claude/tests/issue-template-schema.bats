@@ -45,6 +45,12 @@ _assert_template_no_parent() {
 	[ -f "$path" ]
 	run yq . "$path"
 	[ "$status" -eq 0 ]
+	# CR-in-CI r1: enforce the "no parent" contract — helper name promises
+	# the template has no parent input. Without this check, the helper
+	# would pass on a template that DOES have id:parent (silently weakening
+	# the assertion below).
+	parent_count=$(yq -r '[.body[] | select(.id == "parent")] | length' "$path")
+	[ "$parent_count" -eq 0 ]
 	area_type=$(yq -r '.body[] | select(.id == "area") | .type' "$path")
 	[ "$area_type" = "dropdown" ]
 	option_count=$(yq -r '.body[] | select(.id == "area") | .attributes.options | length' "$path")
