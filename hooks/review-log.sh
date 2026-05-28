@@ -117,7 +117,7 @@ phase1)
 		fi
 		if ! echo "$expected" | grep -qx "$AGENT"; then
 			echo "ERROR: unknown Phase 1 agent '$AGENT'. Expected one of:" >&2
-			printf '  - %s\n' "$expected" | sed 's/  - $//' >&2
+			while IFS= read -r line; do printf '  - %s\n' "$line" >&2; done <<<"$expected"
 			echo "(Source: $LIST_SCRIPT / .claude/review-config.yml)" >&2
 			exit 2
 		fi

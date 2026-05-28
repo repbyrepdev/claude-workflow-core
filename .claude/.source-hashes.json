@@ -91,7 +91,7 @@
     "hooks/pre-push-pipeline-gate.sh": "4747214e15be913bbdac3f66e6c365df6eb27a7b35d75f85b8ed07da4645a380",
     "hooks/recreate-baseline-gate.sh": "72e73adfd3a07cc3ba2eacb2a5c9bc10629421f6c352d39478dc949699c18232",
     "hooks/restore-session-state.sh": "2a0b2bce980a7a6cf85fcbccfec1ac30c29f61ac2a3b9fe0ccf88515e0da2da8",
-    "hooks/review-log.sh": "b89a82d1ba8019858f0e08297ad87fc48f6cef6e0fd16f8a76ab488081f756f6",
+    "hooks/review-log.sh": "16b71f27317630a0af2e912d7ebd640bad5fec462f6597963ded024865572960",
     "hooks/security-reminder.sh": "600177ab885313a35737291bf527823441cb897af48b670b47d7448ecdefea4d",
     "hooks/session-start-report.sh": "94ba7c9aafc906fb91f70c0b55df3fd0f8cc4f2730ad830d30927c16b1005f7d",
     "hooks/session-start-stale-marker-sweep.sh": "3af1d756a5209b237a9eb4c97068aad24000cbc7687666af207b8fcaff54a220",
