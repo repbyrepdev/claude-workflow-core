@@ -123,22 +123,24 @@ for cmd in yq jq shasum; do
 	}
 done
 
-yq_err=$(mktemp -t rfs-yq.XXXXXX) || {
-	echo "refresh-from-source: mktemp failed" >&2
-	exit 2
-}
+# r3 silent-failure-hunter MEDIUM: initialize _in_flight_new BEFORE
+# mktemp + trap registration. If mktemp fails (exit 2 below), the EXIT
+# trap fires; under bash 3.2 + set -u, ${#_in_flight_new[@]} would
+# crash if the array were unbound. Declared first → safe.
+_in_flight_new=()
+yq_err=""
+
 # r2 code-reviewer + silent-failure-hunter HIGH: promote .new tracking
 # to script scope so the trap can actually clean up. Prior r1 declared
 # this array `local` inside _refresh_one_consumer with _cleanup_new
 # unwired — dead code on SIGINT mid-cascade.
-_in_flight_new=()
 # shellcheck disable=SC2329,SC2317
 _cleanup() {
-	rm -f "$yq_err"
+	[ -n "$yq_err" ] && rm -f "$yq_err"
 	# Iterate via index — `"${_in_flight_new[@]:-}"` with `set -e` causes
-	# the empty-default empty-string iteration to trigger a non-zero exit
-	# on the `[ -n "$f" ]` short-circuit, which crashes the trap.
-	local i n
+	# the empty-default empty-string iteration to fire `[ -n "" ]` which
+	# returns rc=1 and aborts the trap. Indexed iteration sidesteps that.
+	local i n f
 	n=${#_in_flight_new[@]}
 	for ((i = 0; i < n; i++)); do
 		f=${_in_flight_new[$i]}
@@ -148,6 +150,11 @@ _cleanup() {
 	done
 }
 trap _cleanup EXIT INT TERM HUP
+
+yq_err=$(mktemp -t rfs-yq.XXXXXX) || {
+	echo "refresh-from-source: mktemp failed" >&2
+	exit 2
+}
 
 _resolve_consumer_path() {
 	# Resolve --consumer <name> against consumers.yml; expand ~/.
