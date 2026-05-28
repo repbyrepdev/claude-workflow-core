@@ -288,9 +288,9 @@ _write_settings() {
 }
 
 # Discover all auto-register hooks if --all-auto-register.
-# Restricted to first 15 lines per the frontmatter contract — _parse_frontmatter
-# only trusts that window, so discovery must too (a later heredoc/comment
-# containing `# auto-register: true` shouldn't make a hook auto-register).
+# Full-file scan (SSOT semantic shared with discover-orphan-hooks.sh +
+# migrate-settings.sh as of v0.24.0 #150). Hooks with long license/
+# provenance headers can push the directive past any line cap.
 # Use while-read array build (portable across bash 3.2 + bash 4+); mapfile is bash 4+.
 if [ "$ALL_AUTO" = "1" ]; then
 	while IFS= read -r h; do
