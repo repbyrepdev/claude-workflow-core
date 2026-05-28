@@ -50,6 +50,43 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || BRANCH="<unresolved>"
 jq -nc --arg ts "$TS" --arg sha "$SHA" --arg branch "$BRANCH" \
 	'{ts:$ts, sha:$sha, branch:$branch, action:"fire-resume"}' >>"$LOG"
 
+# v0.28.0 #174: post-commit sweep of phase1-directive markers whose SHA is
+# NOT the current HEAD and is not reachable from any local ref. Each
+# commit creates a new HEAD sha; markers for the prior sha are stranded
+# (the prior sha may still exist as a danglable commit but no longer
+# matches an active phase1 round). Sweep proactively to prevent
+# accumulation. 2026-05-28: 34 markers accumulated across prior sessions
+# in a peer repo (#174 Axis 2), blocking every tool call in a later session.
+DIRECTIVE_DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
+if [ -d "$DIRECTIVE_DIR" ]; then
+	for f in "$DIRECTIVE_DIR"/*.phase1-directive.txt; do
+		[ -f "$f" ] || continue
+		_sha=$(basename "$f" .phase1-directive.txt)
+		# Keep current HEAD's marker — it's the active phase1 round.
+		[ "$_sha" = "$SHA" ] && continue
+		# CR-SFH fix #5: validate basename is hex sha BEFORE for-each-ref
+		# (skip editor swap files / .DS_Store that would error out the cmd).
+		[[ $_sha =~ ^[0-9a-f]{7,40}$ ]] || continue
+		# CR-SFH fix #5: separate RC from empty-output. for-each-ref FAILURE
+		# (corrupt repo, perm denied, older git) was being treated as "sha
+		# not reachable" → mass-rm of legitimate markers. Now: rc!=0 = WARN
+		# + keep marker (fail-closed).
+		_ref_err=$(mktemp)
+		_ref_out=""
+		_ref_rc=0
+		_ref_out=$(git for-each-ref --contains "$_sha" --format='%(refname)' 2>"$_ref_err") || _ref_rc=$?
+		if [ "$_ref_rc" -ne 0 ]; then
+			echo "post-commit-ship-cycle: WARN for-each-ref rc=$_ref_rc for $_sha: $(head -c 200 "$_ref_err") — keeping marker" >&2
+			rm -f "$_ref_err"
+			continue
+		fi
+		rm -f "$_ref_err"
+		if [ -z "$_ref_out" ]; then
+			rm -f "$f" 2>/dev/null || echo "post-commit-ship-cycle: WARN rm failed for stale marker $f" >&2
+		fi
+	done
+fi
+
 # Detach: setsid + nohup so the resume call survives the commit's parent
 # shell exit. stdout/stderr → log file for post-mortem inspection.
 DETACH_LOG="$LOG_DIR/ship-cycle-resume-$(printf '%s' "$SHA" | head -c 8).log"
