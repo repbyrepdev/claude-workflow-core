@@ -2,7 +2,13 @@
 # covers: .github/labels.yml .github/labels-spec.md
 
 setup() {
-	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	# r2 silent-failure-hunter: capture cd-stderr so a cd failure (perm
+	# denied, missing intermediate dir, symlink-to-file) surfaces in the
+	# diagnostic instead of just an empty REPO_ROOT.
+	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." 2>&1 && pwd) || {
+		echo "FATAL: cd to repo root failed: $REPO_ROOT" >&2
+		return 1
+	}
 	[ -d "$REPO_ROOT/.github" ] || {
 		echo "FATAL: bad REPO_ROOT=$REPO_ROOT (no .github/)" >&2
 		return 1
@@ -113,9 +119,21 @@ setup() {
 		# CR Issue Planner
 		plan-me no-plan
 	)
+	# r2 silent-failure-hunter: hoist yq outside the loop. Prior code
+	# called yq 25 times AND silently swallowed yq failures as "every
+	# label missing" — misleading diagnostic blamed phantom label
+	# removals when the real cause was a yq parse error.
+	names=$(yq -r '.[].name' "$LABELS") || {
+		echo "FAIL: yq failed extracting label names from $LABELS" >&2
+		return 1
+	}
+	[ -n "$names" ] || {
+		echo "FAIL: yq returned empty name list" >&2
+		return 1
+	}
 	missing=()
 	for lbl in "${REQUIRED[@]}"; do
-		yq -r '.[].name' "$LABELS" | grep -Fxq "$lbl" || missing+=("$lbl")
+		echo "$names" | grep -Fxq "$lbl" || missing+=("$lbl")
 	done
 	[ "${#missing[@]}" -eq 0 ] || {
 		echo "FAIL: missing required labels: ${missing[*]}" >&2
@@ -161,12 +179,20 @@ setup() {
 # document the two-tier model + audit table. Strong assertions, not
 # weak substring matches.
 @test "labels-spec.md exists with structural markers" {
-	[ -f "$SPEC" ]
-	[ "$(wc -l <"$SPEC")" -gt 50 ]
-	grep -qE '^## Two-tier model' "$SPEC"
-	grep -qE '^## Promotion criteria' "$SPEC"
-	grep -qE '^## Cross-repo audit' "$SPEC"
-	grep -qE '^## What stays in consumer local-overrides' "$SPEC"
-	grep -qE 'Generic tier' "$SPEC"
-	grep -qE 'Domain-extension tier' "$SPEC"
+	# r2 silent-failure-hunter: explicit FAIL messages per assertion so a
+	# regression points at the specific structural marker that broke.
+	[ -f "$SPEC" ] || {
+		echo "FAIL: labels-spec.md missing at $SPEC" >&2
+		return 1
+	}
+	[ "$(wc -l <"$SPEC")" -gt 50 ] || {
+		echo "FAIL: labels-spec.md unexpectedly short ($(wc -l <"$SPEC") lines)" >&2
+		return 1
+	}
+	for marker in '^## Two-tier model' '^## Promotion criteria' '^## Cross-repo audit' '^## What stays in consumer local-overrides' 'Generic tier' 'Domain-extension tier'; do
+		grep -qE "$marker" "$SPEC" || {
+			echo "FAIL: labels-spec.md missing structural marker: $marker" >&2
+			return 1
+		}
+	done
 }
