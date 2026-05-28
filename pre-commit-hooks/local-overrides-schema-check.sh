@@ -54,13 +54,31 @@ command -v yq >/dev/null 2>&1 || {
 	exit 2
 }
 
+# r3 code-reviewer Important: validate the STAGED blob, not the worktree
+# file. Mirrors consumers-schema-check.sh + issue-template-schema-check.sh
+# pattern. Without this, an operator who `git add`s a valid file then
+# edits it locally would see the hook validate the WRONG content.
 yq_err=$(mktemp -t lo-yq.XXXXXX) || {
-	echo "local-overrides-schema-check: mktemp failed" >&2
+	echo "local-overrides-schema-check: mktemp failed (yq_err buffer)" >&2
+	exit 2
+}
+staged_tmp=$(mktemp -t lo-staged.XXXXXX) || {
+	rm -f "$yq_err"
+	echo "local-overrides-schema-check: mktemp failed (staged buffer)" >&2
 	exit 2
 }
 # shellcheck disable=SC2329,SC2317
-_cleanup() { rm -f "$yq_err"; }
+_cleanup() { rm -f "$yq_err" "$staged_tmp"; }
 trap _cleanup EXIT INT TERM HUP
+
+# Materialize staged content to a temp file. r3: capture git show stderr
+# explicitly so corrupt-object-store / permission errors surface instead
+# of getting masked.
+if ! git show ":${OVERRIDES}" >"$staged_tmp" 2>"$yq_err"; then
+	echo "local-overrides-schema-check: could not read staged $OVERRIDES:" >&2
+	cat "$yq_err" >&2
+	exit 2
+fi
 
 _yq_or_die() {
 	local expr=$1 file=$2 desc=$3
@@ -74,14 +92,14 @@ _yq_or_die() {
 	printf '%s' "$out"
 }
 
-spec_version=$(_yq_or_die '.schema_version' "$OVERRIDES" 'schema_version')
+spec_version=$(_yq_or_die '.schema_version' "$staged_tmp" 'schema_version')
 if [ "$spec_version" != "1" ]; then
 	echo "local-overrides-schema-check: $OVERRIDES .schema_version must equal 1 (got '$spec_version')" >&2
 	exit 1
 fi
 
 # Allow empty overrides[] — fresh consumer with no divergences is valid.
-overrides_count=$(_yq_or_die '.overrides // [] | length' "$OVERRIDES" 'overrides list length')
+overrides_count=$(_yq_or_die '.overrides // [] | length' "$staged_tmp" 'overrides list length')
 if [ "$overrides_count" = "0" ]; then
 	exit 0
 fi
@@ -95,11 +113,11 @@ errors=()
 today=$(date +%Y-%m-%d)
 i=0
 while [ "$i" -lt "$overrides_count" ]; do
-	path=$(_yq_or_die ".overrides[$i].path" "$OVERRIDES" "overrides[$i].path")
-	category=$(_yq_or_die ".overrides[$i].category" "$OVERRIDES" "overrides[$i].category")
-	reason=$(_yq_or_die ".overrides[$i].reason" "$OVERRIDES" "overrides[$i].reason")
-	added=$(_yq_or_die ".overrides[$i].added" "$OVERRIDES" "overrides[$i].added")
-	expires=$(_yq_or_die ".overrides[$i].expires // \"\"" "$OVERRIDES" "overrides[$i].expires")
+	path=$(_yq_or_die ".overrides[$i].path" "$staged_tmp" "overrides[$i].path")
+	category=$(_yq_or_die ".overrides[$i].category" "$staged_tmp" "overrides[$i].category")
+	reason=$(_yq_or_die ".overrides[$i].reason" "$staged_tmp" "overrides[$i].reason")
+	added=$(_yq_or_die ".overrides[$i].added" "$staged_tmp" "overrides[$i].added")
+	expires=$(_yq_or_die ".overrides[$i].expires // \"\"" "$staged_tmp" "overrides[$i].expires")
 
 	# path: required, non-empty, no '..' or absolute
 	if [ -z "$path" ] || [ "$path" = "null" ]; then
