@@ -196,12 +196,16 @@ EOF
 	fi
 	if [ "$hooks_present" = "yes" ]; then
 		mkdir -p "$TEST_TMP/fakerepo/hooks"
+		# v0.24.0 (#150) — migrate-settings.sh now data-discovers hooks
+		# via `# auto-register: true` header (was a hardcoded 3-element
+		# array). Fixture hooks must declare the directive to be picked
+		# up by the new discovery loop.
 		for h in cr-auto-parse-poll phase1-directive-pending-guard ship-cycle-director-gate; do
-			# Real hook frontmatter — needed by register-hook.sh
 			cat >"$TEST_TMP/fakerepo/hooks/$h.sh" <<EOF
 #!/bin/bash
 # event: PreToolUse
 # matcher: Bash
+# auto-register: true
 echo "stub-hook"
 EOF
 			chmod +x "$TEST_TMP/fakerepo/hooks/$h.sh"
