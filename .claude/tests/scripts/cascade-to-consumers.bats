@@ -196,8 +196,13 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	GH_STUB_FAIL_LABEL=1 run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 3 ]
-	[[ $output == *"fail-label-create"* ]] || [[ $output == *"failed to ensure"* ]]
+	[[ $output == *"failed to ensure"* ]]
 	[[ $output == *"failed:          1"* ]]
+	# r3 code-reviewer LOW: also verify the JSONL audit log carries the
+	# fail-label-create action (whole-point-of-the-audit-log).
+	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
+	run jq -s 'map(select(.action == "fail-label-create")) | length' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	[ "$output" -ge 1 ]
 }
 
 @test "malformed consumer entry (missing fields) rc=3 + audit logs fail-malformed-entry" {

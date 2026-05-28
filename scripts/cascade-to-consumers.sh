@@ -276,6 +276,9 @@ if ! n=$(jq 'length' <<<"$consumers_json" 2>"$yq_err"); then
 	exit 2
 fi
 for ((i = 0; i < n; i++)); do
+	# r3 silent-failure-hunter MEDIUM: total++ before any continue so the
+	# summary "total" matches the number of entries we tried.
+	total=$((total + 1))
 	if ! entry=$(jq -c ".[$i]" <<<"$consumers_json" 2>"$yq_err"); then
 		echo "cascade-to-consumers: jq failed extracting consumer[$i]:" >&2
 		cat "$yq_err" >&2
@@ -283,14 +286,20 @@ for ((i = 0; i < n; i++)); do
 		worst_rc=3
 		continue
 	fi
-	name=$(jq -r '.name // empty' <<<"$entry")
-	repo=$(jq -r '.repo // empty' <<<"$entry")
-	old_ver=$(jq -r '.pinned_version // empty' <<<"$entry")
-	total=$((total + 1))
+	# r3 silent-failure-hunter LOW: explicit 2>"$yq_err" guard per the r2
+	# mandate (previously bare jq -r). Catches set -e abort with diagnostic.
+	if ! name=$(jq -r '.name // empty' <<<"$entry" 2>"$yq_err") ||
+		! repo=$(jq -r '.repo // empty' <<<"$entry" 2>>"$yq_err") ||
+		! old_ver=$(jq -r '.pinned_version // empty' <<<"$entry" 2>>"$yq_err"); then
+		echo "cascade-to-consumers: jq -r failed extracting fields for consumer[$i]:" >&2
+		cat "$yq_err" >&2
+		_log "consumer[$i]" "<unknown>" "<unknown>" "fail-jq-extract" "" "$(cat "$yq_err")"
+		failed=$((failed + 1))
+		worst_rc=3
+		continue
+	fi
 
-	# r2 silent-failure-hunter HIGH: jq -r on null field emits 'null' (or
-	# now `empty` → empty string with the // empty guard); reject malformed
-	# entries explicitly rather than letting `--repo ''` or `--consumer null`
+	# Reject malformed entries explicitly rather than letting `--repo ''`
 	# leak into the gh call + audit log.
 	if [ -z "$name" ] || [ -z "$repo" ] || [ -z "$old_ver" ]; then
 		echo "[FAIL] consumer[$i] missing required field (name='$name' repo='$repo' pinned_version='$old_ver')" >&2
@@ -310,18 +319,20 @@ for ((i = 0; i < n; i++)); do
 
 	title="feat: refresh from plugin v$NEW_VER (was v$old_ver)"
 
-	# r2 fix (code-reviewer HIGH + silent-failure-hunter MEDIUM):
 	# Idempotency MUST be label-based to survive future title-format drift.
 	# Ensure the auto:plugin-release-cascade label exists in the consumer
-	# repo before creation (idempotent — `gh label create --force` no-ops
-	# when present). Then both the idempotency query AND the issue creation
-	# use --label, so a re-cascade detects its own prior issue.
+	# repo before creation. `--force` is an UPSERT (creates if absent,
+	# updates color/description if present) — this is intentional: the
+	# plugin owns the label's canonical color + description, and consumer-
+	# side edits should be made via local-overrides.yml (Sub 9), not by
+	# manually editing the label on github.com. After this call both the
+	# idempotency query AND the issue creation use --label so a re-cascade
+	# detects its own prior issue.
 	#
-	# We do this on EVERY consumer to handle the "newly-onboarded" case
-	# where the label hasn't been registered yet; gh label create is
-	# cheap (a no-op when the label exists). Failure to create the label
-	# halts cascade for this consumer (no point creating an unlabeled
-	# issue that future idempotency checks won't find).
+	# Failure to upsert the label halts cascade for this consumer (no
+	# point creating an unlabeled issue that future idempotency checks
+	# won't find). Common cause: gh token lacks `repo` write scope on
+	# the consumer.
 	if ! gh label create auto:plugin-release-cascade \
 		--color "0e8a16" \
 		--description "Auto-opened cascade tracker — consumer should refresh from plugin source" \
@@ -352,7 +363,10 @@ for ((i = 0; i < n; i++)); do
 		worst_rc=3
 		continue
 	fi
-	if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+	# r3 silent-failure-hunter MEDIUM: validate $existing is numeric before
+	# passing to _log (--argjson would crash the script if $existing is
+	# non-JSON like "abc" — set -e would abort the whole cascade mid-sweep).
+	if [ -n "$existing" ] && [ "$existing" != "null" ] && [[ $existing =~ ^[0-9]+$ ]]; then
 		echo "[EXISTS] $name ($repo) — issue #$existing already open"
 		_log "$name" "$repo" "$old_ver" "skip-exists" "$existing"
 		skipped_exists=$((skipped_exists + 1))
@@ -365,20 +379,13 @@ for ((i = 0; i < n; i++)); do
 		continue
 	fi
 
-	# r2 silent-failure-hunter MEDIUM: render body to a variable BEFORE
-	# piping so a body-render failure produces a distinct error path
-	# rather than masquerading as a gh-create failure.
-	if ! body=$(_render_body "$name" "$old_ver" 2>"$yq_err"); then
-		echo "[FAIL] $name ($repo) — failed to render issue body:" >&2
-		cat "$yq_err" >&2
-		_log "$name" "$repo" "$old_ver" "fail-body-render" "" "$(cat "$yq_err")"
-		failed=$((failed + 1))
-		worst_rc=3
-		continue
-	fi
+	# Render body to a variable so we can `printf '%s\n'` it (preserves
+	# the trailing newline a heredoc produces — r3 silent-failure-hunter
+	# LOW: bare `printf '%s' "$body"` would byte-mismatch heredoc-pipe).
+	body=$(_render_body "$name" "$old_ver")
 	# Create the issue with --label so future idempotency checks can find
 	# it (label is now guaranteed to exist in the consumer repo).
-	if ! issue_url=$(printf '%s' "$body" |
+	if ! issue_url=$(printf '%s\n' "$body" |
 		gh issue create --repo "$repo" \
 			--title "$title" \
 			--label auto:plugin-release-cascade \

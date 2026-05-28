@@ -136,11 +136,13 @@ fi
 
 # Build status records per consumer. Output is an array of:
 #   { name, repo, pinned, current, is_behind, open_cascade_issue }
-# r2 silent-failure-hunter MEDIUM: every jq call guarded with explicit
-# error capture; partial gh failures tracked separately so --quiet can
-# surface a "detection unreliable" stderr signal.
+# r3 silent-failure-hunter HIGH: every silent-drop path (gh failure,
+# jq-extract failure, jq-append failure, missing required field) MUST
+# increment detection_failures so --quiet can surface "N consumer(s)
+# detection unreliable" — without this, the snapshot's `behind` count
+# silently undercounts when consumers are dropped mid-sweep.
 status_json='[]'
-gh_failures=0
+detection_failures=0
 if ! n=$(jq 'length' <<<"$consumers_json" 2>"$yq_err"); then
 	echo "cascade-status: jq failed counting consumers:" >&2
 	cat "$yq_err" >&2
@@ -150,19 +152,26 @@ for ((i = 0; i < n; i++)); do
 	if ! entry=$(jq -c ".[$i]" <<<"$consumers_json" 2>"$yq_err"); then
 		echo "cascade-status: jq failed extracting consumer[$i]:" >&2
 		cat "$yq_err" >&2
+		detection_failures=$((detection_failures + 1))
 		continue
 	fi
-	name=$(jq -r '.name // empty' <<<"$entry")
-	repo=$(jq -r '.repo // empty' <<<"$entry")
-	pinned=$(jq -r '.pinned_version // empty' <<<"$entry")
+	# r3 silent-failure-hunter LOW: guard every jq -r per the r2 mandate.
+	if ! name=$(jq -r '.name // empty' <<<"$entry" 2>"$yq_err") ||
+		! repo=$(jq -r '.repo // empty' <<<"$entry" 2>>"$yq_err") ||
+		! pinned=$(jq -r '.pinned_version // empty' <<<"$entry" 2>>"$yq_err"); then
+		echo "cascade-status: jq failed extracting fields for consumer[$i]:" >&2
+		cat "$yq_err" >&2
+		detection_failures=$((detection_failures + 1))
+		continue
+	fi
 	if [ -z "$name" ] || [ -z "$repo" ] || [ -z "$pinned" ]; then
 		echo "cascade-status: consumer[$i] missing required field — skipping" >&2
+		detection_failures=$((detection_failures + 1))
 		continue
 	fi
 
-	# r2 code-simplifier LOW: compute is_behind inside jq instead of via
-	# bash ternary intermediate ($([ A != B ] && echo true || echo false)
-	# is a known footgun + extra subshell per consumer).
+	# is_behind is computed inside the jq builder below (avoids a bash
+	# ternary subshell per consumer).
 
 	# Query open cascade issue. Drop --search (GitHub tokenizer
 	# fragments colons/parens/dots and may false-miss). Use --label
@@ -175,10 +184,10 @@ for ((i = 0; i < n; i++)); do
 			--label auto:plugin-release-cascade \
 			--json number 2>"$yq_err" |
 			jq -r '.[0].number // empty' 2>>"$yq_err"); then
-			# Best-effort: track gh failure count so --quiet can warn,
+			# Best-effort: track failure count so --quiet can warn,
 			# but don't abort the whole sweep on one consumer's failure.
 			issue_num="?"
-			gh_failures=$((gh_failures + 1))
+			detection_failures=$((detection_failures + 1))
 		fi
 	fi
 
@@ -188,6 +197,7 @@ for ((i = 0; i < n; i++)); do
 		<<<"$status_json" 2>"$yq_err"); then
 		echo "cascade-status: jq failed appending status for consumer[$i]:" >&2
 		cat "$yq_err" >&2
+		detection_failures=$((detection_failures + 1))
 		continue
 	fi
 done
@@ -203,20 +213,22 @@ json)
 	printf '%s\n' "$status_json"
 	;;
 text)
-	if [ "$QUIET" = "1" ] && [ "$behind" -eq 0 ]; then
-		exit 0
-	fi
+	# r3 silent-failure-hunter HIGH: --quiet must surface detection_failures
+	# even when behind==0. The prior code exited 0 silently when behind==0
+	# regardless of detection_failures, so session-start would report
+	# "all clear" while gh queries had actually failed for every consumer.
 	if [ "$QUIET" = "1" ]; then
-		echo "cascade-status: $behind consumer(s) behind plugin v$current_ver (run 'scripts/cascade-status.sh' for details)" >&2
-		# r2 silent-failure-hunter MEDIUM: surface gh detection failures
-		# so operator knows the issue-existence side of the count is
-		# unreliable. Without this, an operator firing cascade-to-
-		# consumers.sh based on the laggard count would create duplicates
-		# when the idempotency check there hits the same gh failure.
-		if [ "$gh_failures" -gt 0 ]; then
-			echo "cascade-status: WARNING: $gh_failures consumer(s) had gh failures — issue-detection unreliable; recheck before cascading" >&2
+		if [ "$behind" -gt 0 ]; then
+			echo "cascade-status: $behind consumer(s) behind plugin v$current_ver (run 'scripts/cascade-status.sh' for details)" >&2
 		fi
-		exit 1
+		if [ "$detection_failures" -gt 0 ]; then
+			echo "cascade-status: WARNING: $detection_failures consumer(s) had detection failures (gh / jq / missing-field) — snapshot unreliable; recheck before acting" >&2
+		fi
+		# Exit 1 if EITHER behind > 0 OR detection failed.
+		if [ "$behind" -gt 0 ] || [ "$detection_failures" -gt 0 ]; then
+			exit 1
+		fi
+		exit 0
 	fi
 	echo "=== Cascade status (plugin v$current_ver) ==="
 	echo
@@ -230,8 +242,8 @@ text)
 	echo "$behind consumer(s) behind."
 	# Use `if` not `[ A ] && B` — under set -e, the test returning rc=1
 	# would propagate as the script's final exit code (false-fail).
-	if [ "$gh_failures" -gt 0 ]; then
-		echo "WARNING: $gh_failures consumer(s) had gh failures — issue-detection unreliable" >&2
+	if [ "$detection_failures" -gt 0 ]; then
+		echo "WARNING: $detection_failures consumer(s) had detection failures — snapshot may undercount" >&2
 	fi
 	;;
 esac
