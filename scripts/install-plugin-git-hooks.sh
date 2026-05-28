@@ -86,10 +86,18 @@ check)
 		echo "install-plugin-git-hooks: ✗ .git/hooks/post-merge missing" >&2
 		exit 1
 	fi
-	# The expected wrapper contains the source-hook invocation. Match
-	# loosely so future composition with other handlers doesn't false-trip.
-	if ! grep -Fq "post-merge-release-fire.sh" "$HOOK_PATH" 2>/dev/null; then
-		echo "install-plugin-git-hooks: ✗ .git/hooks/post-merge exists but doesn't invoke release-fire" >&2
+	if [ ! -r "$HOOK_PATH" ]; then
+		echo "install-plugin-git-hooks: ✗ $HOOK_PATH exists but is unreadable — fix perms and re-run" >&2
+		exit 2
+	fi
+	# Sentinel marker for stronger drift detection. A comment in a hand-
+	# written hook mentioning "post-merge-release-fire.sh" should NOT
+	# false-pass; only a wrapper installed by this script will contain
+	# `# wired-by: install-plugin-git-hooks` at the top.
+	# code-reviewer #139 r1 IMPORTANT: prior loose grep matched any
+	# substring including comments.
+	if ! grep -Fq "# wired-by: install-plugin-git-hooks" "$HOOK_PATH" 2>/dev/null; then
+		echo "install-plugin-git-hooks: ✗ .git/hooks/post-merge exists but isn't the canonical wrapper (missing sentinel)" >&2
 		exit 1
 	fi
 	echo "install-plugin-git-hooks: ✓ post-merge wired"
@@ -105,32 +113,65 @@ uninstall)
 	exit 0
 	;;
 install)
-	# Idempotent: if already wired correctly, no-op.
-	if [ -x "$HOOK_PATH" ] && grep -Fq "post-merge-release-fire.sh" "$HOOK_PATH" 2>/dev/null; then
+	# Idempotent: if already wired correctly, no-op. Sentinel-marker
+	# check (instead of substring grep) prevents false-positive on
+	# hand-written hooks that mention the source script in a comment.
+	if [ -x "$HOOK_PATH" ] && grep -Fq "# wired-by: install-plugin-git-hooks" "$HOOK_PATH" 2>/dev/null; then
 		echo "install-plugin-git-hooks: ✓ already installed at $HOOK_PATH"
 		exit 0
 	fi
 
-	# Preserve any prior content via a one-shot backup if the file
-	# exists but doesn't yet wire release-fire. Operators with their
-	# own post-merge logic can manually compose afterward.
+	# Preserve any prior content via a timestamped backup so re-running
+	# the installer after operator-edits or a regenerated wrapper doesn't
+	# clobber the FIRST install's backup of the original operator hook.
+	# silent-failure-hunter #139 r1 MED: original .pre-v0.18.0.bak was a
+	# hardcoded name that any re-install would silently overwrite.
 	if [ -e "$HOOK_PATH" ]; then
-		BACKUP="${HOOK_PATH}.pre-v0.18.0.bak"
-		cp "$HOOK_PATH" "$BACKUP"
+		_ts=$(date -u +%Y%m%dT%H%M%SZ)
+		BACKUP="${HOOK_PATH}.bak.${_ts}"
+		if ! cp "$HOOK_PATH" "$BACKUP"; then
+			echo "install-plugin-git-hooks: failed to back up $HOOK_PATH → $BACKUP — refusing to overwrite" >&2
+			exit 2
+		fi
 		echo "install-plugin-git-hooks: backed up prior $HOOK_PATH → $BACKUP"
 	fi
 
 	# Write a stable wrapper that resolves the source via the repo root.
-	# Single-file edit; chmod +x; done.
+	# Sentinel marker enables stricter idempotency + --check detection.
+	# Failures from the source hook are logged to a JSONL audit trail in
+	# the operator's home (not the repo's .claude/logs — REPO_ROOT may
+	# be unresolvable in degraded states). silent-failure-hunter #139
+	# r1 CRIT: prior `|| true` silently swallowed release-fire exit 2.
 	cat >"$HOOK_PATH" <<'WRAPPER'
 #!/bin/bash
-# Installed by scripts/install-plugin-git-hooks.sh (v0.18.0, #139).
-# DO NOT EDIT inline — re-run the installer or compose around this snippet.
+# wired-by: install-plugin-git-hooks (v0.18.0, #139)
+# Installed by scripts/install-plugin-git-hooks.sh. DO NOT EDIT inline —
+# re-run the installer to refresh. Pre-existing operator content is
+# preserved in a timestamped .bak file alongside this file.
 set -u
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+	_ts=$(date -u +%FT%TZ)
+	_home_log="$HOME/.claude/logs/post-merge-wrapper-failures.jsonl"
+	mkdir -p "$(dirname "$_home_log")" 2>/dev/null || true
+	printf '{"ts":"%s","hook":"post-merge-wrapper","status":"git-rev-parse-failed","cwd":"%s"}\n' \
+		"$_ts" "$PWD" >>"$_home_log" 2>/dev/null || true
+	exit 0
+}
 TARGET="$REPO_ROOT/hooks/post-merge-release-fire.sh"
 if [ -x "$TARGET" ]; then
-	"$TARGET" || true
+	# Capture rc BEFORE the conditional — `if ! cmd; then $?` resets to
+	# the `!` operator's exit (which is 0 when it successfully inverts),
+	# masking cmd's real rc.
+	_rc=0
+	"$TARGET" || _rc=$?
+	if [ "$_rc" -ne 0 ]; then
+		_ts=$(date -u +%FT%TZ)
+		_log="$REPO_ROOT/.claude/logs/post-merge-wrapper-failures.jsonl"
+		mkdir -p "$(dirname "$_log")" 2>/dev/null || true
+		printf '{"ts":"%s","hook":"post-merge-release-fire","rc":%d}\n' \
+			"$_ts" "$_rc" >>"$_log" 2>/dev/null || true
+		echo "post-merge-wrapper: release-fire exited rc=$_rc — see .claude/logs/post-merge-wrapper-failures.jsonl" >&2
+	fi
 fi
 WRAPPER
 	chmod +x "$HOOK_PATH"

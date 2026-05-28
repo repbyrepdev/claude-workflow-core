@@ -142,7 +142,83 @@ teardown() {
 	run scripts/backfill-tags.sh --dry-run --since v0.1.0
 	[ "$status" -eq 0 ]
 	# Should NOT include v0.1.0 in the dry-run output (since it's the
-	# baseline) — but should include v0.2.0 + v0.3.0.
+	# baseline) — but should include v0.2.0 + v0.3.0. Negative + positive
+	# assertions per comment-analyzer #139 r1 MED (CR-007 — prior version
+	# had only the positive assertions; a future change that includes
+	# v0.1.0 in the walk would pass silently).
+	[[ $output != *"v0.1.0"* ]]
 	[[ $output == *"v0.2.0"* ]]
 	[[ $output == *"v0.3.0"* ]]
+}
+
+@test "tags point at the FIRST commit where each version first appeared" {
+	# pr-test-analyzer #139 r1 CRITICAL BFT-02: tag-name-only assertion
+	# would pass even if all 3 tags pointed at HEAD. The whole point of
+	# the script is "tag at the RIGHT sha". Pin that explicitly.
+	cd "$TEST_TMP" || return 1
+	# Capture the 3 fixture shas (oldest → newest) BEFORE running backfill
+	v01_sha=$(git log --reverse --format=%H | sed -n '1p')
+	v02_sha=$(git log --reverse --format=%H | sed -n '2p')
+	v03_sha=$(git log --reverse --format=%H | sed -n '3p')
+	scripts/backfill-tags.sh --skip-push --skip-release >/dev/null
+	# Each tag must resolve to its introducing commit. Tags are annotated,
+	# so peel via `^{commit}` to compare with the commit sha (not the
+	# annotated tag object's own sha).
+	[ "$(git rev-parse 'v0.1.0^{commit}')" = "$v01_sha" ]
+	[ "$(git rev-parse 'v0.2.0^{commit}')" = "$v02_sha" ]
+	[ "$(git rev-parse 'v0.3.0^{commit}')" = "$v03_sha" ]
+	# AND the plugin.json.version at each tag matches the tag name
+	[ "$(git show v0.1.0:.claude-plugin/plugin.json | jq -r .version)" = "0.1.0" ]
+	[ "$(git show v0.2.0:.claude-plugin/plugin.json | jq -r .version)" = "0.2.0" ]
+	[ "$(git show v0.3.0:.claude-plugin/plugin.json | jq -r .version)" = "0.3.0" ]
+}
+
+@test "release.sh fires once per version inside its historical worktree" {
+	# pr-test-analyzer #139 r1 CRITICAL BFT-01: the worktree+release.sh
+	# code path is the entire reason this script exists. Drop --skip-release
+	# and assert the stub fired with the right version per invocation.
+	cd "$TEST_TMP" || return 1
+	scripts/backfill-tags.sh --skip-push >/dev/null
+	# Stub release.sh logs `version=...` per invocation; assert each
+	# fixture version appears exactly once
+	[ "$(grep -c 'version=0.1.0' "$BACKFILL_TEST_LOG")" -eq 1 ]
+	[ "$(grep -c 'version=0.2.0' "$BACKFILL_TEST_LOG")" -eq 1 ]
+	[ "$(grep -c 'version=0.3.0' "$BACKFILL_TEST_LOG")" -eq 1 ]
+	# AND no worktree directories leak after the run
+	leftover=$(git worktree list --porcelain | grep -c '^worktree ')
+	# Always at least 1 (the main worktree); MUST NOT be more
+	[ "$leftover" -eq 1 ]
+}
+
+@test "plugin.json with null .version is skipped, not tagged as vnull" {
+	# silent-failure-hunter #139 r1 CRITICAL: jq -r '.version' on null
+	# returns the STRING "null" → previously would create a `vnull` tag.
+	cd "$TEST_TMP" || return 1
+	# Add a 4th commit with null version
+	echo '{"version":null}' >.claude-plugin/plugin.json
+	git commit -aq -m "null version (should be skipped)"
+	# Add a 5th commit with valid version
+	echo '{"version":"0.4.0"}' >.claude-plugin/plugin.json
+	git commit -aq -m "v0.4.0"
+	run scripts/backfill-tags.sh --skip-push --skip-release
+	[ "$status" -eq 0 ]
+	# Should NOT create vnull
+	run git rev-parse -q --verify refs/tags/vnull
+	[ "$status" -ne 0 ]
+	# But SHOULD have skipped with a WARN to stderr
+	[[ $output == *"missing/null/non-string"* ]]
+	# And v0.4.0 still gets tagged (the null commit doesn't poison the walk)
+	git rev-parse -q --verify refs/tags/v0.4.0 >/dev/null
+}
+
+@test "schema_version field present in every audit log entry" {
+	# type-design-analyzer #139 r1 HIGH T1: every emitted JSONL row must
+	# carry schema_version so downstream consumers can detect format drift.
+	cd "$TEST_TMP" || return 1
+	scripts/backfill-tags.sh --skip-push --skip-release >/dev/null
+	[ -f .claude/logs/release-backfill.jsonl ]
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		echo "$line" | jq -e '.schema_version == 1' >/dev/null
+	done <.claude/logs/release-backfill.jsonl
 }

@@ -111,7 +111,7 @@ teardown() {
 	rm -rf "$OTHER"
 }
 
-@test "preserves prior post-merge content as backup" {
+@test "preserves prior post-merge content as timestamped backup" {
 	cd "$TEST_TMP" || return 1
 	# Pre-existing hook with different content (operator's custom logic)
 	cat >.git/hooks/post-merge <<'OLD'
@@ -122,11 +122,64 @@ OLD
 	run scripts/install-plugin-git-hooks.sh
 	[ "$status" -eq 0 ]
 	[[ $output == *"backed up"* ]]
-	# Backup file exists with the old content
-	[ -f .git/hooks/post-merge.pre-v0.18.0.bak ]
-	grep -q "my custom hook" .git/hooks/post-merge.pre-v0.18.0.bak
-	# New hook is the wrapper
-	grep -Fq "post-merge-release-fire.sh" .git/hooks/post-merge
+	# Backup file with timestamp suffix exists with the old content.
+	# Pattern: post-merge.bak.YYYYMMDDTHHMMSSZ
+	shopt -s nullglob
+	backups=(.git/hooks/post-merge.bak.*)
+	[ "${#backups[@]}" -ge 1 ]
+	grep -q "my custom hook" "${backups[0]}"
+	# New hook is the canonical wrapper (sentinel marker present)
+	grep -Fq "# wired-by: install-plugin-git-hooks" .git/hooks/post-merge
+}
+
+@test "--check fails with rc=1 when hook exists but lacks sentinel" {
+	# IPGH-02: wrong-wrapper case — hook present + executable + does
+	# NOT contain the sentinel comment. Previously this returned 0
+	# under the loose substring grep.
+	cd "$TEST_TMP" || return 1
+	cat >.git/hooks/post-merge <<'CUSTOM'
+#!/bin/bash
+echo operator-only
+CUSTOM
+	chmod +x .git/hooks/post-merge
+	run scripts/install-plugin-git-hooks.sh --check
+	[ "$status" -eq 1 ]
+	[[ $output == *"isn't the canonical wrapper"* ]] || [[ $output == *"missing sentinel"* ]]
+}
+
+@test "comment mentioning release-fire.sh does NOT false-pass --check" {
+	# code-reviewer #139 r1 IMPORTANT: loose grep would match a comment
+	# mentioning post-merge-release-fire.sh even without invocation.
+	cd "$TEST_TMP" || return 1
+	cat >.git/hooks/post-merge <<'TRICKY'
+#!/bin/bash
+# This is NOT a real wired hook — just mentions post-merge-release-fire.sh
+echo "operator hook (not wired)"
+TRICKY
+	chmod +x .git/hooks/post-merge
+	run scripts/install-plugin-git-hooks.sh --check
+	[ "$status" -eq 1 ]
+}
+
+@test "installed wrapper logs release-fire non-zero exit (no silent swallow)" {
+	# silent-failure-hunter #139 r1 CRIT: prior wrapper used `|| true`
+	# which swallowed every release-fire failure.
+	cd "$TEST_TMP" || return 1
+	# Replace stub source-hook with one that exits non-zero
+	cat >hooks/post-merge-release-fire.sh <<'FAIL'
+#!/usr/bin/env bash
+echo "release-fire intentional failure" >&2
+exit 2
+FAIL
+	chmod +x hooks/post-merge-release-fire.sh
+	scripts/install-plugin-git-hooks.sh >/dev/null
+	# Fire the wrapper directly
+	run .git/hooks/post-merge
+	# Wrapper itself exits 0 (must NOT break the merge)
+	[ "$status" -eq 0 ]
+	# But the failure was logged to the JSONL audit trail
+	[ -f .claude/logs/post-merge-wrapper-failures.jsonl ]
+	grep -q '"rc":2' .claude/logs/post-merge-wrapper-failures.jsonl
 }
 
 @test "exits 2 if source hook is missing" {
