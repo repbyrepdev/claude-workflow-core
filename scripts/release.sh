@@ -146,21 +146,52 @@ fi
 # Snapshot + regen + compare + restore (must not mutate during a
 # clean-tree assertion). Worktree was certified clean above, so we
 # can compute the diff safely without git stash.
-_snap=$(mktemp -t source-hashes-release.XXXXXX)
-cp "$SOURCE_HASHES_PATH" "$_snap"
-if ! "$HASH_DRIFT_SH" --generate >/dev/null 2>&1; then
-	mv "$_snap" "$SOURCE_HASHES_PATH"
-	echo "release.sh: hash-drift.sh --generate failed during release-time verification" >&2
+# #155 silent-failure-hunter CRIT-2 + HIGH-1: register trap BEFORE
+# mktemp so an interrupt (Ctrl-C) between regen + restore can't leave
+# the working tree mutated. Also guard mktemp against silent failure.
+_snap=""
+# shellcheck disable=SC2329,SC2317
+_restore_hashes() {
+	if [ -n "$_snap" ] && [ -f "$_snap" ]; then
+		# Best-effort restore + cleanup. Failure here is non-recoverable
+		# (operator must inspect manually); surface to stderr.
+		mv "$_snap" "$SOURCE_HASHES_PATH" 2>/dev/null || {
+			echo "release.sh: WARNING: failed to restore $SOURCE_HASHES_PATH from $_snap — inspect manually" >&2
+			rm -f "$_snap"
+		}
+		_snap=""
+	fi
+}
+trap _restore_hashes EXIT INT TERM HUP
+_snap=$(mktemp -t source-hashes-release.XXXXXX) || {
+	echo "release.sh: mktemp failed — cannot snapshot $SOURCE_HASHES_PATH" >&2
+	exit 2
+}
+if ! cp "$SOURCE_HASHES_PATH" "$_snap"; then
+	echo "release.sh: failed to snapshot $SOURCE_HASHES_PATH" >&2
 	exit 2
 fi
+# #155 silent-failure-hunter HIGH: capture hash-drift.sh --generate
+# stderr instead of suppressing — surface why regen failed.
+_gen_err=$(mktemp -t source-hashes-gen-err.XXXXXX) || {
+	echo "release.sh: mktemp for hash-drift stderr failed" >&2
+	exit 2
+}
+if ! "$HASH_DRIFT_SH" --generate >/dev/null 2>"$_gen_err"; then
+	echo "release.sh: hash-drift.sh --generate failed during release-time verification:" >&2
+	cat "$_gen_err" >&2
+	rm -f "$_gen_err"
+	exit 2
+fi
+rm -f "$_gen_err"
 if ! diff -q "$_snap" "$SOURCE_HASHES_PATH" >/dev/null 2>&1; then
-	# Restore committed version + bail
-	mv "$_snap" "$SOURCE_HASHES_PATH"
+	# Trap will restore snapshot on exit.
 	echo "release.sh: $SOURCE_HASHES_PATH is stale vs current source — regenerate + commit before release" >&2
 	exit 2
 fi
-# In sync — restore (same content; defensive)
-mv "$_snap" "$SOURCE_HASHES_PATH"
+# In sync — restore explicitly (trap as safety net) + clear trap.
+_restore_hashes
+trap - EXIT INT TERM HUP
 
 # 3. Version not regressing — compare to the latest existing tag.
 # Fetch remote tags so the comparison uses the actual state of origin,

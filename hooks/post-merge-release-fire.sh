@@ -2,7 +2,7 @@
 set -euo pipefail
 # event: git-post-merge
 # auto-register: false
-# Introduced in #88 (released as v0.9.7) — post-merge auto-fire of
+# Introduced in #88 (released as v0.9.8) — post-merge auto-fire of
 # scripts/release.sh when .claude-plugin/plugin.json.version changed
 # in the merge.
 #

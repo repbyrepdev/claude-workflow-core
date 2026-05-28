@@ -80,7 +80,7 @@
     "hooks/phase1-scaler.sh": "12e386fae9fb927a8a4b6b93ad75b75c808e439673075ae3a33c94409696c4e4",
     "hooks/post-commit-ship-cycle.sh": "9b4eac39a918927ca5106ff8f9af1fe47c8a1128295a7b3243056ffb792532f3",
     "hooks/post-commit-template-lint.sh": "ab1e055cb2061d9666e2106660c646f0db482c353f40e9d7ea85b21b4e7e0d5d",
-    "hooks/post-merge-release-fire.sh": "acc651fbe92872e2b2eb04291f0fc5faa72287044460a4f39c7a9cb2aad88ee4",
+    "hooks/post-merge-release-fire.sh": "ce5f105388a329e6b2a8415ba429c4c80a566edaa375b9060e6a4b134b675e49",
     "hooks/post-tool-failure.sh": "019de9c13f420ed86766db8f15032c600696f96f9761fee6d020f93e6711be1a",
     "hooks/pr-close-prune.sh": "f8e54aa9b28005862914bc5849d25249e1edb1339bdf13c91c2954deb83b3a8d",
     "hooks/pr-lint-check.sh": "665d04eaf70109f3d12b4abccd9160652abdb8b5150b834302c0ab583c47b375",
