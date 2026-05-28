@@ -57,10 +57,10 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE FOR OPERATOR block. Phase 1's `security-review` MUST be fired in a separate Claude turn from the 5 parallel Agent calls — the pending-file gate kills the Skill when bundled. The directive layout:
 
 1. Block A: 5 parallel Agent calls (code-reviewer, code-simplifier, comment-analyzer, pr-test-analyzer, silent-failure-hunter)
-2. Barrier: log all 5 via `review-log.sh phase1 N <agent> <count> ok`
-3. Run semgrep + log
+2. Barrier: log all 5 via `.claude/hooks/review-log.sh phase1 <round> <agent> <findings-count> ok`
+3. Run semgrep against the PR diff and log: invoke the `semgrep:semgrep_scan` MCP tool against the changed files (auto-config), then log via `.claude/hooks/review-log.sh phase1 <round> semgrep <findings-count> ok`. (The MCP tool is the canonical entry — direct CLI invocation works too but bypasses the MCP-side rate budgeting.)
 4. Fire `Skill(security-review)` SEPARATELY (NOT in same parallel block — pending-file gate kills the Skill)
-5. Log security-review
+5. Log security-review: `.claude/hooks/review-log.sh phase1 <round> security-review <findings-count> ok`
 6. Re-run `next` — orchestrator detects 2-streak clean and advances to phase2
 
 **Why operator-driven:** bash can't fire Claude agents. A future enhancement (#732) would wire a UserPromptSubmit hook that emits the directive into Claude's context after a post-commit cascade; until then, the operator runs the agent calls.
