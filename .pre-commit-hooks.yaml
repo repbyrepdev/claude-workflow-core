@@ -112,6 +112,13 @@
   pass_filenames: false
   stages: [pre-commit]
 
+- id: hash-drift-verify
+  name: Verify consumer files match plugin SSOT (v0.25.0 #148)
+  entry: pre-commit-hooks/hash-drift-verify.sh
+  language: script
+  pass_filenames: false
+  stages: [pre-commit, pre-push]
+
 - id: event-frontmatter-check
   name: "event-frontmatter — hooks must declare `# event:` for discovery"
   entry: pre-commit-hooks/event-frontmatter-check.sh
