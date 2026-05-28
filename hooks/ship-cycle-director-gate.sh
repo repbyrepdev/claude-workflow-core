@@ -93,19 +93,18 @@ if [ "${SKILL_WRAPPER:-0}" = "1" ]; then
 	exit 0
 fi
 
-# Detect command category. v0.27.0 #173 Layer 4: anchored regex match
-# requiring START-OF-STRING + optional env-var prefix. Substring match
-# in the prior version tripped on heredoc/grep/echo content mentioning
-# workflow command names in DOCUMENTATION text. Post-separator (after
-# `;`/`&&`/`|`) deliberately NOT matched here — `|` triggers on grep
-# alternation patterns like `grep "X\|gh pr merge"`. Operators who
-# legitimately chain `false; gh pr merge` are rare in practice and can
-# split into two commands. Trade-off: tighter false-positive avoidance.
+# Detect command category. v0.27.0 #173 Layer 4 (Phase 1 r1 fix): use
+# bash `[[ =~ ]]` (string-anchor) instead of `grep -qE` (line-anchor).
+# Grep's `^` matches start-of-LINE, so heredoc bodies containing a
+# workflow command name on an interior line tripped the gate as a
+# false positive. Bash regex matches against the whole string, so `^`
+# binds to the actual start of the command text only.
 _cmd_starts_with() {
 	local cmd=$1 needle=$2
-	# `^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*<needle>` —
-	# anchored at start, optional env-var prefixes, then literal needle.
-	printf '%s' "$cmd" | grep -qE "^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*$needle"
+	# Anchored against WHOLE string; optional `K=V` env-var prefixes;
+	# `[^[:space:]]*` stops at whitespace (env-var values with quoted
+	# internal spaces should be invoked via the matching skill wrapper).
+	[[ $cmd =~ ^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*$needle ]]
 }
 CATEGORY=""
 if _cmd_starts_with "$CMD" "coderabbit review" || _cmd_starts_with "$CMD" "scripts/cr/local-review\.sh" || _cmd_starts_with "$CMD" "\\./scripts/cr/local-review\.sh"; then

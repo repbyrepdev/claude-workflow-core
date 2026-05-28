@@ -76,13 +76,15 @@ pending_count=0
 pending_list=""
 while IFS= read -r -d '' f; do
 	sha=$(basename "$f" .phase1-directive.txt)
-	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now on
-	# origin/main (already shipped — work is done). Without this self-
-	# heal, every merged-PR's directive marker stays orphaned in
-	# .claude/.session-state/ship-cycle/ and trips this gate on every
-	# subsequent Bash call until manually cleaned. Branch-deletion +
-	# squash-merge doesn't clean up; that's exactly the trap that
-	# stranded 10 markers in the 2026-05-28 session.
+	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now
+	# reachable from origin/main. Catches merge-commit / fast-forward /
+	# rebase-and-push-retaining-SHA flows. Squash-merge writes a NEW
+	# commit on main, so the ORIGINAL topic-branch HEAD sha is NOT a
+	# direct ancestor of main — Layer 1 will NOT clean those; Layer 2
+	# (skill-side rm in github-pr-merge) catches squash-merges by
+	# capturing the pre-merge HEAD sha + removing the marker before the
+	# branch is deleted. Layer 3 (post-merge hook) provides cross-clone
+	# coverage for non-squash paths the operator pulled from main.
 	if git merge-base --is-ancestor "$sha" origin/main 2>/dev/null; then
 		rm -f "$f"
 		continue

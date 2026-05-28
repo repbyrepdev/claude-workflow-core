@@ -77,6 +77,10 @@ if [ ! -x "$SOURCE_HOOK" ]; then
 	echo "install-plugin-git-hooks: source hook missing or non-exec: $SOURCE_HOOK" >&2
 	exit 2
 fi
+# v0.27.0 #173 Layer 3: the wrapper also invokes hooks/post-merge-clean-
+# phase1-markers.sh — wrapper resolves its path at runtime via REPO_ROOT
+# and exits 0 if the script is missing (older clones), so no install-time
+# precondition needed here.
 
 # Single-target wrapper. Use a wrapper (not a symlink) so the operator can
 # add other post-merge handlers later without losing release-fire.

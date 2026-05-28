@@ -29,7 +29,7 @@ fi
 # CR #634 round 3 finding 29: honor both CLAUDE_MEMORY_DIR (this hook's
 # original contract) and MEMORY_DIR (used by session-start-report.sh) so
 # operators have one consistent knob across hooks.
-MEMORY_DIR="${CLAUDE_MEMORY_DIR:-${MEMORY_DIR:-$HOME/.claude/projects/$(echo "$HOME" | sed 's|/|-|g')/memory}}"
+MEMORY_DIR="${CLAUDE_MEMORY_DIR:-${MEMORY_DIR:-$HOME/.claude/projects/${HOME//\//-}/memory}}"
 [ -d "$MEMORY_DIR" ] || exit 0
 
 if [ "${MEMORY_DRIFT_GATE_SKIP:-0}" = "1" ]; then
@@ -88,8 +88,18 @@ for mem in "${mem_files[@]}"; do
 			# paths) — if the path resolves under any external root, treat
 			# as live (no drift).
 			external_hit=0
-			if [ -n "${MEMORY_DRIFT_EXTERNAL_ROOTS:-}" ]; then
-				IFS=':' read -ra _ext_roots <<<"$MEMORY_DRIFT_EXTERNAL_ROOTS"
+			# v0.27.0 (#173 sibling): if env var unset, default to common
+			# peer-repo locations under $HOME so the hook is useful out-of-
+			# box without operator config. Discovered 2026-05-28: had to
+			# manually export EXTERNAL_ROOTS each commit because memory
+			# files reference paths in consumer repos (media-server,
+			# pricing-team-toolkit). Sensible defaults eliminate that toil.
+			_resolved_roots="${MEMORY_DRIFT_EXTERNAL_ROOTS:-}"
+			if [ -z "$_resolved_roots" ]; then
+				_resolved_roots="$HOME/media-server:$HOME/pricing-team-toolkit"
+			fi
+			if [ -n "$_resolved_roots" ]; then
+				IFS=':' read -ra _ext_roots <<<"$_resolved_roots"
 				for _root in "${_ext_roots[@]}"; do
 					[ -n "$_root" ] || continue
 					if [ -e "$_root/$path" ]; then
