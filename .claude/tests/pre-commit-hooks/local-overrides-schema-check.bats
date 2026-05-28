@@ -69,6 +69,70 @@ YAML
 	[ "$status" -eq 0 ]
 }
 
+# CR-in-CI r1 F3: explicit happy-path coverage for all 4 categories.
+@test "passes on valid superset entry" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: .github/labels.yml
+    category: superset
+    reason: "Domain labels extend plugin's generic set"
+    added: "2026-04-21"
+    diff_allowed: domain_extensions_only
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 0 ]
+}
+
+@test "passes on valid legacy entry" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: scripts/old-helper.sh
+    category: legacy
+    reason: "Predates SSOT discipline; reconcile in future audit"
+    added: "2025-01-15"
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 0 ]
+}
+
+# CR-in-CI r1 F2: benign filenames with `..` (e.g. `docs/v1..v2-notes.md`)
+# must PASS — the path-traversal guard targets `..` as a path segment only.
+@test "passes on benign filename containing '..'" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: docs/v1..v2-notes.md
+    category: legacy
+    reason: "Benign filename — '..' is part of filename, not path segment"
+    added: "2025-01-15"
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 0 ]
+}
+
+# CR-in-CI r1 F1: non-array `overrides:` (e.g. scalar string) must
+# be rejected with a clear "must be a list" message — not silently
+# slip through to `.overrides[$i]` iteration crash.
+@test "fails on non-array .overrides (scalar)" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides: bogus
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"must be a list"* ]]
+}
+
 @test "passes on valid one-entry domain-extension" {
 	cd "$TEST_TMP" || return 1
 	_write_valid_one_domain_extension
@@ -120,7 +184,7 @@ YAML
 	[[ $output == *"must be repo-relative"* ]]
 }
 
-@test "fails on path-traversal" {
+@test "fails on path-traversal '..' as path segment" {
 	cd "$TEST_TMP" || return 1
 	cat >.claude/local-overrides.yml <<'YAML'
 schema_version: 1
@@ -133,7 +197,24 @@ YAML
 	git add .claude/local-overrides.yml
 	run pre-commit-hooks/local-overrides-schema-check.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"must be repo-relative"* ]]
+	[[ $output == *"path traversal"* ]] || [[ $output == *"'..' as a path segment"* ]]
+}
+
+# Other path-traversal shapes — embedded '..' segment after a prefix.
+@test "fails on embedded '..' as path segment" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: docs/../etc/passwd
+    category: domain-extension
+    reason: "Embedded path traversal attempt"
+    added: "2026-04-21"
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"path traversal"* ]]
 }
 
 @test "fails on invalid category" {

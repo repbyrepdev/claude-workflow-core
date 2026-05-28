@@ -23,8 +23,9 @@
 #                      date — converts to "must reconcile" on next commit.
 #   legacy           — drift predating SSOT discipline; tracked for future
 #                      reconciliation. Required fields: path, category,
-#                      reason, added. Schema-check warns (not blocks) on
-#                      legacy entries older than 90 days.
+#                      reason, added. (No automatic age warning today —
+#                      operator should periodically audit legacy entries
+#                      for reconciliation opportunities.)
 
 schema_version: 1
 

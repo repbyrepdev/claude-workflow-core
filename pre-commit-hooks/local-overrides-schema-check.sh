@@ -98,6 +98,16 @@ if [ "$spec_version" != "1" ]; then
 	exit 1
 fi
 
+# CR-in-CI r1 F1: assert .overrides is an array (not scalar/object) BEFORE
+# relying on `length`. `overrides: bogus` (scalar string) would have yq
+# return `length(bogus)` = string length, slipping past as a numeric
+# count and crashing later at .overrides[$i] iteration.
+overrides_type=$(_yq_or_die '.overrides // [] | type' "$staged_tmp" 'overrides type')
+if [ "$overrides_type" != "!!seq" ] && [ "$overrides_type" != "array" ]; then
+	echo "local-overrides-schema-check: $OVERRIDES .overrides must be a list (got type '$overrides_type')" >&2
+	exit 1
+fi
+
 # Allow empty overrides[] — fresh consumer with no divergences is valid.
 overrides_count=$(_yq_or_die '.overrides // [] | length' "$staged_tmp" 'overrides list length')
 if [ "$overrides_count" = "0" ]; then
@@ -119,11 +129,15 @@ while [ "$i" -lt "$overrides_count" ]; do
 	added=$(_yq_or_die ".overrides[$i].added" "$staged_tmp" "overrides[$i].added")
 	expires=$(_yq_or_die ".overrides[$i].expires // \"\"" "$staged_tmp" "overrides[$i].expires")
 
-	# path: required, non-empty, no '..' or absolute
+	# path: required, non-empty, no absolute, no `..` as path SEGMENT.
+	# CR-in-CI r1 F2: prior `*..*` rejected valid filenames like
+	# `docs/v1..v2-notes.md`. Match `..` only when it's a bare segment.
 	if [ -z "$path" ] || [ "$path" = "null" ]; then
 		errors+=("overrides[$i].path missing or null")
-	elif [[ $path == /* ]] || [[ $path == *..* ]]; then
-		errors+=("overrides[$i].path '$path' must be repo-relative (no leading '/', no '..')")
+	elif [[ $path == /* ]]; then
+		errors+=("overrides[$i].path '$path' must be repo-relative (no leading '/')")
+	elif [[ $path == ".." ]] || [[ $path == "../"* ]] || [[ $path == *"/.." ]] || [[ $path == *"/../"* ]]; then
+		errors+=("overrides[$i].path '$path' contains '..' as a path segment (path traversal)")
 	fi
 
 	# category: required, must be one of the 4 enums
