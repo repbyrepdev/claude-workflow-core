@@ -168,6 +168,53 @@ YAML
 	[[ $output == *"path missing or null"* ]]
 }
 
+# CR-CLI r3: per-field missing-field coverage for the 4 required fields
+# (path/category/reason/added). Mirrors the existing "missing path" test.
+@test "fails on missing category field" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    reason: "Reason long enough to pass min-length check"
+    added: "2026-04-21"
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"category missing"* ]]
+}
+
+@test "fails on missing reason field" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    added: "2026-04-21"
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"reason missing"* ]]
+}
+
+@test "fails on missing added field" {
+	cd "$TEST_TMP" || return 1
+	cat >.claude/local-overrides.yml <<'YAML'
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    reason: "Reason long enough to pass min-length check"
+YAML
+	git add .claude/local-overrides.yml
+	run pre-commit-hooks/local-overrides-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"added missing"* ]]
+}
+
 @test "fails on absolute path" {
 	cd "$TEST_TMP" || return 1
 	cat >.claude/local-overrides.yml <<'YAML'
