@@ -18,9 +18,11 @@ set -euo pipefail
 #     itself failed (sibling missing, layout drift, etc.).
 #
 # Bypass: HASH_DRIFT_VERIFY_SKIP=1 (audit-logged to JSONL at
-# ~/.claude/logs/hash-drift-verify-bypass.jsonl AND stderr — pre-commit
-# captures stderr only on failure, so a persistent file log is required
-# for post-hoc audit).
+# ~/.claude/logs/hash-drift-skip.jsonl per #148 spec AND stderr —
+# pre-commit captures stderr only on failure, so a persistent file log
+# is required for post-hoc audit). Bypass FAILS CLOSED if audit-logging
+# is impossible (mkdir perm denied, jq missing) — exit 2 instead of 0,
+# preventing an unaudited bypass.
 
 # r2 silent-failure-hunter MEDIUM: reject extra args with clear message.
 # Contract is locked-down: this shim hardcodes --verify. Future custom
@@ -32,32 +34,33 @@ if [ "$#" -gt 0 ]; then
 fi
 
 if [ "${HASH_DRIFT_VERIFY_SKIP:-0}" = "1" ]; then
-	# r2 silent-failure-hunter HIGH: pre-commit captures stderr only on
-	# failure. Bypass exits 0, so stderr is swallowed. Persist to JSONL
-	# so the bypass is recoverable post-hoc.
-	# CR Phase 2 MAJOR: the prior version silence-failed mkdir + jq with
-	# `|| true` then unconditionally printed "audit-logged" — misleading
-	# if the write actually failed. Now we track success explicitly +
-	# emit the accurate message.
+	# Bypass is gated on successful audit-logging — issue #148 explicitly
+	# requires the override to be audit-logged. CR Phase 2 server-side
+	# MAJOR: failing-closed when audit persistence fails prevents an
+	# unaudited bypass slipping through.
+	# Log path per #148 spec: ~/.claude/logs/hash-drift-skip.jsonl.
 	_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 	_log_dir="${HOME}/.claude/logs"
+	_log_file="$_log_dir/hash-drift-skip.jsonl"
 	_audit_logged=0
 	if mkdir -p "$_log_dir" 2>/dev/null; then
 		if command -v jq >/dev/null 2>&1; then
 			if jq -cn --arg ts "$_ts" --arg sha "$_sha" --arg actor "${USER:-unknown}" --arg pwd "$PWD" \
 				'{ts:$ts,sha:$sha,actor:$actor,pwd:$pwd,event:"hash-drift-verify-skip"}' \
-				>>"$_log_dir/hash-drift-verify-bypass.jsonl" 2>/dev/null; then
+				>>"$_log_file" 2>/dev/null; then
 				_audit_logged=1
 			fi
 		fi
 	fi
 	if [ "$_audit_logged" -eq 1 ]; then
-		echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 — BYPASS (audit-logged to $_log_dir/hash-drift-verify-bypass.jsonl)" >&2
-	else
-		echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 — BYPASS (audit log write FAILED at $_log_dir; jq may be unavailable or perms denied)" >&2
+		echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 — BYPASS (audit-logged to $_log_file)" >&2
+		exit 0
 	fi
-	exit 0
+	# Fail-closed: audit-logging is a precondition for bypass.
+	echo "hash-drift-verify: HASH_DRIFT_VERIFY_SKIP=1 set but audit log write FAILED at $_log_file" >&2
+	echo "  Cannot proceed: bypass requires audit-logging per #148. Check $_log_dir perms or jq availability." >&2
+	exit 2
 fi
 
 # r2 silent-failure-hunter MEDIUM: use BASH_SOURCE[0] + `--` for cd to

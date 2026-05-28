@@ -85,18 +85,33 @@ EOF
 	[[ $output == *"is a directory, not a file"* ]]
 }
 
-@test "HASH_DRIFT_VERIFY_SKIP=1 bypass exits 0 + writes JSONL audit log" {
+@test "HASH_DRIFT_VERIFY_SKIP=1 bypass exits 0 + writes JSONL audit log (per #148 path)" {
 	_write_stub_hash_drift 1
 	HASH_DRIFT_VERIFY_SKIP=1 HOME="$TEST_TMP/home" run "$TEST_TMP/pre-commit-hooks/hash-drift-verify.sh"
 	[ "$status" -eq 0 ]
 	[[ $output == *"HASH_DRIFT_VERIFY_SKIP=1"* ]]
 	[[ $output == *"BYPASS"* ]]
-	# r2 silent-failure-hunter HIGH: assert the audit log file was written.
-	[ -f "$TEST_TMP/home/.claude/logs/hash-drift-verify-bypass.jsonl" ]
-	# Parseable JSON
-	jq -e . "$TEST_TMP/home/.claude/logs/hash-drift-verify-bypass.jsonl"
-	# Contains the expected event marker
-	grep -q '"event":"hash-drift-verify-skip"' "$TEST_TMP/home/.claude/logs/hash-drift-verify-bypass.jsonl"
+	# CR Phase 2 MAJOR: log path is hash-drift-skip.jsonl per #148 spec.
+	[ -f "$TEST_TMP/home/.claude/logs/hash-drift-skip.jsonl" ]
+	jq -e . "$TEST_TMP/home/.claude/logs/hash-drift-skip.jsonl"
+	grep -q '"event":"hash-drift-verify-skip"' "$TEST_TMP/home/.claude/logs/hash-drift-skip.jsonl"
+}
+
+@test "HASH_DRIFT_VERIFY_SKIP=1 FAILS CLOSED when audit log write fails (mkdir denied)" {
+	_write_stub_hash_drift 1
+	# Remove the pre-created .claude dir (setup() created it for the
+	# happy-path test) + recreate parent as unwritable so mkdir -p
+	# .claude/logs inside the shim fails.
+	rm -rf "$TEST_TMP/home/.claude"
+	mkdir -p "$TEST_TMP/home"
+	chmod 0500 "$TEST_TMP/home"
+	HASH_DRIFT_VERIFY_SKIP=1 HOME="$TEST_TMP/home" run "$TEST_TMP/pre-commit-hooks/hash-drift-verify.sh"
+	# Restore perms for teardown cleanup
+	chmod 0755 "$TEST_TMP/home"
+	# Per CR Phase 2: bypass must fail-closed when audit-logging fails.
+	[ "$status" -eq 2 ]
+	[[ $output == *"audit log write FAILED"* ]]
+	[[ $output == *"#148"* ]]
 }
 
 @test "extra args rejected with exit 2 + clear message (locked-down contract)" {
