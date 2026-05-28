@@ -91,11 +91,17 @@ while IFS= read -r -d '' f; do
 	fi
 	# v0.28.0 #174: also drop markers whose sha is no longer reachable
 	# from ANY local ref (abandoned commits — branch deleted, commit
-	# rebased away). Without this, every interim commit-attempt leaves
-	# an orphan marker; 2026-05-28 observed 34 accumulating in one session.
-	if ! git for-each-ref --contains "$sha" --format='%(refname)' 2>/dev/null | grep -q .; then
-		rm -f "$f"
-		continue
+	# rebased away). 2026-05-28 observed 34 accumulating across prior
+	# sessions in a peer repo (#174 Axis 2).
+	# CR fix: validate hex-sha basename BEFORE for-each-ref (skip
+	# editor swap files); separate rc from empty-output (rc!=0 keeps
+	# marker rather than flipping `!` into mass-rm on git error).
+	if [[ $sha =~ ^[0-9a-f]{7,40}$ ]]; then
+		_ref_out=$(git for-each-ref --contains "$sha" --format='%(refname)' 2>/dev/null) && _ref_rc=0 || _ref_rc=$?
+		if [ "$_ref_rc" -eq 0 ] && [ -z "$_ref_out" ]; then
+			rm -f "$f"
+			continue
+		fi
 	fi
 	pending_count=$((pending_count + 1))
 	pending_list="${pending_list}  - sha=$sha (directive emitted; agents not yet fired)

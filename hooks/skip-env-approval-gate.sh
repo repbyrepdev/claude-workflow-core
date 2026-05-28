@@ -51,28 +51,26 @@ if [ -z "$PAYLOAD" ]; then
 	exit 0
 fi
 
-# Extract the Bash command.
-CMD=""
-if command -v jq >/dev/null 2>&1; then
-	CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || true)
+# Extract the Bash command. CR fix #2: jq missing must FAIL-CLOSED (not
+# fail-open) to match the user's "every use requires approval" contract.
+if ! command -v jq >/dev/null 2>&1; then
+	echo "skip-env-approval-gate: ERROR jq missing — refusing skip (gate cannot evaluate payload)" >&2
+	exit 2
 fi
+CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || true)
 [ -z "$CMD" ] && exit 0
 
 # Recognized skip-style env-var name patterns. Matches:
-#   *_SKIP=<anything>     workflow gate skips
-#   *_BYPASS=<anything>   alternate naming
-#   HOOK_ACK_CLEAR=<anything>  the orphan-cleanup escape
-#   *_GATE_SKIP=<anything>  more explicit form
-# All must be at command START, optionally preceded by other env-vars
-# (same anchored-regex approach as ship-cycle-director-gate.sh Layer 4).
-#
-# Use bash regex against the whole string (string-anchored, not line-
-# anchored). Capture the SKIP var name so we can show it in the deny.
+#   <prefix>_SKIP=<anything>     workflow gate skips
+#   <prefix>_BYPASS=<anything>   alternate naming
+#   HOOK_ACK_CLEAR=<anything>    bare form (no prefix required) — orphan cleanup
+# All must be at command START, optionally preceded by other env-vars.
+# CR fix #1: HOOK_ACK_CLEAR as a bare identifier did NOT match prior
+# regex because suffix-alternation required a non-empty prefix.
 SKIP_VAR=""
-SKIP_RE='^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*([A-Z_][A-Z0-9_]*(_SKIP|_BYPASS|HOOK_ACK_CLEAR))=[^[:space:]]+'
+SKIP_RE='^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*([A-Z_][A-Z0-9_]*(_SKIP|_BYPASS)|HOOK_ACK_CLEAR)=[^[:space:]]+'
 if [[ $CMD =~ $SKIP_RE ]]; then
 	# Walk through env-prefix tokens to find which one is the skip-var.
-	# Take the first token in CMD that matches *_SKIP / *_BYPASS / HOOK_ACK_CLEAR.
 	for tok in $CMD; do
 		case "$tok" in
 		HOOK_ACK_CLEAR=* | *_SKIP=* | *_BYPASS=*)

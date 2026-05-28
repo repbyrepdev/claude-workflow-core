@@ -34,12 +34,29 @@ _sweep_repo() {
 		[ -f "$f" ] || continue
 		local sha
 		sha=$(basename "$f" .phase1-directive.txt)
-		# Drop the marker only if the SHA is not reachable from any ref.
-		# This is the conservative criterion — if the sha lives anywhere
-		# (open branch, tag, stash, reflog tip), we keep the marker.
-		if ! git -C "$repo" for-each-ref --contains "$sha" --format='%(refname)' 2>/dev/null | grep -q .; then
+		# CR-SFH fix #1: validate basename is a hex sha BEFORE for-each-ref
+		# to skip editor backup files / .DS_Store / swap files that would
+		# error out for-each-ref and flip the `!` to mass-rm.
+		[[ $sha =~ ^[0-9a-f]{7,40}$ ]] || continue
+		# CR-SFH fix #2: separate RC from empty-output. Prior version
+		# treated for-each-ref FAILURE (corrupt repo, perm denied, older
+		# git rejecting --contains) the SAME as "sha not reachable" → mass-
+		# rm. Now: on rc!=0, WARN + keep the marker (fail-closed for safety).
+		local ref_err
+		ref_err=$(mktemp)
+		local ref_out ref_rc=0
+		ref_out=$(git -C "$repo" for-each-ref --contains "$sha" --format='%(refname)' 2>"$ref_err") || ref_rc=$?
+		if [ "$ref_rc" -ne 0 ]; then
+			echo "session-start-marker-sweep: WARN for-each-ref rc=$ref_rc for $sha in $repo: $(head -c 200 "$ref_err") — keeping marker" >&2
+			rm -f "$ref_err"
+			continue
+		fi
+		rm -f "$ref_err"
+		if [ -z "$ref_out" ]; then
 			if rm -f "$f" 2>/dev/null; then
 				cleaned=$((cleaned + 1))
+			else
+				echo "session-start-marker-sweep: WARN failed to rm $f" >&2
 			fi
 		fi
 	done
