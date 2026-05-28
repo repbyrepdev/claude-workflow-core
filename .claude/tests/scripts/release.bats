@@ -31,7 +31,7 @@ _make_fixture_repo() {
 	git init -q
 	git config user.email "test@test"
 	git config user.name "test"
-	mkdir -p .claude-plugin
+	mkdir -p .claude-plugin scripts .claude
 	cat >.claude-plugin/plugin.json <<-EOF
 		{
 		  "name": "fixture",
@@ -39,6 +39,17 @@ _make_fixture_repo() {
 		  "description": "fixture"
 		}
 	EOF
+	# v0.18.1 #140: release.sh Step 2a requires hash-drift.sh + a fresh
+	# .source-hashes.json. Stub hash-drift.sh so --generate writes a
+	# stable empty-files manifest the diff check will accept.
+	cat >scripts/hash-drift.sh <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "--generate" ] || exit 2
+mkdir -p .claude
+printf '{"schema_version":1,"algorithm":"sha256","producer_root":".","files":{}}\n' >.claude/.source-hashes.json
+STUB
+	chmod +x scripts/hash-drift.sh
+	bash scripts/hash-drift.sh --generate
 	git add . >/dev/null
 	git commit -q -m "initial"
 }

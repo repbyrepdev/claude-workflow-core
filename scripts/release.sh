@@ -116,6 +116,46 @@ if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
 fi
 TAG="v$VERSION"
 
+# 2a. (#140) `.claude/.source-hashes.json` must exist + be in sync with
+# current source content. The pre-commit gate enforces freshness at
+# commit time; release.sh re-verifies at release time so an out-of-band
+# edit (manual file shuffle on main, e.g.) can't ship without matching
+# hashes. Refusing here means the release ALWAYS pins a verifiable
+# baseline that consumers can run --verify against.
+# CR-in-CI #156 r1 MAJOR: fail-closed when hash-drift.sh is missing —
+# previously the entire check was wrapped in `if [ -x ]` and silently
+# skipped, allowing a tag to ship without baseline validation.
+# Ordered AFTER plugin.json read so missing-plugin.json tests still
+# hit their specific error before this check fires.
+SOURCE_HASHES_PATH="$REPO_ROOT/.claude/.source-hashes.json"
+HASH_DRIFT_SH="$REPO_ROOT/scripts/hash-drift.sh"
+if [ ! -x "$HASH_DRIFT_SH" ]; then
+	echo "release.sh: $HASH_DRIFT_SH missing or non-executable — cannot verify source hashes; reinstall the plugin" >&2
+	exit 2
+fi
+if [ ! -f "$SOURCE_HASHES_PATH" ]; then
+	echo "release.sh: $SOURCE_HASHES_PATH missing — run scripts/hash-drift.sh --generate + commit first" >&2
+	exit 2
+fi
+# Snapshot + regen + compare + restore (must not mutate during a
+# clean-tree assertion). Worktree was certified clean above, so we
+# can compute the diff safely without git stash.
+_snap=$(mktemp -t source-hashes-release.XXXXXX)
+cp "$SOURCE_HASHES_PATH" "$_snap"
+if ! "$HASH_DRIFT_SH" --generate >/dev/null 2>&1; then
+	mv "$_snap" "$SOURCE_HASHES_PATH"
+	echo "release.sh: hash-drift.sh --generate failed during release-time verification" >&2
+	exit 2
+fi
+if ! diff -q "$_snap" "$SOURCE_HASHES_PATH" >/dev/null 2>&1; then
+	# Restore committed version + bail
+	mv "$_snap" "$SOURCE_HASHES_PATH"
+	echo "release.sh: $SOURCE_HASHES_PATH is stale vs current source — regenerate + commit before release" >&2
+	exit 2
+fi
+# In sync — restore (same content; defensive)
+mv "$_snap" "$SOURCE_HASHES_PATH"
+
 # 3. Version not regressing — compare to the latest existing tag.
 # Fetch remote tags so the comparison uses the actual state of origin,
 # not stale local refs. Capture rc — a fetch failure means we may be
