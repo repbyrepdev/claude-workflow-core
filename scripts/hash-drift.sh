@@ -152,8 +152,9 @@ if [ "$MODE" = "generate" ]; then
 		exit 2
 	fi
 	# Wrap with metadata: schema_version, algorithm, producer_root,
-	# generated_at (ISO 8601 UTC; not part of equality contract — see
-	# below), then files.
+	# then files. NOTE: deliberately NO `generated_at` field — including
+	# a timestamp would break byte-equality of regenerations of the same
+	# content, defeating the pre-commit + release-time idempotency check.
 	if ! jq -S \
 		--arg algo "sha256" \
 		--arg producer_root "." \
