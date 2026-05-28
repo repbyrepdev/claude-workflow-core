@@ -30,13 +30,32 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Install yq (pinned tag, GitHub release as trusted source)
+      - name: Install yq (pinned tag + checksum-verified from release)
         env:
           YQ_VERSION: v4.52.5
+          YQ_ASSET: yq_linux_amd64
         run: |
           set -euxo pipefail
+          # Download binary + its checksums.txt from the same release tag
+          # (release tag pins the upstream version; checksums.txt pins
+          # the binary integrity within that tag).
           curl -fsSL --retry 3 -o /tmp/yq \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${YQ_ASSET}"
+          curl -fsSL --retry 3 -o /tmp/yq.checksums \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/checksums"
+          # checksums file format is `<sha256>  <asset_name>` per line.
+          expected=$(awk -v a="${YQ_ASSET}" '$2==a{print $1; exit}' /tmp/yq.checksums)
+          if [ -z "$expected" ]; then
+            echo "yq install: checksum for ${YQ_ASSET} missing from release checksums file" >&2
+            exit 1
+          fi
+          actual=$(sha256sum /tmp/yq | awk '{print $1}')
+          if [ "$expected" != "$actual" ]; then
+            echo "yq install: checksum mismatch for ${YQ_ASSET}" >&2
+            echo "  expected: $expected" >&2
+            echo "  actual:   $actual" >&2
+            exit 1
+          fi
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
       - name: Run bootstrap-repo.sh --verify --scope plugin
