@@ -151,18 +151,17 @@ JSON
 	[ "$status" -eq 0 ]
 }
 
-@test "--register-missing writes stub YAML" {
-	run "$SCRIPT" --register-missing --hooks-dir "$TEST_TMP/hooks" --settings "$TEST_TMP/.claude/settings.json"
+@test "--register-missing writes stub YAML to DISCOVERY_OUT_DIR (no real-repo leak)" {
+	DISCOVERY_OUT_DIR="$TEST_TMP/discovery" run "$SCRIPT" --register-missing \
+		--hooks-dir "$TEST_TMP/hooks" --settings "$TEST_TMP/.claude/settings.json"
 	[ "$status" -eq 0 ]
 	[[ $output == *"Stub written"* ]]
-	# Find the stub file (timestamp in name)
-	stub=$(find "$REPO_ROOT/.claude/discovery" -name "orphans-*.yml" -newer "$TEST_TMP/.claude/settings.json" 2>/dev/null | head -1)
+	stub=$(find "$TEST_TMP/discovery" -name "orphans-*.yml" 2>/dev/null | head -1)
 	[ -n "$stub" ]
 	[ -f "$stub" ]
+	# Verify @json-escaped YAML (quoted strings parseable as YAML).
 	grep -q 'name: "orphan-a.sh"' "$stub"
 	grep -q 'name: "orphan-b.sh"' "$stub"
-	# Cleanup the stub we created in the real repo (test artifact).
-	rm -f "$stub"
 }
 
 @test "missing settings.json exits 2" {
