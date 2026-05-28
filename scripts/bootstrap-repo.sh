@@ -588,7 +588,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Generic plugin areas. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -649,7 +649,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Generic plugin areas. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -698,7 +698,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Generic plugin areas. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
+      description: Generic plugin areas. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -737,7 +737,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Primary plugin area this epic covers. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
+      description: Primary plugin area this epic covers. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
@@ -805,7 +805,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Primary plugin area this discussion covers. Consumer repos may extend via local-overrides (#147). AI triage applies the matching area:* label + board Area field.
+      description: Primary plugin area this discussion covers. Consumer repos may extend via local-overrides (see plugin docs). AI triage applies the matching area:* label + board Area field.
       options:
         - Skills (.claude/skills/*)
         - Hooks (.claude/hooks/*, pre-commit-hooks/*)
