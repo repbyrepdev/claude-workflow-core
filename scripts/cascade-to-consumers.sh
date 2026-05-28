@@ -376,41 +376,89 @@ for ((i = 0; i < n; i++)); do
 	if [ "$DRY_RUN" = "1" ]; then
 		echo "[DRY-RUN] $name ($repo) — would create: $title"
 		_log "$name" "$repo" "$old_ver" "dry-run-would-create"
-		continue
+		# v0.26.0 #169: dry-run should preview supersedes too. Use a
+		# synthetic placeholder for issue_num so the supersede preview
+		# can format a "would close #X (superseded by ...)" line.
+		# Real gh issue close is gated by DRY_RUN=1 inside the loop.
+		issue_num="<would-be-new>"
+	else
+		# Render body to a variable so we can `printf '%s\n'` it (preserves
+		# the trailing newline a heredoc produces — r3 silent-failure-hunter
+		# LOW: bare `printf '%s' "$body"` would byte-mismatch heredoc-pipe).
+		body=$(_render_body "$name" "$old_ver")
+		# Create the issue with --label so future idempotency checks can find
+		# it (label is now guaranteed to exist in the consumer repo).
+		if ! issue_url=$(printf '%s\n' "$body" |
+			gh issue create --repo "$repo" \
+				--title "$title" \
+				--label auto:plugin-release-cascade \
+				--body-file - 2>"$yq_err"); then
+			echo "[FAIL] $name ($repo) — gh issue create failed:" >&2
+			cat "$yq_err" >&2
+			_log "$name" "$repo" "$old_ver" "fail-create" "" "$(cat "$yq_err")"
+			failed=$((failed + 1))
+			worst_rc=3
+			continue
+		fi
+		# gh issue create prints the URL; extract the trailing /N to log.
+		issue_num=$(printf '%s' "$issue_url" | awk -F/ '{print $NF}' | tr -d '[:space:]')
+		if ! [[ $issue_num =~ ^[0-9]+$ ]]; then
+			# Numeric extraction failed — log raw URL via .detail (not .error,
+			# r2 code-simplifier LOW: the create itself succeeded). Don't fail
+			# the cascade — the issue is created, just unparseable.
+			echo "[CREATED] $name ($repo) — $issue_url (issue number parse failed)"
+			_log "$name" "$repo" "$old_ver" "created-url-only" "" "$issue_url"
+			created=$((created + 1))
+			continue
+		fi
+		echo "[CREATED] $name ($repo) — issue #$issue_num"
+		_log "$name" "$repo" "$old_ver" "created" "$issue_num"
+		created=$((created + 1))
 	fi
 
-	# Render body to a variable so we can `printf '%s\n'` it (preserves
-	# the trailing newline a heredoc produces — r3 silent-failure-hunter
-	# LOW: bare `printf '%s' "$body"` would byte-mismatch heredoc-pipe).
-	body=$(_render_body "$name" "$old_ver")
-	# Create the issue with --label so future idempotency checks can find
-	# it (label is now guaranteed to exist in the consumer repo).
-	if ! issue_url=$(printf '%s\n' "$body" |
-		gh issue create --repo "$repo" \
-			--title "$title" \
-			--label auto:plugin-release-cascade \
-			--body-file - 2>"$yq_err"); then
-		echo "[FAIL] $name ($repo) — gh issue create failed:" >&2
+	# v0.26.0 #169: dedup — close any OTHER open cascade issues in this
+	# consumer with a "superseded by #N" comment. Operator running
+	# migrate-settings.sh once jumps consumer pin from oldest pin
+	# straight to NEW_VER; intermediate cascades are no longer
+	# actionable but pollute the board until manually closed.
+	# Idempotent: a re-run that hits [EXISTS] above doesn't enter this
+	# branch, so old cascades aren't re-closed. Dry-run uses a synthetic
+	# placeholder for issue_num; we filter via jq tostring so non-numeric
+	# placeholder doesn't crash --argjson. Failure here is best-effort
+	# (primary create already succeeded); failures are audit-logged.
+	if ! prior_list=$(gh issue list --repo "$repo" \
+		--state open \
+		--label auto:plugin-release-cascade \
+		--json number,title 2>"$yq_err" |
+		jq -r --arg keep "$issue_num" '.[] | select((.number | tostring) != $keep) | .number' 2>>"$yq_err"); then
+		echo "  [supersede-skip] $name — gh issue list failed; superseded cleanup not attempted" >&2
 		cat "$yq_err" >&2
-		_log "$name" "$repo" "$old_ver" "fail-create" "" "$(cat "$yq_err")"
-		failed=$((failed + 1))
-		worst_rc=3
+		_log "$name" "$repo" "$old_ver" "fail-supersede-list" "" "$(cat "$yq_err")"
 		continue
 	fi
-	# gh issue create prints the URL; extract the trailing /N to log.
-	issue_num=$(printf '%s' "$issue_url" | awk -F/ '{print $NF}' | tr -d '[:space:]')
-	if ! [[ $issue_num =~ ^[0-9]+$ ]]; then
-		# Numeric extraction failed — log raw URL via .detail (not .error,
-		# r2 code-simplifier LOW: the create itself succeeded). Don't fail
-		# the cascade — the issue is created, just unparseable.
-		echo "[CREATED] $name ($repo) — $issue_url (issue number parse failed)"
-		_log "$name" "$repo" "$old_ver" "created-url-only" "" "$issue_url"
-		created=$((created + 1))
+	if [ -z "$prior_list" ]; then
 		continue
 	fi
-	echo "[CREATED] $name ($repo) — issue #$issue_num"
-	_log "$name" "$repo" "$old_ver" "created" "$issue_num"
-	created=$((created + 1))
+	while IFS= read -r prior; do
+		[ -z "$prior" ] && continue
+		[ "$prior" = "$issue_num" ] && continue
+		if [ "$DRY_RUN" = "1" ]; then
+			echo "  [DRY-RUN-supersede] $name — would close #$prior (superseded by #$issue_num)"
+			_log "$name" "$repo" "$old_ver" "dry-run-would-supersede" "$prior"
+			continue
+		fi
+		if ! gh issue close "$prior" --repo "$repo" \
+			--comment "Superseded by #$issue_num (cascade for plugin v$NEW_VER). Operator running scripts/migrate-settings.sh jumps consumer pin from any prior version straight to the latest; intermediate cascades are no longer actionable." \
+			2>"$yq_err"; then
+			echo "  [supersede-fail] $name — gh issue close #$prior failed:" >&2
+			cat "$yq_err" >&2
+			_log "$name" "$repo" "$old_ver" "fail-supersede-close" "$prior" "$(cat "$yq_err")"
+			# Don't fail the cascade — supersede is best-effort polish.
+			continue
+		fi
+		echo "  [SUPERSEDED] $name — closed #$prior (superseded by #$issue_num)"
+		_log "$name" "$repo" "$old_ver" "superseded-close" "$prior"
+	done <<<"$prior_list"
 done
 
 echo
