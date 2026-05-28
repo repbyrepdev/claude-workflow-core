@@ -43,10 +43,24 @@ jobs:
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${YQ_ASSET}"
           curl -fsSL --retry 3 -o /tmp/yq.checksums \
             "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/checksums"
-          # checksums file format is `<sha256>  <asset_name>` per line.
-          expected=$(awk -v a="${YQ_ASSET}" '$2==a{print $1; exit}' /tmp/yq.checksums)
-          if [ -z "$expected" ]; then
+          # mikefarah/yq checksums format: `<asset_name>  <hash1>  <hash2> ...`
+          # (asset in field 1, multiple hash types in subsequent fields).
+          # Extract the sha256 column via `checksums_hashes_order` file
+          # would be more robust, but for v4.52.5 the sha256 is at a
+          # known column. Use sha256sum --check via a synthesized line.
+          expected_line=$(awk -v a="${YQ_ASSET}" '$1==a{print; exit}' /tmp/yq.checksums)
+          if [ -z "$expected_line" ]; then
             echo "yq install: checksum for ${YQ_ASSET} missing from release checksums file" >&2
+            exit 1
+          fi
+          # Field 19 in the checksums file is sha256 per mikefarah/yq
+          # checksums_hashes_order (asset, then sha-1/sha-224/sha-256/...
+          # in 18 columns of different hash types). Operator dogfood:
+          # `curl -s .../checksums_hashes_order` to verify the column.
+          expected=$(echo "$expected_line" | awk '{print $19}')
+          if ! [[ $expected =~ ^[0-9a-f]{64}$ ]]; then
+            echo "yq install: extracted sha256 has unexpected shape ('$expected')" >&2
+            echo "  Verify checksums_hashes_order at https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/checksums_hashes_order" >&2
             exit 1
           fi
           actual=$(sha256sum /tmp/yq | awk '{print $1}')
