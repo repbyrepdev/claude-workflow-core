@@ -35,7 +35,9 @@ DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
 [ -d "$DIR" ] || exit 0
 
 LOG_DIR="$REPO_ROOT/.claude/logs"
-mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
+# v0.27.1 CR: log-dir creation failure should NOT abort cleanup — degraded
+# logging is acceptable, but losing cleanup means marker leaks accumulate.
+mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG_FILE="$LOG_DIR/phase1-marker-cleanup.jsonl"
 
 cleaned=0

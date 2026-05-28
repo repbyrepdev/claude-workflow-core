@@ -179,6 +179,20 @@ if [ -x "$TARGET" ]; then
 		echo "post-merge-wrapper: release-fire exited rc=$_rc — see .claude/logs/post-merge-wrapper-failures.jsonl" >&2
 	fi
 fi
+# v0.27.0 #173 Layer 3: phase1-directive marker self-heal on git pull bringing main commits.
+PHASE1_CLEAN="$REPO_ROOT/hooks/post-merge-clean-phase1-markers.sh"
+if [ -x "$PHASE1_CLEAN" ]; then
+	_rc=0
+	"$PHASE1_CLEAN" || _rc=$?
+	if [ "$_rc" -ne 0 ]; then
+		_ts=$(date -u +%FT%TZ)
+		_log="$REPO_ROOT/.claude/logs/post-merge-wrapper-failures.jsonl"
+		mkdir -p "$(dirname "$_log")" 2>/dev/null || true
+		printf '{"ts":"%s","hook":"post-merge-clean-phase1-markers","rc":%d}\n' \
+			"$_ts" "$_rc" >>"$_log" 2>/dev/null || true
+		echo "post-merge-wrapper: clean-phase1-markers exited rc=$_rc — see .claude/logs/post-merge-wrapper-failures.jsonl" >&2
+	fi
+fi
 WRAPPER
 	chmod +x "$HOOK_PATH"
 	echo "install-plugin-git-hooks: ✓ wired $HOOK_PATH → hooks/post-merge-release-fire.sh"
