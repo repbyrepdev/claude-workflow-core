@@ -20,7 +20,9 @@ There are two tiers of labels:
    the plugin because they'd be noise to other consumers.
 
 The consumer's effective `labels.yml` is `plugin's labels.yml + consumer's
-local-overrides.yml`. The merge is handled by `label-sync.yml` (Sub 6 #144).
+local-overrides.yml`. The merge **will be handled** by `label-sync.yml` once
+Sub 6 #144 ships; until then, sync is manual via `scripts/bootstrap-repo.sh
+--apply-labels` (or `gh label create` per-label).
 
 ## Promotion criteria — what belongs in the plugin
 
@@ -59,17 +61,17 @@ A label is generic (plugin tier) if:
   PII). Better to declare in each overrides with consumer-tuned descriptions
   than promote a vague generic.
 
-## Cross-repo audit (2026-05-28)
+## Cross-repo audit (as of 2026-05-28; counts drift over time)
 
-| Repo | labels.yml | local-overrides | Notes |
+| Repo | labels.yml count | local-overrides | Notes |
 |---|---|---|---|
-| `claude-workflow-core` (plugin) | 24 labels (this file) | n/a — plugin IS the SSOT | `area:plugin-manifest` is plugin-domain; sub-issue follow-up to move to plugin's own overrides if needed |
-| `media-server` | currently 32 (pre-sub-6) | 0 — will be created in Sub 9 #147 | Will reduce to `plugin's set + ~12 domain labels` in Sub 9 |
-| `pricing-team-toolkit` | currently 30 (pre-sub-6) | 0 — will be created in Sub 9 #147 | Will reduce to `plugin's set + ~10 domain labels` in Sub 9 |
+| `claude-workflow-core` (plugin) | 25 (this file) | n/a — plugin IS the SSOT | `area:plugin-manifest` is plugin-domain; once consumer overrides land (Sub 9), plugin may grow its own overrides file |
+| `media-server` | 32 (pre-Sub-6) | 0 — to be created in Sub 9 #147 | Will reduce to `plugin's set + ~12 domain labels` once Sub 9 ships |
+| `pricing-team-toolkit` | 30 (pre-Sub-6) | 0 — to be created in Sub 9 #147 | Will reduce to `plugin's set + ~10 domain labels` once Sub 9 ships |
 
 ## What ships in #142 (this sub)
 
-- Promote the union-of-generic labels into the plugin's `labels.yml` (24
+- Promote the union-of-generic labels into the plugin's `labels.yml` (25
   labels total, up from 17).
 - Document the promotion rule (this file).
 - Add bats test asserting plugin's `labels.yml` parses + has the required
@@ -94,8 +96,8 @@ A label is generic (plugin tier) if:
 
 2. Use the 8-color Primer palette declared at the top of `labels.yml`.
 
-3. The pre-commit hook validating `labels.yml` schema integrity will block
-   the commit if the new label is malformed (Sub 8 #146 will land the
-   schema gate).
+3. Run `scripts/test.sh .claude/tests/github/labels-yml.bats` before
+   committing to catch malformed shape (Sub 8 #146 will promote this to
+   a dedicated pre-commit hook).
 
 4. Update this file's audit table if the consumer counts shift materially.
