@@ -97,7 +97,13 @@ fi
 APPROVAL_DIR="$REPO_ROOT/.claude/.session-state/skip-approvals"
 LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG_FILE="$LOG_DIR/skip-approvals.jsonl"
-mkdir -p "$APPROVAL_DIR" "$LOG_DIR" 2>/dev/null || true
+# CR fix #8: fail-closed when approval/log directories can't be created.
+# Silent degradation here would tell the operator to `touch` a file in a
+# location that doesn't exist + lose the audit log silently.
+if ! mkdir -p "$APPROVAL_DIR" "$LOG_DIR" 2>/dev/null; then
+	echo "skip-env-approval-gate: ERROR cannot create approval/log directories under $REPO_ROOT — refusing skip" >&2
+	exit 2
+fi
 
 # CR fix #4: hash the FULL CMD (not just first 50 chars). Prior 50-char
 # preview window let two commands sharing a prefix collide on the same
