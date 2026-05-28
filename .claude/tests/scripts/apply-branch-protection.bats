@@ -84,7 +84,7 @@ EOF
 	chmod +x "$root/bin/gh"
 }
 
-@test "exits 2 when --help" {
+@test "exits 0 when --help" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
 	[[ $output == *"Applies the required-checks list"* ]]

@@ -1,23 +1,23 @@
 #!/bin/bash
 set -euo pipefail
-# v0.28.0 (#172): apply-branch-protection — SSOT → GitHub branch-protection
+# v0.29.0 (#172): apply-branch-protection — SSOT → GitHub branch-protection
 # applicator + drift detector.
 #
 # Reads `.github/required-checks-list.yml` (the canonical list of required
 # status checks for `main`) and either:
-#   - applies the list to GitHub via PATCH on the branch-protection API
-#   - prints the planned PATCH body (--dry-run)
+#   - applies the list to GitHub via PUT on the branch-protection API
+#   - prints the planned PUT body (--dry-run)
 #   - detects drift between SSOT and GitHub (--check)
 #
 # Closes the last manual SSOT-application gap. Today the YAML is READ by
 # the pr-merge skill + run-required-checks.sh, but APPLYING it to
-# GitHub's branch-protection settings is a manual `gh api PATCH` step
+# GitHub's branch-protection settings is a manual `gh api PUT` step
 # that operators have to remember. This script makes the round-trip
 # mechanical.
 #
 # Usage:
 #   scripts/apply-branch-protection.sh             # apply YAML → GitHub
-#   scripts/apply-branch-protection.sh --dry-run   # print planned PATCH body
+#   scripts/apply-branch-protection.sh --dry-run   # print planned PUT body
 #   scripts/apply-branch-protection.sh --check     # exit 1 if drift
 #   scripts/apply-branch-protection.sh --help
 #
@@ -37,7 +37,7 @@ Applies the required-checks list from `.github/required-checks-list.yml`
 to GitHub branch protection on `main`. Idempotent.
 
 Options:
-  --dry-run    Print planned PATCH body; do not call GitHub.
+  --dry-run    Print planned PUT body; do not call GitHub.
   --check      Compare current branch-protection state against SSOT;
                exit 1 on drift, 0 on match.
   --help       Show this help.
@@ -111,17 +111,38 @@ REPO=$(gh repo view --json name --jq '.name') || {
 }
 BRANCH="main"
 
-# Build the checks array body for the PATCH. Modern GitHub uses
-# `checks[]` (context + app_id), legacy uses `contexts[]`. Use the
-# modern form; GitHub accepts it on all current branch-protection
-# endpoints.
+# Modern GitHub uses `checks[]` (context + app_id), legacy uses
+# `contexts[]`. CHECKS_JSON is built below from the validated/deduped
+# REQUIRED_NAMES list.
+
+# Tempfile cleanup via single trap (avoids leak on signal / future exit
+# paths). All temp files live under $WORK.
+WORK=$(mktemp -d -t apply-branch-protection.XXXXXX) || {
+	echo "apply-branch-protection: ERROR mktemp -d failed" >&2
+	exit 2
+}
+trap 'rm -rf "$WORK"' EXIT INT TERM
+current_err="$WORK/current.err"
+
+# Validate REQUIRED_NAMES: no empty entries, no whitespace-only, no
+# duplicates. Whitespace-only/empty would silently register an
+# unsatisfiable required check; duplicates create false-positive drift.
+clean_names=$(printf '%s\n' "$REQUIRED_NAMES" | awk 'NF>0 && !seen[$0]++')
+if [ -z "$clean_names" ]; then
+	echo "apply-branch-protection: ERROR SSOT .required[] yielded no usable check_names after trim" >&2
+	exit 2
+fi
+if [ "$(printf '%s\n' "$REQUIRED_NAMES" | awk 'NF>0' | wc -l)" != "$(printf '%s\n' "$clean_names" | wc -l)" ]; then
+	echo "apply-branch-protection: ERROR SSOT .required[] contains duplicate check_names" >&2
+	exit 2
+fi
+REQUIRED_NAMES="$clean_names"
 CHECKS_JSON=$(printf '%s\n' "$REQUIRED_NAMES" | jq -R '{context: ., app_id: -1}' | jq -s '.')
 
 # Fetch the current branch-protection state once; cope with the "branch
 # not protected" 404 by using a sensible empty default. Both --check and
 # apply modes use this; --check treats 404 as drift (SSOT non-empty vs
-# current empty), apply mode uses defaults to build the initial PATCH.
-current_err=$(mktemp)
+# current empty), apply mode uses defaults to build the initial PUT.
 current_payload=""
 current_rc=0
 current_payload=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH/protection" 2>"$current_err") || current_rc=$?
@@ -130,11 +151,9 @@ if [ "$current_rc" -ne 0 ]; then
 		current_payload='{}'
 	else
 		echo "apply-branch-protection: ERROR gh api fetch failed (rc=$current_rc): $(head -c 200 "$current_err")" >&2
-		rm -f "$current_err"
 		exit 3
 	fi
 fi
-rm -f "$current_err"
 
 if [ "$MODE" = "check" ]; then
 	# Accept both modern (.required_status_checks.checks[].context) and
@@ -158,7 +177,7 @@ if [ "$MODE" = "check" ]; then
 	exit 1
 fi
 
-# GitHub's PATCH endpoint uses a restricted subset of fields; we explicitly
+# GitHub's PUT endpoint uses a restricted subset of fields; we explicitly
 # construct each top-level key. Strict_status_checks is preserved.
 STRICT=$(printf '%s' "$current_payload" | jq -r '.required_status_checks.strict // true')
 ENFORCE_ADMINS=$(printf '%s' "$current_payload" | jq -r '.enforce_admins.enabled // false')
@@ -170,7 +189,7 @@ REQUIRED_CONVERSATION_RESOLUTION=$(printf '%s' "$current_payload" | jq -r '.requ
 # Preserve required_pull_request_reviews if present; otherwise null.
 PR_REVIEWS=$(printf '%s' "$current_payload" | jq -c '.required_pull_request_reviews // null')
 
-PATCH_BODY=$(jq -n \
+PUT_BODY=$(jq -n \
 	--argjson checks "$CHECKS_JSON" \
 	--argjson strict "$STRICT" \
 	--argjson enforce_admins "$ENFORCE_ADMINS" \
@@ -191,19 +210,29 @@ PATCH_BODY=$(jq -n \
 	}')
 
 if [ "$MODE" = "dry-run" ]; then
-	echo "# apply-branch-protection: DRY RUN — would PATCH repos/$OWNER/$REPO/branches/$BRANCH/protection"
+	echo "# apply-branch-protection: DRY RUN — would PUT repos/$OWNER/$REPO/branches/$BRANCH/protection"
 	echo "# Body:"
-	printf '%s\n' "$PATCH_BODY" | jq .
+	printf '%s\n' "$PUT_BODY" | jq .
 	exit 0
 fi
 
+# Pre-validate PUT body before sending (defense against upstream
+# breakage producing an empty/invalid body).
+if [ -z "$PUT_BODY" ] || ! printf '%s' "$PUT_BODY" | jq -e '.required_status_checks.checks | length > 0' >/dev/null 2>&1; then
+	echo "apply-branch-protection: ERROR PUT body invalid or has empty checks[] — refusing to apply" >&2
+	exit 2
+fi
+
 # Apply.
-apply_err=$(mktemp)
-if ! printf '%s' "$PATCH_BODY" | gh api --method PUT "repos/$OWNER/$REPO/branches/$BRANCH/protection" --input - >/dev/null 2>"$apply_err"; then
-	echo "apply-branch-protection: ERROR PATCH failed: $(head -c 400 "$apply_err")" >&2
-	rm -f "$apply_err"
+apply_err="$WORK/apply.err"
+if ! printf '%s' "$PUT_BODY" | gh api --method PUT "repos/$OWNER/$REPO/branches/$BRANCH/protection" --input - >/dev/null 2>"$apply_err"; then
+	echo "apply-branch-protection: ERROR PUT failed:" >&2
+	if jq -e . "$apply_err" >/dev/null 2>&1; then
+		jq . "$apply_err" >&2
+	else
+		cat "$apply_err" >&2
+	fi
 	exit 3
 fi
-rm -f "$apply_err"
-echo "apply-branch-protection: ✓ branch protection on $OWNER/$REPO:$BRANCH updated to match SSOT ($(printf '%s' "$REQUIRED_NAMES" | wc -l | tr -d ' ') required checks)"
+echo "apply-branch-protection: ✓ branch protection on $OWNER/$REPO:$BRANCH updated to match SSOT ($(printf '%s' "$CHECKS_JSON" | jq 'length') required checks)"
 exit 0
