@@ -72,7 +72,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-if [ -z "$PR" ] || ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+if [ -z "$PR" ] || ! [[ $PR =~ ^[0-9]+$ ]]; then
 	echo "Usage: $0 --pr <num> [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] [--tag vX.Y.Z]" >&2
 	exit 2
 fi
@@ -136,8 +136,22 @@ skc_approve_or_exit "Merge PR #$PR ($METHOD)?"
 # Merge.
 MERGE_ARGS=(pr merge "$PR" "$METHOD")
 [ "$DELETE_BRANCH" = "1" ] && MERGE_ARGS+=(--delete-branch)
+# Capture branch HEAD sha BEFORE merge (branch may be deleted by --delete-branch).
+BRANCH_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+
 SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
 echo "✓ Merged PR #$PR ($METHOD)"
+
+# v0.27.0 #173 Layer 2: clear phase1-directive marker for the merged
+# branch HEAD sha. Without this, the marker stays orphaned until either
+# Layer 1 (phase1-directive-pending-guard self-heal) or Layer 3 (post-
+# merge git hook) catches it. Belt-and-suspenders: catch at the source.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+MARKER_DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
+if [ -n "$BRANCH_HEAD_SHA" ] && [ -f "$MARKER_DIR/$BRANCH_HEAD_SHA.phase1-directive.txt" ]; then
+	rm -f "$MARKER_DIR/$BRANCH_HEAD_SHA.phase1-directive.txt"
+	echo "  cleaned phase1-directive marker for $BRANCH_HEAD_SHA (merged via this skill)"
+fi
 
 # Resolve the exact merge-commit SHA via the GitHub API BEFORE any local
 # fetch/pull that could move origin/main. This guarantees the tag (if

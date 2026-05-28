@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
-# event: PreToolUse Bash
+# event: PreToolUse
+# matcher: Bash
 # auto-register: true
 # v0.8.4 (#63) — ship-pr-cycle director-gate.
 #
@@ -92,19 +93,30 @@ if [ "${SKILL_WRAPPER:-0}" = "1" ]; then
 	exit 0
 fi
 
-# Detect command category.
-case "$CMD" in
-*"coderabbit review"* | *"scripts/cr/local-review.sh"*)
+# Detect command category. v0.27.0 #173 Layer 4: anchored regex match
+# requiring START-OF-STRING + optional env-var prefix. Substring match
+# in the prior version tripped on heredoc/grep/echo content mentioning
+# workflow command names in DOCUMENTATION text. Post-separator (after
+# `;`/`&&`/`|`) deliberately NOT matched here — `|` triggers on grep
+# alternation patterns like `grep "X\|gh pr merge"`. Operators who
+# legitimately chain `false; gh pr merge` are rare in practice and can
+# split into two commands. Trade-off: tighter false-positive avoidance.
+_cmd_starts_with() {
+	local cmd=$1 needle=$2
+	# `^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*<needle>` —
+	# anchored at start, optional env-var prefixes, then literal needle.
+	printf '%s' "$cmd" | grep -qE "^([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*$needle"
+}
+CATEGORY=""
+if _cmd_starts_with "$CMD" "coderabbit review" || _cmd_starts_with "$CMD" "scripts/cr/local-review\.sh" || _cmd_starts_with "$CMD" "\\./scripts/cr/local-review\.sh"; then
 	CATEGORY="cr-cli"
-	;;
-*"gh pr merge"*)
+elif _cmd_starts_with "$CMD" "gh pr merge"; then
 	CATEGORY="merge"
-	;;
-*"git push"*)
+elif _cmd_starts_with "$CMD" "git push"; then
 	CATEGORY="push"
-	;;
-*) exit 0 ;;
-esac
+else
+	exit 0
+fi
 
 # Stderr-capture helper used across all subsequent calls. tmpfile fallback
 # to /dev/null + audible WARN on mktemp failure (F6 fix — was silently

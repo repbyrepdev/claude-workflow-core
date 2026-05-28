@@ -185,7 +185,39 @@ else
 	rm -f "$_tmp_expected"
 fi
 
-# --- 3. Summary ----------------------------------------------------------
+# --- 3. exec-bit self-heal on all hooks/*.sh ---------------------------
+# v0.27.0 #173 Layer 5: re-assert chmod +x on every hooks/*.sh. The
+# session of 2026-05-28 hit a real bug — phase1-directive-pending-guard.sh
+# lost its +x bit mid-session (cause unknown — possibly a stale file-mode
+# entry from a worktree migration). Every Bash command logged "Permission
+# denied" until manual chmod. This step self-heals on every install/check.
+if [ "$CHECK_ONLY" = "1" ]; then
+	# In --check mode, FLAG non-executable hooks as drift but don't auto-fix.
+	non_exec=()
+	for h in hooks/*.sh; do
+		[ -f "$h" ] || continue
+		[ -x "$h" ] || non_exec+=("$h")
+	done
+	if [ "${#non_exec[@]}" -gt 0 ]; then
+		_log "DRIFT: hooks missing +x bit (cannot fire as PreToolUse handlers):"
+		printf '  %s\n' "${non_exec[@]}" >&2
+		_log "  Re-run 'scripts/install-hooks.sh' to fix."
+		exit 1
+	fi
+else
+	_log "asserting chmod +x on every hooks/*.sh..."
+	fixed=0
+	for h in hooks/*.sh; do
+		[ -f "$h" ] || continue
+		if [ ! -x "$h" ]; then
+			chmod +x "$h"
+			fixed=$((fixed + 1))
+		fi
+	done
+	[ "$fixed" -gt 0 ] && _log "  +x restored on $fixed hook(s)"
+fi
+
+# --- 4. Summary ----------------------------------------------------------
 if [ "$CHECK_ONLY" = "1" ]; then
 	_log "✓ all hooks installed + match expected layout"
 else

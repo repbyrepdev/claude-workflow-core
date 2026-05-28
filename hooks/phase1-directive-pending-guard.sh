@@ -75,8 +75,19 @@ rm -f "$find_err"
 pending_count=0
 pending_list=""
 while IFS= read -r -d '' f; do
-	pending_count=$((pending_count + 1))
 	sha=$(basename "$f" .phase1-directive.txt)
+	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now on
+	# origin/main (already shipped — work is done). Without this self-
+	# heal, every merged-PR's directive marker stays orphaned in
+	# .claude/.session-state/ship-cycle/ and trips this gate on every
+	# subsequent Bash call until manually cleaned. Branch-deletion +
+	# squash-merge doesn't clean up; that's exactly the trap that
+	# stranded 10 markers in the 2026-05-28 session.
+	if git merge-base --is-ancestor "$sha" origin/main 2>/dev/null; then
+		rm -f "$f"
+		continue
+	fi
+	pending_count=$((pending_count + 1))
 	pending_list="${pending_list}  - sha=$sha (directive emitted; agents not yet fired)
 "
 done <"$find_out"
