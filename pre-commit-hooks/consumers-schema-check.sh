@@ -39,26 +39,68 @@ cd "$REPO_ROOT"
 
 REGISTRY=".github/consumers.yml"
 
-# Stage detection — include DELETIONS (diff-filter=D) so we catch
-# `git rm .github/consumers.yml` staged for commit. Per type-design-
-# analyzer #9 (Phase 1): registry SSOT presence is a hard contract;
-# silently allowing its deletion would break cascade tools downstream.
-STAGED=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null |
-	grep -Fx "$REGISTRY" || true)
-if [ -z "$STAGED" ]; then
+# Stage detection — use --name-status with --diff-filter=ACMRD so we see
+# BOTH the change-status code AND old/new paths for rename entries.
+# r2 silent-failure-hunter: dropped `2>/dev/null` on git diff calls so
+# index corruption / permission errors on .git/index surface instead of
+# silently disabling the gate.
+# r2 code-reviewer: `git mv .github/consumers.yml elsewhere.yml` records
+# a single `R<score>` entry whose name-only output is ONLY the new path.
+# That bypassed the prior pure-deletion guard. --name-status surfaces
+# the rename so we can detect "rename-away" (registry → other path).
+STAGED_RAW=$(git diff --cached --name-status --diff-filter=ACMRD)
+if [ -z "$STAGED_RAW" ]; then
 	exit 0
 fi
 
-# Distinguish add/modify (ACMR) from delete (D).
-STAGED_MODIFY=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null |
-	grep -Fx "$REGISTRY" || true)
-STAGED_DELETE=$(git diff --cached --name-only --diff-filter=D 2>/dev/null |
-	grep -Fx "$REGISTRY" || true)
+# Walk the status output. For each line:
+#   A/C/M/D  <path>
+#   R<score> <old>   <new>
+# Detect: registry add/modify (STAGED_MODIFY), pure deletion (STAGED_DELETE),
+# rename-away (STAGED_RENAME_AWAY — registry → other path), rename-to
+# (registry-becomes — other path → registry).
+STAGED_MODIFY=""
+STAGED_DELETE=""
+STAGED_RENAME_AWAY=""
+STAGED_RENAME_TO=""
+while IFS=$'\t' read -r status p1 p2; do
+	case "$status" in
+	A | C* | M | T)
+		[ "$p1" = "$REGISTRY" ] && STAGED_MODIFY=1
+		;;
+	D)
+		[ "$p1" = "$REGISTRY" ] && STAGED_DELETE=1
+		;;
+	R*)
+		if [ "$p1" = "$REGISTRY" ] && [ "$p2" != "$REGISTRY" ]; then
+			STAGED_RENAME_AWAY=1
+		fi
+		if [ "$p2" = "$REGISTRY" ] && [ "$p1" != "$REGISTRY" ]; then
+			STAGED_RENAME_TO=1
+		fi
+		;;
+	esac
+done <<<"$STAGED_RAW"
 
-if [ -n "$STAGED_DELETE" ] && [ -z "$STAGED_MODIFY" ]; then
-	echo "consumers-schema-check: $REGISTRY staged for DELETION — refusing" >&2
-	echo "  $REGISTRY is the SSOT for plugin consumers; cascade tools depend" >&2
-	echo "  on it existing. If consolidating, write a deprecation issue first." >&2
+# Touch detection: any of the registry-affecting status codes.
+if [ -z "$STAGED_MODIFY" ] && [ -z "$STAGED_DELETE" ] &&
+	[ -z "$STAGED_RENAME_AWAY" ] && [ -z "$STAGED_RENAME_TO" ]; then
+	exit 0
+fi
+
+# Pure deletion OR rename-away both leave the registry path empty in the
+# committed tree — both break cascade tools that depend on its presence.
+if { [ -n "$STAGED_DELETE" ] || [ -n "$STAGED_RENAME_AWAY" ]; } && [ -z "$STAGED_MODIFY" ] && [ -z "$STAGED_RENAME_TO" ]; then
+	if [ -n "$STAGED_RENAME_AWAY" ]; then
+		echo "consumers-schema-check: $REGISTRY staged for RENAME-AWAY — refusing" >&2
+		echo "  $REGISTRY is the SSOT for plugin consumers; cascade tools depend" >&2
+		echo "  on it existing AT THIS PATH. If relocating the SSOT, update the" >&2
+		echo "  cascade tools + this hook + bootstrap-repo.sh template first." >&2
+	else
+		echo "consumers-schema-check: $REGISTRY staged for DELETION — refusing" >&2
+		echo "  $REGISTRY is the SSOT for plugin consumers; cascade tools depend" >&2
+		echo "  on it existing. If consolidating, write a deprecation issue first." >&2
+	fi
 	echo "  Bypass (audit-log): CONSUMERS_SCHEMA_SKIP=1 git commit ..." >&2
 	exit 1
 fi
@@ -98,8 +140,13 @@ yq_err=$(mktemp -t consumers-yq.XXXXXX) || {
 _cleanup() { rm -f "$staged_tmp" "$yq_err"; }
 trap _cleanup EXIT INT TERM HUP
 
-if ! git show ":${REGISTRY}" >"$staged_tmp" 2>/dev/null; then
-	echo "consumers-schema-check: could not read staged $REGISTRY" >&2
+# Capture git show stderr to yq_err (reusing tmp buffer) and surface
+# it on failure. r2 silent-failure-hunter #1: prior `2>/dev/null` masked
+# corrupt-object-store / permission errors as a generic "could not read"
+# message with no diagnostic context.
+if ! git show ":${REGISTRY}" >"$staged_tmp" 2>"$yq_err"; then
+	echo "consumers-schema-check: could not read staged $REGISTRY:" >&2
+	cat "$yq_err" >&2
 	exit 2
 fi
 

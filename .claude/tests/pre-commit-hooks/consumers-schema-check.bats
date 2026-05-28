@@ -228,6 +228,73 @@ YAML
 	[[ $output == *"staged for DELETION"* ]]
 }
 
+# Phase 1 r2 code-reviewer: deletion guard must also block rename-away
+# (git mv consumers.yml elsewhere.yml). Prior diff-filter=D missed this
+# because R<score> entries record only the new path under --name-only.
+@test "fails on staged rename-away of consumers.yml (registry SSOT)" {
+	cd "$TEST_TMP" || return 1
+	_write_valid_consumers
+	git add .github/consumers.yml
+	git commit -q -m "add consumers.yml"
+	git mv .github/consumers.yml .github/consumers-new.yml
+	run pre-commit-hooks/consumers-schema-check.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"staged for RENAME-AWAY"* ]]
+}
+
+# Phase 1 r2 code-reviewer: rename-TO (other-path → consumers.yml)
+# should be treated as a modify (file ends up at the SSOT path).
+@test "passes on rename TO consumers.yml when content valid" {
+	cd "$TEST_TMP" || return 1
+	# Create the registry under a different path first.
+	mkdir -p .github
+	cat >.github/consumers-other.yml <<'YAML'
+schema_version: 1
+consumers:
+  - name: media-server
+    repo: repbyrepdev/plex_arr_media_stack
+    local_path: ~/media-server
+    pinned_version: "0.8.5"
+    overrides_file: .claude/local-overrides.yml
+    bootstrap_date: 2026-04-21
+    contact: "@damien"
+    notes: "Homelab consumer"
+YAML
+	git add .github/consumers-other.yml
+	git commit -q -m "add other"
+	git mv .github/consumers-other.yml .github/consumers.yml
+	run pre-commit-hooks/consumers-schema-check.sh
+	[ "$status" -eq 0 ]
+}
+
+# Phase 1 r2 silent-failure-hunter #1: git show stderr must surface
+# on failure (corrupt object store, missing blob), not be masked as
+# a generic "could not read" message. Reliable trigger: remove the
+# specific blob file backing the staged registry entry, then run.
+@test "git show stderr surfaces on missing blob" {
+	cd "$TEST_TMP" || return 1
+	_write_valid_consumers
+	git add .github/consumers.yml
+	# Locate the blob backing the staged entry and remove it. This
+	# forces `git show :path` to fail with a real diagnostic instead
+	# of succeeding silently.
+	blob_sha=$(git rev-parse ":.github/consumers.yml")
+	blob_path=".git/objects/${blob_sha:0:2}/${blob_sha:2}"
+	[ -f "$blob_path" ] || {
+		echo "FATAL: expected blob at $blob_path" >&2
+		return 1
+	}
+	rm -f "$blob_path"
+	run pre-commit-hooks/consumers-schema-check.sh
+	[ "$status" -eq 2 ]
+	[[ $output == *"could not read staged"* ]]
+	# Stderr should now contain git's actual error (the blob ref or
+	# "fatal: bad object" / "Not a valid object name") — proving
+	# 2>/dev/null no longer masks. Match the blob sha as the most
+	# deterministic indicator.
+	[[ $output == *"${blob_sha:0:7}"* ]] || [[ $output == *"fatal"* ]] || [[ $output == *"bad"* ]] || [[ $output == *"object"* ]]
+}
+
 # Phase 1 silent-failure-hunter SF-001/002/003: a corrupt YAML must
 # exit 2 (parse failure / precondition error), NOT 1 (schema violation).
 # Distinguishes "operator wrote bad content" from "parser can't read it".
