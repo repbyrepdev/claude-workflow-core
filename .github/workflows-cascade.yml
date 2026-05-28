@@ -1,0 +1,49 @@
+# Workflows-cascade SSOT — declares which workflows in
+# `.github/workflows-source/` propagate to consumer repos, and which are
+# plugin-only meta workflows that should NOT cascade.
+#
+# Consumed by:
+#   * pre-commit-hooks/workflow-source-pin.sh — enforces hash-equivalence
+#     between workflows-source/X.yml and workflows/X.yml for every
+#     cascade entry on the plugin side.
+#   * scripts/refresh-from-source.sh (#151, not yet shipped) — iterates
+#     cascade[] and copies into each consumer's `.github/workflows/`.
+#
+# Plugin design (Sub 6 #144 of #138):
+#   - workflows-source/ is the SSOT directory the plugin owns
+#   - workflows/ is the live directory GitHub Actions reads from
+#     (symlinks across `.github/workflows/` don't work — GitHub
+#     resolves the literal directory; must be content-replicated)
+#   - cascade: workflows that propagate to every consumer
+#   - no_cascade: plugin-only (meta workflows that exist to validate the
+#     plugin itself; cascading them to consumers would be wrong)
+#   - planned: workflows we WANT to promote from consumers but haven't
+#     yet shipped a canonical plugin version of (informational; not
+#     enforced by the hook)
+
+schema_version: 1
+
+cascade:
+  - pr-lint.yml          # Conventional Commits PR title check
+  - gitleaks.yml         # secret scan
+  - pr-labeler.yml       # path-based PR labels (consumer's labeler.yml)
+  - label-sync.yml       # sync .github/labels.yml to GitHub label set
+
+no_cascade:
+  - plugin-self-bootstrap-verify.yml  # plugin-only — validates plugin
+                                      # itself bootstraps cleanly. Has
+                                      # no meaning in consumer context.
+
+# Workflows known to be duplicated in consumer repos that the plugin
+# doesn't yet ship canonical versions of. Listed here as a backlog
+# pointer; promotion happens in follow-up subs (likely under #138's
+# remaining sub-issues or a separate v0.20 epic). NOT enforced by the
+# hook — they'd be flagged as drift in consumers but the plugin has
+# nothing to enforce against yet.
+planned:
+  - ai-triage.yml
+  - auto-close-parent.yml
+  - delete-branch-on-close.yml
+  - project-automation.yml
+  - release.yml
+  - lint-ci.yml

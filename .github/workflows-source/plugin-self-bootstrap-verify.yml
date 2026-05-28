@@ -1,0 +1,49 @@
+name: Plugin self-bootstrap verify
+
+# Runs bootstrap-repo.sh --verify --scope plugin against the plugin's
+# own repo on every push/PR. Prevents shipping a release where the
+# plugin's own .github/* has drifted from what bootstrap-manifest.yml
+# declares it produces.
+#
+# The verify script reads only checked-in YAML; the only external
+# fetch is the pinned yq release tarball from GitHub.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # issues:read grants access to repository.labels via GraphQL (required by
+  # `gh label list` inside _verify_target's label-remote check).
+  issues: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install yq (pinned tag, GitHub release as trusted source)
+        env:
+          YQ_VERSION: v4.52.5
+        run: |
+          set -euxo pipefail
+          curl -fsSL --retry 3 -o /tmp/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+      - name: Run bootstrap-repo.sh --verify --scope plugin
+        env:
+          # Required for the label-remote check (gh label list) inside _verify_target.
+          # Without GH_TOKEN, gh CLI errors and the script fails closed.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/bootstrap-repo.sh . --verify --scope plugin

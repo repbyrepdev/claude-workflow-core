@@ -1,0 +1,30 @@
+name: PR auto-label
+
+# v3.23.D #311 — apply area:* + documentation labels to PRs based on
+# changed-files globs defined in .github/labeler.yml. Complements
+# ai-triage.yml which handles issue-side labeling (#312).
+#
+# Triggers on pull_request_target so PRs from forks still get labeled
+# (forked PRs can't write labels under pull_request event). Read-only
+# checkout; safe to run on untrusted PR content.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213  # v6.1.0
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: true

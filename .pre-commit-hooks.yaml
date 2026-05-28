@@ -98,6 +98,13 @@
   pass_filenames: false
   stages: [pre-commit]
 
+- id: workflow-source-pin
+  name: workflows-source/ ↔ workflows/ hash-equivalence (v0.19.2 #144)
+  entry: pre-commit-hooks/workflow-source-pin.sh
+  language: script
+  pass_filenames: false
+  stages: [pre-commit]
+
 - id: event-frontmatter-check
   name: "event-frontmatter — hooks must declare `# event:` for discovery"
   entry: pre-commit-hooks/event-frontmatter-check.sh
