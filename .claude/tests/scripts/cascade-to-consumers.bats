@@ -75,17 +75,33 @@ case "$1" in
             j=$((i+1)); repo="${!j}"; break
           fi
         done
-        env_name="GH_STUB_EXISTING_$(printf '%s' "$repo" | tr '/-' '__')"
+        env_repo=$(printf '%s' "$repo" | tr '/-' '__')
+        env_name="GH_STUB_EXISTING_$env_repo"
         existing_num=$(printenv "$env_name" 2>/dev/null || echo "")
         # Title-aware env: GH_STUB_EXISTING_TITLE_<repo>=<full title>
-        title_env="GH_STUB_EXISTING_TITLE_$(printf '%s' "$repo" | tr '/-' '__')"
+        title_env="GH_STUB_EXISTING_TITLE_$env_repo"
         existing_title=$(printenv "$title_env" 2>/dev/null || echo "")
-        # Emit one element when existing_num is set; else empty array.
+        # v0.26.0 #169: GH_STUB_PRIOR_<repo>="num1,num2,..." lists OPEN
+        # cascade issues that supersede-dedup should close. Returned IN
+        # ADDITION to the title-exact existing_num (if set).
+        prior_env="GH_STUB_PRIOR_$env_repo"
+        prior_list=$(printenv "$prior_env" 2>/dev/null || echo "")
+        # Build the JSON array. Title for prior entries is intentionally
+        # different from the to-be-created title so the title-exact
+        # idempotency check doesn't false-match them.
+        entries=""
         if [ -n "$existing_num" ]; then
-          printf '[{"number":%s,"title":"%s"}]\n' "$existing_num" "${existing_title:-feat: refresh from plugin v1.2.3 (was v1.0.0)}"
-        else
-          printf '[]\n'
+          entries="{\"number\":$existing_num,\"title\":\"${existing_title:-feat: refresh from plugin v1.2.3 (was v1.0.0)}\"}"
         fi
+        if [ -n "$prior_list" ]; then
+          IFS=, read -ra arr <<<"$prior_list"
+          for p in "${arr[@]}"; do
+            [ -z "$p" ] && continue
+            [ -n "$entries" ] && entries="$entries,"
+            entries="$entries{\"number\":$p,\"title\":\"feat: refresh from plugin (PRIOR $p)\"}"
+          done
+        fi
+        printf '[%s]\n' "$entries"
         exit 0
         ;;
       create)
@@ -102,6 +118,28 @@ case "$1" in
         echo "https://github.com/$repo/issues/777"
         exit 0
         ;;
+      close)
+        # v0.26.0 #169: cascade-dedup supersede calls gh issue close <num>
+        # --repo <r> --comment "...". Stub records the close to a log so
+        # tests can assert which numbers got closed. Parent-dir mkdir
+        # guard prevents silent log loss if a future test uses a nested
+        # GH_STUB_CLOSE_LOG path (r2 silent-failure-hunter MEDIUM).
+        close_num="$3"
+        close_log="${GH_STUB_CLOSE_LOG:-/tmp/gh-stub-close.log}"
+        if ! mkdir -p "$(dirname "$close_log")" 2>/dev/null; then
+          echo "stub: cannot create close_log parent dir" >&2
+          exit 99
+        fi
+        if ! echo "$close_num" >>"$close_log"; then
+          echo "stub: append to $close_log failed" >&2
+          exit 99
+        fi
+        if [ "${GH_STUB_FAIL_CLOSE:-0}" = "1" ]; then
+          echo "gh: stubbed close failure" >&2
+          exit 1
+        fi
+        exit 0
+        ;;
     esac
     ;;
 esac
@@ -116,6 +154,7 @@ GHSCRIPT
 
 	export PATH="$TEST_TMP/bin:$PATH"
 	export GH_STUB_LOG="$TEST_TMP/gh-stub.log"
+	export GH_STUB_CLOSE_LOG="$TEST_TMP/gh-stub-close.log"
 }
 
 teardown() {
@@ -278,4 +317,106 @@ YAML
 	run scripts/cascade-to-consumers.sh --dry-run
 	[ "$status" -eq 2 ]
 	[[ $output == *"null or empty"* ]]
+}
+
+# --- v0.26.0 #169 cascade-dedup tests ---
+
+@test "dedup: one prior open cascade is superseded after new create" {
+	cd "$TEST_TMP/plugin" || return 1
+	# Stub: org/alpha has prior open cascade #555 (different version)
+	GH_STUB_PRIOR_org_alpha="555" run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"[CREATED] alpha"* ]]
+	[[ $output == *"[SUPERSEDED] alpha"* ]]
+	[[ $output == *"#555"* ]]
+	# Verify the close call landed
+	[ -f "$TEST_TMP/gh-stub-close.log" ]
+	grep -Fxq "555" "$TEST_TMP/gh-stub-close.log"
+}
+
+@test "dedup: multiple priors all get superseded" {
+	cd "$TEST_TMP/plugin" || return 1
+	GH_STUB_PRIOR_org_alpha="100,200,300" run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"[CREATED] alpha"* ]]
+	# All 3 priors closed
+	[ -f "$TEST_TMP/gh-stub-close.log" ]
+	grep -Fxq "100" "$TEST_TMP/gh-stub-close.log"
+	grep -Fxq "200" "$TEST_TMP/gh-stub-close.log"
+	grep -Fxq "300" "$TEST_TMP/gh-stub-close.log"
+}
+
+@test "dedup: zero priors → no supersede calls" {
+	cd "$TEST_TMP/plugin" || return 1
+	# Default state: no GH_STUB_PRIOR set
+	run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"[CREATED] alpha"* ]]
+	[[ $output != *"[SUPERSEDED]"* ]]
+	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || [ ! -s "$TEST_TMP/gh-stub-close.log" ]
+}
+
+@test "dedup: --dry-run previews supersede without closing" {
+	cd "$TEST_TMP/plugin" || return 1
+	GH_STUB_PRIOR_org_alpha="500" run scripts/cascade-to-consumers.sh --consumer alpha --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output == *"[DRY-RUN] alpha"* ]]
+	[[ $output == *"[DRY-RUN-supersede] alpha"* ]]
+	[[ $output == *"#500"* ]]
+	# No close calls actually fired
+	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || [ ! -s "$TEST_TMP/gh-stub-close.log" ]
+}
+
+@test "dedup: existing-issue [EXISTS] path does NOT supersede priors" {
+	cd "$TEST_TMP/plugin" || return 1
+	# EXISTS path: title-match returns the existing issue. Dedup loop
+	# should NOT fire (we're already on the latest).
+	GH_STUB_EXISTING_org_alpha=555 \
+		GH_STUB_EXISTING_TITLE_org_alpha="feat: refresh from plugin v1.2.3 (was v1.0.0)" \
+		GH_STUB_PRIOR_org_alpha="100" \
+		run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"[EXISTS] alpha"* ]]
+	# Should NOT have closed #100 (we hit EXISTS, not CREATED)
+	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || ! grep -Fxq "100" "$TEST_TMP/gh-stub-close.log"
+}
+
+@test "dedup: close-fail is best-effort (rc stays 0; failure audit-logged WITH detail)" {
+	cd "$TEST_TMP/plugin" || return 1
+	GH_STUB_PRIOR_org_alpha="999" GH_STUB_FAIL_CLOSE=1 run scripts/cascade-to-consumers.sh --consumer alpha
+	# Primary cascade succeeded → exit 0 even with supersede failures
+	[ "$status" -eq 0 ]
+	[[ $output == *"[CREATED] alpha"* ]]
+	[[ $output == *"[supersede-fail] alpha"* ]]
+	# r2 code-reviewer CRITICAL: fail-supersede-close audit MUST capture
+	# BOTH the prior issue number AND the gh-close stderr (was dropping
+	# detail when issue_num was set under the old mutually-exclusive _log).
+	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
+	grep -q '"action":"fail-supersede-close"' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	grep -q '"issue":999' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	grep -q '"detail":' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	# r2 silent-failure-hunter HIGH: supersede failure shows in summary.
+	[[ $output == *"supersede fails: 1"* ]]
+}
+
+@test "dedup: summary surfaces superseded counter on success" {
+	cd "$TEST_TMP/plugin" || return 1
+	GH_STUB_PRIOR_org_alpha="100,200,300" run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	# r2 silent-failure-hunter HIGH: feature must be visible in summary
+	# (was: superseded counter only in audit log; operator at-a-glance
+	# couldn't see whether dedup actually fired).
+	[[ $output == *"superseded:      3"* ]]
+	[[ $output == *"supersede fails: 0"* ]]
+}
+
+@test "dedup: zero priors emits supersede-none audit entry" {
+	cd "$TEST_TMP/plugin" || return 1
+	# No GH_STUB_PRIOR → empty prior list
+	run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	# r2 silent-failure-hunter MEDIUM: audit log must positively record
+	# "no priors found" rather than silence on this path.
+	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
+	grep -q '"action":"supersede-none"' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
 }
