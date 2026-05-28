@@ -121,10 +121,19 @@ case "$1" in
       close)
         # v0.26.0 #169: cascade-dedup supersede calls gh issue close <num>
         # --repo <r> --comment "...". Stub records the close to a log so
-        # tests can assert which numbers got closed.
+        # tests can assert which numbers got closed. Parent-dir mkdir
+        # guard prevents silent log loss if a future test uses a nested
+        # GH_STUB_CLOSE_LOG path (r2 silent-failure-hunter MEDIUM).
         close_num="$3"
         close_log="${GH_STUB_CLOSE_LOG:-/tmp/gh-stub-close.log}"
-        echo "$close_num" >>"$close_log"
+        if ! mkdir -p "$(dirname "$close_log")" 2>/dev/null; then
+          echo "stub: cannot create close_log parent dir" >&2
+          exit 99
+        fi
+        if ! echo "$close_num" >>"$close_log"; then
+          echo "stub: append to $close_log failed" >&2
+          exit 99
+        fi
         if [ "${GH_STUB_FAIL_CLOSE:-0}" = "1" ]; then
           echo "gh: stubbed close failure" >&2
           exit 1
@@ -372,14 +381,42 @@ YAML
 	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || ! grep -Fxq "100" "$TEST_TMP/gh-stub-close.log"
 }
 
-@test "dedup: close-fail is best-effort (rc stays 0; failure audit-logged)" {
+@test "dedup: close-fail is best-effort (rc stays 0; failure audit-logged WITH detail)" {
 	cd "$TEST_TMP/plugin" || return 1
 	GH_STUB_PRIOR_org_alpha="999" GH_STUB_FAIL_CLOSE=1 run scripts/cascade-to-consumers.sh --consumer alpha
 	# Primary cascade succeeded → exit 0 even with supersede failures
 	[ "$status" -eq 0 ]
 	[[ $output == *"[CREATED] alpha"* ]]
 	[[ $output == *"[supersede-fail] alpha"* ]]
-	# Audit log records the failure
+	# r2 code-reviewer CRITICAL: fail-supersede-close audit MUST capture
+	# BOTH the prior issue number AND the gh-close stderr (was dropping
+	# detail when issue_num was set under the old mutually-exclusive _log).
 	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
 	grep -q '"action":"fail-supersede-close"' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	grep -q '"issue":999' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	grep -q '"detail":' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+	# r2 silent-failure-hunter HIGH: supersede failure shows in summary.
+	[[ $output == *"supersede fails: 1"* ]]
+}
+
+@test "dedup: summary surfaces superseded counter on success" {
+	cd "$TEST_TMP/plugin" || return 1
+	GH_STUB_PRIOR_org_alpha="100,200,300" run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	# r2 silent-failure-hunter HIGH: feature must be visible in summary
+	# (was: superseded counter only in audit log; operator at-a-glance
+	# couldn't see whether dedup actually fired).
+	[[ $output == *"superseded:      3"* ]]
+	[[ $output == *"supersede fails: 0"* ]]
+}
+
+@test "dedup: zero priors emits supersede-none audit entry" {
+	cd "$TEST_TMP/plugin" || return 1
+	# No GH_STUB_PRIOR → empty prior list
+	run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	# r2 silent-failure-hunter MEDIUM: audit log must positively record
+	# "no priors found" rather than silence on this path.
+	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
+	grep -q '"action":"supersede-none"' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
 }
