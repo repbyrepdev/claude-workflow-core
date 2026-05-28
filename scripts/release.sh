@@ -146,23 +146,72 @@ fi
 # Snapshot + regen + compare + restore (must not mutate during a
 # clean-tree assertion). Worktree was certified clean above, so we
 # can compute the diff safely without git stash.
-# #155 silent-failure-hunter CRIT-2 + HIGH-1: register trap BEFORE
-# mktemp so an interrupt (Ctrl-C) between regen + restore can't leave
-# the working tree mutated. Also guard mktemp against silent failure.
+# #155 silent-failure-hunter CRIT-2 + HIGH-1: snapshot+regen+compare
+# needs trap protection — an interrupt between hash-drift --generate
+# (which mutates SOURCE_HASHES_PATH) and the final restore would leave
+# the working tree mutated. CRITICAL fix (r2): trap must only treat
+# _snap as a valid restore source AFTER cp succeeds. Otherwise an
+# interrupt or cp-failure between mktemp + cp would mv an empty file
+# over SOURCE_HASHES_PATH, corrupting the real baseline. Sentinel
+# `_snap_valid` flips to 1 only after a successful cp.
 _snap=""
+_snap_valid=0
+_gen_err=""
+_diff_err=""
+_mv_err=""
+_restore_failed=0
 # shellcheck disable=SC2329,SC2317
 _restore_hashes() {
-	if [ -n "$_snap" ] && [ -f "$_snap" ]; then
-		# Best-effort restore + cleanup. Failure here is non-recoverable
-		# (operator must inspect manually); surface to stderr.
-		mv "$_snap" "$SOURCE_HASHES_PATH" 2>/dev/null || {
-			echo "release.sh: WARNING: failed to restore $SOURCE_HASHES_PATH from $_snap — inspect manually" >&2
-			rm -f "$_snap"
-		}
-		_snap=""
+	# Restore SOURCE_HASHES_PATH only if cp populated _snap with real
+	# content (sentinel _snap_valid). Otherwise just clean up tmpfiles.
+	if [ "$_snap_valid" = "1" ] && [ -n "$_snap" ] && [ -f "$_snap" ]; then
+		# r2 silent-failure-hunter MED-2: capture mv stderr so operator
+		# sees WHY restore failed (ENOSPC / EACCES / ENOENT / EROFS).
+		_mv_err=$(mktemp -t restore-mv-err.XXXXXX 2>/dev/null || true)
+		if [ -n "$_mv_err" ]; then
+			if ! mv "$_snap" "$SOURCE_HASHES_PATH" 2>"$_mv_err"; then
+				echo "release.sh: CRITICAL: failed to restore $SOURCE_HASHES_PATH from $_snap:" >&2
+				cat "$_mv_err" >&2 2>/dev/null || true
+				rm -f "$_mv_err" "$_snap"
+				_restore_failed=1
+			fi
+			rm -f "$_mv_err"
+		else
+			# mktemp for stderr failed; do the mv anyway, log the rc.
+			if ! mv "$_snap" "$SOURCE_HASHES_PATH" 2>/dev/null; then
+				echo "release.sh: CRITICAL: failed to restore $SOURCE_HASHES_PATH from $_snap (mv stderr capture also failed)" >&2
+				rm -f "$_snap"
+				_restore_failed=1
+			fi
+		fi
+	elif [ -n "$_snap" ] && [ -f "$_snap" ]; then
+		# _snap_valid=0: pre-cp tmpfile. Just delete it, never restore.
+		rm -f "$_snap"
+	fi
+	_snap=""
+	_snap_valid=0
+	# r2 HIGH-1: also clean tmpfiles _gen_err + _diff_err on signal so
+	# they don't strand in $TMPDIR.
+	if [ -n "$_gen_err" ] && [ -f "$_gen_err" ]; then
+		rm -f "$_gen_err"
+		_gen_err=""
+	fi
+	if [ -n "$_diff_err" ] && [ -f "$_diff_err" ]; then
+		rm -f "$_diff_err"
+		_diff_err=""
 	fi
 }
-trap _restore_hashes EXIT INT TERM HUP
+# r2 silent-failure-hunter CRIT-1: signal-induced trap must abort the
+# script (re-raise via exit 130 for SIGINT), otherwise the script
+# continues past the trap on Ctrl-C and may tag-and-ship despite a
+# restore failure. Separate EXIT (cleanup-only) from signals (exit-on).
+# shellcheck disable=SC2329,SC2317
+_on_signal() {
+	_restore_hashes
+	exit 130
+}
+trap _restore_hashes EXIT
+trap _on_signal INT TERM HUP
 _snap=$(mktemp -t source-hashes-release.XXXXXX) || {
 	echo "release.sh: mktemp failed — cannot snapshot $SOURCE_HASHES_PATH" >&2
 	exit 2
@@ -171,8 +220,12 @@ if ! cp "$SOURCE_HASHES_PATH" "$_snap"; then
 	echo "release.sh: failed to snapshot $SOURCE_HASHES_PATH" >&2
 	exit 2
 fi
-# #155 silent-failure-hunter HIGH: capture hash-drift.sh --generate
-# stderr instead of suppressing — surface why regen failed.
+# r2 CRITICAL fix: flip the sentinel only AFTER cp succeeds. The trap
+# will treat _snap as a restore source from here on; before this line
+# it would only clean up the empty file.
+_snap_valid=1
+# Capture hash-drift.sh --generate stderr instead of suppressing — surface
+# why regen failed.
 _gen_err=$(mktemp -t source-hashes-gen-err.XXXXXX) || {
 	echo "release.sh: mktemp for hash-drift stderr failed" >&2
 	exit 2
@@ -181,17 +234,44 @@ if ! "$HASH_DRIFT_SH" --generate >/dev/null 2>"$_gen_err"; then
 	echo "release.sh: hash-drift.sh --generate failed during release-time verification:" >&2
 	cat "$_gen_err" >&2
 	rm -f "$_gen_err"
+	_gen_err=""
 	exit 2
 fi
 rm -f "$_gen_err"
-if ! diff -q "$_snap" "$SOURCE_HASHES_PATH" >/dev/null 2>&1; then
-	# Trap will restore snapshot on exit.
+_gen_err=""
+# r2 silent-failure-hunter HIGH-2: capture diff stderr + distinguish
+# rc=1 (drift, expected) from rc>1 (trouble, surface diagnostic).
+_diff_err=$(mktemp -t source-hashes-diff-err.XXXXXX) || {
+	echo "release.sh: mktemp for diff stderr failed" >&2
+	exit 2
+}
+_diff_rc=0
+diff -q "$_snap" "$SOURCE_HASHES_PATH" >/dev/null 2>"$_diff_err" || _diff_rc=$?
+if [ "$_diff_rc" -eq 1 ]; then
+	rm -f "$_diff_err"
+	_diff_err=""
 	echo "release.sh: $SOURCE_HASHES_PATH is stale vs current source — regenerate + commit before release" >&2
 	exit 2
+elif [ "$_diff_rc" -gt 1 ]; then
+	echo "release.sh: diff failed checking $SOURCE_HASHES_PATH (rc=$_diff_rc):" >&2
+	cat "$_diff_err" >&2
+	rm -f "$_diff_err"
+	_diff_err=""
+	exit 2
 fi
-# In sync — restore explicitly (trap as safety net) + clear trap.
+rm -f "$_diff_err"
+_diff_err=""
+# In sync — restore explicitly + clear traps. If restore fails (rare),
+# _restore_failed is set; bail before tagging to avoid shipping a tag
+# whose .source-hashes.json is the regenerated state, not the committed
+# baseline (silent integrity gap closed).
 _restore_hashes
-trap - EXIT INT TERM HUP
+trap - EXIT
+trap - INT TERM HUP
+if [ "$_restore_failed" = "1" ]; then
+	echo "release.sh: refusing to tag — hash baseline restore failed (see CRITICAL message above)" >&2
+	exit 2
+fi
 
 # 3. Version not regressing — compare to the latest existing tag.
 # Fetch remote tags so the comparison uses the actual state of origin,
