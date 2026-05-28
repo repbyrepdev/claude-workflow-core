@@ -127,8 +127,26 @@ yq_err=$(mktemp -t rfs-yq.XXXXXX) || {
 	echo "refresh-from-source: mktemp failed" >&2
 	exit 2
 }
+# r2 code-reviewer + silent-failure-hunter HIGH: promote .new tracking
+# to script scope so the trap can actually clean up. Prior r1 declared
+# this array `local` inside _refresh_one_consumer with _cleanup_new
+# unwired — dead code on SIGINT mid-cascade.
+_in_flight_new=()
 # shellcheck disable=SC2329,SC2317
-_cleanup() { rm -f "$yq_err"; }
+_cleanup() {
+	rm -f "$yq_err"
+	# Iterate via index — `"${_in_flight_new[@]:-}"` with `set -e` causes
+	# the empty-default empty-string iteration to trigger a non-zero exit
+	# on the `[ -n "$f" ]` short-circuit, which crashes the trap.
+	local i n
+	n=${#_in_flight_new[@]}
+	for ((i = 0; i < n; i++)); do
+		f=${_in_flight_new[$i]}
+		if [ -n "$f" ] && [ -f "$f" ]; then
+			rm -f "$f"
+		fi
+	done
+}
 trap _cleanup EXIT INT TERM HUP
 
 _resolve_consumer_path() {
@@ -242,19 +260,24 @@ _refresh_one_consumer() {
 	local n_clean=0 n_replaced=0 n_overridden=0 n_failed=0
 	local now
 	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	# r2 silent-failure-hunter MEDIUM: jq plugin_version had no error
+	# handling. Match the explicit error-trapping pattern used everywhere
+	# else in this script.
 	local plugin_version
-	plugin_version=$(jq -r '.version' "$PLUGIN_ROOT/.claude-plugin/plugin.json")
-	# r1 silent-failure-hunter HIGH: track per-cascade .new files so a
-	# signal/yq-fail mid-loop cleans up partial artifacts. Per-consumer
-	# scope (each call to _refresh_one_consumer rebuilds).
-	local _in_flight_new=()
-	# shellcheck disable=SC2329,SC2317
-	_cleanup_new() {
-		local f
-		for f in "${_in_flight_new[@]:-}"; do
-			[ -n "$f" ] && [ -f "$f" ] && rm -f "$f"
-		done
-	}
+	if ! plugin_version=$(jq -r '.version' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>"$yq_err"); then
+		echo "refresh-from-source: jq failed reading plugin.json:" >&2
+		cat "$yq_err" >&2
+		return 2
+	fi
+	if [ -z "$plugin_version" ] || [ "$plugin_version" = "null" ]; then
+		echo "refresh-from-source: plugin.json .version missing or null" >&2
+		return 2
+	fi
+	# r2 code-reviewer + silent-failure-hunter HIGH: reset the script-
+	# scope _in_flight_new at the top of each consumer call so prior
+	# consumer's tracked .new (already cleaned up via mv) doesn't pollute
+	# this consumer's trap-cleanup behavior.
+	_in_flight_new=()
 
 	# Filter to --files subset if requested.
 	local filter_arr=()
