@@ -27,7 +27,7 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 
 ## State machine
 
-```
+```text
 [branch-ready]    fresh branch, ≥1 commit ahead of base
     ↓ next
 [phase0.5]        copilot prefilter logged for HEAD
@@ -54,7 +54,7 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 
 ## Phase 1 firing — operator-driven
 
-When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE FOR OPERATOR block per `feedback_phase1_security_review_separate.md`:
+When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE FOR OPERATOR block. Phase 1's `security-review` MUST be fired in a separate Claude turn from the 5 parallel Agent calls — the pending-file gate kills the Skill when bundled. The directive layout:
 
 1. Block A: 5 parallel Agent calls (code-reviewer, code-simplifier, comment-analyzer, pr-test-analyzer, silent-failure-hunter)
 2. Barrier: log all 5 via `review-log.sh phase1 N <agent> <count> ok`
