@@ -140,3 +140,64 @@ teardown() {
 	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')
 	[ "$rc" = allow ]
 }
+
+# --- v0.30.E r2 (#191 Phase 1): compound-command bypass denials -------------
+# R1 agents proved a read verb at the FRONT laundered a mutation behind it.
+# Each of these MUST deny — a leading read verb does not make the whole
+# command read-only.
+
+@test "behavioral: read && mutate is DENIED (chaining)" {
+	_setup_pending_repo
+	for c in "git diff && git push" "cat f && rm x" "ls && git commit -m y" "git log || git push"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY for chain: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "behavioral: separator/pipe variants DENIED (; with space, | tee, | sh)" {
+	_setup_pending_repo
+	for c in "ls ; rm -rf x" "git diff | tee out.txt" "git log | sh" "ls | xargs rm"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY for sep/pipe: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "behavioral: command/process substitution DENIED" {
+	_setup_pending_repo
+	for c in 'cat $(rm -rf x)' 'git diff $(git push)' "cat <(rm f)"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY for subst: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "behavioral: git --output write flag DENIED (writes without redirect)" {
+	_setup_pending_repo
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git diff --output=stolen.txt"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git log --output=x main..HEAD"}}')" = deny ]
+}
+
+@test "behavioral: find write/exec actions DENIED" {
+	_setup_pending_repo
+	for c in "find . -delete" "find . -name x -exec rm {} ;" "find . -fprintf /tmp/z %p"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY for find-write: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "behavioral: read-only find (no write action) still ALLOWED" {
+	_setup_pending_repo
+	d=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"find . -name foo.sh -print"}}')
+	[ "$d" = allow ]
+}

@@ -141,29 +141,47 @@ if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:sp
 	exit 0
 fi
 
-# v0.30.E (#191): allow read-only INSPECTION commands through while a
-# directive is pending. The guard's purpose is to stop the main loop from
-# doing PRODUCTIVE work (Edit/Write/commit/push) or stalling before firing
-# the Phase 1 agents — NOT to block harmless reads. Critically, this
+# v0.30.E (#191): allow a SINGLE, SIMPLE read-only INSPECTION command through
+# while a directive is pending. The guard's purpose is to stop the main loop
+# from doing PRODUCTIVE work (Edit/Write/commit/push) or stalling before
+# firing the Phase 1 agents — NOT to block harmless reads. Critically, this
 # PreToolUse hook ALSO fires inside the Phase 1 subagents (code-reviewer et
-# al.), whose whole job is to run `git diff`/`cat`/`grep` over the diff;
-# blocking those reads forced a "use Read not git diff" workaround into every
-# agent prompt (the #191 bug). Edit/Write/NotebookEdit are never read-only
-# (the matcher still blocks them); only Bash gets this allowlist, and only
-# when the command has NO file-writing redirect.
+# al.), whose job is to run `git diff`/`cat`/`grep` over the diff; denying
+# those reads mid-review was the #191 bug. Non-Bash write tools (Edit, Write,
+# MultiEdit, NotebookEdit) are never read-only — the [ "$TOOL" = Bash ] guard
+# means they fall straight through to the deny.
+#
+# SECURITY (v0.30.E r2, #191 Phase 1): a read verb at the FRONT does NOT make
+# a COMPOUND command read-only. `git diff && git push`, `cat $(rm -rf x)`,
+# `git diff | tee f`, `git diff --output=f`, and `find . -delete` all launder
+# a mutation behind a leading read verb. So we REJECT (fall through to deny)
+# any command that can chain, substitute, pipe, background, redirect to a
+# file, or invoke a per-tool write action — and only THEN allowlist the
+# leading verb of what remains (which is now guaranteed a single simple cmd).
 if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
-	# Strip the harmless discard/dup redirects (2>/dev/null, 2>&1,
-	# >/dev/null, &>/dev/null); if any `>` remains, the command writes a
-	# real file → do NOT treat it as read-only (fall through to the deny).
-	_no_redir=$(printf '%s' "$CMD" | sed -E 's/2>&1//g; s/[0-9]*>>?[[:space:]]*\/dev\/null//g; s/&>>?[[:space:]]*\/dev\/null//g')
-	if ! printf '%s' "$_no_redir" | grep -q '>'; then
-		# Read-only verb allowlist. git mutating verbs (commit/push/add/
-		# reset/rebase/merge/checkout/...) are deliberately EXCLUDED — only
-		# the read subcommands are listed. awk/sed/jq/yq are excluded too
-		# (they can write); subagents use the Read tool + git diff, not those.
+	# Strip harmless discard/dup redirects (2>/dev/null, 2>&1, >/dev/null,
+	# &>/dev/null) so they don't trip the `>` reject; fold newlines to `;`
+	# so a multi-line command is caught by the separator reject below.
+	_resid=$(printf '%s' "$CMD" |
+		sed -E 's/2>&1/ /g; s/[0-9]*>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g; s/&>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
+		tr '\n' ';')
+	# Reject if the residue contains ANY of:
+	#   [;&|`]    — statement separator / background / pipe / backtick-subst
+	#   $( <( >(  — command / process substitution
+	#   >         — a surviving file-writing redirect
+	#   --output  — git diff/log/show write flag (writes a file, no `>`)
+	#   -delete / -exec* / -ok* / -fprint* / -fls — find write/exec actions
+	# Anything matching is NOT a single simple read-only command → deny.
+	if printf '%s' "$_resid" | grep -qE '[;&|`]|\$\(|<\(|>\(|>|--output|(^|[[:space:]])-(delete|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)([[:space:]]|$)'; then
+		: # compound / substitution / pipe / redirect / write-action — deny
+	else
+		# Single simple command: allowlist its leading read-only verb. git
+		# mutating verbs (commit/push/add/reset/...) are excluded — only read
+		# subcommands listed. sed/awk/jq/yq excluded entirely (write modes:
+		# sed -i, sed -n 'w', awk redirects); subagents use Read + git diff.
 		for _ro in \
 			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame|grep)' \
-			'cat' 'head' 'tail' 'grep' 'rg' 'find' 'ls' 'wc' 'sed[[:space:]]+-n' 'semgrep'; do
+			'cat' 'head' 'tail' 'grep' 'rg' 'find' 'ls' 'wc' 'semgrep'; do
 			if match_cmd_at_anchor "$_ro" "$CMD"; then
 				exit 0
 			fi
