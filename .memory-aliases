@@ -1,0 +1,18 @@
+# Memory-path migration aliases (#177).
+#
+# When a plugin restructure renames an internal path, add an `old -> new`
+# mapping here so memory files that still reference the OLD path pass
+# pre-commit-hooks/memory-drift-check.sh: the gate treats a stale OLD
+# reference as live when its mapped NEW path resolves (index / worktree /
+# external root). This is the documented migration mechanism — preferable to
+# hand-editing every affected memory file or papering over the gap with
+# MEMORY_DRIFT_EXTERNAL_ROOTS.
+#
+# Format: one `old -> new` mapping per line; `#` comments and blank lines are
+# ignored. A trailing-slash `old` is a PREFIX rename (rewrites the prefix,
+# keeps the remainder); an exact `old` rewrites the whole path. First match
+# wins. Paths are repo-relative (the same form memory files reference).
+#
+# v0.6.0 (#19): skills were extracted from the consumer's
+# `.claude/skills/X/run.sh` into the plugin's top-level `skills/X/run.sh`.
+.claude/skills/ -> skills/
