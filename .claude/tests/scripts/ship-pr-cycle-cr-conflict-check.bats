@@ -68,7 +68,7 @@ fi
 for a in "$@"; do
 	case "$a" in
 	*mergeStateStatus*)
-		printf '%s\n' "{\"number\":${STUB_PR:-123},\"mergeStateStatus\":\"${STUB_MERGE-CLEAN}\",\"mergeable\":\"${STUB_MERGEABLE-MERGEABLE}\",\"headRefOid\":\"${STUB_HEAD:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}\"}"
+		printf '%s\n' "{\"number\":${STUB_PR:-123},\"mergeStateStatus\":\"${STUB_MERGE-CLEAN}\",\"mergeable\":\"${STUB_MERGEABLE-MERGEABLE}\",\"headRefOid\":\"${STUB_HEAD-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}\"}"
 		exit 0
 		;;
 	esac
@@ -177,6 +177,19 @@ _cur_stage() {
 	_seed_stage cr-conflict-check
 	cd "$TEST_TMP" || return 1
 	export STUB_MERGE="" STUB_MERGEABLE=""
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"empty merge fields"* ]]
+	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
+@test "cr-conflict-check + empty headRefOid → rc 2 (remote-ahead guard can't fail open)" {
+	# An empty PR head would make the remote-ahead guard no-op and advance an
+	# un-pulled state; the empty-fields guard must catch it (CR phase2 #190).
+	# Relies on the stub honoring an explicit empty STUB_HEAD (${VAR-default}).
+	_seed_stage cr-conflict-check
+	cd "$TEST_TMP" || return 1
+	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE STUB_HEAD=""
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
 	[[ $output == *"empty merge fields"* ]]

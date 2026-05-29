@@ -1892,8 +1892,12 @@ EOF
 		# Empty/null after a successful, valid-JSON gh call = schema drift or a
 		# PR-state anomaly. Fail loud rather than silently staying forever
 		# (silent-failure-hunter #190 r1; same posture as the skill's guard).
-		if [ -z "$cc_merge" ] || [ -z "$cc_mergeable" ]; then
-			echo "ship-pr-cycle: cr-conflict-check — PR state has empty merge fields (merge='$cc_merge' mergeable='$cc_mergeable'); refusing to advance" >&2
+		# headRefOid is validated here too: an empty PR head would make the
+		# remote-ahead guard below fail open (its comparison would no-op) and
+		# advance an un-pulled state — so treat empty head as the same anomaly
+		# (CR phase2 #190).
+		if [ -z "$cc_merge" ] || [ -z "$cc_mergeable" ] || [ -z "$cc_remote_head" ]; then
+			echo "ship-pr-cycle: cr-conflict-check — PR state has empty merge fields (merge='$cc_merge' mergeable='$cc_mergeable' head='$cc_remote_head'); refusing to advance" >&2
 			return 2
 		fi
 		# Conflict trigger requires BOTH fields to agree (mirrors the skill's
@@ -1926,7 +1930,9 @@ EOF
 		# review cycle). (code-reviewer #190 r1.)
 		local cc_local_head
 		cc_local_head=$(_current_sha)
-		if [ -n "$cc_remote_head" ] && [ "$cc_remote_head" != "$cc_local_head" ]; then
+		# cc_remote_head is guaranteed non-empty (validated in the empty-fields
+		# guard above), so a bare inequality is sufficient here.
+		if [ "$cc_remote_head" != "$cc_local_head" ]; then
 			cat <<EOF
 ship-pr-cycle: cr-conflict-check — PR #$cc_pr_num is mergeable, but the PR head
 ($cc_remote_head) differs from local HEAD ($cc_local_head): a resolution was
