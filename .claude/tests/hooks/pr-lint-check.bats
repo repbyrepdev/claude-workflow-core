@@ -218,6 +218,19 @@ BODY
 	done
 }
 
+@test "PR template ships the linter's required headings (#204 SSOT lock)" {
+	# Regression lock: .github/pull_request_template.md must contain every
+	# heading pr-lint-check.sh requires (## Summary + ## Test plan), so a
+	# contributor who fills in the template verbatim passes the linter.
+	# Guards the #204 drift where the template said '## Testing' while the
+	# linter required '## Test plan'. Headings are matched line-anchored, the
+	# same way the linter checks them.
+	TEMPLATE="${REPO_ROOT}/.github/pull_request_template.md"
+	[ -f "$TEMPLATE" ]
+	grep -qE '^## Summary$' "$TEMPLATE"
+	grep -qE '^## Test plan$' "$TEMPLATE"
+}
+
 @test "missing --body flag → rc=2 argparse" {
 	run "$SCRIPT" --labels '[]'
 	[ "$status" -eq 2 ]
