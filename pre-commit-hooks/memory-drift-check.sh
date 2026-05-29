@@ -16,6 +16,16 @@ set -euo pipefail
 # referenced inside memory `.md` files. URL-style paths and prose
 # mentions (e.g. "the lint-shell hook" without a path) are ignored.
 #
+# v0.30.J (#177): memory-path migration. A plugin restructure that promotes a
+# consumer's `.claude/skills/X/run.sh` into the plugin's top-level
+# `skills/X/run.sh` leaves memory files referencing the OLD consumer path —
+# and nothing migrated them, so this gate flagged the still-valid memories as
+# stale. The fix is a `.memory-aliases` map at repo root: each line is
+# `old -> new`, where `old` is matched as an exact path, or — when `old` ends
+# in `/` — as a path prefix. A stale OLD reference is treated as live when its
+# mapped NEW path resolves. This is the documented migration mechanism (vs the
+# prior workaround of baking peer-repo defaults into MEMORY_DRIFT_EXTERNAL_ROOTS).
+#
 # Bypass: MEMORY_DRIFT_GATE_SKIP=1 (audit-logged).
 
 # CR #634 round 2 finding 21: fail closed when repo root unresolvable.
@@ -36,6 +46,97 @@ if [ "${MEMORY_DRIFT_GATE_SKIP:-0}" = "1" ]; then
 	echo "memory-drift-check: MEMORY_DRIFT_GATE_SKIP=1 — bypassing" >&2
 	exit 0
 fi
+
+# Resolve the external-root list once (env override, else sensible peer-repo
+# defaults under $HOME). v0.27.0 (#173 sibling): defaults make the hook useful
+# out-of-box; memory files reference paths in consumer repos (media-server,
+# pricing-team-toolkit) + the plugin cache.
+_resolved_roots="${MEMORY_DRIFT_EXTERNAL_ROOTS:-}"
+if [ -z "$_resolved_roots" ]; then
+	_resolved_roots="$HOME/media-server:$HOME/pricing-team-toolkit"
+fi
+
+# _path_resolves <repo-relative-path> → 0 if the path points at a live file.
+# Checks, in order: (1) staged index — CR #634 round 4 finding 73 validates
+# against the index, not the worktree, so a local shadow file can't weaken the
+# gate; (2) gitignored + worktree-present (logs/generated state never enter the
+# index by design); (3) any external root (v0.6.2 #35 cross-repo awareness),
+# with a `.claude/` prefix strip (v0.6.4 #35) since the plugin-cache layout has
+# no `.claude/` prefix (`.claude/skills/X/run.sh` lives at `<cache>/skills/...`).
+_path_resolves() {
+	local p=$1 _root _alt
+	if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+		return 0
+	fi
+	if git -C "$REPO_ROOT" check-ignore -q "$p" 2>/dev/null && [ -e "$REPO_ROOT/$p" ]; then
+		return 0
+	fi
+	[ -n "$_resolved_roots" ] || return 1
+	IFS=':' read -ra _ext_roots <<<"$_resolved_roots"
+	for _root in "${_ext_roots[@]}"; do
+		[ -n "$_root" ] || continue
+		[ -e "$_root/$p" ] && return 0
+		case "$p" in
+		.claude/*)
+			_alt="${p#.claude/}"
+			[ -e "$_root/$_alt" ] && return 0
+			;;
+		esac
+	done
+	return 1
+}
+
+# _memory_alias_target <old-path> → echoes the migrated NEW path (and returns
+# 0) if `.memory-aliases` maps the old path, else returns 1. Mappings are
+# `old -> new`, one per line, `#` comments + blank lines ignored. An exact
+# `old` rewrites the whole path; an `old` that ENDS IN `/` is a prefix rename
+# (rewrites the prefix, keeps the remainder). A bare-segment `old` (no trailing
+# slash) is exact-only — it must NOT broadly prefix-match (SFH-177-1). First
+# match wins.
+_memory_alias_target() {
+	local p=$1 aliases="$REPO_ROOT/.memory-aliases" line old new
+	[ -f "$aliases" ] || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in '#'* | '') continue ;; esac
+		# Require a literal "->" separator.
+		case "$line" in *'->'*) ;; *) continue ;; esac
+		old=${line%%->*}
+		new=${line#*->}
+		# Trim surrounding whitespace from both sides.
+		old=$(printf '%s' "$old" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+		new=$(printf '%s' "$new" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+		[ -n "$old" ] || continue
+		# Alias targets must stay repo-relative + non-traversing — reject empty,
+		# absolute (/...), or parent-traversal (../, .../../...) `new`, else a
+		# malformed alias could resolve a file OUTSIDE the repo and mask a stale
+		# reference (CR-in-CI #208).
+		case "$new" in
+		'' | /* | ../* | */../* | */..)
+			continue
+			;;
+		esac
+		# Exact-path rename always applies.
+		if [ "$p" = "$old" ]; then
+			printf '%s\n' "$new"
+			return 0
+		fi
+		# Prefix rename applies ONLY when `old` ends in `/` — so a bare segment
+		# like `.claude` can't broadly prefix-match `.claude/...` (SFH-177-1).
+		case "$old" in
+		*/)
+			case "$p" in
+			"$old"*)
+				# Rewrite the prefix, keep the remainder. ${p#"$old"} strips
+				# $old literally.
+				printf '%s\n' "${new}${p#"$old"}"
+				return 0
+				;;
+			esac
+			;;
+		esac
+	done <"$aliases"
+	return 1
+}
 
 # Gather all memory .md files (small set; cheap to scan every commit).
 # bash 3.2-portable form (no mapfile) — macOS /bin/bash is bash 3.2.
@@ -70,58 +171,21 @@ for mem in "${mem_files[@]}"; do
 		case "$path" in
 		*'*'* | *'?'*) continue ;;
 		esac
-		# CR #634 round 4 finding 73: validate against staged index, not
-		# the working tree. `-e` on checkout passes when a file is absent
-		# from the staged commit but a local shadow file exists — weakens
-		# the gate's "blocked-when-bypassed" guarantee.
-		# Exception: gitignored paths (logs, generated state) won't be in
-		# the index by design; accept worktree existence for those.
-		if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-			: # in index — pass
-		elif git -C "$REPO_ROOT" check-ignore -q "$path" 2>/dev/null && [ -e "$REPO_ROOT/$path" ]; then
-			: # gitignored but worktree-present (logs/generated files) — pass
+		if _path_resolves "$path"; then
+			: # live (index / gitignored-worktree / external root) — pass
 		else
-			# v0.6.2 (#35): cross-repo awareness. Memory files reference paths
-			# in multiple consumer repos + the plugin. From any one repo's
-			# cwd, paths in the OTHER repos look "stale". Honor
-			# MEMORY_DRIFT_EXTERNAL_ROOTS (colon-separated list of absolute
-			# paths) — if the path resolves under any external root, treat
-			# as live (no drift).
-			external_hit=0
-			# v0.27.0 (#173 sibling): if env var unset, default to common
-			# peer-repo locations under $HOME so the hook is useful out-of-
-			# box without operator config. Discovered 2026-05-28: had to
-			# manually export EXTERNAL_ROOTS each commit because memory
-			# files reference paths in consumer repos (media-server,
-			# pricing-team-toolkit). Sensible defaults eliminate that toil.
-			_resolved_roots="${MEMORY_DRIFT_EXTERNAL_ROOTS:-}"
-			if [ -z "$_resolved_roots" ]; then
-				_resolved_roots="$HOME/media-server:$HOME/pricing-team-toolkit"
-			fi
-			if [ -n "$_resolved_roots" ]; then
-				IFS=':' read -ra _ext_roots <<<"$_resolved_roots"
-				for _root in "${_ext_roots[@]}"; do
-					[ -n "$_root" ] || continue
-					if [ -e "$_root/$path" ]; then
-						external_hit=1
-						break
-					fi
-					# v0.6.4 (#35): plugin-cache layout has NO `.claude/` prefix.
-					# Memory says `.claude/skills/X/run.sh` but plugin has it
-					# at `<cache>/skills/X/run.sh`. Strip prefix + retry so
-					# plugin paths resolve from external roots.
-					case "$path" in
-					.claude/*)
-						alt_path="${path#.claude/}"
-						if [ -e "$_root/$alt_path" ]; then
-							external_hit=1
-							break
-						fi
-						;;
-					esac
-				done
-			fi
-			if [ "$external_hit" = "0" ]; then
+			# v0.30.J (#177): the path is stale as-written. Before flagging
+			# drift, consult the `.memory-aliases` migration map — if the old
+			# path maps to a NEW path that resolves, the reference is honored
+			# (the file moved during a plugin restructure; the memory just
+			# predates the rename).
+			alias_target=$(_memory_alias_target "$path" || true)
+			if [ -n "$alias_target" ] && _path_resolves "$alias_target"; then
+				# Resolved via migration alias — pass, but surface it (advisory,
+				# non-fatal) so alias-driven exemptions are visible in commit
+				# output and don't accumulate silently (SFH-177-2).
+				echo "memory-drift-check: '${path}' honored via .memory-aliases -> '${alias_target}'" >&2
+			else
 				drift_found=$((drift_found + 1))
 				drift_lines="${drift_lines}  - ${path} (referenced in $(basename "$mem"))"$'\n'
 			fi
@@ -141,6 +205,7 @@ if [ "$drift_found" -gt 0 ]; then
 	printf '%s' "$drift_lines" >&2
 	echo "" >&2
 	echo "  Update the memory file(s) to point to the current path, or remove the stale reference." >&2
+	echo "  (Or add an old -> new mapping to .memory-aliases if the path was renamed by a plugin restructure.)" >&2
 	echo "  Override: MEMORY_DRIFT_GATE_SKIP=1 git commit ..." >&2
 	exit 1
 fi
