@@ -128,6 +128,29 @@ BODY
 	[ "$status" -eq 0 ]
 }
 
+@test "Advances #N satisfies issue-reference check (v0.30.I #199)" {
+	# Partial-progress PRs reference their parent without closing it. GitHub
+	# does not auto-close on Advances, so this is lint-acceptance only.
+	for kw in "Advances #7" "advances #7" "Advance #7" "Advanced #7"; do
+		cat >"$TEST_TMP/body.md" <<BODY
+## Summary
+
+One slice of a multi-slice issue.
+
+## Test plan
+
+- [x] Tests pass
+
+$kw
+BODY
+		run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+		[ "$status" -eq 0 ] || {
+			echo "expected rc=0 for keyword: $kw (got $status)" >&2
+			false
+		}
+	done
+}
+
 @test "missing --body flag → rc=2 argparse" {
 	run "$SCRIPT" --labels '[]'
 	[ "$status" -eq 2 ]
