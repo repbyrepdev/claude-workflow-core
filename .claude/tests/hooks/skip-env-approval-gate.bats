@@ -62,27 +62,40 @@ _run_hook() {
 	jq -nc --arg c "LINT_GATE_SKIP=1 echo hi" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
 	run bash -c "cd '$TEST_TMP' && SKIP_APPROVAL_GATE_RECURSED=1 bash '$HOOK' < '$TEST_TMP/payload.json'"
 	[ "$status" -eq 0 ]
+	# rc 0 must come from the recursion guard, not a fail-open in the deny path.
+	[[ $output != *"BLOCKED by skip-env-approval-gate"* ]]
 }
 
 @test "approval is per-exact-command — same >50-char prefix does NOT collide (T2)" {
-	# CR fix #4: hash the FULL command, not a 50-char preview. Two commands that
-	# share a >50-char prefix but differ in the tail must get DISTINCT approval
-	# files, so approving one never grants the other.
+	# CR fix #4: hash the FULL command, not a 50-char preview, so two commands
+	# sharing a >50-char prefix get DISTINCT approval files. This test must
+	# exercise the COLLISION directly: grant A, then fire B *while A's grant is
+	# still present* — under the OLD 50-char-preview hash B would ride A's file
+	# (rc 0); with the full-CMD hash B has a distinct hash so it stays refused
+	# (rc 2). (Consuming A before firing B would make B fail on the empty dir
+	# regardless of the hash — a false-green; silent-failure-hunter #180 r1.)
 	local pfx="LINT_GATE_SKIP=1 echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	# A is refused; grab its approval-file path from the deny message.
+	# A refused; grab its approval-file path from the labeled deny line (anchored
+	# on the label, not a no-space glob, so a space in $TMPDIR can't truncate it).
 	_run_hook "$pfx ONE"
 	[ "$status" -eq 2 ]
 	local fileA
-	fileA=$(printf '%s\n' "$output" | grep -oE '/[^ ]*/skip-approvals/[0-9a-f]+\.txt' | head -1)
+	fileA=$(printf '%s\n' "$output" | sed -nE 's/^[[:space:]]*approval-state path:[[:space:]]*//p' | head -1)
 	[ -n "$fileA" ]
-	# Grant approval for A, then A is consumed (rc 0).
+	# Grant A — but do NOT consume it yet.
 	touch "$fileA"
-	_run_hook "$pfx ONE"
-	[ "$status" -eq 0 ]
-	# B shares the >50-char prefix but differs in the tail → distinct hash →
-	# still refused (no collision with A's approval).
+	# B shares the >50-char prefix, differs in the tail → distinct full-CMD hash
+	# → A's still-present grant must NOT let B through.
 	_run_hook "$pfx TWO"
 	[ "$status" -eq 2 ]
+	local fileB
+	fileB=$(printf '%s\n' "$output" | sed -nE 's/^[[:space:]]*approval-state path:[[:space:]]*//p' | head -1)
+	# Pin hash-distinctness directly: A and B map to different approval files.
+	[ -n "$fileB" ]
+	[ "$(basename "$fileA")" != "$(basename "$fileB")" ]
+	# A's grant is still present + is consumed-on-use (proves the grant was real).
+	_run_hook "$pfx ONE"
+	[ "$status" -eq 0 ]
 }
 
 @test "jq missing → fail-closed (refuse skip), not fail-open (T5)" {
@@ -98,6 +111,9 @@ _run_hook() {
 	run env -i PATH="$nojq" HOME="$HOME" bash -c "cd '$TEST_TMP' && bash '$HOOK' < '$TEST_TMP/payload.json'"
 	[ "$status" -eq 2 ]
 	[[ $output == *"jq missing"* ]]
+	# Confirm it refused via the jq-missing branch, NOT the normal no-approval
+	# deny — so rc 2 alone (shared by both) can't false-pass this test.
+	[[ $output != *"BLOCKED by skip-env-approval-gate"* ]]
 }
 
 @test "skip var embedded mid-command (not a leading prefix) is not gated (T16)" {
@@ -106,5 +122,8 @@ _run_hook() {
 	# a command-substitution is out of scope (not a top-level env assignment).
 	# This documents that analysis so it isn't re-litigated.
 	_run_hook 'echo "$(date): LINT_GATE_SKIP=1 is just text here"'
+	[ "$status" -eq 0 ]
+	# Plain quoted-string variant (no command-substitution) — also out of scope.
+	_run_hook 'echo "this line merely mentions LINT_GATE_SKIP=1 in prose"'
 	[ "$status" -eq 0 ]
 }
