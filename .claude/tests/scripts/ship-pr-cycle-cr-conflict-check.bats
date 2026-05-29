@@ -170,6 +170,20 @@ _cur_stage() {
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
+@test "cr-conflict-check + non-MERGEABLE (CONFLICTING, merge!=DIRTY) holds, does not advance" {
+	# A transient single-field mismatch (mergeable=CONFLICTING but merge!=DIRTY)
+	# is NOT caught by the both-fields conflict guard; the explicit MERGEABLE
+	# gate must hold it instead of leaking an unmergeable PR to merge-gate
+	# (CR-in-CI #203 major).
+	_seed_stage cr-conflict-check
+	cd "$TEST_TMP" || return 1
+	export STUB_MERGE=BLOCKED STUB_MERGEABLE=CONFLICTING STUB_HEAD="$SHA"
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"not MERGEABLE"* ]]
+	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
 @test "cr-conflict-check + empty/malformed merge fields → rc 2 (fail loud, not 'computing')" {
 	# gh rc=0 + valid JSON but empty mergeStateStatus/mergeable (schema drift)
 	# must fail loud, NOT be treated as 'still computing' (which would stay

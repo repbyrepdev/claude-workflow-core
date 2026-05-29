@@ -1922,6 +1922,15 @@ re-reviewed on a fresh local cycle before merge-gate.
 EOF
 			return 0
 		fi
+		# Advance only when GitHub explicitly reports MERGEABLE. Any other
+		# non-UNKNOWN value (e.g. CONFLICTING with merge != DIRTY — a transient
+		# single-field mismatch the conflict guard above does not catch) must
+		# hold here, never leak an unmergeable PR into merge-gate. (CR-in-CI
+		# #203 major.)
+		if [ "$cc_mergeable" != "MERGEABLE" ]; then
+			echo "ship-pr-cycle: cr-conflict-check — mergeable='$cc_mergeable' (merge=$cc_merge) is not MERGEABLE; holding at cr-conflict-check, re-run 'next' once GitHub settles" >&2
+			return 0
+		fi
 		# Mergeable — but a server-side resolution (CR's resolver pushes the
 		# merge commit to the REMOTE PR branch) leaves local HEAD behind.
 		# Advancing now would send an un-re-reviewed merge commit to
