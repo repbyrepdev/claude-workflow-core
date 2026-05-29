@@ -153,11 +153,13 @@ BODY
 
 @test "standalone keyword mid-body still PASSES with boundary anchor" {
 	# A keyword preceded by whitespace/newline (the normal case) must still
-	# match after adding the leading boundary.
+	# match after adding the leading boundary. ONLY one reference (Advances
+	# #7) so the assertion isolates the boundary behavior — a second valid
+	# ref would let the test pass even if Advances stopped matching (CR #201).
 	cat >"$TEST_TMP/body.md" <<'BODY'
 ## Summary
 
-Some text. Closes #42 in the trailer below.
+Some text without a closing keyword.
 
 ## Test plan
 
