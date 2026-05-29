@@ -128,6 +128,30 @@ BODY
 	[ "$status" -eq 0 ]
 }
 
+@test "non-closing keyword + #N still FAILS (regex not too broad, #199)" {
+	# Guards that adding `advance[sd]?` didn't broaden the alternation to
+	# accept arbitrary verbs. A real issue-number token is present, but the
+	# keyword isn't an accepted one → must still rc=1.
+	for kw in "Mentions #7" "See #7" "Refs #7" "Related to #7"; do
+		cat >"$TEST_TMP/body.md" <<BODY
+## Summary
+
+x
+
+## Test plan
+
+- [x] y
+
+$kw
+BODY
+		run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+		[ "$status" -eq 1 ] || {
+			echo "expected rc=1 (no valid ref) for keyword: $kw (got $status)" >&2
+			false
+		}
+	done
+}
+
 @test "Advances #N satisfies issue-reference check (v0.30.I #199)" {
 	# Partial-progress PRs reference their parent without closing it. GitHub
 	# does not auto-close on Advances, so this is lint-acceptance only.
