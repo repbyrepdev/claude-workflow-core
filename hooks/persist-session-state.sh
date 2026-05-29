@@ -89,12 +89,16 @@ case "$CMD" in
 	# Append to the rolling shared action log (PR field tagged per-row, not
 	# per-file partitioned). PR_NUM was set above when the cache resolved or
 	# was refreshed; empty string is fine and is what jq --arg expects.
-	# v0.30.A (#187): capture jq output to var so a jq failure can't leave a
-	# partial line. PostToolUse fires per tool call — highest race risk of
-	# the three JSONL writers. Shell `>>` opens fd with O_APPEND; on
-	# Linux/macOS, write(2) to an O_APPEND-opened regular file is atomic
-	# for sizes ≤ PIPE_BUF (4096 bytes typical) — the JSONL entry stays
-	# well under that.
+	# v0.30.A (#187): capture jq output to var so a jq failure can't leave
+	# a partial line — the guarded printf below only writes when jq
+	# succeeded fully. PostToolUse fires per tool call (highest race risk
+	# of the three JSONL writers). Shell `>>` opens the fd with O_APPEND;
+	# POSIX guarantees the kernel atomically positions to current EOF on
+	# every write, so concurrent writers don't overwrite each other's
+	# bytes. POSIX does NOT mandate a PIPE_BUF-style atomic-size limit for
+	# regular files (that guarantee is for pipes/FIFOs only); behavior can
+	# differ on network filesystems (e.g. NFS without atomic-append wire
+	# support). The jq-success-only contract is what carries the load.
 	_pss_line=$(jq -nc \
 		--arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 		--arg pr "${PR_NUM:-}" \

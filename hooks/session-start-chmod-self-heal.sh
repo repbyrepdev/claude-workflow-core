@@ -36,7 +36,7 @@ fi
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd) || REPO_ROOT=""
 # Sanity-check REPO_ROOT looks like the plugin repo — refuse to chmod inside
 # / or a random parent dir if the cd somehow degraded.
-if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ] || [ ! -e "$REPO_ROOT/.claude" ]; then
+if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/.claude" ]; then
 	echo "session-start-chmod-self-heal: REPO_ROOT='$REPO_ROOT' missing .claude/ marker — refusing self-heal" >&2
 	exit 0
 fi

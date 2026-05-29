@@ -43,10 +43,12 @@ if printf '%s' "$MSG" | grep -qE '\[no-issue:[[:space:]]*[^]]+\]'; then
 		REASON=$(printf '%s' "$MSG" | grep -oE '\[no-issue:[[:space:]]*[^]]+\]' | head -1 | sed -E 's/^\[no-issue:[[:space:]]*//;s/\]$//')
 		mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
 		# v0.30.A (#187): capture jq output to var so a jq failure can't
-		# leave a partial line. Shell `>>` opens fd with O_APPEND;
-		# write(2) to an O_APPEND-opened regular file is atomic for sizes
-		# ≤ PIPE_BUF (4096 bytes typical on Linux/macOS) — single-line
-		# JSONL stays well under that.
+		# leave a partial line — the guarded printf below only writes
+		# when jq succeeded. Shell `>>` opens fd with O_APPEND; POSIX
+		# guarantees atomic positioning at EOF for every write (no
+		# interleaved overwrites between writers). POSIX does NOT extend
+		# the pipes/FIFOs PIPE_BUF size-atomicity guarantee to regular
+		# files. The jq-success-only contract carries correctness.
 		_csti_line=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 			--arg reason "$REASON" \
 			--arg subject "$(printf '%s' "$MSG" | head -1)" \
