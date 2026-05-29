@@ -129,8 +129,15 @@ teardown() {
 		cd "$TEST_TMP" || exit 1
 		echo 'bad' >f.sh
 		lint_log_append f.sh shellcheck fail 3 "SC1000 example"
-		run lint_log_verdict f.sh shellcheck
-		[ "$output" = fail ] || [[ $output == *fail* ]]
+		# --separate-stderr so $output is stdout (the 'fail' verdict) and
+		# $stderr is the detail line. Keeps the explicit status/output
+		# assertions AND additionally asserts the detail text round-trips
+		# (CR #202: previously only 'fail' + rc were checked, so a dropped
+		# detail would have passed silently).
+		run --separate-stderr lint_log_verdict f.sh shellcheck
 		[ "$status" -eq 1 ]
+		[ "$output" = fail ]
+		# shellcheck disable=SC2154  # $stderr is set by bats `run --separate-stderr`
+		[[ $stderr == *"SC1000 example"* ]]
 	)
 }
