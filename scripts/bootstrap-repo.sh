@@ -489,7 +489,7 @@ _write .github/pull_request_template.md 644 <<'EOF'
 ## Changes
 <!-- Files / modules modified -->
 
-## Testing
+## Test plan
 - [ ] Skill exercised against representative input
 - [ ] Lint/tests clean for changed files
 - [ ] No leaked tokens in diff

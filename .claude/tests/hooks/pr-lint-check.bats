@@ -218,17 +218,28 @@ BODY
 	done
 }
 
-@test "PR template ships the linter's required headings (#204 SSOT lock)" {
-	# Regression lock: .github/pull_request_template.md must contain every
-	# heading pr-lint-check.sh requires (## Summary + ## Test plan), so a
-	# contributor who fills in the template verbatim passes the linter.
-	# Guards the #204 drift where the template said '## Testing' while the
-	# linter required '## Test plan'. Headings are matched line-anchored, the
-	# same way the linter checks them.
+@test "PR template passes pr-lint's own heading check (#204 SSOT lock)" {
+	# Bidirectional regression lock: feed the ACTUAL template through the
+	# ACTUAL linter (not a re-implemented grep), so drift on EITHER side —
+	# template loses a required heading, or the linter renames/adds one —
+	# fails here. Guards the #204 drift (template said '## Testing' while the
+	# linter required '## Test plan'). Invoking the linter also avoids
+	# duplicating the heading list + matcher in the test (the prior grep
+	# version was stricter than the linter's whitespace-tolerant anchor).
+	# The template ships a placeholder 'Closes #<...>', so append a real ref
+	# to isolate the heading check; --skip-label-check drops the label
+	# requirement (the bare template carries no labels).
 	TEMPLATE="${REPO_ROOT}/.github/pull_request_template.md"
 	[ -f "$TEMPLATE" ]
-	grep -qE '^## Summary$' "$TEMPLATE"
-	grep -qE '^## Test plan$' "$TEMPLATE"
+	{
+		cat "$TEMPLATE"
+		echo "Closes #1"
+	} >"$TEST_TMP/tmpl-body.md"
+	run "$SCRIPT" --body "$TEST_TMP/tmpl-body.md" --skip-label-check
+	[ "$status" -eq 0 ] || {
+		echo "template fails pr-lint heading check (status=$status): $output" >&2
+		false
+	}
 }
 
 @test "missing --body flag → rc=2 argparse" {
