@@ -5,9 +5,17 @@ set -u
 # lint family and bats family share one pattern.
 #
 # Schema per entry:
-#   {ts: "...", sha: "<sha256 content hash>", file: "<path>",
+#   {ts: "...", content_hash: "<sha256 of file content>", file: "<path>",
 #    linter: "shellcheck|shfmt|yamllint|actionlint",
 #    issues: <int>, status: "pass|fail", detail: "<short summary>"}
+#
+# v0.30.G (#194): the hash field is `content_hash`, NOT `sha`. It is a
+# sha256 of FILE CONTENT, not a git commit sha — naming it `sha` conflated
+# it with the commit-sha keys in review-log/*.jsonl + auto-triage.jsonl and
+# invited a meaningless cross-log join. Renaming makes the distinction
+# explicit. (One-time effect: pre-rename entries keyed on `sha` read as
+# `unknown` → those files re-lint once on next commit. Harmless; rotation
+# ages the old entries out.)
 #
 # Consumers:
 #   - .claude/hooks/lint-shell.sh + lint-yaml.sh + lint-actions.sh (writers)
@@ -59,11 +67,11 @@ lint_log_append() {
 	# NOTE: no `2>/dev/null` on jq — if it fails, jq's own error message
 	# ends up on stderr alongside our diagnostic, surfacing useful detail.
 	if ! jq -nc \
-		--arg ts "$ts" --arg sha "$hash" --arg file "$lpath" \
+		--arg ts "$ts" --arg content_hash "$hash" --arg file "$lpath" \
 		--arg linter "$llinter" --arg status "$lstatus" \
 		--argjson issues "${lissues:-0}" \
 		--arg detail "$ldetail" \
-		'{ts:$ts, sha:$sha, file:$file, linter:$linter, status:$status, issues:$issues, detail:$detail}' \
+		'{ts:$ts, content_hash:$content_hash, file:$file, linter:$linter, status:$status, issues:$issues, detail:$detail}' \
 		>>"$log"; then
 		echo "lint-log: append failed for $lpath ($llinter) — check disk/permissions on $log" >&2
 		return 1
@@ -92,7 +100,7 @@ lint_log_verdict() {
 	fi
 	local last
 	last=$(jq -c --arg f "$lpath" --arg h "$hash" --arg l "$llinter" \
-		'select(.file==$f and .sha==$h and .linter==$l)' "$log" 2>/dev/null | tail -1)
+		'select(.file==$f and .content_hash==$h and .linter==$l)' "$log" 2>/dev/null | tail -1)
 	if [ -z "$last" ]; then
 		echo "unknown"
 		return 2
