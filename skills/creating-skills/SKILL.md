@@ -142,11 +142,32 @@ Match specificity to the task's fragility:
 - Lowercase, hyphens between words, max 64 chars
 - Styles: gerund (`processing-pdfs`), noun phrase (`github-pr-creation`), prefixed group (`github-pr-*`)
 
+## Required: `## Auto-continue` section (#189)
+
+Every SKILL.md **must** end with an `## Auto-continue` section — a decision
+tree for what happens after the skill runs, so the next action is explicit and
+reviewable rather than ad-hoc. This is enforced by
+`.claude/tests/skills/skill-auto-continue-present.bats` (exactly one non-empty
+section per skill); a new skill without it fails CI.
+
+Format (see `git-commit/SKILL.md` for the canonical exemplar): bulleted
+outcomes, each `**<state>** → <next action>`. Cover the success path, the
+common failure paths, and any operator gate. Example:
+
+```markdown
+## Auto-continue
+
+- **Succeeded, more work coming** → stay on branch, keep editing
+- **Succeeded, ready for review** → run review → push → invoke github-pr-creation (GATE at PR create)
+- **Blocked** → diagnose the specific error and fix; do not retry verbatim
+```
+
 ## Important rules
 
 - **ALWAYS** write descriptions that include WHAT + WHEN triggers + capabilities
 - **ALWAYS** keep SKILL.md under 500 lines, split to references when approaching
 - **ALWAYS** reference bundled files from SKILL.md so Claude discovers them
+- **ALWAYS** end with an `## Auto-continue` section (enforced by bats — see above)
 - **NEVER** duplicate info between SKILL.md and reference files
 - **NEVER** create wrapper scripts for single commands
 - **NEVER** include extraneous files (README.md, CHANGELOG.md, INSTALLATION_GUIDE.md, QUICK_REFERENCE.md)
