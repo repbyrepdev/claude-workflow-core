@@ -130,7 +130,8 @@ at `branch-ready` — there is no automatic priority-sub selection yet.
 Epic #175 tracks closing this gap.
 
 If the brainstorm's decision is straightforward and doesn't need CR
-planning (e.g. a single concrete change touching ≤1 file or ≤30 LoC),
+planning (rough guideline: typically a single concrete change touching
+≤1 file or ≤30 LoC — complexity may vary beyond file/LoC counts),
 omit `--label plan-me` — the operator or Claude can implement directly.
 
 ## Don'ts
