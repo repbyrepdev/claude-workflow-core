@@ -280,6 +280,25 @@ BODY
 	[[ $output == *"## Test plan"* ]]
 }
 
+@test "## Summary as a prose substring is also rejected (#205 line-anchor symmetry)" {
+	# Symmetric to the ## Test plan case (pr-test #205 r1): bury ## Summary
+	# inline in prose and keep a real ## Test plan heading. Both required
+	# headings flow through the same matcher, but pin both for durability
+	# against a future change that matches them via separate logic.
+	cat >"$TEST_TMP/body.md" <<'BODY'
+This line only mentions ## Summary inline as prose, not as a heading.
+
+## Test plan
+
+Real test-plan heading present.
+
+Closes #1
+BODY
+	run "$SCRIPT" --body "$TEST_TMP/body.md" --skip-label-check
+	[ "$status" -eq 1 ]
+	[[ $output == *"## Summary"* ]]
+}
+
 @test "neither local hook nor server workflow uses grep -qF for the heading check (#205 parity)" {
 	# #205: the server used 'grep -qF \"\$heading\"' (substring) while the local
 	# hook used a line-anchored ERE — they accepted different bodies. Lock both
@@ -298,4 +317,14 @@ BODY
 	[ "$status" -ne 0 ]
 	run grep -F "$bad" "$WF"
 	[ "$status" -ne 0 ]
+	# Positive lock (pr-test #205 r1): assert both sides DO carry the
+	# line-anchored tail [[:space:]]*$ — guards a future swap to some OTHER
+	# non-anchored matcher that also lacks the grep -qF literal. Build the
+	# token at runtime so no single-quoted '$' appears (shellcheck-clean).
+	local anchor_tail
+	anchor_tail=$(printf '[[:space:]]*%s"' "$dollar")
+	run grep -F "$anchor_tail" "$SCRIPT"
+	[ "$status" -eq 0 ]
+	run grep -F "$anchor_tail" "$WF"
+	[ "$status" -eq 0 ]
 }
