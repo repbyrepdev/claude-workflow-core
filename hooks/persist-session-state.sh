@@ -88,13 +88,17 @@ case "$CMD" in
 	# Append to the rolling shared action log (PR field tagged per-row, not
 	# per-file partitioned). PR_NUM was set above when the cache resolved or
 	# was refreshed; empty string is fine and is what jq --arg expects.
-	jq -nc \
+	# v0.30.A (#187): capture jq output to var so a jq failure can't leave a
+	# partial line. PostToolUse fires per tool call — highest race risk of
+	# the three JSONL writers. printf is a single short write (single-line
+	# JSONL entry, well under POSIX PIPE_BUF — atomic).
+	_pss_line=$(jq -nc \
 		--arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 		--arg pr "${PR_NUM:-}" \
 		--arg branch "$BRANCH" \
 		--arg cmd "$SHORT_CMD" \
-		'{ts: $ts, pr: $pr, branch: $branch, cmd: $cmd}' \
-		>>"$STATE_DIR/cr-round-state.jsonl" 2>/dev/null
+		'{ts: $ts, pr: $pr, branch: $branch, cmd: $cmd}' 2>/dev/null) || _pss_line=""
+	[ -n "$_pss_line" ] && printf '%s\n' "$_pss_line" >>"$STATE_DIR/cr-round-state.jsonl" 2>/dev/null
 	;;
 esac
 

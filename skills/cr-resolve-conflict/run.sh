@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+# v0.30.A (#187): SKILL_WRAPPER=1 so skill-bypass-guard honors the gh api
+# calls below (line ~114). Every other skill wrapper sets this; this one
+# was missed at v0.9.0 — would have blocked the first real conflict-resolve
+# fire on a guard-active branch.
+export SKILL_WRAPPER=1
 # v0.9.0 (#45): cr-resolve-conflict — wrap CodeRabbit's resolve-merge-conflict
 # feature with comment-trigger + poll + telemetry.
 #
@@ -100,7 +105,7 @@ fi
 # malformed CR_RESOLVE_TIMEOUT_SEC env. Final value must be a positive
 # integer — the poll loop uses [ -ge ] arithmetic which would blow up
 # on non-numeric/negative values otherwise.
-if ! [[ "$TIMEOUT_SEC" =~ ^[0-9]+$ ]] || [ "$TIMEOUT_SEC" -le 0 ]; then
+if ! [[ $TIMEOUT_SEC =~ ^[0-9]+$ ]] || [ "$TIMEOUT_SEC" -le 0 ]; then
 	echo "error: timeout must be a positive integer (got '$TIMEOUT_SEC'; from --timeout or CR_RESOLVE_TIMEOUT_SEC env)" >&2
 	exit 2
 fi
