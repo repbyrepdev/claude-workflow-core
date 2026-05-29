@@ -44,6 +44,12 @@ if [ -f "$LIB_SENTINEL" ]; then
 else
 	hook_inline_sentinel_check() { return 1; }
 fi
+# v0.30.E (#191): cmd-anchor for the read-only allowlist below.
+LIB_ANCHOR="$HOOK_DIR/../_lib/cmd-anchor.sh"
+if [ -f "$LIB_ANCHOR" ]; then
+	# shellcheck source=../_lib/cmd-anchor.sh
+	source "$LIB_ANCHOR"
+fi
 
 # Outside-git-repo: allow (hook can fire anywhere). Capture stderr to
 # distinguish "not a repo" from corruption.
@@ -133,6 +139,36 @@ esac
 # agents return). Mirrors phase1-log-pending-gate's escape hatch.
 if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)\.?/?\.claude/hooks/review-log\.sh'; then
 	exit 0
+fi
+
+# v0.30.E (#191): allow read-only INSPECTION commands through while a
+# directive is pending. The guard's purpose is to stop the main loop from
+# doing PRODUCTIVE work (Edit/Write/commit/push) or stalling before firing
+# the Phase 1 agents — NOT to block harmless reads. Critically, this
+# PreToolUse hook ALSO fires inside the Phase 1 subagents (code-reviewer et
+# al.), whose whole job is to run `git diff`/`cat`/`grep` over the diff;
+# blocking those reads forced a "use Read not git diff" workaround into every
+# agent prompt (the #191 bug). Edit/Write/NotebookEdit are never read-only
+# (the matcher still blocks them); only Bash gets this allowlist, and only
+# when the command has NO file-writing redirect.
+if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
+	# Strip the harmless discard/dup redirects (2>/dev/null, 2>&1,
+	# >/dev/null, &>/dev/null); if any `>` remains, the command writes a
+	# real file → do NOT treat it as read-only (fall through to the deny).
+	_no_redir=$(printf '%s' "$CMD" | sed -E 's/2>&1//g; s/[0-9]*>>?[[:space:]]*\/dev\/null//g; s/&>>?[[:space:]]*\/dev\/null//g')
+	if ! printf '%s' "$_no_redir" | grep -q '>'; then
+		# Read-only verb allowlist. git mutating verbs (commit/push/add/
+		# reset/rebase/merge/checkout/...) are deliberately EXCLUDED — only
+		# the read subcommands are listed. awk/sed/jq/yq are excluded too
+		# (they can write); subagents use the Read tool + git diff, not those.
+		for _ro in \
+			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame|grep)' \
+			'cat' 'head' 'tail' 'grep' 'rg' 'find' 'ls' 'wc' 'sed[[:space:]]+-n' 'semgrep'; do
+			if match_cmd_at_anchor "$_ro" "$CMD"; then
+				exit 0
+			fi
+		done
+	fi
 fi
 
 # Inline-sentinel bypass.
