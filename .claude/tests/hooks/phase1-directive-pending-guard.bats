@@ -25,6 +25,5 @@ setup() {
 @test "Layer 1 v0.28.0 #174 hex-sha basename validation present" {
 	# v0.28.x #174/#178 P1 r1 fix: validate basename is hex sha before
 	# for-each-ref so editor swap files / .DS_Store don't trigger mass-rm
-	grep -qE 'sha =~ \^\[0-9a-f\]\{7,40\}\$' "$HOOK" ||
-		grep -qF '$sha =~ ^[0-9a-f]{7,40}$' "$HOOK"
+	grep -qF '$sha =~ ^[0-9a-f]{7,40}$' "$HOOK"
 }
