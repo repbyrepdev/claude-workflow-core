@@ -102,3 +102,9 @@ disjoint by design.
 - `parse` with malformed plan markdown → defensive fallback (rc=2)
 - `parse` requires `plan-me` label (forces correct flow)
 - `parse` requires APPROVE=1 (non-interactive guard)
+
+## Auto-continue
+
+- **`trigger` applied plan-me** → wait ~5-10min for the CR Issue Planner to post its plan comment; do not parse before it lands.
+- **`parse` created the epic + subs** → report the new numbers; do NOT auto-start work. Operator picks a sub, assigns `@me`, branches `feat/vX.Y/<sub>-…` → ship-pr-cycle takes over from `branch-ready`.
+- **`parse` hit malformed plan markdown (rc=2)** → surface the defensive-fallback reason; re-run `trigger` or clean up the plan comment.

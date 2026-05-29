@@ -112,3 +112,11 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 - `github-pr-creation` — invoked at the `push` → PR-open transition.
 - `github-pr-merge` — invoked at the `merge-gate` → merged transition after operator approval.
 - `coderabbit:autofix` — invoked from `cr-in-ci-wait` when CR posts findings.
+
+## Auto-continue
+
+- **`next` advanced a stage** → re-run `next` to continue; the state machine drives branch-ready → phase0.5 → phase1 → phase2 → push → cr-in-ci-wait → auto-triage → (cr-autofix) → merge-gate.
+- **phase1 directive emitted** → fire the 5 parallel review agents + semgrep + security-review, log each via `review-log.sh`, then re-run `next`.
+- **phase2 / CR findings** → apply or reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire; do not advance with open findings.
+- **merge-gate reached** → operator approval point; on approval, invoke `github-pr-merge`. This is the one human gate.
+- **`resume`** → auto-advances until it hits phase1 (needs agents), merge-gate (needs operator), or a terminal state.

@@ -200,3 +200,9 @@ After modifying a SKILL.md, the Skill tool surface may continue serving the **pr
 
 - `references/official_best_practices.md` - Principles, anti-patterns, quality checklist, testing
 - `references/skill_examples.md` - Concrete skill examples with new features
+
+## Auto-continue
+
+- **New skill authored** → add `.claude/tests/skills/<name>.bats` + run it before committing (untested skills fail the structure audit).
+- **SKILL.md modified mid-session** → reload / restart to clear the Skill-tool per-session loader cache before verifying the change (#739).
+- **30+ lines of bash inside a SKILL.md fence** → extract a `run.sh` wrapper and reference it; don't grow the fence.

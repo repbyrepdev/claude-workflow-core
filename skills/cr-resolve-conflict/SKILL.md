@@ -55,3 +55,10 @@ Before this skill, ship-pr-cycle at push stage would surface DIRTY state and req
 - [CodeRabbit docs — Resolve merge conflicts](https://docs.coderabbit.ai/finishing-touches/resolve-merge-conflict)
 - Related: `cr-plan` (parallel pattern — CR feature wrapped as plugin skill with poll + log)
 - Issue: #44 epic, #45 this skill
+
+## Auto-continue
+
+- **rc=0, conflict resolved by CR** → re-fetch PR state; ship-pr-cycle resumes at push / CR-in-CI against the new HEAD CR produced.
+- **rc=0, no conflict (idempotent pre-check)** → proceed to the merge gate; nothing to resolve.
+- **rc=2, CR declined / timed out** → operator rebases manually (conflict is ambiguous or security-critical by CR's judgment).
+- **rc=3, prereqs missing** → fix gh auth / jq, then re-run; do not assume the conflict was touched.

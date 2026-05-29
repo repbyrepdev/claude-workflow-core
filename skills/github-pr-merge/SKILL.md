@@ -347,3 +347,9 @@ The replica's behavior mirrors `release.yml`:
 - Transient check failure (runner 504, rate-limit, flaky test): `gh run rerun <id>` then retry the skill
 - CR rate-limited but previous review was clean: if `latestReviews.commit.oid` is the current HEAD and walkthrough shows "No actionable comments", the skill can proceed — document the rate-limit state in the merge summary to the user
 - `CHANGES_REQUESTED` reviews from a human who has since resolved off-channel: ask them to either mark the review dismissed or resolve inline before proceeding
+
+## Auto-continue
+
+- **Merged** → `git checkout main && git pull --ff-only && git remote prune origin`; fire epic auto-close + (during Actions cap) board-sync for each `Closes #N`; if compose/config changed, run the post-merge deploy + verify before declaring done.
+- **Merge blocked (BLOCKED / UNSTABLE / BEHIND)** → report the specific blocker; do NOT retry verbatim. A required-check fail = local-pipeline regression: fix it + note which Phase 1 agent should have caught it.
+- **Tag eligible (milestone closed + deploy verified)** → prompt the operator before tagging; never tag before post-deploy e2e passes.
