@@ -111,7 +111,9 @@ LOGS_DIR=".claude/logs"
 MAX_LOG_LINES="${PRE_COMPACT_LOG_MAX_LINES:-500}"
 if [ -d "$LOGS_DIR" ]; then
 	# Validate MAX_LOG_LINES is a positive int; fall back to 500 on garbage
-	# env so a bad override can't wipe logs (head -n -0 / non-numeric).
+	# env so a bad override can't wipe logs. The trim below uses `tail -n
+	# "$MAX_LOG_LINES"`: a non-numeric value would error under set -e, and
+	# `tail -n 0` would empty the file — both prevented by this guard.
 	case "$MAX_LOG_LINES" in
 	'' | *[!0-9]*) MAX_LOG_LINES=500 ;;
 	esac
@@ -126,7 +128,15 @@ if [ -d "$LOGS_DIR" ]; then
 		# Archive the full pre-trim copy once per rotation (timestamped),
 		# then keep the last MAX_LOG_LINES lines. Best-effort archive: a
 		# failed cp must not block the trim (disk full → still want to cap).
-		cp "$_logf" "$ARCHIVE_DIR/$(basename "$_logf" .jsonl)-pretrim-${ts}.jsonl" 2>/dev/null || true
+		# But the trim IS destructive, so surface a WARN when the archive
+		# fails for ANY reason (ARCHIVE_DIR on a different mount/permission
+		# than the log, concurrent cleanup, EXDEV, etc.) — otherwise the
+		# pre-trim lines are silently lost with no record the archive was
+		# skipped. Mirrors the observable-audit-gap pattern this same PR
+		# applied to scripts/cr/auto-triage.sh. Non-blocking: trim proceeds.
+		if ! cp "$_logf" "$ARCHIVE_DIR/$(basename "$_logf" .jsonl)-pretrim-${ts}.jsonl" 2>/dev/null; then
+			echo "pre-compact-flush: WARN: pre-trim archive of $_logf failed — trimming to last $MAX_LOG_LINES lines anyway; older lines will not be archived." >&2
+		fi
 		_trim_tmp=$(mktemp "${_logf}.rotate.XXXXXX" 2>/dev/null) || continue
 		if tail -n "$MAX_LOG_LINES" "$_logf" >"$_trim_tmp" 2>/dev/null; then
 			mv "$_trim_tmp" "$_logf" 2>/dev/null || rm -f "$_trim_tmp"

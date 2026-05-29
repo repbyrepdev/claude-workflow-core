@@ -47,3 +47,19 @@ _audit_jq() {
 	# fails — keeping the join-key contract locked to the source.
 	grep -q 'sha: \$sha' "$SCRIPT"
 }
+
+@test "source audit-write field set matches the tested copy (full drift guard)" {
+	# P1 R1 (pr-test-analyzer crit-3): the _audit_jq helper duplicates the
+	# source jq filter. The single-token sha guard above only catches sha
+	# removal; this asserts the FULL projected field set is still present in
+	# source so a rename/drop of any other field (path/class/thread_id/...)
+	# is caught too, keeping the copy honest.
+	for field in 'ts: \$ts' 'pr: \$pr' 'sha: \$sha' 'thread_id: .thread_id' \
+		'path: .path' 'line: .line' 'class: .class' 'suggested_action: .suggested_action'; do
+		grep -q "$field" "$SCRIPT" || {
+			echo "audit-write jq filter drifted: source missing '$field'" >&2
+			echo "update _audit_jq in this test to match scripts/cr/auto-triage.sh" >&2
+			false
+		}
+	done
+}

@@ -86,7 +86,7 @@
     "hooks/pr-close-prune.sh": "f8e54aa9b28005862914bc5849d25249e1edb1339bdf13c91c2954deb83b3a8d",
     "hooks/pr-lint-check.sh": "665d04eaf70109f3d12b4abccd9160652abdb8b5150b834302c0ab583c47b375",
     "hooks/pr-trigger.sh": "506b9cb26ff0f948aa7134fb0fa4b0855ba265c6e35747b4163be975a2b497b2",
-    "hooks/pre-compact-flush.sh": "f02d7465f5fca1c8a7cc543d6c99ad32ec74d122ffcf4ae6b33a9cbbc2cba75a",
+    "hooks/pre-compact-flush.sh": "a4d19a0065a13c8d7620b0e4340d2f787eec5422b0054948fc920566d0528eba",
     "hooks/pre-merge-cr-comments-gate.sh": "c7d0d0e758702e6a8174966862ffe22eb21985e9e67df1a8c6c926c5010d37bf",
     "hooks/pre-push-pipeline-gate.sh": "4747214e15be913bbdac3f66e6c365df6eb27a7b35d75f85b8ed07da4645a380",
     "hooks/recreate-baseline-gate.sh": "72e73adfd3a07cc3ba2eacb2a5c9bc10629421f6c352d39478dc949699c18232",
