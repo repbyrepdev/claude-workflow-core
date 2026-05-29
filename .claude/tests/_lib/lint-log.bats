@@ -77,6 +77,51 @@ teardown() {
 	)
 }
 
+@test "mixed log: legacy sha-keyed entry ignored; new content_hash wins (#194 transition)" {
+	# The exact transition scenario from the rename: a log with BOTH a legacy
+	# `sha`-keyed entry AND a new `content_hash` entry. The legacy entry (even
+	# at a matching hash value) must be IGNORED (verdict keys on content_hash),
+	# so a stale legacy `fail` can never override a fresh `content_hash` pass.
+	# Guards against a "backward-compat" refactor that re-matches `.sha`.
+	# shellcheck source=/dev/null
+	source "$LIB"
+	(
+		cd "$TEST_TMP" || exit 1
+		echo 'echo hi' >f.sh
+		h=$(lint_sha256_file f.sh)
+		mkdir -p .claude/logs
+		# Legacy entry: same hash value but under the OLD `sha` key, status fail.
+		printf '{"ts":"2020-01-01T00:00:00Z","sha":"%s","file":"f.sh","linter":"shellcheck","status":"fail","issues":9,"detail":"legacy"}\n' "$h" >.claude/logs/lint-run.jsonl
+		# Legacy-only → verdict must be unknown (NOT fail — the old key is ignored).
+		run lint_log_verdict f.sh shellcheck
+		[ "$output" = unknown ]
+		[ "$status" -eq 2 ]
+		# Now append a fresh content_hash PASS; mixed log → pass must win.
+		lint_log_append f.sh shellcheck pass 0 "fresh"
+		v=$(lint_log_verdict f.sh shellcheck)
+		[ "$v" = pass ]
+	)
+}
+
+@test "multi-linter: verdict selects the right linter (no cross-linter bleed)" {
+	# file + content_hash match but a DIFFERENT linter must not satisfy the
+	# query — guards the .linter clause in the verdict selector.
+	# shellcheck source=/dev/null
+	source "$LIB"
+	(
+		cd "$TEST_TMP" || exit 1
+		echo 'echo hi' >f.sh
+		lint_log_append f.sh shellcheck pass 0 "sc clean"
+		lint_log_append f.sh shfmt fail 2 "shfmt diff"
+		# assign-then-test (avoid inline $() under set -e) — shellcheck=pass.
+		sc=$(lint_log_verdict f.sh shellcheck) || true
+		[ "$sc" = pass ]
+		# shfmt entry is fail → verdict fail/1 (different linter, not bled).
+		sf=$(lint_log_verdict f.sh shfmt) || true
+		[ "$sf" = fail ]
+	)
+}
+
 @test "fail verdict round-trips with detail on stderr" {
 	# shellcheck source=/dev/null
 	source "$LIB"
