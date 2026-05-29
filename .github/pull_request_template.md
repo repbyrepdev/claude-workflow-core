@@ -4,7 +4,7 @@
 ## Changes
 <!-- Files / modules modified -->
 
-## Testing
+## Test plan
 - [ ] Skill exercised against representative input
 - [ ] Lint/tests clean for changed files
 - [ ] No leaked tokens in diff
