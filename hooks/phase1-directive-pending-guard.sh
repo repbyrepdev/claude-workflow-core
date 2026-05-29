@@ -165,23 +165,53 @@ if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
 	_resid=$(printf '%s' "$CMD" |
 		sed -E 's/2>&1/ /g; s/[0-9]*>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g; s/&>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
 		tr '\n' ';')
+	# THREAT MODEL (#191 P1 r1-r3): this guard is a WORKFLOW NUDGE for a
+	# cooperative agent — it stops the main loop from doing productive work
+	# (commit/push/Edit/Write) or stalling before firing Phase 1 agents. It is
+	# NOT an adversarial sandbox: the realistic failure is Claude absent-
+	# mindedly committing before agents fire, not Claude crafting `find -rm`
+	# to evade its own guard. Prompt-injection of a subagent is defended by
+	# the auto-mode classifier + other gates, not here. So the screen below is
+	# BEST-EFFORT for the known write/exec-via-flag classes; it does not
+	# attempt to be exhaustive against every tool implementation's flag zoo
+	# (the local `find` is bfs with `-rm`, `grep` is ugrep with `--filter` —
+	# implementations vary and cannot all be enumerated).
+	#
 	# Reject if the residue contains ANY of:
-	#   [;&|`]    — statement separator / background / pipe / backtick-subst
-	#   $( <( >(  — command / process substitution
-	#   >         — a surviving file-writing redirect
-	#   --output  — git diff/log/show write flag (writes a file, no `>`)
-	#   -delete / -exec* / -ok* / -fprint* / -fls — find write/exec actions
+	#   [;&|`]      — statement separator / background / pipe / backtick-subst
+	#   $( <( >(    — command / process substitution
+	#   >           — a surviving file-writing redirect
+	#   --*output=  — git --output + semgrep --json-output/--sarif-output/...
+	#                 (the whole --<fmt>-output family writes a file / POSTs to
+	#                 a URL). Anchored so the READ flag --output-indicator-* is
+	#                 NOT false-rejected.
+	#   --autofix   — semgrep in-place source rewrite (#191 r3)
+	#   --pre / --hostname-bin — ripgrep exec-a-command flags (#191 r2)
+	#   -delete / -rm / -exec* / -ok* / -fprint* / -fls — find write/exec
+	#                 actions (-rm is the bfs alias for -delete, #191 r3)
 	# Anything matching is NOT a single simple read-only command → deny.
-	if printf '%s' "$_resid" | grep -qE '[;&|`]|\$\(|<\(|>\(|>|--output|(^|[[:space:]])-(delete|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)([[:space:]]|$)'; then
-		: # compound / substitution / pipe / redirect / write-action — deny
+	#
+	# RULE for adding a verb to the allowlist below: it must be a tool with NO
+	# subprocess-spawn / file-write FLAG in common implementations. cat/head/
+	# tail/ls/wc/grep qualify; rg/find/git-grep/semgrep-autofix did NOT (each
+	# found in r1-r3). git read subcmds qualify with --output screened.
+	if printf '%s' "$_resid" | grep -qE '[;&|`]|\$\(|<\(|>\(|>|(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-local-builds)([[:space:]=]|$)|(^|[[:space:]])--(pre|hostname-bin)([[:space:]=]|$)|(^|[[:space:]])-(delete|rm|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)([[:space:]]|$)'; then
+		: # compound / substitution / pipe / redirect / exec-or-write-flag — deny
 	else
 		# Single simple command: allowlist its leading read-only verb. git
 		# mutating verbs (commit/push/add/reset/...) are excluded — only read
-		# subcommands listed. sed/awk/jq/yq excluded entirely (write modes:
-		# sed -i, sed -n 'w', awk redirects); subagents use Read + git diff.
+		# subcommands listed. sed/awk/jq/yq excluded (write modes: sed -i,
+		# sed -n 'w', awk redirects). `rg` excluded too (--pre/--hostname-bin
+		# exec — #191 r2); subagents use the Grep TOOL (unaffected by this
+		# Bash-only hook) or `grep`, plus the Read tool + git diff.
+		# NB: `git grep` is intentionally NOT here — it has
+		# --open-files-in-pager[=<cmd>] which execs a pager (same exec-flag
+		# class as rg --pre, #191 r2). Plain `grep` (no such flag) covers
+		# search. git diff's `-O<orderfile>` (read) is fine — only --output
+		# writes, and that's screened above.
 		for _ro in \
-			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame|grep)' \
-			'cat' 'head' 'tail' 'grep' 'rg' 'find' 'ls' 'wc' 'semgrep'; do
+			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame)' \
+			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep'; do
 			if match_cmd_at_anchor "$_ro" "$CMD"; then
 				exit 0
 			fi
