@@ -136,10 +136,10 @@ jobs:
         # checks per run (same UX as before) while still billing as 1 job.
         if: always() && !cancelled()
         run: |
-          if echo "$BODY" | grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+"; then
+          if echo "$BODY" | grep -qiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?|advance[sd]?) #[0-9]+"; then
             echo "Issue link found"
           else
-            echo "::error::PR body must reference an issue (e.g., 'Closes #47')"
+            echo "::error::PR body must reference an issue (e.g., 'Closes #47' or 'Advances #47')"
             exit 1
           fi
 

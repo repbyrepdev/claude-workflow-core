@@ -108,10 +108,17 @@ rc=0
 # grep -F file path avoids both that and the trailing-newline strip
 # (`BODY=$(cat ...)` collapses trailing newlines).
 
-# Check 1: issue reference (matches Closes/Fixes/Resolves with optional
-# -s/-d suffix, case-insensitive).
-if ! grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+" "$BODY_FILE"; then
-	echo "✗ PR body must reference an issue (e.g., 'Closes #47')" >&2
+# Check 1: issue reference (matches Closes/Fixes/Resolves/Advances with
+# optional -s/-d suffix, case-insensitive). v0.30.I (#199): `Advances #N` is
+# accepted so a partial-progress PR (one slice of a multi-slice issue) can
+# reference its parent honestly. GitHub only auto-closes on
+# Closes/Fixes/Resolves — NOT Advances — so this is a pure lint-acceptance
+# change: "Advances" links for traceability without closing the parent.
+# v0.30.J (#200, folded into #199 r2): leading `(^|[^[:alnum:]_])` boundary so
+# an embedded-word like `discloses #1` / `fooadvances #7` / `unresolved #7`
+# does NOT match — only standalone keywords count.
+if ! grep -qiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?|advance[sd]?) #[0-9]+" "$BODY_FILE"; then
+	echo "✗ PR body must reference an issue (e.g., 'Closes #47' or 'Advances #47')" >&2
 	rc=1
 fi
 

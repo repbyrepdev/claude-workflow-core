@@ -128,6 +128,96 @@ BODY
 	[ "$status" -eq 0 ]
 }
 
+@test "embedded-word keyword + #N FAILS (boundary anchor, #200 folded into #199)" {
+	# discloses/fooadvances/unresolved are NOT standalone keywords — the
+	# leading (^|[^[:alnum:]_]) boundary must reject them even with a real #N.
+	for kw in "discloses #1" "fooadvances #7" "unresolved #7" "prefixes #3" "precloses #2"; do
+		cat >"$TEST_TMP/body.md" <<BODY
+## Summary
+
+x
+
+## Test plan
+
+- [x] y
+
+$kw
+BODY
+		run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+		[ "$status" -eq 1 ] || {
+			echo "expected rc=1 (embedded word, not standalone) for: $kw (got $status)" >&2
+			false
+		}
+	done
+}
+
+@test "standalone keyword mid-body still PASSES with boundary anchor" {
+	# A keyword preceded by whitespace/newline (the normal case) must still
+	# match after adding the leading boundary. ONLY one reference (Advances
+	# #7) so the assertion isolates the boundary behavior — a second valid
+	# ref would let the test pass even if Advances stopped matching (CR #201).
+	cat >"$TEST_TMP/body.md" <<'BODY'
+## Summary
+
+Some text without a closing keyword.
+
+## Test plan
+
+- [x] y
+
+Advances #7
+BODY
+	run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+	[ "$status" -eq 0 ]
+}
+
+@test "non-closing keyword + #N still FAILS (regex not too broad, #199)" {
+	# Guards that adding `advance[sd]?` didn't broaden the alternation to
+	# accept arbitrary verbs. A real issue-number token is present, but the
+	# keyword isn't an accepted one → must still rc=1.
+	for kw in "Mentions #7" "See #7" "Refs #7" "Related to #7"; do
+		cat >"$TEST_TMP/body.md" <<BODY
+## Summary
+
+x
+
+## Test plan
+
+- [x] y
+
+$kw
+BODY
+		run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+		[ "$status" -eq 1 ] || {
+			echo "expected rc=1 (no valid ref) for keyword: $kw (got $status)" >&2
+			false
+		}
+	done
+}
+
+@test "Advances #N satisfies issue-reference check (v0.30.I #199)" {
+	# Partial-progress PRs reference their parent without closing it. GitHub
+	# does not auto-close on Advances, so this is lint-acceptance only.
+	for kw in "Advances #7" "advances #7" "Advance #7" "Advanced #7"; do
+		cat >"$TEST_TMP/body.md" <<BODY
+## Summary
+
+One slice of a multi-slice issue.
+
+## Test plan
+
+- [x] Tests pass
+
+$kw
+BODY
+		run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+		[ "$status" -eq 0 ] || {
+			echo "expected rc=0 for keyword: $kw (got $status)" >&2
+			false
+		}
+	done
+}
+
 @test "missing --body flag → rc=2 argparse" {
 	run "$SCRIPT" --labels '[]'
 	[ "$status" -eq 2 ]

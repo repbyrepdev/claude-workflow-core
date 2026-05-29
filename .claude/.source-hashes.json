@@ -84,7 +84,7 @@
     "hooks/post-merge-release-fire.sh": "ce5f105388a329e6b2a8415ba429c4c80a566edaa375b9060e6a4b134b675e49",
     "hooks/post-tool-failure.sh": "019de9c13f420ed86766db8f15032c600696f96f9761fee6d020f93e6711be1a",
     "hooks/pr-close-prune.sh": "f8e54aa9b28005862914bc5849d25249e1edb1339bdf13c91c2954deb83b3a8d",
-    "hooks/pr-lint-check.sh": "665d04eaf70109f3d12b4abccd9160652abdb8b5150b834302c0ab583c47b375",
+    "hooks/pr-lint-check.sh": "c5c927e9487be289189856bc989ef2c434e020733ba0ced39c5adf45c005c63b",
     "hooks/pr-trigger.sh": "506b9cb26ff0f948aa7134fb0fa4b0855ba265c6e35747b4163be975a2b497b2",
     "hooks/pre-compact-flush.sh": "a4d19a0065a13c8d7620b0e4340d2f787eec5422b0054948fc920566d0528eba",
     "hooks/pre-merge-cr-comments-gate.sh": "c7d0d0e758702e6a8174966862ffe22eb21985e9e67df1a8c6c926c5010d37bf",
