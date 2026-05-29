@@ -17,8 +17,9 @@ set -euo pipefail
 # (added matched commands, new state files, etc.) needs corresponding test
 # cases — the `# covers:` header lists this script path, not file types.
 #
-# Registration: this is a USER-SCOPE PostToolUse hook (per CLAUDE.md, those
-# live in ~/.claude/settings.json, not project-scope). Run
+# Registration: this is a USER-SCOPE PostToolUse hook — Claude Code only
+# loads PreToolUse/PostToolUse handlers from `~/.claude/settings.json`, not
+# project-scope `.claude/settings.json`. Run
 # `.claude/hooks/install-session-state-hook.sh` once on a fresh clone to wire
 # this script into your user settings.
 
@@ -88,13 +89,23 @@ case "$CMD" in
 	# Append to the rolling shared action log (PR field tagged per-row, not
 	# per-file partitioned). PR_NUM was set above when the cache resolved or
 	# was refreshed; empty string is fine and is what jq --arg expects.
-	jq -nc \
+	# v0.30.A (#187): capture jq output to var so a jq failure can't leave
+	# a partial line — the guarded printf below only writes when jq
+	# succeeded fully. PostToolUse fires per tool call (highest race risk
+	# of the three JSONL writers). Shell `>>` opens the fd with O_APPEND;
+	# POSIX guarantees the kernel atomically positions to current EOF on
+	# every write, so concurrent writers don't overwrite each other's
+	# bytes. POSIX does NOT mandate a PIPE_BUF-style atomic-size limit for
+	# regular files (that guarantee is for pipes/FIFOs only); behavior can
+	# differ on network filesystems (e.g. NFS without atomic-append wire
+	# support). The jq-success-only contract is what carries the load.
+	_pss_line=$(jq -nc \
 		--arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 		--arg pr "${PR_NUM:-}" \
 		--arg branch "$BRANCH" \
 		--arg cmd "$SHORT_CMD" \
-		'{ts: $ts, pr: $pr, branch: $branch, cmd: $cmd}' \
-		>>"$STATE_DIR/cr-round-state.jsonl" 2>/dev/null
+		'{ts: $ts, pr: $pr, branch: $branch, cmd: $cmd}' 2>/dev/null) || _pss_line=""
+	[ -n "$_pss_line" ] && printf '%s\n' "$_pss_line" >>"$STATE_DIR/cr-round-state.jsonl" 2>/dev/null
 	;;
 esac
 

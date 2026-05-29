@@ -44,8 +44,7 @@ EOF
 		cat <<'EOF'
 Focus ONLY on: test coverage gaps, weak assertions, missing edge cases for
 THIS PR's changes. Do NOT flag: lack of tests for pre-existing untouched code,
-or testing infra not present in this repo (e.g. bats-gate deferral noted in
-CLAUDE.md).
+or testing infra not present in this repo.
 EOF
 		;;
 	silent-failure-hunter)
@@ -59,8 +58,8 @@ EOF
 		cat <<'EOF'
 Focus on HIGH-CONFIDENCE security vulnerabilities ONLY. Exclude DoS, secrets-
 on-disk (handled separately), rate-limiting, theoretical race conditions. Per
-CLAUDE.md, command injection in shell scripts is generally non-exploitable
-unless concrete untrusted input path is identified.
+repo policy: command injection in shell scripts is generally non-exploitable
+unless a concrete untrusted input path is identified.
 EOF
 		;;
 	*)

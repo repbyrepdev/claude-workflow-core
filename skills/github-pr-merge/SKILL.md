@@ -83,7 +83,7 @@ Halt if any required check is `FAILURE`, `CANCELLED`, or `SKIPPED`. v4.1: `CodeR
 
 ### 3. CodeRabbit cleanliness
 
-CR is a required blocking status check as of v4.1 (see rule 8 of CLAUDE.md and the Branch protection Guards row). Before surfacing the merge gate, independently verify no unresolved CR review threads — the required-status check covers CR's summary verdict but stranded review threads (outdated-not-resolved) can still exist. Run the helper:
+CR is a required blocking status check as of v4.1 (enforced via branch protection — see `.github/required-checks-list.yml`). Before surfacing the merge gate, independently verify no unresolved CR review threads — the required-status check covers CR's summary verdict but stranded review threads (outdated-not-resolved) can still exist. Run the helper:
 
 ```bash
 .claude/hooks/_pr-cr-findings.sh "$PR"
@@ -101,7 +101,7 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "PRRT_
 - **Walkthrough Pre-merge failures** (hard `❌` count from CR's walkthrough summary comment; warnings are informational).
 - **Outside-diff-range findings** (v4.1 CR #359 gap): CR can't anchor to lines not in the diff, so it embeds them in the review body under `## Outside diff range comments (N)`. The helper extracts and sums these. v4.2.A locked this in as a regression test: `.claude/hooks/tests/test_pr-cr-findings.sh` exercises the helper via `CR_TEST_MODE=1` with fixtures under `.claude/hooks/tests/fixtures/` — a review body with `Outside diff range comments (2)` must produce `TOTAL needing cleanup: 2` and exit 1. Run the tests after any helper edit.
 
-Non-zero exit halts. The `CodeRabbit` status check in branch protection is the required blocking gate (v4.1) — GitHub won't merge until CR posts its review. But the status-check pass/fail signals "review complete", not "findings=0". This helper is what counts findings + blocks on a non-zero total; CLAUDE.md Rule 8's policy ("any CR finding = local pipeline regression — fix + tighten") depends on the helper running. Don't skip it. Do NOT paper over stranded threads — manually resolving them IS the cleanup, not a workaround.
+Non-zero exit halts. The `CodeRabbit` status check in branch protection is the required blocking gate (v4.1) — GitHub won't merge until CR posts its review. But the status-check pass/fail signals "review complete", not "findings=0". This helper is what counts findings + blocks on a non-zero total; repo policy ("any CR finding = local pipeline regression — fix + tighten") depends on the helper running. Don't skip it. Do NOT paper over stranded threads — manually resolving them IS the cleanup, not a workaround.
 
 ### 4. Unresolved review threads (human reviewers)
 

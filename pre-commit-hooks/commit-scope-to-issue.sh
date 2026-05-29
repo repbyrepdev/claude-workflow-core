@@ -15,6 +15,7 @@ set -u
 # Registered in .pre-commit-config.yaml under stages: [commit-msg].
 
 MSG_FILE="${1:-}"
+# shellcheck disable=SC2015  # intentional: precondition gate with explicit exit
 [ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] || {
 	echo "commit-scope-to-issue: missing commit-msg file arg" >&2
 	exit 0
@@ -41,11 +42,21 @@ if printf '%s' "$MSG" | grep -qE '\[no-issue:[[:space:]]*[^]]+\]'; then
 	if [ -n "$REPO_ROOT" ] && command -v jq >/dev/null 2>&1; then
 		REASON=$(printf '%s' "$MSG" | grep -oE '\[no-issue:[[:space:]]*[^]]+\]' | head -1 | sed -E 's/^\[no-issue:[[:space:]]*//;s/\]$//')
 		mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
-		jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		# v0.30.A (#187): capture jq output to var so a jq failure can't
+		# leave a partial line — the guarded printf below only writes
+		# when jq succeeded. Shell `>>` opens fd with O_APPEND; POSIX
+		# guarantees atomic positioning at EOF for every write (no
+		# interleaved overwrites between writers). POSIX does NOT extend
+		# the pipes/FIFOs PIPE_BUF size-atomicity guarantee to regular
+		# files. The jq-success-only contract carries correctness.
+		_csti_line=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 			--arg reason "$REASON" \
 			--arg subject "$(printf '%s' "$MSG" | head -1)" \
-			'{ts:$ts, reason:$reason, subject:$subject}' \
-			>>"$REPO_ROOT/.claude/logs/no-issue-commits.jsonl" 2>/dev/null || true
+			'{ts:$ts, reason:$reason, subject:$subject}' 2>/dev/null) || _csti_line=""
+		if [ -n "$_csti_line" ]; then
+			printf '%s\n' "$_csti_line" \
+				>>"$REPO_ROOT/.claude/logs/no-issue-commits.jsonl" 2>/dev/null || true
+		fi
 	fi
 	echo "commit-scope-to-issue: [no-issue: ...] marker present — allowing (logged)" >&2
 	exit 0
@@ -53,12 +64,12 @@ fi
 
 {
 	echo ""
-	echo "✗ commit-scope-to-issue: commit message body has no \`#NNN\` issue reference"
-	echo "  and no \`[no-issue: <reason>]\` bypass marker."
+	echo '✗ commit-scope-to-issue: commit message body has no `#NNN` issue reference'
+	echo '  and no `[no-issue: <reason>]` bypass marker.'
 	echo ""
 	echo "  Add one of:"
-	echo "    - \`Closes #NNN\` / \`Fixes #NNN\` / \`Advances #NNN\` in the commit body"
-	echo "    - \`[no-issue: <reason>]\` explicit marker (logged to .claude/logs/no-issue-commits.jsonl)"
+	echo '    - `Closes #NNN` / `Fixes #NNN` / `Advances #NNN` in the commit body'
+	echo '    - `[no-issue: <reason>]` explicit marker (logged to .claude/logs/no-issue-commits.jsonl)'
 	echo ""
 	echo "  Why: the 'code without tracking issue' regression from #201 — every"
 	echo "  commit should have board lineage."

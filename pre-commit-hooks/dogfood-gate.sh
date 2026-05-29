@@ -74,7 +74,7 @@ if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$REGISTRY_PATH" >/dev/null 2
 	if [ ! -s "$REGISTRY" ]; then
 		echo "dogfood-gate: staged registry is empty — refusing commit" >&2
 		echo "  An empty registry would disable enforcement. Restore content or override:" >&2
-		echo "  DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON=\"<text>\" git commit ..." >&2
+		echo '  DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON="<text>" git commit ...' >&2
 		exit 1
 	fi
 else
@@ -97,8 +97,17 @@ if [ "${DOGFOOD_GATE_SKIP:-0}" = "1" ]; then
 	mkdir -p "$REPO_ROOT/.claude/logs"
 	# jq may be missing here too — write directly without jq dep.
 	if command -v jq >/dev/null 2>&1; then
-		jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg r "$reason" \
-			'{ts:$ts, action:"bypass", reason:$r}' >>"$REPO_ROOT/.claude/logs/dogfood-skip.jsonl" 2>/dev/null || true
+		# v0.30.A (#187): capture jq output to var so a jq failure (rc!=0)
+		# can't leave a partial line on disk — the guarded printf below
+		# only writes when jq succeeded fully. Shell `>>` opens fd with
+		# O_APPEND; POSIX guarantees atomic EOF positioning per write but
+		# NOT a PIPE_BUF-style size atomicity for regular files (that's a
+		# pipes/FIFOs guarantee). jq-success-only carries correctness.
+		_dgf_line=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg r "$reason" \
+			'{ts:$ts, action:"bypass", reason:$r}' 2>/dev/null) || _dgf_line=""
+		if [ -n "$_dgf_line" ]; then
+			printf '%s\n' "$_dgf_line" >>"$REPO_ROOT/.claude/logs/dogfood-skip.jsonl" 2>/dev/null || true
+		fi
 	else
 		# CR #634 round 3 finding 34: JSON-escape $reason. Without escaping,
 		# a reason containing `"`, `\`, or newlines corrupts the .jsonl log.
@@ -120,13 +129,13 @@ fi
 if ! command -v yq >/dev/null 2>&1; then
 	echo "dogfood-gate: yq not installed — required for registry parsing." >&2
 	echo "  Install: brew install yq" >&2
-	echo "  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON=\"<text>\" git commit ..." >&2
+	echo '  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON="<text>" git commit ...' >&2
 	exit 1
 fi
 if ! command -v jq >/dev/null 2>&1; then
 	echo "dogfood-gate: jq not installed — required for log parsing." >&2
 	echo "  Install: brew install jq" >&2
-	echo "  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON=\"<text>\" git commit ..." >&2
+	echo '  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON="<text>" git commit ...' >&2
 	exit 1
 fi
 
@@ -146,7 +155,7 @@ if ! target_count=$(yq '.targets | length' "$REGISTRY" 2>&1); then
 	echo "  Fix .claude/dogfood-registry.yml or override: DOGFOOD_GATE_SKIP=1 ..." >&2
 	exit 1
 fi
-[[ "$target_count" =~ ^[0-9]+$ ]] || target_count=0
+[[ $target_count =~ ^[0-9]+$ ]] || target_count=0
 [ "$target_count" -gt 0 ] || exit 0
 
 # CR Phase-1 silent-failure #2 / code-simplifier #1: hoist sha256 portable
@@ -175,6 +184,7 @@ drift_targets=""
 i=0
 while [ "$i" -lt "$target_count" ]; do
 	target_name=$(yq ".targets[$i].name" "$REGISTRY" 2>/dev/null)
+	# shellcheck disable=SC2015  # intentional: precondition gate with explicit continue
 	[ -n "$target_name" ] && [ "$target_name" != "null" ] || {
 		i=$((i + 1))
 		continue
@@ -192,7 +202,7 @@ while [ "$i" -lt "$target_count" ]; do
 		[ -z "$pattern" ] && continue
 		for sf in "${staged[@]}"; do
 			# shellcheck disable=SC2053
-			if [[ "$sf" == $pattern ]]; then
+			if [[ $sf == $pattern ]]; then
 				matched=1
 				break 2
 			fi
@@ -226,7 +236,7 @@ while [ "$i" -lt "$target_count" ]; do
 		[ -z "$pattern" ] && continue
 		for sf in "${staged[@]}"; do
 			# shellcheck disable=SC2053
-			if [[ "$sf" == $pattern ]]; then
+			if [[ $sf == $pattern ]]; then
 				matched_paths+=("$sf")
 			fi
 		done
@@ -257,7 +267,7 @@ while [ "$i" -lt "$target_count" ]; do
 			[ -z "$p" ] && continue
 			dogfood_per_file_hash "$REPO_ROOT" "$p"
 		done | _sha256_cmd | awk '{print $1}')
-	if ! [[ "$staged_fp" =~ ^[0-9a-f]{64}$ ]]; then
+	if ! [[ $staged_fp =~ ^[0-9a-f]{64}$ ]]; then
 		echo "dogfood-gate: staged_fp computation produced invalid hash — refusing commit" >&2
 		echo "  This is a fingerprint pipeline bug. Override: DOGFOOD_GATE_SKIP=1 ..." >&2
 		exit 1
@@ -266,9 +276,9 @@ while [ "$i" -lt "$target_count" ]; do
 	# disabled the 1h freshness check (cutoff=0 → jq's `>= 0` matches any
 	# historical pass). Fail closed if neither BSD nor GNU date works.
 	cutoff=$(date -u -v-1H +%s 2>/dev/null || date -u -d '1 hour ago' +%s 2>/dev/null || true)
-	if ! [[ "${cutoff:-}" =~ ^[0-9]+$ ]] || [ "$cutoff" -le 0 ]; then
+	if ! [[ ${cutoff:-} =~ ^[0-9]+$ ]] || [ "$cutoff" -le 0 ]; then
 		echo "dogfood-gate: cannot compute 1h cutoff on this platform; refusing commit." >&2
-		echo "  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON=\"<text>\" git commit ..." >&2
+		echo '  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON="<text>" git commit ...' >&2
 		exit 1
 	fi
 	# Require: target=match AND status=ok AND ts>=cutoff. Prefer entries
@@ -329,7 +339,7 @@ if [ -n "$drift_targets" ]; then
 		echo "dogfood-gate: $autorun_failed target(s) FAILED auto-run:" >&2
 		printf '%s' "$failed_targets" >&2
 		echo "" >&2
-		echo "  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON=\"<text>\" git commit ..." >&2
+		echo '  Override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON="<text>" git commit ...' >&2
 		while IFS= read -r line; do
 			[ -z "$line" ] && continue
 			target=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*-[[:space:]]+([^[:space:]]+).*/\1/')
@@ -341,7 +351,7 @@ if [ -n "$drift_targets" ]; then
 	printf '%s' "$drift_targets" >&2
 	echo "" >&2
 	echo "  Run: scripts/dogfood.sh --target <name>" >&2
-	echo "  Or override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON=\"<text>\" git commit ..." >&2
+	echo '  Or override: DOGFOOD_GATE_SKIP=1 DOGFOOD_GATE_SKIP_REASON="<text>" git commit ...' >&2
 	# Append each drift target to sentinel so single-pane sees them.
 	while IFS= read -r line; do
 		[ -z "$line" ] && continue
