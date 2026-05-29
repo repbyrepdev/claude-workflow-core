@@ -97,16 +97,42 @@ EOF
 )"
 ```
 
-When the brainstorm later becomes actionable, convert:
+When the brainstorm later becomes actionable, convert with the `plan-me`
+label so CodeRabbit's Issue Planner auto-posts a structured plan. The
+chain epic #175 is building (currently partially operator-driven):
+brainstorm → CR plan comment → cr-plan parse → epic + sub-issues →
+**operator picks a sub + branches** → ship-pr-cycle takes over at
+branch-ready stage.
 
 ```bash
-# Open a new task/feature issue that references the brainstorm
+# Open a new task/feature issue that references the brainstorm.
+# The `plan-me` label triggers CR Issue Planner to post a structured
+# plan comment (Implementation Steps / Phases) in the issue thread.
+# The cr-plan skill then parses that plan and invokes github-epic-
+# creation to create the actual epic + sub-issues with GraphQL linkage
+# (CR does not create sub-issues itself — that's cr-plan's job).
 gh issue create --title "<action>" \
+  --label plan-me \
   --body "Implements decision from brainstorm #<N>. Closes #<N> (discussion resolved)."
-# ai-triage will auto-apply priority:* + area:* based on the body.
-# Then close the original brainstorm issue
+# ai-triage attempts to apply priority:* + area:* based on the body.
+# Under ACTIONS_MODE=remote this is the server-side Claude classifier;
+# under ACTIONS_MODE=local it's the regex backup (lossy — see #809).
+# plan-me is set explicitly at create-time so CR sees it on the
+# issue.opened event regardless of ai-triage mode.
+# Then close the original brainstorm issue.
 gh issue close <N> --comment "Resolved — implementation tracked in #<new>."
 ```
+
+**Operator handoff still needed:** after cr-plan creates the subs, an
+operator picks a sub, runs `gh issue edit <sub> --add-assignee @me`, and
+branches off `feat/v0.X/<sub>-…`. ship-pr-cycle's state machine begins
+at `branch-ready` — there is no automatic priority-sub selection yet.
+Epic #175 tracks closing this gap.
+
+If the brainstorm's decision is straightforward and doesn't need CR
+planning (rough guideline: typically a single concrete change touching
+≤1 file or ≤30 LoC — complexity may vary beyond file/LoC counts),
+omit `--label plan-me` — the operator or Claude can implement directly.
 
 ## Don'ts
 
