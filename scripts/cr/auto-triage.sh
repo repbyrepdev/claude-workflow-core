@@ -63,7 +63,7 @@ while [ "$#" -gt 0 ]; do
 	[0-9]*)
 		# CR-in-CI #733 r4 trivial: case pattern `[0-9]*` accepts
 		# `123abc`; tighten to numeric-only via regex post-match.
-		if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+		if ! [[ $1 =~ ^[0-9]+$ ]]; then
 			echo "auto-triage: ERROR: pr-number must be numeric, got '$1'" >&2
 			exit 2
 		fi
@@ -241,8 +241,14 @@ audit_err_file=$(mktemp -t auto-triage-audit-err.XXXXXX) || {
 	audit_err_file="/dev/null"
 }
 audit_rc=0
-printf '%s' "$CLASSIFIED" | jq -c --arg ts "$(date -u +%FT%TZ)" --arg pr "$PR" \
-	'.[] | {ts: $ts, pr: $pr, thread_id: .thread_id, path: .path, line: .line, class: .class, suggested_action: .suggested_action}' \
+# v0.30.B (#188): include the HEAD commit sha (full 40-char) so auto-triage
+# entries can be joined with review-log/*.jsonl, which keys on the same
+# commit sha. Before this, auto-triage keyed only on (pr, thread_id) while
+# review-log keyed on commit sha — no shared join key across the two logs.
+# Best-effort: empty string if not in a git repo (jq --arg tolerates "").
+AUDIT_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+printf '%s' "$CLASSIFIED" | jq -c --arg ts "$(date -u +%FT%TZ)" --arg pr "$PR" --arg sha "$AUDIT_SHA" \
+	'.[] | {ts: $ts, pr: $pr, sha: $sha, thread_id: .thread_id, path: .path, line: .line, class: .class, suggested_action: .suggested_action}' \
 	>>"$AUDIT_LOG" 2>"$audit_err_file" || audit_rc=$?
 if [ "$audit_rc" -ne 0 ]; then
 	if [ "$audit_temp_created" = true ]; then

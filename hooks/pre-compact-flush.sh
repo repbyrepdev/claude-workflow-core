@@ -99,6 +99,43 @@ if [ -d "$SESSION_STATE_DIR" ] && [ -n "$(ls -A "$SESSION_STATE_DIR" 2>/dev/null
 		"$(basename "$SESSION_STATE_DIR")" 2>/dev/null || true
 fi
 
+# 2c. v0.30.B (#188): rotate .claude/logs/*.jsonl so they don't grow
+# unbounded across sessions. Audit 2026-05-29 found lint-run.jsonl at
+# 3,281 lines and .claude/logs/ at 4,594 lines total with no rotation.
+# PreCompact is the right cadence: it fires periodically on long sessions
+# (exactly when the logs have grown) without needing a separate timer.
+# Keep the last MAX_LOG_LINES entries per file; archive the pre-trim copy
+# once per rotation so nothing is lost outright. Atomic rewrite (tmp+mv)
+# so a crash mid-rotation can't truncate a log to a partial line.
+LOGS_DIR=".claude/logs"
+MAX_LOG_LINES="${PRE_COMPACT_LOG_MAX_LINES:-500}"
+if [ -d "$LOGS_DIR" ]; then
+	# Validate MAX_LOG_LINES is a positive int; fall back to 500 on garbage
+	# env so a bad override can't wipe logs (head -n -0 / non-numeric).
+	case "$MAX_LOG_LINES" in
+	'' | *[!0-9]*) MAX_LOG_LINES=500 ;;
+	esac
+	[ "$MAX_LOG_LINES" -ge 1 ] || MAX_LOG_LINES=500
+	for _logf in "$LOGS_DIR"/*.jsonl; do
+		[ -f "$_logf" ] || continue
+		_lines=$(wc -l <"$_logf" 2>/dev/null | tr -d ' ' || echo 0)
+		_lines="${_lines:-0}"
+		# Only rotate when over the cap — avoids needless rewrites + archive
+		# churn on small logs.
+		[ "$_lines" -gt "$MAX_LOG_LINES" ] || continue
+		# Archive the full pre-trim copy once per rotation (timestamped),
+		# then keep the last MAX_LOG_LINES lines. Best-effort archive: a
+		# failed cp must not block the trim (disk full → still want to cap).
+		cp "$_logf" "$ARCHIVE_DIR/$(basename "$_logf" .jsonl)-pretrim-${ts}.jsonl" 2>/dev/null || true
+		_trim_tmp=$(mktemp "${_logf}.rotate.XXXXXX" 2>/dev/null) || continue
+		if tail -n "$MAX_LOG_LINES" "$_logf" >"$_trim_tmp" 2>/dev/null; then
+			mv "$_trim_tmp" "$_logf" 2>/dev/null || rm -f "$_trim_tmp"
+		else
+			rm -f "$_trim_tmp"
+		fi
+	done
+fi
+
 # 3. Emit a summary Claude can see post-compact.
 # Pass LOG_FILE as `wc -l <FILE>` argument (not `<"$LOG_FILE"` redirect) so
 # wc's own stderr is suppressed by `2>/dev/null` — input redirection lets
