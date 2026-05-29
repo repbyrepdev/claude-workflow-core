@@ -9,10 +9,12 @@
 # MEMORY_DRIFT_EXTERNAL_ROOTS.
 #
 # Format: one `old -> new` mapping per line; `#` comments and blank lines are
-# ignored. A trailing-slash `old` is a PREFIX rename (rewrites the prefix,
-# keeps the remainder); an exact `old` rewrites the whole path. First match
-# wins. Paths are repo-relative (the same form memory files reference).
+# ignored. An `old` that ENDS IN `/` is a PREFIX rename (rewrites the prefix,
+# keeps the remainder); any other `old` is matched EXACTLY (a bare segment is
+# never a broad prefix). First match wins. Paths are repo-relative (the same
+# form memory files reference).
 #
-# v0.6.0 (#19): skills were extracted from the consumer's
-# `.claude/skills/X/run.sh` into the plugin's top-level `skills/X/run.sh`.
+# Skills live at the plugin's top-level `skills/X/run.sh`, but memory written
+# against the consumer layout references `.claude/skills/X/run.sh`; this prefix
+# rename keeps those references resolving.
 .claude/skills/ -> skills/

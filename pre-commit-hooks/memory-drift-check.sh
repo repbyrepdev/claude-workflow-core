@@ -16,15 +16,15 @@ set -euo pipefail
 # referenced inside memory `.md` files. URL-style paths and prose
 # mentions (e.g. "the lint-shell hook" without a path) are ignored.
 #
-# v0.30.J (#177): memory-path migration. A plugin restructure that renames
-# old → new internal paths (e.g. v0.6.0 extracted consumer
-# `.claude/skills/X/run.sh` into the plugin's top-level `skills/X/run.sh`)
-# leaves memory files referencing the OLD path — and nothing migrated them,
-# so this gate flagged 14+ memories as stale. The fix is a `.memory-aliases`
-# map at repo root (`old -> new`, exact or trailing-slash prefix): a stale
-# OLD reference is treated as live when its mapped NEW path resolves. This
-# is the documented migration mechanism (vs the prior workaround of baking
-# peer-repo defaults into MEMORY_DRIFT_EXTERNAL_ROOTS).
+# v0.30.J (#177): memory-path migration. A plugin restructure that promotes a
+# consumer's `.claude/skills/X/run.sh` into the plugin's top-level
+# `skills/X/run.sh` leaves memory files referencing the OLD consumer path —
+# and nothing migrated them, so this gate flagged the still-valid memories as
+# stale. The fix is a `.memory-aliases` map at repo root: each line is
+# `old -> new`, where `old` is matched as an exact path, or — when `old` ends
+# in `/` — as a path prefix. A stale OLD reference is treated as live when its
+# mapped NEW path resolves. This is the documented migration mechanism (vs the
+# prior workaround of baking peer-repo defaults into MEMORY_DRIFT_EXTERNAL_ROOTS).
 #
 # Bypass: MEMORY_DRIFT_GATE_SKIP=1 (audit-logged).
 
@@ -88,9 +88,11 @@ _path_resolves() {
 
 # _memory_alias_target <old-path> → echoes the migrated NEW path (and returns
 # 0) if `.memory-aliases` maps the old path, else returns 1. Mappings are
-# `old -> new`, one per line, `#` comments + blank lines ignored. A mapping
-# whose `old` is a trailing-slash prefix (e.g. `.claude/skills/ -> skills/`)
-# rewrites the prefix; an exact `old` rewrites the whole path. First match wins.
+# `old -> new`, one per line, `#` comments + blank lines ignored. An exact
+# `old` rewrites the whole path; an `old` that ENDS IN `/` is a prefix rename
+# (rewrites the prefix, keeps the remainder). A bare-segment `old` (no trailing
+# slash) is exact-only — it must NOT broadly prefix-match (SFH-177-1). First
+# match wins.
 _memory_alias_target() {
 	local p=$1 aliases="$REPO_ROOT/.memory-aliases" line old new
 	[ -f "$aliases" ] || return 1
@@ -104,17 +106,23 @@ _memory_alias_target() {
 		old=$(printf '%s' "$old" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
 		new=$(printf '%s' "$new" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
 		[ -n "$old" ] || continue
-		case "$p" in
-		"$old")
-			# Exact-path rename.
+		# Exact-path rename always applies.
+		if [ "$p" = "$old" ]; then
 			printf '%s\n' "$new"
 			return 0
-			;;
-		"$old"*)
-			# Prefix rename (old typically ends in `/`): rewrite the prefix,
-			# keep the remainder. Uses ${p#"$old"} so $old is matched literally.
-			printf '%s\n' "${new}${p#"$old"}"
-			return 0
+		fi
+		# Prefix rename applies ONLY when `old` ends in `/` — so a bare segment
+		# like `.claude` can't broadly prefix-match `.claude/...` (SFH-177-1).
+		case "$old" in
+		*/)
+			case "$p" in
+			"$old"*)
+				# Rewrite the prefix, keep the remainder. ${p#"$old"} strips
+				# $old literally.
+				printf '%s\n' "${new}${p#"$old"}"
+				return 0
+				;;
+			esac
 			;;
 		esac
 	done <"$aliases"
@@ -164,7 +172,10 @@ for mem in "${mem_files[@]}"; do
 			# predates the rename).
 			alias_target=$(_memory_alias_target "$path" || true)
 			if [ -n "$alias_target" ] && _path_resolves "$alias_target"; then
-				: # resolved via migration alias — pass
+				# Resolved via migration alias — pass, but surface it (advisory,
+				# non-fatal) so alias-driven exemptions are visible in commit
+				# output and don't accumulate silently (SFH-177-2).
+				echo "memory-drift-check: '${path}' honored via .memory-aliases -> '${alias_target}'" >&2
 			else
 				drift_found=$((drift_found + 1))
 				drift_lines="${drift_lines}  - ${path} (referenced in $(basename "$mem"))"$'\n'
