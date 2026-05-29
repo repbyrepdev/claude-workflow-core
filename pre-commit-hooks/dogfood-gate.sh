@@ -98,8 +98,9 @@ if [ "${DOGFOOD_GATE_SKIP:-0}" = "1" ]; then
 	# jq may be missing here too — write directly without jq dep.
 	if command -v jq >/dev/null 2>&1; then
 		# v0.30.A (#187): capture jq output to var so a jq failure (rc!=0)
-		# can't leave a partial line on disk. The subsequent printf is a
-		# single short write — atomic under POSIX PIPE_BUF.
+		# can't leave a partial line on disk. Shell `>>` opens fd with
+		# O_APPEND; write(2) to an O_APPEND-opened regular file is atomic
+		# for sizes ≤ PIPE_BUF (4096 bytes typical on Linux/macOS).
 		_dgf_line=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg r "$reason" \
 			'{ts:$ts, action:"bypass", reason:$r}' 2>/dev/null) || _dgf_line=""
 		if [ -n "$_dgf_line" ]; then

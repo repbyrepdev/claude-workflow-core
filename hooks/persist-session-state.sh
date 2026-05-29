@@ -17,8 +17,9 @@ set -euo pipefail
 # (added matched commands, new state files, etc.) needs corresponding test
 # cases — the `# covers:` header lists this script path, not file types.
 #
-# Registration: this is a USER-SCOPE PostToolUse hook (per CLAUDE.md, those
-# live in ~/.claude/settings.json, not project-scope). Run
+# Registration: this is a USER-SCOPE PostToolUse hook — Claude Code only
+# loads PreToolUse/PostToolUse handlers from `~/.claude/settings.json`, not
+# project-scope `.claude/settings.json`. Run
 # `.claude/hooks/install-session-state-hook.sh` once on a fresh clone to wire
 # this script into your user settings.
 
@@ -90,8 +91,10 @@ case "$CMD" in
 	# was refreshed; empty string is fine and is what jq --arg expects.
 	# v0.30.A (#187): capture jq output to var so a jq failure can't leave a
 	# partial line. PostToolUse fires per tool call — highest race risk of
-	# the three JSONL writers. printf is a single short write (single-line
-	# JSONL entry, well under POSIX PIPE_BUF — atomic).
+	# the three JSONL writers. Shell `>>` opens fd with O_APPEND; on
+	# Linux/macOS, write(2) to an O_APPEND-opened regular file is atomic
+	# for sizes ≤ PIPE_BUF (4096 bytes typical) — the JSONL entry stays
+	# well under that.
 	_pss_line=$(jq -nc \
 		--arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 		--arg pr "${PR_NUM:-}" \

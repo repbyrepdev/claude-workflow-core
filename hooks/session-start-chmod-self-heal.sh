@@ -18,32 +18,45 @@ set -euo pipefail
 # output stays clean.
 #
 # Registration: append this hook's absolute path to ~/.claude/settings.json
-# under hooks.SessionStart[].hooks[]. See README §Install for an idempotent
-# jq snippet (or run scripts/install-hooks.sh --register-session-hooks once
-# v0.30.A ships).
+# under hooks.SessionStart[].hooks[]. Auto-registration via install-hooks.sh
+# is intentionally deferred to a follow-up issue under epic #186 (the
+# settings.json edit logic deserves its own dogfood pass).
 
-# Resolve repo root from script location (not git rev-parse) — the same
-# pattern install-hooks.sh uses, so it works inside worktrees / submodules
-# without conflating cwd with the plugin repo.
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
-
-# Exit cleanly if the path is broken — never block SessionStart.
-[ -d "$REPO_ROOT" ] || exit 0
+# Resolve repo root from script location (not git rev-parse) — same pattern
+# install-hooks.sh uses. WHY: SessionStart fires before cwd is necessarily
+# inside the repo (could be a subdir worktree, /tmp, etc.), so git rev-parse
+# may fail or resolve the wrong repo. Capture cd failures explicitly — if
+# the script's own dirname is broken (orphan symlink, deleted worktree),
+# fail loud-but-non-blocking so the operator knows the self-heal no-op'd.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || SCRIPT_DIR=""
+if [ -z "$SCRIPT_DIR" ] || [ ! -d "$SCRIPT_DIR" ]; then
+	echo "session-start-chmod-self-heal: cannot resolve script dir (broken symlink or worktree?) — skipping self-heal" >&2
+	exit 0
+fi
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd) || REPO_ROOT=""
+# Sanity-check REPO_ROOT looks like the plugin repo — refuse to chmod inside
+# / or a random parent dir if the cd somehow degraded.
+if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ] || [ ! -e "$REPO_ROOT/.claude" ]; then
+	echo "session-start-chmod-self-heal: REPO_ROOT='$REPO_ROOT' missing .claude/ marker — refusing self-heal" >&2
+	exit 0
+fi
 cd "$REPO_ROOT" || exit 0
 
 shopt -s nullglob
 fixed=()
+failed=()
 for d in hooks .claude/hooks; do
 	[ -d "$d" ] || continue
 	for h in "$d"/*.sh; do
 		[ -f "$h" ] || continue
 		if [ ! -x "$h" ]; then
-			# Best-effort chmod. If we can't write (rare — e.g., read-only
-			# mount, EPERM in a restricted shell), skip silently rather than
-			# failing the SessionStart. Logged for diagnostics.
-			if chmod +x "$h" 2>/dev/null; then
+			# Best-effort chmod. On failure (EPERM / EROFS / EIO / ENOSPC)
+			# collect the path + error so the operator sees WHY the heal
+			# didn't take. Never block SessionStart — exit 0 either way.
+			if chmod_err=$(chmod +x "$h" 2>&1); then
 				fixed+=("$h")
+			else
+				failed+=("$h: $chmod_err")
 			fi
 		fi
 	done
@@ -53,6 +66,10 @@ shopt -u nullglob
 if [ "${#fixed[@]}" -gt 0 ]; then
 	printf 'session-start-chmod-self-heal: restored +x on %d hook(s):\n' "${#fixed[@]}" >&2
 	printf '  %s\n' "${fixed[@]}" >&2
+fi
+if [ "${#failed[@]}" -gt 0 ]; then
+	printf 'session-start-chmod-self-heal: FAILED to restore +x on %d hook(s):\n' "${#failed[@]}" >&2
+	printf '  %s\n' "${failed[@]}" >&2
 fi
 
 exit 0

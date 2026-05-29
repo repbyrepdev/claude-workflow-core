@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
-# v0.30.A (#187): SKILL_WRAPPER=1 so skill-bypass-guard honors the gh api
-# calls below (line ~114). Every other skill wrapper sets this; this one
-# was missed at v0.9.0 — would have blocked the first real conflict-resolve
-# fire on a guard-active branch.
+# v0.30.A (#187): SKILL_WRAPPER=1 so skill-bypass-guard honors the `gh auth
+# status`, `gh pr view`, `gh pr comment`, and `gh api` calls below. Every
+# other skill wrapper sets this; this one was missed at v0.9.0 — would have
+# blocked the first real conflict-resolve fire on a guard-active branch.
 export SKILL_WRAPPER=1
 # v0.9.0 (#45): cr-resolve-conflict — wrap CodeRabbit's resolve-merge-conflict
 # feature with comment-trigger + poll + telemetry.
