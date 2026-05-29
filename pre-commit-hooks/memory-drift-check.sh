@@ -106,6 +106,15 @@ _memory_alias_target() {
 		old=$(printf '%s' "$old" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
 		new=$(printf '%s' "$new" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
 		[ -n "$old" ] || continue
+		# Alias targets must stay repo-relative + non-traversing — reject empty,
+		# absolute (/...), or parent-traversal (../, .../../...) `new`, else a
+		# malformed alias could resolve a file OUTSIDE the repo and mask a stale
+		# reference (CR-in-CI #208).
+		case "$new" in
+		'' | /* | ../* | */../* | */..)
+			continue
+			;;
+		esac
 		# Exact-path rename always applies.
 		if [ "$p" = "$old" ]; then
 			printf '%s\n' "$new"

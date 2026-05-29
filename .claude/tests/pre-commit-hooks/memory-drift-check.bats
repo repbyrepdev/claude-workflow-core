@@ -203,3 +203,13 @@ _touch_only() {
 	[ "$status" -eq 1 ]
 	[[ $output == *".claude/skills/ns/run.sh"* ]]
 }
+
+@test "absolute / parent-traversal alias target is rejected — stale ref still flagged (rc 1) (#177 CR-in-CI #208)" {
+	# A malformed alias `new` (absolute or ..) must NOT be applied, else it could
+	# resolve a file OUTSIDE the repo and mask a stale reference.
+	printf '.claude/skills/ -> /abs/\n.claude/hooks/ -> ../../outside/\n' >"$TEST_TMP/.memory-aliases"
+	printf 'Ref `.claude/skills/abs/run.sh` and `.claude/hooks/trav.sh`.\n' >"$TEST_TMP/memory/m.md"
+	_run_hook
+	[ "$status" -eq 1 ]
+	[[ $output == *".claude/skills/abs/run.sh"* ]]
+}
