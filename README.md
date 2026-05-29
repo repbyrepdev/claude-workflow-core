@@ -58,6 +58,7 @@ Per `scripts/ship-pr-cycle.sh` (lines 30-39), the current canonical state machin
 - **push** — pre-push pipeline gate + local pr-lint mirror (#119/#127); `github-pr-creation` enforces label gates (#118/#120/#121)
 - **cr-in-ci-wait** — wait for server-side CodeRabbit on the open PR
 - **auto-triage** — placeholder for #733 classifier (currently a stub)
+- **cr-conflict-check** — route a DIRTY PR through CodeRabbit's resolver before the gate (#190); CLEAN PRs pass straight through
 - **merge-gate** — operator approves here (the only interaction)
 - **merged** — terminal
 
