@@ -6,6 +6,12 @@
 # branching is exercised end-to-end (no network). Also pins the auto-triage
 # 0-unresolved-threads reroute: it now lands on cr-conflict-check, NOT
 # merge-gate directly.
+#
+# The handler makes ONE `gh pr view --json number,mergeStateStatus,mergeable,
+# headRefOid` call. Outcomes covered here: mergeable+local-HEAD-matches →
+# merge-gate; DIRTY+CONFLICTING → stay+directive; UNKNOWN → stay (computing);
+# empty/malformed fields → rc 2; gh failure → rc 2; mergeable but PR head
+# ahead of local HEAD (server-side resolve) → stay + pull directive.
 
 # @bats test bodies run as subshells, so shellcheck flags the per-test STUB_*
 # exports (SC2030/SC2031) as "lost in subshell" — false positive here: each
@@ -41,12 +47,20 @@ setup() {
 	mkdir -p "$STATE_DIR"
 
 	# Unified `gh` stub: routes by argv shape.
-	#   api graphql ...                       → 0 unresolved threads, no next page
-	#   ... --json mergeStateStatus,mergeable → {STUB_MERGE, STUB_MERGEABLE}
-	#   ... --json id --jq .id                → a node id
-	#   ... --json number --jq .number        → STUB_PR (default 123)
+	#   STUB_GH_RC!=0 (set)                    → exit that rc (gh-failure path)
+	#   api graphql ...                        → 0 unresolved threads, no next page
+	#   ... --json ...mergeStateStatus...      → {number, mergeStateStatus,
+	#                                             mergeable, headRefOid} from STUB_*
+	#   ... --json id --jq .id                 → a node id
+	#   ... --json number --jq .number         → STUB_PR (default 123)
+	# STUB_MERGE / STUB_MERGEABLE use ${VAR-default} (not :-) so an exported
+	# empty string is honored as empty for the malformed-fields test.
 	cat >"$TEST_TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [ -n "${STUB_GH_RC:-}" ] && [ "${STUB_GH_RC}" != "0" ]; then
+	echo "stub gh: forced failure (STUB_GH_RC=${STUB_GH_RC})" >&2
+	exit "${STUB_GH_RC}"
+fi
 if [ "${1:-}" = "api" ]; then
 	printf '%s\n' '{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'
 	exit 0
@@ -54,7 +68,7 @@ fi
 for a in "$@"; do
 	case "$a" in
 	*mergeStateStatus*)
-		printf '%s\n' "{\"mergeStateStatus\":\"${STUB_MERGE:-CLEAN}\",\"mergeable\":\"${STUB_MERGEABLE:-MERGEABLE}\"}"
+		printf '%s\n' "{\"number\":${STUB_PR:-123},\"mergeStateStatus\":\"${STUB_MERGE-CLEAN}\",\"mergeable\":\"${STUB_MERGEABLE-MERGEABLE}\",\"headRefOid\":\"${STUB_HEAD:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}\"}"
 		exit 0
 		;;
 	esac
@@ -90,10 +104,11 @@ _cur_stage() {
 	jq -r '.stage' "$STATE_DIR/$SHA.json"
 }
 
-@test "cr-conflict-check + CLEAN/MERGEABLE advances to merge-gate" {
+@test "cr-conflict-check + CLEAN/MERGEABLE (local==PR head) advances to merge-gate" {
 	_seed_stage cr-conflict-check
 	cd "$TEST_TMP" || return 1
-	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE
+	# headRefOid == local HEAD → no remote-ahead hold → advance.
+	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE STUB_HEAD="$SHA"
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
 	[[ $output == *"advanced to merge-gate"* ]]
@@ -106,9 +121,13 @@ _cur_stage() {
 	export STUB_MERGE=DIRTY STUB_MERGEABLE=CONFLICTING
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	# Directive names the cr-resolve-conflict skill wrapper + the PR number.
+	# Directive names the cr-resolve-conflict skill wrapper (resolved path,
+	# env-dependent prefix) + the PR number, the opt-out env, and the manual
+	# rebase fallback — the operator's full escape-hatch set.
 	[[ $output == *"cr-resolve-conflict/run.sh --pr 123"* ]]
 	[[ $output == *"merge conflict"* ]]
+	[[ $output == *"CR_RESOLVE_CONFLICT_DISABLED=1"* ]]
+	[[ $output == *"git rebase origin/"* ]]
 	# Stage MUST NOT advance — operator resolves, then HEAD moves.
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
@@ -128,11 +147,50 @@ _cur_stage() {
 	# resolver — mirrors the skill's strict gate. Routes to merge-gate.
 	_seed_stage cr-conflict-check
 	cd "$TEST_TMP" || return 1
-	export STUB_MERGE=DIRTY STUB_MERGEABLE=MERGEABLE
+	export STUB_MERGE=DIRTY STUB_MERGEABLE=MERGEABLE STUB_HEAD="$SHA"
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
 	[[ $output == *"advanced to merge-gate"* ]]
 	[ "$(_cur_stage)" = merge-gate ]
+}
+
+@test "cr-conflict-check + mergeable but PR head ahead of local → stay + pull directive" {
+	# Server-side resolve (CR pushes the merge commit to the REMOTE branch)
+	# leaves local HEAD behind. Advancing would send an un-re-reviewed merge
+	# commit to merge-gate; instead the handler holds + directs a pull so the
+	# resolution re-enters the cycle on a new local HEAD. (#190 code-reviewer.)
+	_seed_stage cr-conflict-check
+	cd "$TEST_TMP" || return 1
+	# headRefOid differs from local HEAD (default fake sha) → remote-ahead.
+	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"differs from local HEAD"* ]]
+	[[ $output == *"pull --ff-only"* ]]
+	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
+@test "cr-conflict-check + empty/malformed merge fields → rc 2 (fail loud, not 'computing')" {
+	# gh rc=0 + valid JSON but empty mergeStateStatus/mergeable (schema drift)
+	# must fail loud, NOT be treated as 'still computing' (which would stay
+	# forever). Mirrors the cr-resolve-conflict skill's malformed-state guard.
+	_seed_stage cr-conflict-check
+	cd "$TEST_TMP" || return 1
+	export STUB_MERGE="" STUB_MERGEABLE=""
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"empty merge fields"* ]]
+	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
+@test "cr-conflict-check + gh failure → rc 2 (halts, does not advance)" {
+	_seed_stage cr-conflict-check
+	cd "$TEST_TMP" || return 1
+	export STUB_GH_RC=1
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"cannot resolve PR"* ]]
+	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
 @test "auto-triage with 0 unresolved threads reroutes to cr-conflict-check (#190)" {

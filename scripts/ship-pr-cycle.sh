@@ -34,7 +34,7 @@ set -euo pipefail
 #   phase2            → CR-CLI loop (cap from scaler tier)
 #   push              → ready to push to origin
 #   cr-in-ci-wait     → waiting for GitHub CR
-#   auto-triage       → placeholder for #733 classifier (currently a stub)
+#   auto-triage       → classify CR threads via scripts/cr/auto-triage.sh (#733)
 #   cr-conflict-check → route DIRTY PR through CR resolver before gate (#190)
 #   merge-gate        → OPERATOR APPROVES HERE (only interaction)
 #   merged            → terminal
@@ -1707,9 +1707,10 @@ EOF
 		# v4.28-W5 (#774, #775): route based on unresolved CR-thread count.
 		# >0 → cr-autofix stage applies via skill (auto-apply all severities;
 		# operator gates only at merge-gate per 4-gate autonomy model).
-		# 0 → cr-conflict-check (#190); that stage passes straight through to
-		# merge-gate unless the PR is DIRTY, in which case it routes the
-		# conflict through CR's resolver first. Counting is extracted to
+		# 0 → cr-conflict-check (#190); that stage advances to merge-gate when
+		# mergeable, routes a DIRTY PR through CR's resolver, or holds if
+		# mergeability is still computing (see its handler). Counting is
+		# extracted to
 		# _count_unresolved_threads (#775) since pre-push-pipeline-gate
 		# shares the same code path for content-aware acceptance — helper
 		# enforces numeric guard + stderr-labeled diagnostics on failure.
@@ -1838,69 +1839,108 @@ EOF
 		# routes a DIRTY PR through it instead of letting a conflicted PR sit
 		# unmergeable at the operator's approve-to-ship gate.
 		#
-		# ADDITIVE + STATELESS — re-evaluates mergeability every run:
-		#   not DIRTY → advance to merge-gate (clean common path unchanged).
-		#   DIRTY     → emit the resolve directive + stay (return 0). Once the
-		#               resolution commit lands, HEAD moves and the machine
-		#               starts a FRESH cycle on the new SHA (#674 "new HEAD =
-		#               fresh review cycle"), so the merged result is reviewed
-		#               end-to-end before it returns here — now CLEAN — and
-		#               advances to merge-gate.
-		#   UNKNOWN   → GitHub still computing mergeability (common right after
-		#               a push); stay (return 0), re-run 'next' shortly. Never
-		#               advance on a guess.
-		local cc_pr_num cc_gh_err cc_gh_err_file cc_gh_rc=0
-		cc_gh_err_file=$(mktemp -t ship-cycle-crconflict-pr.XXXXXX) ||
+		# ADDITIVE + STATELESS — re-evaluates mergeability every run. Outcomes:
+		#   DIRTY        → emit the resolve directive + stay (return 0). When
+		#                  the resolution lands LOCALLY (manual rebase moves
+		#                  local HEAD), the machine starts a FRESH cycle on the
+		#                  new SHA (#674 "new HEAD = fresh review cycle") so the
+		#                  merged result is reviewed end-to-end. When CR
+		#                  resolves SERVER-SIDE, only the REMOTE PR head moves;
+		#                  the "mergeable but remote-ahead" guard below catches
+		#                  that and forces a pull (→ new local HEAD → fresh
+		#                  cycle) before merge-gate, so a CR-authored merge
+		#                  commit can never reach the gate un-re-reviewed.
+		#   UNKNOWN      → GitHub still computing mergeability (common right
+		#                  after a push); stay (return 0), re-run shortly.
+		#   empty/null   → schema drift / PR-state anomaly on an otherwise OK
+		#                  gh call → fail loud (return 2), NOT treated as
+		#                  "computing" (would stay forever). Mirrors the
+		#                  cr-resolve-conflict skill's malformed-state guard.
+		#   mergeable    → advance to merge-gate (only when local HEAD == PR
+		#                  head; see remote-ahead guard).
+		# One gh round-trip fetches number (for directives) + merge state +
+		# mergeable + headRefOid (remote-ahead detection); `gh pr view` with no
+		# positional arg resolves the current branch's PR.
+		local cc_state cc_gh_err cc_gh_err_file cc_gh_rc=0
+		cc_gh_err_file=$(mktemp -t ship-cycle-crconflict.XXXXXX) ||
 			scm_fail "mktemp for cr-conflict-check gh pr view stderr capture failed"
-		cc_pr_num=$(gh pr view --json number --jq .number 2>"$cc_gh_err_file") || cc_gh_rc=$?
+		cc_state=$(gh pr view --json number,mergeStateStatus,mergeable,headRefOid 2>"$cc_gh_err_file") || cc_gh_rc=$?
 		[ -s "$cc_gh_err_file" ] && cc_gh_err=$(cat "$cc_gh_err_file")
 		rm -f "$cc_gh_err_file"
 		if [ "$cc_gh_rc" -ne 0 ]; then
 			echo "ship-pr-cycle: cr-conflict-check — cannot resolve PR (gh rc=$cc_gh_rc): ${cc_gh_err:-not pushed?}" >&2
 			return 2
 		fi
-		local cc_state cc_state_err cc_state_err_file cc_state_rc=0
-		cc_state_err_file=$(mktemp -t ship-cycle-crconflict-state.XXXXXX) ||
-			scm_fail "mktemp for cr-conflict-check merge-state capture failed"
-		cc_state=$(gh pr view "$cc_pr_num" --json mergeStateStatus,mergeable 2>"$cc_state_err_file") || cc_state_rc=$?
-		[ -s "$cc_state_err_file" ] && cc_state_err=$(cat "$cc_state_err_file")
-		rm -f "$cc_state_err_file"
-		if [ "$cc_state_rc" -ne 0 ]; then
-			echo "ship-pr-cycle: cr-conflict-check — gh pr view merge-state failed (rc=$cc_state_rc): ${cc_state_err:-<no stderr>}" >&2
+		# Validate JSON shape before extracting — a non-JSON body (proxy/5xx
+		# HTML that still exits 0) would otherwise abort the run mid-extract
+		# under set -e instead of returning the handler's own rc=2.
+		if ! printf '%s' "$cc_state" | jq -e . >/dev/null 2>&1; then
+			echo "ship-pr-cycle: cr-conflict-check — gh returned non-JSON PR state; refusing to advance" >&2
 			return 2
 		fi
-		local cc_merge cc_mergeable
+		local cc_pr_num cc_merge cc_mergeable cc_remote_head
+		cc_pr_num=$(printf '%s' "$cc_state" | jq -r '.number // ""')
 		cc_merge=$(printf '%s' "$cc_state" | jq -r '.mergeStateStatus // ""')
 		cc_mergeable=$(printf '%s' "$cc_state" | jq -r '.mergeable // ""')
-		# GitHub computes mergeability asynchronously — UNKNOWN/empty means
-		# "not yet determined". Don't advance on a guess; a re-run re-checks
-		# once GitHub settles.
-		if [ "$cc_mergeable" = "UNKNOWN" ] || [ -z "$cc_mergeable" ] || [ -z "$cc_merge" ]; then
-			echo "ship-pr-cycle: cr-conflict-check — mergeability still computing (merge='$cc_merge' mergeable='$cc_mergeable'); re-run 'next' shortly"
+		cc_remote_head=$(printf '%s' "$cc_state" | jq -r '.headRefOid // ""')
+		# Genuine async UNKNOWN (GitHub still computing) is the ONLY "stay
+		# because not-yet-known" case.
+		if [ "$cc_mergeable" = "UNKNOWN" ]; then
+			echo "ship-pr-cycle: cr-conflict-check — mergeability still computing (merge=$cc_merge); re-run 'next' shortly"
 			return 0
+		fi
+		# Empty/null after a successful, valid-JSON gh call = schema drift or a
+		# PR-state anomaly. Fail loud rather than silently staying forever
+		# (silent-failure-hunter #190 r1; same posture as the skill's guard).
+		if [ -z "$cc_merge" ] || [ -z "$cc_mergeable" ]; then
+			echo "ship-pr-cycle: cr-conflict-check — PR state has empty merge fields (merge='$cc_merge' mergeable='$cc_mergeable'); refusing to advance" >&2
+			return 2
 		fi
 		# Conflict trigger requires BOTH fields to agree (mirrors the skill's
 		# strict gate) so a single transient field blip can't misfire.
-		if [ "$cc_merge" != "DIRTY" ] || [ "$cc_mergeable" != "CONFLICTING" ]; then
-			_set_stage "merge-gate"
-			echo "→ no merge conflict (merge=$cc_merge mergeable=$cc_mergeable); advanced to merge-gate"
-			return 0
-		fi
-		cat <<EOF
+		if [ "$cc_merge" = "DIRTY" ] && [ "$cc_mergeable" = "CONFLICTING" ]; then
+			local cc_skill
+			cc_skill=$(_shipcycle_resolve skills/cr-resolve-conflict/run.sh)
+			cat <<EOF
 ship-pr-cycle: cr-conflict-check — PR #$cc_pr_num has a merge conflict (merge=$cc_merge).
 
 Resolve via CodeRabbit's resolver (posts '@coderabbitai resolve merge conflict', polls outcome):
 
-  .claude/skills/cr-resolve-conflict/run.sh --pr $cc_pr_num
+  $cc_skill --pr $cc_pr_num
 
   rc 0 = CR resolved (or nothing to resolve) · rc 2 = CR declined/timed out
   → manual rebase: 'git fetch origin && git rebase origin/$BASE_BRANCH', resolve, push.
   Opt out of CR resolution entirely: CR_RESOLVE_CONFLICT_DISABLED=1.
 
-Once the resolution commit lands, HEAD moves and the cycle restarts on the new
-SHA (graduated phases run fast), re-reviewing the merged result before it
-returns here — now CLEAN — and advances to merge-gate.
+Once the resolution commit lands, re-run 'ship-pr-cycle.sh next'. If CR resolved
+it server-side, the next check directs you to pull first so the merged result is
+re-reviewed on a fresh local cycle before merge-gate.
 EOF
+			return 0
+		fi
+		# Mergeable — but a server-side resolution (CR's resolver pushes the
+		# merge commit to the REMOTE PR branch) leaves local HEAD behind.
+		# Advancing now would send an un-re-reviewed merge commit to
+		# merge-gate, so only advance when local HEAD matches the PR head;
+		# otherwise direct the operator to pull (→ new local HEAD → fresh
+		# review cycle). (code-reviewer #190 r1.)
+		local cc_local_head
+		cc_local_head=$(_current_sha)
+		if [ -n "$cc_remote_head" ] && [ "$cc_remote_head" != "$cc_local_head" ]; then
+			cat <<EOF
+ship-pr-cycle: cr-conflict-check — PR #$cc_pr_num is mergeable, but the PR head
+($cc_remote_head) differs from local HEAD ($cc_local_head): a resolution was
+likely pushed remotely. Pull it so the merged result is re-reviewed before
+merge-gate:
+
+  git fetch origin && git pull --ff-only
+
+Then re-run 'ship-pr-cycle.sh next' — the new HEAD starts a fresh review cycle.
+EOF
+			return 0
+		fi
+		_set_stage "merge-gate"
+		echo "→ no merge conflict (merge=$cc_merge mergeable=$cc_mergeable); advanced to merge-gate"
 		return 0
 		;;
 	merge-gate)

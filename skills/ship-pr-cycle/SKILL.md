@@ -40,7 +40,7 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
     ↓ next
 [cr-in-ci-wait]   gh pr list + watch-until-done.sh
     ↓ next (gate-checked: CR-in-CI terminal state)
-[auto-triage]     (pending #733) classify findings — currently a passthrough; future classifier wires here
+[auto-triage]     classify CR threads via scripts/cr/auto-triage.sh (#733); routes by unresolved count
     ↓ next
 [cr-conflict-check] route a DIRTY PR through CR's resolver (#190); CLEAN passes straight through
     ↓ next
