@@ -98,27 +98,40 @@ EOF
 ```
 
 When the brainstorm later becomes actionable, convert with the `plan-me`
-label so CodeRabbit auto-plans an epic+sub-issue breakdown for the chain
-described in epic #175 (brainstorm → cr-plan → epic+subs → ship-pr-cycle):
+label so CodeRabbit's Issue Planner auto-posts a structured plan. The
+chain epic #175 is building (currently partially operator-driven):
+brainstorm → CR plan comment → cr-plan parse → epic + sub-issues →
+**operator picks a sub + branches** → ship-pr-cycle takes over at
+branch-ready stage.
 
 ```bash
 # Open a new task/feature issue that references the brainstorm.
-# The `plan-me` label triggers CR to post a sub-issue breakdown plan in
-# the new issue thread. The cr-plan skill then parses that plan into an
-# epic + subs (see github-epic-creation skill). ship-pr-cycle picks up
-# the highest-priority sub automatically.
+# The `plan-me` label triggers CR Issue Planner to post a structured
+# plan comment (Implementation Steps / Phases) in the issue thread.
+# The cr-plan skill then parses that plan and invokes github-epic-
+# creation to create the actual epic + sub-issues with GraphQL linkage
+# (CR does not create sub-issues itself — that's cr-plan's job).
 gh issue create --title "<action>" \
   --label plan-me \
   --body "Implements decision from brainstorm #<N>. Closes #<N> (discussion resolved)."
-# ai-triage applies priority:* + area:* server-side based on the body;
-# plan-me is set explicitly at create-time so CR sees it immediately.
+# ai-triage attempts to apply priority:* + area:* based on the body.
+# Under ACTIONS_MODE=remote this is the server-side Claude classifier;
+# under ACTIONS_MODE=local it's the regex backup (lossy — see #809).
+# plan-me is set explicitly at create-time so CR sees it on the
+# issue.opened event regardless of ai-triage mode.
 # Then close the original brainstorm issue.
 gh issue close <N> --comment "Resolved — implementation tracked in #<new>."
 ```
 
+**Operator handoff still needed:** after cr-plan creates the subs, an
+operator picks a sub, runs `gh issue edit <sub> --add-assignee @me`, and
+branches off `feat/v0.X/<sub>-…`. ship-pr-cycle's state machine begins
+at `branch-ready` — there is no automatic priority-sub selection yet.
+Epic #175 tracks closing this gap.
+
 If the brainstorm's decision is straightforward and doesn't need CR
-planning (e.g. a one-line fix), omit `--label plan-me` — the operator
-or Claude can implement directly.
+planning (e.g. a single concrete change touching ≤1 file or ≤30 LoC),
+omit `--label plan-me` — the operator or Claude can implement directly.
 
 ## Don'ts
 
