@@ -22,5 +22,7 @@ setup() {
 @test "BRANCH_HEAD_SHA via gh headRefOid resolution syntax is in run.sh" {
 	# Sanity check that the v0.27.1 Phase 1 r1 fix (gh pr view --jq headRefOid)
 	# is present in the wrapper — guards against accidental revert.
-	grep -q 'gh pr view "\$PR" --json headRefOid' "$WRAPPER"
+	# Flexible regex tolerates "$PR" / $PR / ${PR} variable quoting styles.
+	run grep -E 'gh pr view.*--json[[:space:]]+headRefOid' "$WRAPPER"
+	[ "$status" -eq 0 ]
 }
