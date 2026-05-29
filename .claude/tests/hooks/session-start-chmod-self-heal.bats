@@ -118,3 +118,31 @@ teardown() {
 	[[ $output == *"missing .claude/ marker"* ]] || [[ $output == *"refusing self-heal"* ]]
 	rm -rf "$BARE"
 }
+
+@test "REPO_ROOT/.claude existing as a regular file is REJECTED (-d guard)" {
+	# Regression guard for the marker tightening from `-e` to `-d`
+	# (CR-in-CI finding on PR #192). Under the old `-e` check, a regular
+	# file at REPO_ROOT/.claude would pass and the hook would proceed to
+	# chmod hooks/*.sh inside an unverified parent. The new `-d` check
+	# correctly rejects this case. CRITICAL assertion: the non-executable
+	# .sh under hooks/ must NOT be chmod'd — that's what distinguishes
+	# `-d` from `-e` semantics. A revert to `-e` would silently re-open
+	# the unverified-parent-dir chmod path and flip this assertion.
+	BARE=$(mktemp -d -t chmod-selfheal-file-marker.XXXXXX)
+	mkdir -p "$BARE/hooks"
+	cp "$HOOK" "$BARE/hooks/session-start-chmod-self-heal.sh"
+	# Create .claude as a REGULAR FILE — passes `-e` but fails `-d`.
+	touch "$BARE/.claude"
+	[ -f "$BARE/.claude" ]
+	[ ! -d "$BARE/.claude" ]
+	# Drop a non-executable .sh under hooks/ that the OLD guard would
+	# have chmod'd; the new guard must refuse before touching it.
+	echo '#!/bin/bash' >"$BARE/hooks/lost.sh"
+	chmod 644 "$BARE/hooks/lost.sh"
+	run "$BARE/hooks/session-start-chmod-self-heal.sh"
+	[ "$status" -eq 0 ]
+	[[ $output == *"missing .claude/ marker"* ]] || [[ $output == *"refusing self-heal"* ]]
+	# THE LOAD-BEARING ASSERTION — chmod must NOT have run.
+	[ ! -x "$BARE/hooks/lost.sh" ]
+	rm -rf "$BARE"
+}
