@@ -128,6 +128,47 @@ BODY
 	[ "$status" -eq 0 ]
 }
 
+@test "embedded-word keyword + #N FAILS (boundary anchor, #200 folded into #199)" {
+	# discloses/fooadvances/unresolved are NOT standalone keywords — the
+	# leading (^|[^[:alnum:]_]) boundary must reject them even with a real #N.
+	for kw in "discloses #1" "fooadvances #7" "unresolved #7" "prefixes #3" "precloses #2"; do
+		cat >"$TEST_TMP/body.md" <<BODY
+## Summary
+
+x
+
+## Test plan
+
+- [x] y
+
+$kw
+BODY
+		run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+		[ "$status" -eq 1 ] || {
+			echo "expected rc=1 (embedded word, not standalone) for: $kw (got $status)" >&2
+			false
+		}
+	done
+}
+
+@test "standalone keyword mid-body still PASSES with boundary anchor" {
+	# A keyword preceded by whitespace/newline (the normal case) must still
+	# match after adding the leading boundary.
+	cat >"$TEST_TMP/body.md" <<'BODY'
+## Summary
+
+Some text. Closes #42 in the trailer below.
+
+## Test plan
+
+- [x] y
+
+Advances #7
+BODY
+	run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["area:infrastructure"]'
+	[ "$status" -eq 0 ]
+}
+
 @test "non-closing keyword + #N still FAILS (regex not too broad, #199)" {
 	# Guards that adding `advance[sd]?` didn't broaden the alternation to
 	# accept arbitrary verbs. A real issue-number token is present, but the
