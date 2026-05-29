@@ -260,3 +260,42 @@ BODY
 	[ "$status" -eq 2 ]
 	[[ $output == *"unknown flag"* ]]
 }
+
+@test "heading as a prose substring (not a standalone line) is rejected (#205 line-anchor)" {
+	# The local check is line-anchored (^## Test plan[[:space:]]*$), so a
+	# '## Test plan' that appears only as a substring inside prose is NOT a
+	# valid heading. A substring matcher (grep -qF) would wrongly accept it.
+	# Pins the contract the server pr-lint.yml check now shares (#205 parity).
+	cat >"$TEST_TMP/body.md" <<'BODY'
+## Summary
+
+Real summary heading present.
+
+This line only mentions ## Test plan inline as prose, not as a heading.
+
+Closes #1
+BODY
+	run "$SCRIPT" --body "$TEST_TMP/body.md" --skip-label-check
+	[ "$status" -eq 1 ]
+	[[ $output == *"## Test plan"* ]]
+}
+
+@test "neither local hook nor server workflow uses grep -qF for the heading check (#205 parity)" {
+	# #205: the server used 'grep -qF \"\$heading\"' (substring) while the local
+	# hook used a line-anchored ERE — they accepted different bodies. Lock both
+	# to the anchored form so neither side can reintroduce the substring matcher
+	# (workflows-source/pr-lint.yml stays in sync via the workflow-source-pin
+	# gate, so checking the live workflow suffices).
+	WF="${REPO_ROOT}/.github/workflows/pr-lint.yml"
+	[ -f "$WF" ]
+	# Build the old divergent source line at runtime so no single-quoted '$'
+	# token appears here (keeps shellcheck clean) — the literal we forbid is
+	# grep -qF "<dollar>heading". Assert neither file still contains it; the
+	# line-anchored behavioral test above proves the replacement matcher works.
+	local dollar='$'
+	local bad="grep -qF \"${dollar}heading\""
+	run grep -F "$bad" "$SCRIPT"
+	[ "$status" -ne 0 ]
+	run grep -F "$bad" "$WF"
+	[ "$status" -ne 0 ]
+}

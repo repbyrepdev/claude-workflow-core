@@ -152,7 +152,12 @@ jobs:
         run: |
           MISSING=""
           for heading in "## Summary" "## Test plan"; do
-            if ! echo "$BODY" | grep -qF "$heading"; then
+            # Line-anchored (^heading[[:space:]]*$) like hooks/pr-lint-check.sh
+            # so this server check and the local pre-push check accept the same
+            # bodies — a heading inside prose or a fenced code block is NOT a
+            # match. The two fixed headings have no ERE metacharacters, so no
+            # escaping step is needed here. (#205)
+            if ! echo "$BODY" | grep -qE "^${heading}[[:space:]]*$"; then
               MISSING="$MISSING $heading"
             fi
           done
