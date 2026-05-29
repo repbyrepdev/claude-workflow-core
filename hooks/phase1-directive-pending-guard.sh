@@ -44,6 +44,12 @@ if [ -f "$LIB_SENTINEL" ]; then
 else
 	hook_inline_sentinel_check() { return 1; }
 fi
+# v0.30.E (#191): cmd-anchor for the read-only allowlist below.
+LIB_ANCHOR="$HOOK_DIR/../_lib/cmd-anchor.sh"
+if [ -f "$LIB_ANCHOR" ]; then
+	# shellcheck source=../_lib/cmd-anchor.sh
+	source "$LIB_ANCHOR"
+fi
 
 # Outside-git-repo: allow (hook can fire anywhere). Capture stderr to
 # distinguish "not a repo" from corruption.
@@ -133,6 +139,84 @@ esac
 # agents return). Mirrors phase1-log-pending-gate's escape hatch.
 if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)\.?/?\.claude/hooks/review-log\.sh'; then
 	exit 0
+fi
+
+# v0.30.E (#191): allow a SINGLE, SIMPLE read-only INSPECTION command through
+# while a directive is pending. The guard's purpose is to stop the main loop
+# from doing PRODUCTIVE work (Edit/Write/commit/push) or stalling before
+# firing the Phase 1 agents — NOT to block harmless reads. Critically, this
+# PreToolUse hook ALSO fires inside the Phase 1 subagents (code-reviewer et
+# al.), whose job is to run `git diff`/`cat`/`grep` over the diff; denying
+# those reads mid-review was the #191 bug. Non-Bash write tools (Edit, Write,
+# MultiEdit, NotebookEdit) are never read-only — the [ "$TOOL" = Bash ] guard
+# means they fall straight through to the deny.
+#
+# SECURITY (v0.30.E r2, #191 Phase 1): a read verb at the FRONT does NOT make
+# a COMPOUND command read-only. `git diff && git push`, `cat $(rm -rf x)`,
+# `git diff | tee f`, `git diff --output=f`, and `find . -delete` all launder
+# a mutation behind a leading read verb. So we REJECT (fall through to deny)
+# any command that can chain, substitute, pipe, background, redirect to a
+# file, or invoke a per-tool write action — and only THEN allowlist the
+# leading verb of what remains (which is now guaranteed a single simple cmd).
+if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
+	# Strip harmless discard/dup redirects (2>/dev/null, 2>&1, >/dev/null,
+	# &>/dev/null) so they don't trip the `>` reject; fold newlines to `;`
+	# so a multi-line command is caught by the separator reject below.
+	_resid=$(printf '%s' "$CMD" |
+		sed -E 's/2>&1/ /g; s/[0-9]*>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g; s/&>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
+		tr '\n' ';')
+	# THREAT MODEL (#191 P1 r1-r3): this guard is a WORKFLOW NUDGE for a
+	# cooperative agent — it stops the main loop from doing productive work
+	# (commit/push/Edit/Write) or stalling before firing Phase 1 agents. It is
+	# NOT an adversarial sandbox: the realistic failure is Claude absent-
+	# mindedly committing before agents fire, not Claude crafting `find -rm`
+	# to evade its own guard. Prompt-injection of a subagent is defended by
+	# the auto-mode classifier + other gates, not here. So the screen below is
+	# BEST-EFFORT for the known write/exec-via-flag classes; it does not
+	# attempt to be exhaustive against every tool implementation's flag zoo
+	# (the local `find` is bfs with `-rm`, `grep` is ugrep with `--filter` —
+	# implementations vary and cannot all be enumerated).
+	#
+	# Reject if the residue contains ANY of:
+	#   [;&|`]      — statement separator / background / pipe / backtick-subst
+	#   $( <( >(    — command / process substitution
+	#   >           — a surviving file-writing redirect
+	#   --*output=  — git --output + semgrep --json-output/--sarif-output/...
+	#                 (the whole --<fmt>-output family writes a file / POSTs to
+	#                 a URL). Anchored so the READ flag --output-indicator-* is
+	#                 NOT false-rejected.
+	#   --autofix   — semgrep in-place source rewrite (#191 r3)
+	#   --pre / --hostname-bin — ripgrep exec-a-command flags (#191 r2)
+	#   -delete / -rm / -exec* / -ok* / -fprint* / -fls — find write/exec
+	#                 actions (-rm is the bfs alias for -delete, #191 r3)
+	# Anything matching is NOT a single simple read-only command → deny.
+	#
+	# RULE for adding a verb to the allowlist below: it must be a tool with NO
+	# subprocess-spawn / file-write FLAG in common implementations. cat/head/
+	# tail/ls/wc/grep qualify; rg/find/git-grep/semgrep-autofix did NOT (each
+	# found in r1-r3). git read subcmds qualify with --output screened.
+	if printf '%s' "$_resid" | grep -qE '[;&|`]|\$\(|<\(|>\(|>|(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-local-builds)([[:space:]=]|$)|(^|[[:space:]])--(pre|hostname-bin)([[:space:]=]|$)|(^|[[:space:]])-(delete|rm|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)([[:space:]]|$)'; then
+		: # compound / substitution / pipe / redirect / exec-or-write-flag — deny
+	else
+		# Single simple command: allowlist its leading read-only verb. git
+		# mutating verbs (commit/push/add/reset/...) are excluded — only read
+		# subcommands listed. sed/awk/jq/yq excluded (write modes: sed -i,
+		# sed -n 'w', awk redirects). `rg` excluded too (--pre/--hostname-bin
+		# exec — #191 r2); subagents use the Grep TOOL (unaffected by this
+		# Bash-only hook) or `grep`, plus the Read tool + git diff.
+		# NB: `git grep` is intentionally NOT here — it has
+		# --open-files-in-pager[=<cmd>] which execs a pager (same exec-flag
+		# class as rg --pre, #191 r2). Plain `grep` (no such flag) covers
+		# search. git diff's `-O<orderfile>` (read) is fine — only --output
+		# writes, and that's screened above.
+		for _ro in \
+			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame)' \
+			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep'; do
+			if match_cmd_at_anchor "$_ro" "$CMD"; then
+				exit 0
+			fi
+		done
+	fi
 fi
 
 # Inline-sentinel bypass.
