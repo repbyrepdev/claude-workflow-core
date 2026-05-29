@@ -30,3 +30,9 @@ After running, the sentinel is empty + every diagnostic file referenced has been
 - **Many same-(hook, reason) entries from a single bats run** → `/ack` (one tool call clears them all)
 - **One unfamiliar ack you need to dig into** → individual `Read <per-file diagnostic>` (preserves fine-grained surfacing)
 - **Mid-pipeline blocker you need to understand fully** → per-file Read (don't batch-skip)
+
+## Auto-continue
+
+- **Sentinel cleared, was mid-pipeline** → return to the blocked action and retry it (the ack was the blocker; the underlying gate already passed or the finding is now acknowledged).
+- **Sentinel cleared, entries were bats test side-effects** → no further action; resume normal work.
+- **An entry needs deep inspection** → do NOT batch-clear; `Read` that entry's per-file diagnostic individually first, then fix its root cause before retrying.

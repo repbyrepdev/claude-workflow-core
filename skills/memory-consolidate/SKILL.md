@@ -132,3 +132,9 @@ Run the skill to produce concrete proposals.
 - Proposed merges preserve all information
 - User approval gate explicit
 - Memory-index-valid hook clean post-merge
+
+## Auto-continue
+
+- **Candidates identified** → present each merge for per-candidate user approval; never auto-merge.
+- **Merge approved** → write the target BEFORE deleting sources; re-run the memory-index-valid hook to confirm integrity; update the MEMORY.md index.
+- **Consolidation would drop below ~5 memories** → pause and reconsider; that usually signals over-aggressive merging.

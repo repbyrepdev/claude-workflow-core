@@ -33,3 +33,9 @@ Sub-issue title + body path are passed as paired flags (`--sub-title` /
 ## Why a wrapper
 
 Epic creation is a 1-parent + N-sub multi-step flow where partial failure can leave orphan issues. The wrapper reduces that risk via upfront sub-body-file validation + explicit hard-fail on link-verification errors — best-effort caller-facing atomicity, not GitHub-side transactional rollback.
+
+## Auto-continue
+
+- **Epic + subs created + linked** → report parent + sub numbers. If the operator named a first sub to work, assign `@me` + branch `feat/vX.Y/<sub>-…`; otherwise leave for pickup.
+- **`addSubIssue` failed mid-loop (rc=2)** → the wrapper names the partial-state parent; verify which subs linked + clean up orphans before retrying.
+- **Sub-body file missing (upfront rc=2)** → no github mutation happened; fix the body path + re-run.
