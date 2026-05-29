@@ -97,16 +97,28 @@ EOF
 )"
 ```
 
-When the brainstorm later becomes actionable, convert:
+When the brainstorm later becomes actionable, convert with the `plan-me`
+label so CodeRabbit auto-plans an epic+sub-issue breakdown for the chain
+described in epic #175 (brainstorm → cr-plan → epic+subs → ship-pr-cycle):
 
 ```bash
-# Open a new task/feature issue that references the brainstorm
+# Open a new task/feature issue that references the brainstorm.
+# The `plan-me` label triggers CR to post a sub-issue breakdown plan in
+# the new issue thread. The cr-plan skill then parses that plan into an
+# epic + subs (see github-epic-creation skill). ship-pr-cycle picks up
+# the highest-priority sub automatically.
 gh issue create --title "<action>" \
+  --label plan-me \
   --body "Implements decision from brainstorm #<N>. Closes #<N> (discussion resolved)."
-# ai-triage will auto-apply priority:* + area:* based on the body.
-# Then close the original brainstorm issue
+# ai-triage applies priority:* + area:* server-side based on the body;
+# plan-me is set explicitly at create-time so CR sees it immediately.
+# Then close the original brainstorm issue.
 gh issue close <N> --comment "Resolved — implementation tracked in #<new>."
 ```
+
+If the brainstorm's decision is straightforward and doesn't need CR
+planning (e.g. a one-line fix), omit `--label plan-me` — the operator
+or Claude can implement directly.
 
 ## Don'ts
 
