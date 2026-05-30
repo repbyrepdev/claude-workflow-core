@@ -1,16 +1,17 @@
 #!/usr/bin/env bats
-# covers: skills/deep-audit/SKILL.md skills/github-pr-review/SKILL.md
+# covers: skills/deep-audit/SKILL.md skills/github-pr-review/SKILL.md skills/git-commit/run.sh
 #
 # v0.30.H (#196 slice 1): deep-audit + github-pr-review are MODEL-DRIVEN skills
-# that commit fixes. Their only skill-bypass-guard-blocked call is `git commit`
-# (the guard blocks exactly: git commit, gh pr create, gh issue create,
-# gh pr merge — see hooks/skill-bypass-guard.sh). The #196 "add a run.sh
-# wrapper" framing was over-generalized: a thin per-skill run.sh cannot
+# that commit fixes. Their only relevant skill-bypass-guard-blocked call is
+# `git commit` (the guard blocks several high-risk verbs — `git commit` among
+# them; see hooks/skill-bypass-guard.sh for the full set). The #196 "add a
+# run.sh wrapper" framing was over-generalized: a thin per-skill run.sh cannot
 # propagate SKILL_WRAPPER=1 to the model's own main-thread tool calls (the
 # guard honors it only as the wrapper subprocess's env OR a command prefix).
 # The genuinely-additive, runtime-correct fix is routing `git commit` through
-# the EXISTING git-commit wrapper, which already exports SKILL_WRAPPER=1. This
-# test locks that routing in both SKILL.md.
+# the EXISTING git-commit wrapper, which already sets SKILL_WRAPPER=1 as a
+# command prefix on its git commit. This test locks that routing in both
+# SKILL.md.
 
 setup() {
 	REPO="$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)"
