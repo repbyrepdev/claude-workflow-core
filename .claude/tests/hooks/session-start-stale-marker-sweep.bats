@@ -7,7 +7,9 @@
 # reachable marker and NEVER acting on a non-git dir or a for-each-ref failure.
 # Covers gaps T6/T7/T8/T11/T17 + the missing-marker-dir early return + CR-SFH
 # fix #1 (hex-validate before for-each-ref) + CR-SFH #2 (for-each-ref FAILURE
-# is fail-closed-keep, never mass-rm) + the rm-failure WARN path (T9/T15 family).
+# is fail-closed-keep, never mass-rm) + the rm-failure WARN path (T9/T15 family)
+# + the filename-not-contents invariant (an unreadable marker file is handled
+# identically — the sweep keys on the basename SHA, never the file contents).
 #
 # MARKER_SWEEP_PEER_ROOTS is pinned to a non-existent dir per test so the real
 # peer-repo defaults ($HOME/media-server:...) are never swept.
@@ -165,4 +167,23 @@ _run() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"failed to rm"* ]]
 	_has "$orphan"
+}
+
+@test "unreadable marker file: removed-if-orphan, kept-if-reachable (keys on filename, not contents)" {
+	# The sweep derives the SHA from the marker FILENAME (basename) and never
+	# reads the file contents, so a marker whose file is unreadable (chmod 000)
+	# must behave identically to a readable one. This locks that invariant: a
+	# future refactor that began reading contents would break on unreadable
+	# markers. (rm needs dir-write perm, not file-read perm, so the orphan is
+	# still removed; the reachable one is still kept.)
+	local head orphan
+	head=$(git -C "$TEST_TMP" rev-parse HEAD)
+	orphan=$(_orphan_sha)
+	_marker "$head"
+	_marker "$orphan"
+	chmod 000 "$MDIR/$head.phase1-directive.txt" "$MDIR/$orphan.phase1-directive.txt"
+	_run
+	[ "$status" -eq 0 ]
+	_has "$head"
+	[ ! -f "$MDIR/$orphan.phase1-directive.txt" ]
 }
