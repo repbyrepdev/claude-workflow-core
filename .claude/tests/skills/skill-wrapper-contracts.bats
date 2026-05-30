@@ -42,9 +42,15 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	[[ $output == *"Usage"* ]] || [[ $output == *"usage"* ]]
 }
 
-@test "cr-plan: unknown subcommand exits 2" {
+@test "cr-plan: invalid/missing issue arg exits 2 with usage" {
+	# A single non-flag token leaves issue="${2:-}" empty, so the missing-args
+	# guard (run.sh ~L74) fires the Usage exit-2 path. (The unknown-subcommand
+	# *) branch needs a valid issue number, which pulls in gh — not hermetically
+	# testable, so this locks the missing/invalid-issue-arg guard it actually
+	# reaches, pinned by the Usage message.)
 	run bash "$(_wrapper cr-plan)" definitely-not-a-real-subcommand
 	[ "$status" -eq 2 ]
+	[[ $output == *"Usage"* ]] || [[ $output == *"usage"* ]]
 }
 
 @test "cr-resolve-conflict: --pr with no value exits 2" {
@@ -62,6 +68,9 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 @test "github-epic-creation: --title with no value exits 2" {
 	run bash -c "cd '$REPO' && bash '$(_wrapper github-epic-creation)' --title"
 	[ "$status" -eq 2 ]
+	# Pin the --title arg-guard specifically (a downstream empty-TITLE check
+	# also exits 2, so without this the test would pass even if the guard went).
+	[[ $output == *"--title"* ]]
 }
 
 @test "prove-yourself-audit: --help exits 0" {
@@ -70,6 +79,8 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 }
 
 @test "prove-yourself-audit: unknown action exits 2" {
-	run bash "$(_wrapper prove-yourself-audit)" not-a-real-action
+	run bash -c "cd '$REPO' && bash '$(_wrapper prove-yourself-audit)' not-a-real-action"
 	[ "$status" -eq 2 ]
+	# Pin the unknown-action *) branch (distinct from the missing-jq exit 2).
+	[[ $output == *"unknown subcommand"* ]]
 }
