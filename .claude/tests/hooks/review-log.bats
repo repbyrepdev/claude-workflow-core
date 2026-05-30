@@ -54,12 +54,15 @@ _enable_agents() {
 	mkdir -p "$TEST_TMP/.claude"
 	cp "$REAL_CONFIG" "$TEST_TMP/.claude/review-config.yml"
 }
-# Add a feature commit with a .sh change so `list-phase1-agents.sh main`
-# yields a non-empty agent set (code paths, not skipped test/doc-only).
+# Add a feature commit with a .sh change ON A FEATURE BRANCH so the base
+# `main` is preserved as a real diff base — otherwise `main..HEAD` is empty,
+# `list-phase1-agents.sh main` returns nothing, and the round-complete tests
+# silently skip (pr-test-analyzer #180-PR3 r1: the headline tests were inert).
 _make_diff() {
 	(
 		set -e
 		cd "$TEST_TMP"
+		git checkout -q -b feat
 		mkdir -p scripts
 		printf '#!/bin/bash\necho hi\n' >scripts/dummy.sh
 		git add scripts/dummy.sh
