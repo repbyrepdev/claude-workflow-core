@@ -543,25 +543,24 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 		# EVERY create regardless of body validity (and could mask a real
 		# failure). Fetch the live PR body + labels and pass them so the gate
 		# reflects the actual lint result.
-		_lint_body=$(mktemp)
-		# One round-trip for both fields, then derive locally. The
-		# `|| _pr_meta=""` guard is required: a bare `var=$(failing-cmd)` aborts
-		# under set -e, so capture-then-test keeps a gh failure on the warn+skip
-		# path.
+		# This is an advisory post-create probe (the PR already exists; remote
+		# pr-lint.yml is authoritative), so EVERY local-prep failure — mktemp,
+		# gh, jq — must warn+skip, never abort the wrapper under set -e (#211 CR).
+		# Each step is guarded; a bare `var=$(failing-cmd)` would abort. `.body
+		# // ""` also maps a null (empty) body to an empty file, not the literal
+		# string "null" (else pr-lint greps fabricated content).
+		_lint_body=$(mktemp 2>/dev/null) || _lint_body=""
 		_pr_meta=$(gh pr view "$PR_NUM" --json body,labels 2>/dev/null) || _pr_meta=""
-		if [ -n "$_pr_meta" ]; then
-			# `.body // ""` so a null (empty) PR body becomes an empty file, not
-			# the literal string "null" — otherwise pr-lint greps fabricated
-			# content + misattributes the failure (silent-failure-hunter #211).
-			printf '%s' "$_pr_meta" | jq -r '.body // ""' >"$_lint_body"
-			_lint_labels_json=$(printf '%s' "$_pr_meta" | jq -c '[.labels[].name]')
+		if [ -n "$_lint_body" ] && [ -n "$_pr_meta" ] &&
+			printf '%s' "$_pr_meta" | jq -r '.body // ""' >"$_lint_body" 2>/dev/null &&
+			_lint_labels_json=$(printf '%s' "$_pr_meta" | jq -c '[.labels[].name]' 2>/dev/null); then
 			if ! "$LINT" --body "$_lint_body" --labels "$_lint_labels_json"; then
 				echo "⚠ pr-lint full gate failed on #$PR_NUM — fix the body/labels to satisfy the remote gate." >&2
 			fi
 		else
-			echo "⚠ could not fetch PR metadata for #$PR_NUM — skipping post-labeler pr-lint probe (remote pr-lint.yml is authoritative)." >&2
+			echo "⚠ could not prepare PR metadata for #$PR_NUM (mktemp/gh/jq) — skipping post-labeler pr-lint probe (remote pr-lint.yml is authoritative)." >&2
 		fi
-		rm -f "$_lint_body"
+		if [ -n "$_lint_body" ]; then rm -f "$_lint_body"; fi
 	else
 		echo "⚠ skipping post-labeler pr-lint — no area:* label on PR (labeler failed AND none passed via --label)." >&2
 	fi
