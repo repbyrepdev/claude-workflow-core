@@ -184,3 +184,20 @@ _run() {
 	[ "$status" -eq 0 ]
 	_has "$orphan"
 }
+
+@test "the fire-resume record is appended to ship-cycle-resume.jsonl with sha + branch" {
+	# hook lines 50-51 — the documented core behavior (#3): append a
+	# {action:"fire-resume"} record carrying the HEAD sha + branch (jq-escaped,
+	# not interpolated). Every other test checks only the sweep; this locks the
+	# forensic log itself so a broken/removed append can't pass silently.
+	local sha branch
+	sha=$(git -C "$TEST_TMP" rev-parse HEAD)
+	branch=$(git -C "$TEST_TMP" rev-parse --abbrev-ref HEAD)
+	_run
+	[ "$status" -eq 0 ]
+	local logf="$TEST_TMP/.claude/logs/ship-cycle-resume.jsonl"
+	[ -f "$logf" ]
+	run jq -e --arg s "$sha" --arg b "$branch" \
+		'select(.action=="fire-resume" and .sha==$s and .branch==$b)' "$logf"
+	[ "$status" -eq 0 ]
+}

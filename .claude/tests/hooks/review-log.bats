@@ -286,3 +286,51 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[[ $output == *"NEXT STEPS"* ]]
 	[[ $output != *"GRADUATED"* ]]
 }
+
+@test "phase2 happy path appends a {phase:2} record (the pre-push-gate contract)" {
+	# `review-log.sh phase2 <findings> <status>` is fired by local-review.sh and
+	# the resulting phase==2 record is consumed by pre-push-pipeline-gate.sh to
+	# authorize push. Lock the append shape so a renamed/dropped phase/findings/
+	# status field can't silently break push gating.
+	_init_repo
+	local sha
+	sha=$(git -C "$TEST_TMP" rev-parse HEAD)
+	_log phase2 0 clean
+	[ "$status" -eq 0 ]
+	local logf="$TEST_TMP/.claude/review-log/${sha}.jsonl"
+	[ -f "$logf" ]
+	run jq -e 'select(.phase==2 and .findings==0 and .status=="clean")' "$logf"
+	[ "$status" -eq 0 ]
+}
+
+@test "phase2 with a non-numeric findings count fails loud (no silent skip)" {
+	# Unlike phase1, phase2 does NO numeric guard — $2 goes straight to jq
+	# --argjson. A non-numeric count makes jq abort under set -e, so the run
+	# fails non-zero rather than silently appending a malformed/absent line.
+	_init_repo
+	_log phase2 abc clean
+	[ "$status" -ne 0 ]
+}
+
+@test "accept-with-reason writes a kind=accept-with-reason record; empty reason → exit 2" {
+	_init_repo
+	local sha
+	sha=$(git -C "$TEST_TMP" rev-parse HEAD)
+	# Pass the multi-word reason as a single single-quoted arg (the _log helper
+	# word-splits $*, which would break a spaced reason).
+	run bash -c "cd '$TEST_TMP' && bash '$HOOK' accept-with-reason 'simplifier vs comment-analyzer disagreed - explanatory preferred'"
+	[ "$status" -eq 0 ]
+	local logf="$TEST_TMP/.claude/review-log/${sha}.jsonl"
+	run jq -e 'select(.kind=="accept-with-reason" and .phase==1)' "$logf"
+	[ "$status" -eq 0 ]
+	# an empty reason is refused — no silent no-reason override.
+	_log accept-with-reason
+	[ "$status" -eq 2 ]
+}
+
+@test "unknown action → exit 2 (a typo'd action is not silently ignored)" {
+	_init_repo
+	_log phase3 1 code-reviewer 0 ok
+	[ "$status" -eq 2 ]
+	[[ $output == *"Unknown action"* ]]
+}
