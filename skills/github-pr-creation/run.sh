@@ -549,7 +549,10 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 		# capture-then-test keeps a gh failure on the warn+skip path.
 		_pr_meta=$(gh pr view "$PR_NUM" --json body,labels 2>/dev/null) || _pr_meta=""
 		if [ -n "$_pr_meta" ]; then
-			printf '%s' "$_pr_meta" | jq -r '.body' >"$_lint_body"
+			# `.body // ""` so a null (empty) PR body becomes an empty file, not
+			# the literal string "null" — otherwise pr-lint greps fabricated
+			# content + misattributes the failure (silent-failure-hunter #211).
+			printf '%s' "$_pr_meta" | jq -r '.body // ""' >"$_lint_body"
 			_lint_labels_json=$(printf '%s' "$_pr_meta" | jq -c '[.labels[].name]')
 			if ! "$LINT" --body "$_lint_body" --labels "$_lint_labels_json"; then
 				echo "⚠ pr-lint full gate failed on #$PR_NUM — fix the body/labels to satisfy the remote gate." >&2
