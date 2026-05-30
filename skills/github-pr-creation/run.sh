@@ -537,9 +537,24 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 	fi
 	if [ "$_pr_has_area" = "1" ]; then
 		echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
-		if ! "$LINT" "$PR_NUM"; then
-			echo "⚠ pr-lint full gate failed on #$PR_NUM — push a fix-up commit to satisfy the remote gate." >&2
+		# pr-lint-check.sh takes `--body <path> --labels <json-array>`, NOT a
+		# positional PR number (#211): `"$LINT" "$PR_NUM"` always errored with
+		# "unknown flag: <PR#>", so this gate emitted a false-alarm warning on
+		# EVERY create regardless of body validity (and could mask a real
+		# failure). Fetch the live PR body + labels and pass them so the gate
+		# reflects the actual lint result.
+		_lint_body=$(mktemp)
+		_lint_meta_rc=0
+		gh pr view "$PR_NUM" --json body --jq '.body' >"$_lint_body" 2>/dev/null || _lint_meta_rc=$?
+		_lint_labels_json=$(gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]' 2>/dev/null) || _lint_meta_rc=$?
+		if [ "$_lint_meta_rc" -eq 0 ]; then
+			if ! "$LINT" --body "$_lint_body" --labels "$_lint_labels_json"; then
+				echo "⚠ pr-lint full gate failed on #$PR_NUM — fix the body/labels to satisfy the remote gate." >&2
+			fi
+		else
+			echo "⚠ could not fetch PR body/labels for #$PR_NUM (gh rc=$_lint_meta_rc) — skipping post-labeler pr-lint probe (remote pr-lint.yml is authoritative)." >&2
 		fi
+		rm -f "$_lint_body"
 	else
 		echo "⚠ skipping post-labeler pr-lint — no area:* label on PR (labeler failed AND none passed via --label)." >&2
 	fi
