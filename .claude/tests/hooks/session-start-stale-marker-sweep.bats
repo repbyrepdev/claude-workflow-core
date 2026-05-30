@@ -121,6 +121,22 @@ _run() {
 	[ "$status" -eq 0 ]
 }
 
+@test "non-regular entries matching the glob are skipped by [ -f ] (dir + dangling symlink)" {
+	# hook line 34 (`[ -f "$f" ] || continue`) must skip anything that is not a
+	# regular file so the glob can't feed a directory / FIFO / dangling symlink
+	# into for-each-ref + rm. Drop two non-regular entries whose names look like
+	# valid-hex markers; both must survive untouched with no error. (Even if the
+	# [ -f ] test were removed, a dir fails `rm -f` and a dangling symlink's hex
+	# basename hits the CR-SFH #2 keep — so survival is the right assertion.)
+	mkdir -p "$MDIR/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.phase1-directive.txt"
+	ln -s /nonexistent-target "$MDIR/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.phase1-directive.txt"
+	_run
+	[ "$status" -eq 0 ]
+	# directory skipped (still present); dangling symlink skipped (still present).
+	[ -d "$MDIR/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.phase1-directive.txt" ]
+	[ -L "$MDIR/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.phase1-directive.txt" ]
+}
+
 @test "missing marker dir → early return, no error (hooks line 28 guard)" {
 	# A repo that never ran a ship-cycle has no marker dir at all. hooks line 28
 	# (`[ -d "$marker_dir" ] || return 0`) must short-circuit so the sweep
