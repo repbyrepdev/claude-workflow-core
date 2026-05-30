@@ -544,9 +544,10 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 		# failure). Fetch the live PR body + labels and pass them so the gate
 		# reflects the actual lint result.
 		_lint_body=$(mktemp)
-		# One round-trip for both fields, then derive locally. The `|| _meta=""`
-		# guard is required: a bare `var=$(failing-cmd)` aborts under set -e, so
-		# capture-then-test keeps a gh failure on the warn+skip path.
+		# One round-trip for both fields, then derive locally. The
+		# `|| _pr_meta=""` guard is required: a bare `var=$(failing-cmd)` aborts
+		# under set -e, so capture-then-test keeps a gh failure on the warn+skip
+		# path.
 		_pr_meta=$(gh pr view "$PR_NUM" --json body,labels 2>/dev/null) || _pr_meta=""
 		if [ -n "$_pr_meta" ]; then
 			# `.body // ""` so a null (empty) PR body becomes an empty file, not
