@@ -5,8 +5,9 @@
 # stale-marker sweep. The sweep removes phase1-directive markers whose SHA is
 # unreachable from any local ref (abandoned branches), while NEVER removing a
 # reachable marker and NEVER acting on a non-git dir or a for-each-ref failure.
-# Covers gaps T6/T7/T8/T11/T17 + CR-SFH fix #1 (hex-validate before for-each-ref)
-# + the rm-failure WARN path (T9/T15 family).
+# Covers gaps T6/T7/T8/T11/T17 + the missing-marker-dir early return + CR-SFH
+# fix #1 (hex-validate before for-each-ref) + CR-SFH #2 (for-each-ref FAILURE
+# is fail-closed-keep, never mass-rm) + the rm-failure WARN path (T9/T15 family).
 #
 # MARKER_SWEEP_PEER_ROOTS is pinned to a non-existent dir per test so the real
 # peer-repo defaults ($HOME/media-server:...) are never swept.
@@ -36,8 +37,6 @@ setup() {
 teardown() {
 	# shellcheck disable=SC2164
 	cd /tmp 2>/dev/null || true
-	# A test may chmod the marker dir read-only (rm-fail path) — restore write
-	# so the cleanup rm -rf succeeds.
 	# Restore write perms first (a test may chmod the marker dir read-only).
 	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ]; then
 		chmod -R u+w "$TEST_TMP" 2>/dev/null || true
@@ -78,9 +77,35 @@ _run() {
 	[ ! -f "$MDIR/$orphan.phase1-directive.txt" ]
 }
 
+@test "valid-hex but nonexistent SHA: for-each-ref errors → marker KEPT, never mass-rm'd (CR-SFH #2)" {
+	# CR-SFH #2: when for-each-ref FAILS (corrupt repo, perm denied, or — as
+	# here — a valid-hex basename that is not a real object) the hook must WARN
+	# + KEEP the marker (fail-closed), NEVER treat rc!=0 as "unreachable → rm".
+	# deadbeef… passes the hex-validate guard (CR-SFH #1) so it reaches
+	# for-each-ref, which errors rc=129 (no such commit). This locks the single
+	# most safety-critical property: an unreadable ref-db must not mass-delete.
+	# Complements T6 (orphan → for-each-ref SUCCEEDS empty → removed): together
+	# they pin the reachable / unreachable-success / error trichotomy.
+	_marker "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"WARN for-each-ref"* ]]
+	[[ $output == *"keeping marker"* ]]
+	_has "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+}
+
 @test "empty marker dir → no error, nothing removed (T8 nullglob)" {
 	# Dir exists but holds no markers — the glob must not expand to a literal
 	# and error; the [ -f ] guard skips it.
+	_run
+	[ "$status" -eq 0 ]
+}
+
+@test "missing marker dir → early return, no error (hooks line 28 guard)" {
+	# A repo that never ran a ship-cycle has no marker dir at all. hooks line 28
+	# (`[ -d "$marker_dir" ] || return 0`) must short-circuit so the sweep
+	# no-ops instead of erroring on the missing dir under set -euo pipefail.
+	rm -rf "$MDIR"
 	_run
 	[ "$status" -eq 0 ]
 }
