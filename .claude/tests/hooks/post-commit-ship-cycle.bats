@@ -124,6 +124,23 @@ _run() {
 	_has "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 }
 
+@test "real object that is not a commit (blob sha): for-each-ref errors → marker KEPT (CR-SFH #5)" {
+	# A blob sha is a REAL 40-hex object (passes the hex guard + exists in the
+	# object db) but `for-each-ref --contains` rejects it ("is a blob, not a
+	# commit", rc!=0). Distinct from the deadbeef invalid-object case: proves
+	# the fail-closed keep also covers a real-but-non-commit object (corrupt /
+	# perms / non-commit causes all funnel through the same rc!=0 branch).
+	local blob
+	echo "i am a blob, not a commit" >"$TEST_TMP/blob-src.txt"
+	blob=$(git -C "$TEST_TMP" hash-object -w "$TEST_TMP/blob-src.txt")
+	_marker "$blob"
+	_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"WARN for-each-ref"* ]]
+	[[ $output == *"keeping marker"* ]]
+	_has "$blob"
+}
+
 @test "non-hex marker basename is skipped before for-each-ref (CR-SFH #5)" {
 	_marker "notahexsha-editor-swap"
 	_run

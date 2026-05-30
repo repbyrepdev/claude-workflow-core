@@ -239,3 +239,30 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[[ $output == *"NEXT STEPS"* ]]
 	[[ $output != *"GRADUATED"* ]]
 }
+
+@test "round-complete with an 'errored' agent blocks graduation even at 0 findings (ANY_ERR)" {
+	# hook lines 255/269: round-complete counts status=='errored' agents
+	# (ANY_ERR). A round where every agent reports 0 findings but one is
+	# 'errored' is NOT clean → NEXT STEPS, no graduation. Locks that an errored
+	# agent (crash/timeout/unparseable) is never mistaken for a clean pass.
+	_init_repo
+	_enable_agents
+	_make_diff
+	local expected
+	expected=$(cd "$TEST_TMP" && "$HOOKS_DIR/list-phase1-agents.sh" main 2>/dev/null | sort -u)
+	[ -n "$expected" ] || skip "list-phase1-agents.sh returned no agents for the fixture diff"
+	local ag first=1
+	while IFS= read -r ag; do
+		[ -n "$ag" ] || continue
+		if [ "$first" -eq 1 ]; then
+			_log phase1 1 "$ag" 0 errored
+			first=0
+		else
+			_log phase1 1 "$ag" 0 ok
+		fi
+		[ "$status" -eq 0 ]
+	done <<<"$expected"
+	# 0 findings everywhere but one errored → not clean.
+	[[ $output == *"NEXT STEPS"* ]]
+	[[ $output != *"GRADUATED"* ]]
+}
