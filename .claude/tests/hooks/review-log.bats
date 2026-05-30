@@ -111,6 +111,26 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[[ $output == *"round must be a positive integer"* ]]
 }
 
+@test "extra positional args beyond the 5 are ignored, not an error" {
+	# The hook reads $2..$5 positionally; a stray 6th arg must be ignored, not
+	# misparsed into a failure. Locks the positional-arg contract.
+	_init_repo
+	_enable_agents
+	_log phase1 1 code-reviewer 0 ok ignored-sixth-arg
+	[ "$status" -eq 0 ]
+}
+
+@test "review-log path occupied by a file → fail-loud (mkdir -p refuses)" {
+	# If .claude/review-log is a FILE (not a dir), `mkdir -p "$LOG_DIR"` (line
+	# 37) fails under set -euo pipefail → the hook aborts non-zero rather than
+	# silently logging nowhere. Locks fail-loud on a broken log path.
+	_init_repo
+	mkdir -p "$TEST_TMP/.claude"
+	: >"$TEST_TMP/.claude/review-log"
+	_log phase1 1 code-reviewer 0 ok
+	[ "$status" -ne 0 ]
+}
+
 @test "unknown agent name is rejected (fabrication guard, v4.15.B)" {
 	_init_repo
 	_enable_agents
