@@ -537,9 +537,30 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 	fi
 	if [ "$_pr_has_area" = "1" ]; then
 		echo "=== Post-labeler pr-lint full gate for #$PR_NUM ==="
-		if ! "$LINT" "$PR_NUM"; then
-			echo "⚠ pr-lint full gate failed on #$PR_NUM — push a fix-up commit to satisfy the remote gate." >&2
+		# pr-lint-check.sh takes `--body <path> --labels <json-array>`, NOT a
+		# positional PR number (#211): `"$LINT" "$PR_NUM"` always errored with
+		# "unknown flag: <PR#>", so this gate emitted a false-alarm warning on
+		# EVERY create regardless of body validity (and could mask a real
+		# failure). Fetch the live PR body + labels and pass them so the gate
+		# reflects the actual lint result.
+		# This is an advisory post-create probe (the PR already exists; remote
+		# pr-lint.yml is authoritative), so EVERY local-prep failure — mktemp,
+		# gh, jq — must warn+skip, never abort the wrapper under set -e (#211 CR).
+		# Each step is guarded; a bare `var=$(failing-cmd)` would abort. `.body
+		# // ""` also maps a null (empty) body to an empty file, not the literal
+		# string "null" (else pr-lint greps fabricated content).
+		_lint_body=$(mktemp 2>/dev/null) || _lint_body=""
+		_pr_meta=$(gh pr view "$PR_NUM" --json body,labels 2>/dev/null) || _pr_meta=""
+		if [ -n "$_lint_body" ] && [ -n "$_pr_meta" ] &&
+			printf '%s' "$_pr_meta" | jq -r '.body // ""' >"$_lint_body" 2>/dev/null &&
+			_lint_labels_json=$(printf '%s' "$_pr_meta" | jq -c '[.labels[].name]' 2>/dev/null); then
+			if ! "$LINT" --body "$_lint_body" --labels "$_lint_labels_json"; then
+				echo "⚠ pr-lint full gate failed on #$PR_NUM — fix the body/labels to satisfy the remote gate." >&2
+			fi
+		else
+			echo "⚠ could not prepare PR metadata for #$PR_NUM (mktemp/gh/jq) — skipping post-labeler pr-lint probe (remote pr-lint.yml is authoritative)." >&2
 		fi
+		if [ -n "$_lint_body" ]; then rm -f "$_lint_body"; fi
 	else
 		echo "⚠ skipping post-labeler pr-lint — no area:* label on PR (labeler failed AND none passed via --label)." >&2
 	fi
