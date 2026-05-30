@@ -1,6 +1,7 @@
 ---
 name: ack
 description: Batch-acknowledge every pending hook-ack entry in one Read. Pairs with v4.30.D #800 PostToolUse Read auto-clear when target is the sentinel itself.
+disallowed-tools: Edit Write MultiEdit NotebookEdit Bash
 ---
 
 # ack — batch hook-ack acknowledgment
