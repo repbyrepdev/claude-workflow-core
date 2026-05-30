@@ -249,6 +249,12 @@ _run() {
 }
 
 @test "rm failure on a stale marker is surfaced + marker kept, not silently dropped (T9/T15)" {
+	# This test forces rm to fail via DAC perms (chmod 555 on the marker dir).
+	# UID 0 bypasses DAC, so under root rm would succeed and the assertions
+	# below would break — skip rather than false-fail in a root CI container.
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "#180 rm-failure path relies on DAC perms, which root (uid 0) bypasses"
+	fi
 	# An unreachable marker in a non-writable dir can't be rm'd; the hook must
 	# WARN (not silently succeed) and leave the marker in place (cleaned counter
 	# only increments on a successful rm).
