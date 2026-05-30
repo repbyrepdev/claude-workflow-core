@@ -94,6 +94,16 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[[ $output == *"findings_count must be a non-negative integer"* ]]
 }
 
+@test "negative findings_count is rejected (the ^[0-9]+$ guard excludes the sign)" {
+	# The regex is non-negative-only; a leading '-' must be refused, not parsed
+	# as a count or a flag. Locks the 'non-negative' half of the contract that
+	# the abc-case (non-numeric) does not exercise.
+	_init_repo
+	_log phase1 1 code-reviewer -1 ok
+	[ "$status" -eq 2 ]
+	[[ $output == *"non-negative integer"* ]]
+}
+
 @test "round must be a positive integer → exit 2" {
 	_init_repo
 	_log phase1 0 code-reviewer 0 ok
@@ -190,6 +200,13 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[ ! -f "$marker" ]
 	# clean round → graduation directive emitted.
 	[[ $output == *"GRADUATED"* ]]
+	# state-transition is persisted, not just printed: the per-sha review-log
+	# actually recorded this round's agent entries (phase1/round1).
+	local logf
+	logf="$TEST_TMP/.claude/review-log/$(git -C "$TEST_TMP" rev-parse HEAD).jsonl"
+	[ -f "$logf" ]
+	run jq -e 'select(.phase==1 and .round==1 and .findings==0)' "$logf"
+	[ "$status" -eq 0 ]
 }
 
 @test "round-complete with findings>0 clears marker but emits NEXT STEPS, no graduation (T13)" {

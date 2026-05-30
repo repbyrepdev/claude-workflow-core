@@ -98,6 +98,21 @@ _run() {
 	_has "$first"
 }
 
+@test "marker sha reachable from MULTIPLE refs is kept (for-each-ref returns >1 ref)" {
+	# A sha contained by several refs → for-each-ref --contains emits multiple
+	# refnames (non-empty); the hook's `[ -z "$_ref_out" ]` emptiness check is
+	# ref-count-agnostic → kept. Confirms multi-ref reachability isn't mistaken
+	# for stale.
+	local c1
+	c1=$(git -C "$TEST_TMP" rev-parse HEAD)
+	git -C "$TEST_TMP" branch b2                     # b2 also contains c1
+	git -C "$TEST_TMP" commit --allow-empty -q -m c2 # advance HEAD past c1
+	_marker "$c1"
+	_run
+	[ "$status" -eq 0 ]
+	_has "$c1"
+}
+
 @test "valid-hex but nonexistent sha: for-each-ref errors → marker KEPT (CR-SFH #5)" {
 	# A valid-hex basename that is not a real object errors for-each-ref
 	# (rc!=0); the hook must WARN + KEEP (fail-closed), never mass-rm.
