@@ -9,7 +9,10 @@
 # fix #1 (hex-validate before for-each-ref) + CR-SFH #2 (for-each-ref FAILURE
 # is fail-closed-keep, never mass-rm) + the rm-failure WARN path (T9/T15 family)
 # + the filename-not-contents invariant (an unreadable marker file is handled
-# identically — the sweep keys on the basename SHA, never the file contents).
+# identically — the sweep keys on the basename SHA, never the file contents)
+# + the positive peer-repo sweep (the peer-loop body, otherwise masked by the
+# current-repo call) + the "cleared N stale marker(s)" success summary + the
+# SESSION_START_MARKER_SWEEP_SKIP escape hatch + the self-as-peer dedup guard.
 #
 # MARKER_SWEEP_PEER_ROOTS is pinned to a non-existent dir per test so the real
 # peer-repo defaults ($HOME/media-server:...) are never swept.
@@ -62,12 +65,24 @@ _orphan_sha() {
 	git -C "$TEST_TMP" reset --hard -q HEAD~1
 	printf '%s' "$s"
 }
+# Make a fresh git repo at $1 with one commit (a "peer" repo fixture).
+_init_repo() {
+	(
+		set -e
+		mkdir -p "$1"
+		cd "$1"
+		git init -q
+		git config user.email t@t.t
+		git config user.name t
+		git commit --allow-empty -q -m init
+	)
+}
 # Run the sweep with cwd = the tmp repo + peer roots pinned to a missing dir.
 _run() {
 	run bash -c "cd '$TEST_TMP' && MARKER_SWEEP_PEER_ROOTS='$TEST_TMP/nopeer' bash '$HOOK'"
 }
 
-@test "reachable-sha marker kept, unreachable-sha marker removed (T6)" {
+@test "reachable-sha marker kept, unreachable-sha marker removed + summary emitted (T6)" {
 	local head orphan
 	head=$(git -C "$TEST_TMP" rev-parse HEAD)
 	orphan=$(_orphan_sha)
@@ -77,6 +92,9 @@ _run() {
 	[ "$status" -eq 0 ]
 	_has "$head"
 	[ ! -f "$MDIR/$orphan.phase1-directive.txt" ]
+	# hook line 63: the success path emits a 'cleared N stale marker(s)' summary
+	# (the operator's only positive signal). Exactly one orphan was removed.
+	[[ $output == *"cleared 1 stale marker"* ]]
 }
 
 @test "valid-hex but nonexistent SHA: for-each-ref errors → marker KEPT, never mass-rm'd (CR-SFH #2)" {
@@ -144,6 +162,53 @@ _run() {
 	[ -f "$peer/.claude/.session-state/ship-cycle/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef.phase1-directive.txt" ]
 }
 
+@test "positive peer sweep: orphan removed + reachable kept INSIDE a real git peer (peer-loop body)" {
+	# The other peer tests hit early-return guards (missing dir / non-git dir),
+	# so _sweep_repo's BODY is only ever reached for the CURRENT repo. This
+	# drives the peer code path (hook lines 78-82 → _sweep_repo) into a REAL git
+	# peer. Without it, a regression in the peer iteration/quoting (e.g. a bad
+	# split of $PEER_ROOTS or a quoting bug on $_peer) passes every other test
+	# because the current-repo call masks it. The CURRENT repo (cwd) has no
+	# markers, so the only sweeping observable here happens inside the peer.
+	local peer="$TEST_TMP/peer-git"
+	_init_repo "$peer"
+	local pmdir="$peer/.claude/.session-state/ship-cycle"
+	mkdir -p "$pmdir"
+	git -C "$peer" commit --allow-empty -q -m orphan
+	local porphan phead
+	porphan=$(git -C "$peer" rev-parse HEAD)
+	git -C "$peer" reset --hard -q HEAD~1
+	phead=$(git -C "$peer" rev-parse HEAD)
+	: >"$pmdir/$porphan.phase1-directive.txt"
+	: >"$pmdir/$phead.phase1-directive.txt"
+	run bash -c "cd '$TEST_TMP' && MARKER_SWEEP_PEER_ROOTS='$peer' bash '$HOOK'"
+	[ "$status" -eq 0 ]
+	# orphan inside the PEER removed; reachable inside the PEER kept.
+	[ ! -f "$pmdir/$porphan.phase1-directive.txt" ]
+	[ -f "$pmdir/$phead.phase1-directive.txt" ]
+	# the peer removal emits the success summary (cleaned=1 in the peer).
+	[[ $output == *"cleared 1 stale marker"* ]]
+}
+
+@test "current repo listed as its own peer: swept once, gracefully (dedup guard, hook line 80)" {
+	# hook line 80 (`[ "$_peer" = "$CURRENT_REPO" ] && continue`) skips a peer
+	# entry that equals the current repo (already swept at lines 69-71). Setting
+	# PEER_ROOTS to the current toplevel exercises that continue branch: the
+	# orphan is cleared exactly once and the run stays clean (no error, no
+	# double-fault). Locks that self-as-peer is handled, not that the redundant
+	# pass is impossible — a removed guard re-sweeps idempotently (markers
+	# already gone), so the observable contract is "one clear, no error".
+	local orphan top
+	orphan=$(_orphan_sha)
+	_marker "$orphan"
+	top=$(git -C "$TEST_TMP" rev-parse --show-toplevel)
+	run bash -c "cd '$TEST_TMP' && MARKER_SWEEP_PEER_ROOTS='$top' bash '$HOOK'"
+	[ "$status" -eq 0 ]
+	[ ! -f "$MDIR/$orphan.phase1-directive.txt" ]
+	# exactly one 'cleared' summary — the current repo is not processed twice.
+	[ "$(printf '%s\n' "$output" | grep -c 'cleared 1 stale marker')" -eq 1 ]
+}
+
 @test "empty PEER_ROOTS entries are skipped without error (T7)" {
 	local head
 	head=$(git -C "$TEST_TMP" rev-parse HEAD)
@@ -152,6 +217,19 @@ _run() {
 	run bash -c "cd '$TEST_TMP' && MARKER_SWEEP_PEER_ROOTS=':$TEST_TMP/nopeer::' bash '$HOOK'"
 	[ "$status" -eq 0 ]
 	_has "$head"
+}
+
+@test "SESSION_START_MARKER_SWEEP_SKIP=1 disables the sweep — orphan marker kept (escape hatch)" {
+	# hook lines 21-23: the documented bypass (header line 19) is the operator's
+	# only way to disable a misbehaving sweep. With it set, an otherwise-stale
+	# orphan marker must be left untouched (and the run exits 0 immediately).
+	local orphan
+	orphan=$(_orphan_sha)
+	_marker "$orphan"
+	run bash -c "cd '$TEST_TMP' && SESSION_START_MARKER_SWEEP_SKIP=1 MARKER_SWEEP_PEER_ROOTS='$TEST_TMP/nopeer' bash '$HOOK'"
+	[ "$status" -eq 0 ]
+	# sweep disabled → the stale orphan is STILL present.
+	_has "$orphan"
 }
 
 @test "rm failure on a stale marker is surfaced + marker kept, not silently dropped (T9/T15)" {
