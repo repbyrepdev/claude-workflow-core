@@ -71,6 +71,8 @@ Cardinal rule: **fix findings in the branch that's already open**. Do NOT open a
 
 Make one focused commit per logical scope (e.g., "gitignore fix + hook permissions + healthcheck additions" can all be one commit titled "PR-A: R2 verified fixes — N categories").
 
+**Commit via the git-commit skill wrapper** — `.claude/skills/git-commit/run.sh` (it sets `SKILL_WRAPPER=1` so the `git commit` passes skill-bypass-guard, and enforces Conventional Commits + the Co-Authored-By trailer). A raw `git commit` is refused by the guard with a remediation pointing here.
+
 Respect CR budget: commit locally after each round of fixes; do NOT `git push` until the user approves remote + merge. User's "push" in conversation means local commit.
 
 ## 5. Run full verification (the work actually works)

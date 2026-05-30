@@ -114,7 +114,7 @@ For each comment, in severity order:
 
 ### 4. Commit changes
 
-Use git-commit skill format. Functional fixes get separate commits, cosmetic fixes are batched:
+Commit via the **git-commit skill wrapper** — `.claude/skills/git-commit/run.sh` (it sets `SKILL_WRAPPER=1` so the `git commit` passes skill-bypass-guard, and enforces Conventional Commits + the Co-Authored-By trailer). A raw `git commit` is refused by the guard. Functional fixes get separate commits, cosmetic fixes are batched:
 
 | Change type | Strategy |
 |-------------|----------|
