@@ -159,6 +159,19 @@ _run() {
 	_has "$orphan"
 }
 
+@test "non-executable scripts/ship-pr-cycle.sh → exit 0 before sweep (line 32 -x guard)" {
+	# `[ -x "$SCRIPT" ]` is false for a present-but-non-executable file just as
+	# for a missing one (chmod -x clears all x bits, so even root's test -x is
+	# false) → exit 0 before the sweep, stale marker untouched.
+	chmod -x "$TEST_TMP/scripts/ship-pr-cycle.sh"
+	local orphan
+	orphan=$(_orphan_sha)
+	_marker "$orphan"
+	_run
+	[ "$status" -eq 0 ]
+	_has "$orphan"
+}
+
 @test "missing scripts/ship-pr-cycle.sh → exit 0 before sweep, marker untouched (line 32 guard)" {
 	# Without the orchestrator present the helper has nothing to resume; it
 	# exits 0 at the `[ -x "$SCRIPT" ]` guard BEFORE the sweep, so a stale
