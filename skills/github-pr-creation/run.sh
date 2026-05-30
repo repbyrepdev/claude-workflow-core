@@ -544,15 +544,18 @@ if [ -x "$LINT" ] && [[ $PR_NUM =~ ^[0-9]+$ ]]; then
 		# failure). Fetch the live PR body + labels and pass them so the gate
 		# reflects the actual lint result.
 		_lint_body=$(mktemp)
-		# Both fetches must succeed to run the gate; either failure → skip with
-		# a warn (a single `&&` chain, so no per-fetch rc bookkeeping).
-		if gh pr view "$PR_NUM" --json body --jq '.body' >"$_lint_body" 2>/dev/null &&
-			_lint_labels_json=$(gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]' 2>/dev/null); then
+		# One round-trip for both fields, then derive locally. The `|| _meta=""`
+		# guard is required: a bare `var=$(failing-cmd)` aborts under set -e, so
+		# capture-then-test keeps a gh failure on the warn+skip path.
+		_pr_meta=$(gh pr view "$PR_NUM" --json body,labels 2>/dev/null) || _pr_meta=""
+		if [ -n "$_pr_meta" ]; then
+			printf '%s' "$_pr_meta" | jq -r '.body' >"$_lint_body"
+			_lint_labels_json=$(printf '%s' "$_pr_meta" | jq -c '[.labels[].name]')
 			if ! "$LINT" --body "$_lint_body" --labels "$_lint_labels_json"; then
 				echo "⚠ pr-lint full gate failed on #$PR_NUM — fix the body/labels to satisfy the remote gate." >&2
 			fi
 		else
-			echo "⚠ could not fetch PR body/labels for #$PR_NUM — skipping post-labeler pr-lint probe (remote pr-lint.yml is authoritative)." >&2
+			echo "⚠ could not fetch PR metadata for #$PR_NUM — skipping post-labeler pr-lint probe (remote pr-lint.yml is authoritative)." >&2
 		fi
 		rm -f "$_lint_body"
 	else
