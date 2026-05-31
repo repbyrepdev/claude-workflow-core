@@ -253,12 +253,31 @@ if [ -n "$WALKTHROUGH_BODY" ]; then
 	# M counts both "❌ Failed" AND "⚠ Warning" rows. For merge gating we only
 	# block on hard failures — warnings are informational (GitHub's own
 	# mergeStateStatus doesn't block on CR walkthrough warnings).
-	SUMMARY_FAIL=$(echo "$WALKTHROUGH_BODY" |
-		grep -oE "❌ [0-9]+" | head -1 | grep -oE "[0-9]+" || echo "0")
-	SUMMARY_FAIL=${SUMMARY_FAIL:-0}
+	# v0.31 #230: tolerant ❌-count extraction + FAIL-CLOSED on drift. CR's
+	# summary is "🚥 Pre-merge checks | ✅ N | ❌ M"; the ❌ count can drift in
+	# spacing/markup (nbsp, no space, bold, a ❌️ variation-selector glyph). The
+	# old `grep -oE "❌ [0-9]+" || echo 0` silently reported 0 on ANY drift — the
+	# lone fail-OPEN in this gate (the PR #302 near-miss class). Extract tolerantly
+	# (❌ then a few non-digits then digits), then:
+	#   - count extracted        → use it
+	#   - ❌ marker present but no count extractable → DRIFT → fail closed (exit 1)
+	#   - no ❌ marker at all     → treat as 0 (CR omitted it ⇒ genuinely zero)
+	# `|| true`: under set -e + pipefail, the leading grep returns non-zero when
+	# there is no match — without this the assignment would abort the script
+	# before the fail-closed/lenient branch below could run.
+	SUMMARY_FAIL=$(printf '%s' "$WALKTHROUGH_BODY" |
+		grep -oE '❌[^0-9]{0,6}[0-9]+' | head -1 | grep -oE '[0-9]+' | head -1) || true
+	if [ -z "$SUMMARY_FAIL" ]; then
+		if printf '%s' "$WALKTHROUGH_BODY" | grep -q '❌'; then
+			echo "ERROR: walkthrough Pre-merge-checks body has a ❌ marker but its count is unparseable (format drift) — failing closed; cannot certify 0 failures" >&2
+			printf '%s\n' "$WALKTHROUGH_BODY" | head -20 >&2
+			exit 1
+		fi
+		SUMMARY_FAIL=0 # no ❌ marker → zero hard failures
+	fi
 	if ! [ "$SUMMARY_FAIL" -eq "$SUMMARY_FAIL" ] 2>/dev/null; then
 		echo "ERROR: walkthrough body present but ❌ N count unparseable" >&2
-		echo "$WALKTHROUGH_BODY" | head -20 >&2
+		printf '%s\n' "$WALKTHROUGH_BODY" | head -20 >&2
 		exit 1
 	fi
 	# Count warning rows in the inner "Failed checks" table (status column
