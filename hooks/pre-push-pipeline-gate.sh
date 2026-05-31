@@ -344,12 +344,25 @@ _orphan_hook_advisory() {
 	[ "${ORPHAN_HOOK_CHECK_SKIP:-0}" = "1" ] && return 0
 	local detect="$repo_root/scripts/discover-orphan-hooks.sh"
 	[ -x "$detect" ] || return 0
-	local out
-	if ! out=$("$detect" --strict 2>&1); then
+	local out rc=0
+	out=$("$detect" --strict 2>&1) || rc=$?
+	# discover-orphan-hooks exit codes: 0=clean, 1=orphans found, 2=precondition
+	# error (missing settings.json / jq / hooks dir). #228 r1: distinguish them —
+	# a tooling/precondition error must NOT be framed as "drift" with a
+	# register-hook remediation that wouldn't resolve it (misleading on a fresh
+	# clone). All paths still return 0 — the advisory never blocks the push.
+	case "$rc" in
+	0) : ;; # clean — silent
+	1)
 		echo "pre-push-pipeline-gate: hook-wiring drift (advisory — NOT blocking the push):" >&2
 		printf '%s\n' "$out" | sed 's/^/  /' >&2
 		echo "  → Run: scripts/register-hook.sh --all-auto-register" >&2
-	fi
+		;;
+	*)
+		echo "pre-push-pipeline-gate: orphan-hook check could not run (detector rc=$rc, advisory skipped):" >&2
+		printf '%s\n' "$out" | sed 's/^/  /' >&2
+		;;
+	esac
 	return 0
 }
 

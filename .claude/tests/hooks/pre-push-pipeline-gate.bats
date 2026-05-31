@@ -60,3 +60,36 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ $output != *"hook-wiring drift"* ]]
 }
+
+@test "_orphan_hook_advisory rc=2 (precondition) is NOT framed as drift (#228 r1)" {
+	# silent-failure-hunter/pr-test r1: a detector tooling error (rc=2) must read
+	# as "could not run", not "drift" with a register-hook hint that wouldn't fix it.
+	_stub_detector 2
+	run _orphan_hook_advisory "$TMP"
+	[ "$status" -eq 0 ] # still never blocks
+	[[ $output == *"could not run"* ]]
+	[[ $output != *"hook-wiring drift"* ]]
+	[[ $output != *"register-hook.sh"* ]]
+}
+
+@test "the gate body INVOKES the advisory before the ref loop — call-site guard (#228 r1 integration)" {
+	# Guards the wiring (line ~366), not just the function: run the gate
+	# NON-sourced with empty stdin (no refs ⇒ no pipeline checks) + a stub
+	# detector reporting an orphan. The advisory must fire (proving the call-site
+	# is reached) and the gate must still exit 0 (advisory never blocks).
+	local repo
+	repo=$(mktemp -d -t prepushint.XXXXXX)
+	(cd "$repo" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
+	mkdir -p "$repo/scripts"
+	cat >"$repo/scripts/discover-orphan-hooks.sh" <<'STUB'
+#!/bin/bash
+echo "INTEGRATION STUB ORPHAN"
+exit 1
+STUB
+	chmod +x "$repo/scripts/discover-orphan-hooks.sh"
+	run bash -c "cd '$repo' && printf '' | bash '$HOOK' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"hook-wiring drift"* ]]
+	[[ $output == *"INTEGRATION STUB ORPHAN"* ]]
+	[ -d "$repo" ] && [[ $repo == */prepushint.* ]] && rm -rf "$repo"
+}

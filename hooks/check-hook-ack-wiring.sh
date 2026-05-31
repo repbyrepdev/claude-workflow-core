@@ -33,17 +33,25 @@ LIB_FRONTMATTER="$(dirname "$0")/../_lib/event-frontmatter.sh"
 LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 
 # v0.31 #228: scan the REPO's source hooks dir (resolved via REPO_ROOT), NOT
-# $(dirname "$0"). When this hook is wired via the pinned plugin-cache path,
-# `dirname $0` is the FROZEN cache copy — so the scan was blind to source-only
-# hooks added after the pinned version (exactly the orphan class this advisory
-# exists to catch). Plugin layout = hooks/; consumer layout = .claude/hooks/;
-# fall back to the running dir only when out-of-repo.
-if [ -d "$REPO_ROOT/hooks" ] && compgen -G "$REPO_ROOT/hooks/*.sh" >/dev/null; then
-	HOOKS_DIR="$REPO_ROOT/hooks"
+# $(dirname "$0") — which, wired via the pinned plugin-cache path, is the FROZEN
+# cache copy, blind to source-only hooks added after the pin.
+# #228 r1 (silent-failure-hunter): disambiguate plugin vs consumer by the PLUGIN
+# MARKER (.claude-plugin/plugin.json at the repo root), NOT mere presence of a
+# top-level hooks/ — a consumer with an unrelated top-level hooks/ dir must scan
+# .claude/hooks/, never be shadowed by it. Kept identical in discover-orphan-hooks.sh.
+if [ -f "$REPO_ROOT/.claude-plugin/plugin.json" ] && [ -d "$REPO_ROOT/hooks" ]; then
+	HOOKS_DIR="$REPO_ROOT/hooks" # plugin source layout
 elif [ -d "$REPO_ROOT/.claude/hooks" ]; then
-	HOOKS_DIR="$REPO_ROOT/.claude/hooks"
+	HOOKS_DIR="$REPO_ROOT/.claude/hooks" # consumer layout
+elif [ -d "$REPO_ROOT/hooks" ]; then
+	HOOKS_DIR="$REPO_ROOT/hooks" # non-plugin repo with a top-level hooks/
 else
-	HOOKS_DIR="$(dirname "$0")"
+	HOOKS_DIR="$(dirname "$0")" # out-of-repo fallback
+	case "$HOOKS_DIR" in
+	*/plugins/cache/*)
+		echo "check-hook-ack-wiring: not inside a source repo (cwd=$(pwd)); scanning the pinned cache copy — source-only hooks added after the pin are NOT visible. cd into the plugin source for a full scan." >&2
+		;;
+	esac
 fi
 
 [ -f "$SETTINGS" ] || exit 0
