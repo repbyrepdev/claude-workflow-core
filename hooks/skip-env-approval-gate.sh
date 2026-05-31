@@ -76,11 +76,15 @@ rm -f "$_jq_err"
 # reaching LINT_GATE_SKIP=1, breaking out of the loop. Regex below
 # matches env-prefix tokens where the value is either non-quote-non-space,
 # OR a double-quoted string, OR a single-quoted string. Skip-var name is
-# captured in BASH_REMATCH[3] without needing a post-walk.
-SKIP_RE='^([A-Z_][A-Z0-9_]*=([^[:space:]"'\'']+|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
+# captured in BASH_REMATCH[4] without needing a post-walk.
+# v0.31 #224: also catch leading whitespace + a leading `export ` prefix
+# (e.g. `  LINT_GATE_SKIP=1 cmd`, `export LINT_GATE_SKIP=1; cmd`) — the old
+# `^`-anchored form let both slip past the approval popup. The `(export …)?`
+# group is why the skip-var name is now BASH_REMATCH[4] (was [3]).
+SKIP_RE='^[[:space:]]*(export[[:space:]]+)?([A-Z_][A-Z0-9_]*=([^[:space:]"'\'']+|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
 SKIP_VAR=""
 if [[ $CMD =~ $SKIP_RE ]]; then
-	SKIP_VAR="${BASH_REMATCH[3]}"
+	SKIP_VAR="${BASH_REMATCH[4]}"
 fi
 
 # No skip detected — let it through.

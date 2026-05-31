@@ -127,3 +127,21 @@ _run_hook() {
 	_run_hook 'echo "this line merely mentions LINT_GATE_SKIP=1 in prose"'
 	[ "$status" -eq 0 ]
 }
+
+@test "leading-whitespace skip prefix is detected — refused (T17, #224)" {
+	# v0.31 #224: the old `^`-anchored SKIP_RE missed an indented prefix (heredoc
+	# body, indented continuation, copy-paste). `^[[:space:]]*` now catches it so
+	# it can't slip past the approval popup.
+	_run_hook "  LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "export-prefixed skip is detected — refused (T18, #224)" {
+	# v0.31 #224: `export LINT_GATE_SKIP=1; cmd` set the skip var for the gated
+	# tool within the same Bash call while sailing past the popup.
+	# `(export[[:space:]]+)?` now catches it; the skip var is BASH_REMATCH[4].
+	_run_hook "export LINT_GATE_SKIP=1; echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}

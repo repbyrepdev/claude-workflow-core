@@ -277,6 +277,6 @@ Or invoke via the matching skill wrapper:
   - push:    handled by ship-pr-cycle.sh next at stage=push
   - merge:   github-pr-merge skill at stage=merge-gate
 
-Bypasses (audit-logged):  SHIP_CYCLE_GATE_SKIP=1 <cmd>  |  SKILL_WRAPPER=1 <cmd>
+Bypass (audit-logged):  SHIP_CYCLE_GATE_SKIP=1 <cmd>
 EOF
 exit 2
