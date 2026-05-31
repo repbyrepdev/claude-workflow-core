@@ -72,12 +72,17 @@ _run_gate() {
 	[ "$status" -ne 0 ]
 }
 
-@test "alternate failure glyph (❎ 2) is recognized → blocks (#230 r1 sfh CRITICAL)" {
-	# The extractor + detector match ❌|❎|⛔|🚫; a non-❌ glyph must NOT slip past
-	# as 0 (the residual fail-open the first cut left).
-	_comments_fixture "🚥 Pre-merge checks | ✅ 3 | ❎ 2"
-	_run_gate
-	[ "$status" -ne 0 ]
+@test "ALL four failure glyphs (❌ ❎ ⛔ 🚫) are recognized → block (#230 r1 sfh CRITICAL)" {
+	# The extractor + detector match the full alternation ❌|❎|⛔|🚫; NONE may slip
+	# past as 0 (the residual fail-open the first cut left). Cover every glyph.
+	for g in "❌" "❎" "⛔" "🚫"; do
+		_comments_fixture "🚥 Pre-merge checks | ✅ 3 | $g 2"
+		_run_gate
+		[ "$status" -ne 0 ] || {
+			echo "expected BLOCK for failure glyph: $g (got status=$status)" >&2
+			false
+		}
+	done
 }
 
 @test "decoy ❌ 0 BEFORE the summary line is ignored — count read from summary (#230 r1)" {
