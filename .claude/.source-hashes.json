@@ -1,6 +1,13 @@
 {
   "algorithm": "sha256",
   "files": {
+    ".github/ISSUE_TEMPLATE/brainstorm.yml": "fcc13acd9367937e4194b3e357f2d47926624518b7d0c0d098fba03f7fdc6aa8",
+    ".github/ISSUE_TEMPLATE/bug.yml": "8ad87096c71388728939d2898f6c2d0aaf6eb091ab835fe6a08a988744750253",
+    ".github/ISSUE_TEMPLATE/epic.yml": "1ca4929ec446e7ed3c37fc4e16776c5dcfffc74859819cca738c794469cbfbb6",
+    ".github/ISSUE_TEMPLATE/feature.yml": "35f73075cd0f031bb953ea742487a065b5b7cab738db3d0d887e364137517b01",
+    ".github/ISSUE_TEMPLATE/task.yml": "117a217fb2e7bf70395db0756ffc43d680f3fad329f8912ea5ac9c4e937903b2",
+    ".github/commit-template.yml": "c0b837fc506ac12f302f401b459a9f9d5249dffc71449349fad5303a1eae9cea",
+    ".github/pull_request_template.md": "d96e4af3aa81082d0701bca24456f00238371b57357f8efe23e4682f14bedf2d",
     "_lib/bash-safety-check.sh": "8b02ff4595ef404ea2f33fa9f09ce5439cfb6e59e2df2e51a67334578327ed4a",
     "_lib/bash4-features-check.sh": "3d0a27aa98d369e7fa482472eba8192128f4e4db42d275b1b7096d9610a18dbc",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",

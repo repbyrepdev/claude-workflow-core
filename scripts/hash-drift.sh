@@ -92,6 +92,32 @@ _hash_file() {
 	printf '%s\n' "$hex"
 }
 
+# Hash $1 and emit one JSON `  "path": "hash"` entry to stdout, prefixing a
+# comma after the first entry. Reads + mutates the generate-scoped globals
+# `first`, `tmp`, `entries_tmp`. A file that can't be hashed (or yields a
+# non-sha256 string) is a HARD error: clean the temps and exit 2 — never a
+# silent omission, which would punch a coverage hole in the consumer drift
+# gate. Only called inside the generate `{ }` redirect block.
+_emit_hashed_entry() {
+	local f=$1 hash
+	hash=$(_hash_file "$f") || {
+		echo "hash-drift: failed to hash $f" >&2
+		rm -f "$tmp" "$entries_tmp"
+		exit 2
+	}
+	# Hash-format validation: refuse anything that's not 64-char lowercase
+	# hex (sha256). Catches silently-broken _hash_file output before ship.
+	if ! [[ $hash =~ ^[0-9a-f]{64}$ ]]; then
+		echo "hash-drift: invalid hash for $f: '$hash' (expected 64-char lowercase sha256 hex)" >&2
+		rm -f "$tmp" "$entries_tmp"
+		exit 2
+	fi
+	if [ "$first" -eq 1 ]; then first=0; else printf ',\n'; fi
+	printf '  %s: %s' \
+		"$(jq -Rn --arg p "$f" '$p')" \
+		"$(jq -Rn --arg h "$hash" '$h')"
+}
+
 if [ "$MODE" = "generate" ]; then
 	# Producer mode: walk hooks/ and _lib/ relative to current repo.
 	REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
@@ -120,6 +146,34 @@ if [ "$MODE" = "generate" ]; then
 		rm -f "$tmp"
 		exit 2
 	}
+	# .github byte-SSOT coverage: read the files declared `hashed: true` in
+	# the bootstrap manifest — the single SSOT for what is byte-identical
+	# across repos. Producer-only; requires yq. Materialize the list NOW (and
+	# verify each declared file exists) so a yq parse failure or a missing
+	# declared file fails CLOSED before we emit a partial manifest. A silent
+	# coverage hole would disable the consumer drift gate for those files.
+	MANIFEST="scripts/bootstrap-manifest.yml"
+	GH_HASHED=""
+	if [ -f "$MANIFEST" ]; then
+		command -v yq >/dev/null 2>&1 || {
+			echo "hash-drift: yq required to read hashed paths from $MANIFEST" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		GH_HASHED=$(yq -r '.files[] | select(.hashed == true) | .path' "$MANIFEST" | sort) || {
+			echo "hash-drift: yq failed enumerating hashed paths in $MANIFEST" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		while IFS= read -r ghf; do
+			[ -n "$ghf" ] || continue
+			[ -f "$ghf" ] || {
+				echo "hash-drift: manifest declares hashed file '$ghf' but it is missing under $REPO_ROOT — refusing a coverage hole" >&2
+				rm -f "$tmp" "$entries_tmp"
+				exit 2
+			}
+		done <<<"$GH_HASHED"
+	fi
 	# shellcheck disable=SC2094  # tmp + entries_tmp are distinct files; rm -f below
 	{
 		printf '{\n'
@@ -128,21 +182,17 @@ if [ "$MODE" = "generate" ]; then
 			[ -d "$dir" ] || continue
 			while IFS= read -r f; do
 				[ -f "$f" ] || continue
-				hash=$(_hash_file "$f")
-				# Hash-format validation: refuse anything that's not
-				# 64-char lowercase hex (sha256). Catches silently-broken
-				# _hash_file output before the manifest ships.
-				if ! [[ $hash =~ ^[0-9a-f]{64}$ ]]; then
-					echo "hash-drift: invalid hash for $f: '$hash' (expected 64-char lowercase sha256 hex)" >&2
-					rm -f "$tmp" "$entries_tmp"
-					exit 2
-				fi
-				if [ $first -eq 1 ]; then first=0; else printf ',\n'; fi
-				printf '  %s: %s' \
-					"$(jq -Rn --arg p "$f" '$p')" \
-					"$(jq -Rn --arg h "$hash" '$h')"
+				_emit_hashed_entry "$f"
 			done < <(find "$dir" -name '*.sh' -type f | sort)
 		done
+		# .github byte-SSOT files (manifest `hashed: true`), validated above.
+		# Iterate the materialized list; emit alongside hooks/_lib so the
+		# producer-relative path (e.g. .github/commit-template.yml) lands in
+		# the same `files` map. --verify + refresh map it back to repo-root.
+		while IFS= read -r ghf; do
+			[ -n "$ghf" ] || continue
+			_emit_hashed_entry "$ghf"
+		done <<<"$GH_HASHED"
 		printf '\n}\n'
 	} >"$entries_tmp"
 	# Validate entries before wrapping.
@@ -282,15 +332,21 @@ overridden_count=0
 processed_count=0
 DRIFT_REPORT=""
 while IFS=$'\t' read -r src_path src_hash; do
-	# Map producer-side <relpath> → consumer-side .claude/<relpath>.
-	# String prepend; works for any producer directory in source-
-	# hashes.json (currently hooks/ + _lib/).
+	# Map producer-relative <path> → consumer location. hooks/ and _lib/
+	# mirror under the consumer's .claude/; .github/ files (and any other
+	# repo-root path) map VERBATIM to the consumer root. Before #232 this
+	# hardcoded `.claude/$src_path`, which mis-resolved .github/* entries to
+	# a nonexistent `.claude/.github/*` — a silent missing-file that was
+	# never gated.
 	if [ -z "$src_path" ] || [ -z "$src_hash" ]; then
 		echo "hash-drift: malformed manifest row (empty path or hash)" >&2
 		exit 2
 	fi
 	processed_count=$((processed_count + 1))
-	consumer_path=".claude/$src_path"
+	case "$src_path" in
+	hooks/* | _lib/*) consumer_path=".claude/$src_path" ;;
+	*) consumer_path="$src_path" ;;
+	esac
 	if _is_overridden "$consumer_path"; then
 		overridden_count=$((overridden_count + 1))
 		continue

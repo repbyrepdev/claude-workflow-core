@@ -305,11 +305,18 @@ _refresh_one_consumer() {
 		[ -n "$relpath" ] || continue
 		_is_in_filter "$relpath" || continue
 
-		# Overrides skip — consumer's path may or may not have the
-		# `.claude/` prefix on the SSOT-tracked file. Plugin tracks paths
-		# like `_lib/foo.sh`; consumer mirrors at `.claude/_lib/foo.sh`.
-		# Check both forms in the overrides list.
-		local consumer_rel=".claude/${relpath}"
+		# Map producer-relative path → consumer location. hooks/ and _lib/
+		# mirror under .claude/; .github/ files (and any other repo-root
+		# path) map VERBATIM. Mirrors hash-drift.sh --verify (#232) so a
+		# .github SSOT file lands at <consumer>/.github/..., not
+		# <consumer>/.claude/.github/... The override-skip below checks BOTH
+		# the mapped form and the bare relpath, so either may appear in
+		# local-overrides.yml.
+		local consumer_rel
+		case "$relpath" in
+		hooks/* | _lib/*) consumer_rel=".claude/${relpath}" ;;
+		*) consumer_rel="$relpath" ;;
+		esac
 		if echo "$overrides" | grep -Fxq "$consumer_rel" || echo "$overrides" | grep -Fxq "$relpath"; then
 			n_overridden=$((n_overridden + 1))
 			echo "  [OVERRIDE] $relpath"
