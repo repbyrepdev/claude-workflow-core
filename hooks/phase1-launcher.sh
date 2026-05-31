@@ -583,6 +583,14 @@ if [ -d "$REJECTION_DIR" ] && [ "$ROUND" -gt 1 ]; then
 		# contract for non-corrupt jq failures, 13=rc=4 silent-continue
 		# branch independent from rc=5). The jq-rc discrimination is at
 		# the loop body.
+		#
+		# v0.30 #220: scope to the CURRENT PR cycle (branch) — the SAME filter
+		# as phase1-resume-message.sh's _rejection_block (kept consistent, no
+		# drift). Records carry .branch (stamped by prove-yourself-audit
+		# record-rejection); legacy / other-branch records are excluded so a
+		# round isn't shown stale cross-PR rejections. Undeterminable branch
+		# (detached HEAD / not a repo) → include all (safe fallback = pre-#220).
+		_rej_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 		REJECTION_BLOCK=$(
 			printf '%s\n' "$rejection_files" |
 				while IFS= read -r f; do
@@ -599,7 +607,7 @@ if [ -d "$REJECTION_DIR" ] && [ "$ROUND" -gt 1 ]; then
 					# fails with "syntax error near unexpected token ;;" even
 					# when the syntax is well-formed. The if-chain avoids it.
 					jq_rc=0
-					jq -r 'select(.kind == "rejection" and (.finding_text // "") != "") | "- \(.finding_text[0:200])"' "$f" 2>>"$jq_err" || jq_rc=$?
+					jq -r --arg br "$_rej_branch" 'select(.kind == "rejection" and (.finding_text // "") != "" and ($br == "" or $br == "HEAD" or (.branch // "") == $br)) | "- \(.finding_text[0:200])"' "$f" 2>>"$jq_err" || jq_rc=$?
 					if [ "$jq_rc" -ne 0 ] && [ "$jq_rc" -ne 4 ] && [ "$jq_rc" -ne 5 ]; then
 						echo "phase1-launcher: ERROR: jq failed for '$f' with rc=$jq_rc (non-corrupt failure — fail-loud)" >&2
 						exit 2

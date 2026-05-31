@@ -214,7 +214,7 @@ _check_antipatterns() {
 	local ap ap_lower
 	for ap in "${_ANTIPATTERNS[@]}"; do
 		ap_lower=$(printf '%s' "$ap" | tr '[:upper:]' '[:lower:]')
-		if [[ "$lower" == *"$ap_lower"* ]]; then
+		if [[ $lower == *"$ap_lower"* ]]; then
 			echo "BLOCK: $field contains anti-pattern '$ap'." >&2
 			echo "" >&2
 			echo "Per memory:feedback_dont_dismiss_cr_as_hallucination.md, evidence" >&2
@@ -473,7 +473,7 @@ cmd_record_rejection() {
 		esac
 	done
 
-	if ! [[ "$covers_count" =~ ^[1-9][0-9]*$ ]]; then
+	if ! [[ $covers_count =~ ^[1-9][0-9]*$ ]]; then
 		echo "error: --covers-count must be a positive integer (got: $covers_count)" >&2
 		exit 2
 	fi
@@ -501,7 +501,7 @@ cmd_record_rejection() {
 	# non-numeric input on the rejection path reaches the jq template's
 	# `.confidence | tonumber` and dies as a parse error instead of our
 	# normal exit-2 contract). Mirrors the record-fix hoist from r1.
-	if [ -n "$confidence" ] && ! [[ "$confidence" =~ ^([1-9]|10)$ ]]; then
+	if [ -n "$confidence" ] && ! [[ $confidence =~ ^([1-9]|10)$ ]]; then
 		echo "error: --confidence must be 1-10 integer (got: $confidence)" >&2
 		exit 2
 	fi
@@ -552,7 +552,7 @@ cmd_record_rejection() {
 		;;
 	esac
 	if [ -n "$follow_up_issue" ]; then
-		if ! [[ "$follow_up_issue" =~ ^[0-9]+$ ]]; then
+		if ! [[ $follow_up_issue =~ ^[0-9]+$ ]]; then
 			echo "error: --follow-up-issue must be a positive integer (got: $follow_up_issue)" >&2
 			exit 2
 		fi
@@ -644,7 +644,7 @@ cmd_record_rejection() {
 	_check_antipatterns "$reason" "--reason" || exit 2
 
 	# Validate dogfood-rc is integer.
-	if ! [[ "$dogfood_rc" =~ ^[0-9]+$ ]]; then
+	if ! [[ $dogfood_rc =~ ^[0-9]+$ ]]; then
 		echo "error: --dogfood-rc must be a non-negative integer (got: $dogfood_rc)" >&2
 		exit 2
 	fi
@@ -683,7 +683,9 @@ cmd_record_rejection() {
 		--arg src "$src" \
 		--arg followup "$follow_up_issue" \
 		--arg cluster "$cluster_id" \
+		--arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")" \
 		'{finding_id: $fid, kind: "rejection", finding_text: $ftext, ts: $ts,
+		  branch: (if $branch == "" then null else $branch end),
 		  covers_count: $covers, source: $src,
 		  confidence: (if $conf == "" then null else ($conf | tonumber) end),
 		  severity: (if $sev == "" then null else $sev end),
@@ -842,7 +844,7 @@ cmd_record_fix() {
 		esac
 	done
 
-	if ! [[ "$covers_count" =~ ^[1-9][0-9]*$ ]]; then
+	if ! [[ $covers_count =~ ^[1-9][0-9]*$ ]]; then
 		echo "error: --covers-count must be a positive integer (got: $covers_count)" >&2
 		exit 2
 	fi
@@ -871,7 +873,7 @@ cmd_record_fix() {
 	# (cr-source allows optional --confidence too — without this guard,
 	# non-numeric input reaches jq --argjson and fails as a parse error
 	# instead of our normal exit-2 path).
-	if [ -n "$confidence" ] && ! [[ "$confidence" =~ ^([1-9]|10)$ ]]; then
+	if [ -n "$confidence" ] && ! [[ $confidence =~ ^([1-9]|10)$ ]]; then
 		echo "error: --confidence must be 1-10 integer (got: $confidence)" >&2
 		exit 2
 	fi
@@ -914,7 +916,7 @@ cmd_record_fix() {
 		exit 2
 	}
 
-	if ! [[ "$retest_rc" =~ ^[0-9]+$ ]]; then
+	if ! [[ $retest_rc =~ ^[0-9]+$ ]]; then
 		echo "error: --retest-rc must be a non-negative integer (got: $retest_rc)" >&2
 		exit 2
 	fi
@@ -1023,10 +1025,10 @@ cmd_audit() {
 				fi
 			done
 			# RC field validation — must be present and numeric.
-			val=$(jq -r ".decision_data.dogfood_rc // \"\"" "$f")
+			val=$(jq -r '.decision_data.dogfood_rc // ""' "$f")
 			if [ -z "$val" ]; then
 				errs+=("$f: missing required field .decision_data.dogfood_rc")
-			elif ! [[ "$val" =~ ^[0-9]+$ ]]; then
+			elif ! [[ $val =~ ^[0-9]+$ ]]; then
 				errs+=("$f: .decision_data.dogfood_rc must be numeric integer (got: $val)")
 			fi
 			;;
@@ -1040,10 +1042,10 @@ cmd_audit() {
 				fi
 			done
 			# RC field validation — must be present and numeric.
-			val=$(jq -r ".decision_data.retest_rc // \"\"" "$f")
+			val=$(jq -r '.decision_data.retest_rc // ""' "$f")
 			if [ -z "$val" ]; then
 				errs+=("$f: missing required field .decision_data.retest_rc")
-			elif ! [[ "$val" =~ ^[0-9]+$ ]]; then
+			elif ! [[ $val =~ ^[0-9]+$ ]]; then
 				errs+=("$f: .decision_data.retest_rc must be numeric integer (got: $val)")
 			fi
 			;;
@@ -1314,7 +1316,7 @@ HELP
 			# (e.g. `--limit twenty`) gets a clear operator-facing error
 			# instead of a confusing `tail: invalid number of lines`
 			# message from a deep pipe stage.
-			[[ "$limit" =~ ^[1-9][0-9]*$ ]] || {
+			[[ $limit =~ ^[1-9][0-9]*$ ]] || {
 				echo "search: --limit must be a positive integer; got '$limit'" >&2
 				exit 2
 			}

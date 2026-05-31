@@ -141,6 +141,14 @@ _rejection_block() {
 	[ "$find_err" != /dev/null ] && rm -f "$find_err"
 	[ -n "$files" ] || return 0
 
+	# v0.30 #220: scope rejections to the CURRENT PR cycle (branch). Records are
+	# stamped with .branch at record time (prove-yourself-audit record-rejection);
+	# filtering to this branch keeps a resumed teammate from seeing stale cross-PR
+	# rejections from the global prove-yourself history. Undeterminable branch
+	# (detached HEAD / not a git repo) → include all (safe fallback = pre-#220).
+	local cycle_branch
+	cycle_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
 	local jq_err count=0
 	jq_err=$(mktemp 2>/dev/null) || jq_err=/dev/null
 	local f jq_rc rec
@@ -153,8 +161,9 @@ _rejection_block() {
 		# case) for the rc check is fine here — this jq is not inside a
 		# pipeline-in-$( ), so the bash 3.2 case-parser bug does not apply,
 		# but we keep rc discrimination identical to the launcher anyway.
-		rec=$(jq -r '
-			select(.kind == "rejection" and (.finding_text // "") != "")
+		rec=$(jq -r --arg br "$cycle_branch" '
+			select(.kind == "rejection" and (.finding_text // "") != ""
+			       and ($br == "" or $br == "HEAD" or (.branch // "") == $br))
 			| "  [\(.source // "?")\(if .confidence then "/c\(.confidence)" elif .severity then "/\(.severity)" else "" end)] \(.finding_text[0:200])"
 			+ (if (.decision_data.reason // "") != "" then "\n     reason: \(.decision_data.reason[0:200])" else "" end)
 			+ (if (.decision_data.dogfood_cmd // "") != "" then "\n     dogfood: \(.decision_data.dogfood_cmd[0:160]) -> \(.decision_data.dogfood_output[0:120] // "")(rc=\(.decision_data.dogfood_rc // "?"))" else "" end)
