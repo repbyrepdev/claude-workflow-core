@@ -145,3 +145,27 @@ _run_hook() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"LINT_GATE_SKIP"* ]]
 }
+
+@test "export + benign env prefix before the skip is detected — refused (T19, #224 r2)" {
+	# pr-test-analyzer r1: locks the BASH_REMATCH[4] capture on the combined
+	# export + leading-assignment path (G1 export, G2 consumes FOO=1, G4 = skip).
+	_run_hook "export FOO=1 LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "lowercase benign prefix before the skip is detected — refused (T20, #224 r2)" {
+	# silent-failure-hunter r1: the old [A-Z_] leading-assignment class made a
+	# lowercase benign prefix fail the WHOLE match → SKIP_VAR="" → silent exit-0
+	# let-through. [A-Za-z_] closes that fail-open. This is the load-bearing case.
+	_run_hook "foo=bar LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "indented BENIGN command (no skip var) is NOT gated (T21, #224 r2 negative)" {
+	# pr-test-analyzer r1: prove the new `^[[:space:]]*` anchor did not over-broaden
+	# — a leading-whitespace command with no top-level skip assignment stays allowed.
+	_run_hook "  echo LINT_GATE_SKIP is only mentioned"
+	[ "$status" -eq 0 ]
+}

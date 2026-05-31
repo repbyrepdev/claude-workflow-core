@@ -44,6 +44,10 @@ _run_guard() {
 
 @test "skill deny directive does NOT advertise SKILL_WRAPPER bypass (#224)" {
 	_run_guard "gh issue create --title x"
+	# r2 (pr-test-analyzer): assert a real deny FIRST so the negative checks below
+	# can't pass vacuously on an error path that emitted no directive.
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
 	[[ $output != *"Sanctioned skill-wrapper"* ]]
 	[[ $output != *"SKILL_WRAPPER=1 <your-command>"* ]]
 	# the legitimate emergency escape is still offered

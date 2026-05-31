@@ -16,8 +16,10 @@ set -euo pipefail
 # that was skipped." User feedback 2026-05-28: every use must require
 # explicit per-call approval, not session-wide grant.
 #
-# This hook fires on PreToolUse Bash. If the command starts with one or
-# more `*_SKIP=N` (or `*_BYPASS=N` / `HOOK_ACK_CLEAR=N`) env-var prefixes,
+# This hook fires on PreToolUse Bash. If the command — after optional
+# leading whitespace, an `export ` prefix, and/or preceding env-var
+# assignments — sets one or more `*_SKIP=N` (`*_BYPASS=N` /
+# `HOOK_ACK_CLEAR=N`) env vars (see the SKIP_RE grammar below),
 # the hook refuses with a structured deny message that explains what
 # skip was attempted and prompts the operator to authorize via a popup
 # (AskUserQuestion). Approval is per-PID-keyed and consumed-on-use, so
@@ -81,7 +83,12 @@ rm -f "$_jq_err"
 # (e.g. `  LINT_GATE_SKIP=1 cmd`, `export LINT_GATE_SKIP=1; cmd`) — the old
 # `^`-anchored form let both slip past the approval popup. The `(export …)?`
 # group is why the skip-var name is now BASH_REMATCH[4] (was [3]).
-SKIP_RE='^[[:space:]]*(export[[:space:]]+)?([A-Z_][A-Z0-9_]*=([^[:space:]"'\'']+|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
+# v0.31 #224 r2 (silent-failure-hunter): the LEADING-assignment name class is
+# [A-Za-z_][A-Za-z0-9_]* (not [A-Z_]…) so a lowercase benign prefix like
+# `foo=bar LINT_GATE_SKIP=1 cmd` can't fail the whole match → SKIP_VAR="" →
+# silent exit-0 let-through. Mirrors the sibling skill-bypass-guard ENV_PREFIX
+# (CR #634 #136). The skip-var alternation itself stays UPPERCASE by convention.
+SKIP_RE='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=([^[:space:]"'\'']+|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
 SKIP_VAR=""
 if [[ $CMD =~ $SKIP_RE ]]; then
 	SKIP_VAR="${BASH_REMATCH[4]}"

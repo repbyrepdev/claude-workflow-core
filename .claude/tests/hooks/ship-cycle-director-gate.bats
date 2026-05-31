@@ -55,7 +55,11 @@ _cmd_starts_with() {
 	# exists to block). The SKILL_WRAPPER *exemption* logic + maintainer header
 	# stay; only the advertisement in the deny text is removed. SHIP_CYCLE_GATE_SKIP
 	# remains the one documented, audit-logged bypass.
-	run grep -qF 'SKILL_WRAPPER=1 <cmd>' "$HOOK"
+	# r2 (pr-test-analyzer): match the advert by SHAPE, not one exact string, so a
+	# rephrased re-introduction (`SKILL_WRAPPER=1 <command>` / `<x>` / no space)
+	# can't false-green. `SKILL_WRAPPER=1` followed by an arg placeholder `<` is
+	# the advert; the maintainer header uses an em-dash, not `<`, so it's safe.
+	run grep -qE 'SKILL_WRAPPER=1[[:space:]]*<' "$HOOK"
 	[ "$status" -ne 0 ]
 	run grep -qF 'SHIP_CYCLE_GATE_SKIP=1 <cmd>' "$HOOK"
 	[ "$status" -eq 0 ]
