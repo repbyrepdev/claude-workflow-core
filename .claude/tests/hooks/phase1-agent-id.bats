@@ -23,7 +23,10 @@ setup() {
 	HEAD_SHA="$(git rev-parse HEAD)"
 	# v0.30 #220: the temp repo's branch — _mk_rejection stamps it so records
 	# count as the "current PR cycle" for the branch-scoped rejection block.
-	TEST_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+	# Resolve via `symbolic-ref --short` (NOT `rev-parse --abbrev-ref`) to match
+	# the writer + readers exactly — on a normal branch they're identical, but
+	# using the same primitive keeps the fixture honest about what's under test.
+	TEST_BRANCH="$(git symbolic-ref --quiet --short HEAD)"
 	# A second, distinct 40-hex sha for delta tests (no second commit needed).
 	OTHER_SHA="$(printf 'b%039d' 1 | tr ' ' 0)"
 	STORE="$TMP/.claude/.session-state/phase1-agent-ids"
@@ -459,4 +462,15 @@ _mk_corrupt() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"fresh cycle finding"* ]]
 	[[ $output != *"legacy finding"* ]]
+}
+
+@test "resume-message: detached HEAD (undeterminable branch) includes ALL (#220 fallback)" {
+	# The $br == "" include-all arm: on a detached HEAD the reader can't resolve
+	# the cycle branch, so it must fall back to showing every rejection rather
+	# than silently dropping all of them (= pre-#220 behavior, no masked zero).
+	_mk_rejection oth "other-branch finding here" "reason oth" "some-other-pr-branch"
+	git -C "$TMP" checkout -q --detach
+	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[[ $output == *"other-branch finding"* ]]
 }

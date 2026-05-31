@@ -658,6 +658,16 @@ cmd_record_rejection() {
 	local cited_json
 	cited_json=$(_cited_files_json "$cited_files")
 
+	# v0.30 #220: stamp the PR-cycle branch so the Phase-1 rejection blocks
+	# (phase1-resume-message.sh + phase1-launcher.sh) scope to the current cycle.
+	# `symbolic-ref --short` (NOT `rev-parse --abbrev-ref`) returns EMPTY on
+	# detached HEAD / not-a-repo — never the literal "HEAD" — so empty → null
+	# below and the readers' `$br == ""` arm cleanly means "undeterminable →
+	# include all" with no "HEAD"-sentinel collision. `git -C "$REPO_ROOT"` keeps
+	# the value identical to the readers regardless of cwd.
+	local rej_branch
+	rej_branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+
 	# Write JSON via jq for safe escaping.
 	# v4.28-W3-C: Jaccard text-overlap advisory. If finding_text shares
 	# ≥ 60% word-set with an existing record AND the existing record has
@@ -683,7 +693,7 @@ cmd_record_rejection() {
 		--arg src "$src" \
 		--arg followup "$follow_up_issue" \
 		--arg cluster "$cluster_id" \
-		--arg branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")" \
+		--arg branch "$rej_branch" \
 		'{finding_id: $fid, kind: "rejection", finding_text: $ftext, ts: $ts,
 		  branch: (if $branch == "" then null else $branch end),
 		  covers_count: $covers, source: $src,

@@ -144,10 +144,12 @@ _rejection_block() {
 	# v0.30 #220: scope rejections to the CURRENT PR cycle (branch). Records are
 	# stamped with .branch at record time (prove-yourself-audit record-rejection);
 	# filtering to this branch keeps a resumed teammate from seeing stale cross-PR
-	# rejections from the global prove-yourself history. Undeterminable branch
-	# (detached HEAD / not a git repo) → include all (safe fallback = pre-#220).
+	# rejections from the global prove-yourself history. `symbolic-ref --short`
+	# returns EMPTY on detached HEAD / not-a-repo (never the literal "HEAD"), so
+	# the `$br == ""` arm below cleanly means "undeterminable → include all".
+	# Identical resolution to the writer + launcher (git -C "$REPO_ROOT" → no drift).
 	local cycle_branch
-	cycle_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+	cycle_branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
 
 	local jq_err count=0
 	jq_err=$(mktemp 2>/dev/null) || jq_err=/dev/null
@@ -163,7 +165,7 @@ _rejection_block() {
 		# but we keep rc discrimination identical to the launcher anyway.
 		rec=$(jq -r --arg br "$cycle_branch" '
 			select(.kind == "rejection" and (.finding_text // "") != ""
-			       and ($br == "" or $br == "HEAD" or (.branch // "") == $br))
+			       and ($br == "" or (.branch // "") == $br))
 			| "  [\(.source // "?")\(if .confidence then "/c\(.confidence)" elif .severity then "/\(.severity)" else "" end)] \(.finding_text[0:200])"
 			+ (if (.decision_data.reason // "") != "" then "\n     reason: \(.decision_data.reason[0:200])" else "" end)
 			+ (if (.decision_data.dogfood_cmd // "") != "" then "\n     dogfood: \(.decision_data.dogfood_cmd[0:160]) -> \(.decision_data.dogfood_output[0:120] // "")(rc=\(.decision_data.dogfood_rc // "?"))" else "" end)
@@ -182,6 +184,13 @@ _rejection_block() {
 		echo "phase1-resume-message: WARN jq stderr while scanning rejections (corrupt record?): $(head -c 200 "$jq_err")" >&2
 	fi
 	[ "$jq_err" != /dev/null ] && rm -f "$jq_err"
+	# v0.30 #220 (silent-failure-hunter): masked-zero telemetry. If rejection
+	# records exist but the branch filter emitted none, say so — distinguishes
+	# "no rejections this cycle" (healthy) from "all rejections are out-of-cycle"
+	# (filtered) so an empty block isn't mistaken for a clean history.
+	if [ "$count" -eq 0 ] && [ -n "$files" ]; then
+		echo "phase1-resume-message: note — 0 rejections for branch '${cycle_branch:-<none>}' this cycle (records exist for other branches/cycles, scoped out)" >&2
+	fi
 }
 
 sub=${1:-}
