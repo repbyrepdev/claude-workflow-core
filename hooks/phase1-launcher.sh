@@ -583,6 +583,16 @@ if [ -d "$REJECTION_DIR" ] && [ "$ROUND" -gt 1 ]; then
 		# contract for non-corrupt jq failures, 13=rc=4 silent-continue
 		# branch independent from rc=5). The jq-rc discrimination is at
 		# the loop body.
+		#
+		# v0.30 #220: scope to the CURRENT PR cycle (branch) — the SAME predicate
+		# as phase1-resume-message.sh's _rejection_block (kept consistent, no
+		# drift; differs only in line-wrapping). Records carry .branch (stamped by
+		# prove-yourself-audit record-rejection); legacy / other-branch records
+		# are excluded so a round isn't shown stale cross-PR rejections.
+		# `symbolic-ref --short` returns EMPTY on detached HEAD / not-a-repo (never
+		# the literal "HEAD"), so the `$br == ""` arm means "undeterminable →
+		# include all". git -C "$REPO_ROOT" → identical value to the other sites.
+		_rej_branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
 		REJECTION_BLOCK=$(
 			printf '%s\n' "$rejection_files" |
 				while IFS= read -r f; do
@@ -599,7 +609,7 @@ if [ -d "$REJECTION_DIR" ] && [ "$ROUND" -gt 1 ]; then
 					# fails with "syntax error near unexpected token ;;" even
 					# when the syntax is well-formed. The if-chain avoids it.
 					jq_rc=0
-					jq -r 'select(.kind == "rejection" and (.finding_text // "") != "") | "- \(.finding_text[0:200])"' "$f" 2>>"$jq_err" || jq_rc=$?
+					jq -r --arg br "$_rej_branch" 'select(.kind == "rejection" and (.finding_text // "") != "" and ($br == "" or (.branch // "") == $br)) | "- \(.finding_text[0:200])"' "$f" 2>>"$jq_err" || jq_rc=$?
 					if [ "$jq_rc" -ne 0 ] && [ "$jq_rc" -ne 4 ] && [ "$jq_rc" -ne 5 ]; then
 						echo "phase1-launcher: ERROR: jq failed for '$f' with rc=$jq_rc (non-corrupt failure — fail-loud)" >&2
 						exit 2
@@ -612,8 +622,15 @@ if [ -d "$REJECTION_DIR" ] && [ "$ROUND" -gt 1 ]; then
 		fi
 		rm -f "$jq_err"
 		# Count emitted rejection rows (positive-confirmation telemetry).
+		# v0.30 #220 (silent-failure-hunter): when files exist but 0 survive the
+		# branch filter, say so — masked-zero (all out-of-cycle / corrupt) reads
+		# differently from a healthy "no rejections this round".
 		rej_count=$(printf '%s\n' "$REJECTION_BLOCK" | awk 'NF { c++ } END { print c+0 }')
-		echo "phase1-launcher: rejection-list: $rej_count records (round $ROUND)" >&2
+		if [ "$rej_count" -eq 0 ]; then
+			echo "phase1-launcher: rejection-list: 0 in-cycle records for branch '${_rej_branch:-<none>}' (round $ROUND; rejection files present but scoped out by branch / corrupt)" >&2
+		else
+			echo "phase1-launcher: rejection-list: $rej_count records (round $ROUND)" >&2
+		fi
 	else
 		echo "phase1-launcher: rejection-list: 0 records (no .json files in $REJECTION_DIR)" >&2
 	fi

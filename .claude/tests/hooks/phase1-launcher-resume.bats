@@ -61,6 +61,16 @@ _seed_record() {
 		"$AGENTID" "$BASE_SHA" "$BASE_SHA" >"$STORE/code-reviewer.json"
 }
 
+_seed_rejection() {
+	# $1=stem  $2=finding_text  $3=branch literal to stamp on .branch (#220).
+	local dir="$TMP/.claude/.session-state/prove-yourself"
+	mkdir -p "$dir"
+	jq -n --arg ft "$2" --arg br "$3" \
+		'{kind:"rejection", source:"phase1", confidence:4, finding_text:$ft, branch:$br,
+		  decision_data:{reason:"r", dogfood_cmd:"grep x y", dogfood_output:"rc=0", dogfood_rc:0}}' \
+		>"$dir/$1.json"
+}
+
 @test "FLAG OFF round 2: fresh Agent line, NO [RESUME] (byte-identical fallback)" {
 	_seed_record
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
@@ -129,4 +139,35 @@ _seed_record() {
 	out_head=$(CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 bash "$TMP/run/hooks/phase1-launcher.sh" 2 2>/dev/null)
 	[ -n "$out_main" ]
 	[ "$out_main" = "$out_head" ]
+}
+
+# ---------------- #220: launcher rejection block is branch-scoped ----------------
+
+@test "round 2 DO-NOT-RE-FLAG block is scoped to the current cycle branch (#220)" {
+	# pr-test-analyzer flagged the launcher's branch filter was untested (only
+	# phase1-resume-message.sh's twin filter had coverage). The one-way block
+	# (round>1, fresh agent) must list ONLY this branch's rejections — an
+	# other-branch record is a stale cross-PR dismissal and must not leak in.
+	# Flag OFF keeps the agent fresh (AGENT_RESUMED=0) so the block emits.
+	local cur
+	cur=$(git -C "$TMP" symbolic-ref --short HEAD)
+	_seed_rejection cur "current-cycle finding ABC123" "$cur"
+	_seed_rejection oth "other-cycle finding XYZ789" "some-other-pr-branch"
+	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
+	[ "$status" -eq 0 ]
+	[[ $output == *"DO NOT RE-FLAG"* ]]
+	[[ $output == *"current-cycle finding ABC123"* ]]
+	[[ $output != *"other-cycle finding XYZ789"* ]]
+}
+
+@test "round 2 DO-NOT-RE-FLAG: detached HEAD (undeterminable branch) includes ALL (#220 fallback)" {
+	# The include-all fallback arm ($br == ""): on a detached HEAD the launcher
+	# can't determine the cycle branch, so it must NOT silently drop records —
+	# it falls back to showing every rejection (pre-#220 behavior).
+	_seed_rejection oth "other-cycle finding XYZ789" "some-other-pr-branch"
+	git -C "$TMP" checkout -q --detach
+	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
+	[ "$status" -eq 0 ]
+	[[ $output == *"DO NOT RE-FLAG"* ]]
+	[[ $output == *"other-cycle finding XYZ789"* ]]
 }
