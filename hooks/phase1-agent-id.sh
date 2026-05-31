@@ -320,7 +320,10 @@ cmd_list() {
 	for f in "$STATE_DIR"/*.json; do
 		[ -f "$f" ] || continue
 		# Compact per-record summary, one line — operator-readable.
-		jq -rc '"\(.agent) agentId=\(.agentId) resume=\(.resume_count // 0)/\(env.PHASE1_RESUME_CAP // "3") last_sha=\(.last_sha[0:8] // .sha[0:8])"' "$f" 2>/dev/null ||
+		# Phase 2 CR-CLI (minor): pass the cap via --arg, not env.PHASE1_RESUME_CAP.
+		# PHASE1_RESUME_CAP is a shell var (not exported), so jq's `env.` saw null
+		# and `list` always printed "/3" even when the cap was overridden.
+		jq -rc --arg cap "$PHASE1_RESUME_CAP" '"\(.agent) agentId=\(.agentId) resume=\(.resume_count // 0)/\($cap) last_sha=\(.last_sha[0:8] // .sha[0:8])"' "$f" 2>/dev/null ||
 			echo "(corrupt record: $f)"
 	done
 }

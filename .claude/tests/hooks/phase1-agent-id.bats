@@ -188,12 +188,16 @@ _mk_record() {
 	[ "$status" -eq 2 ]
 }
 
-@test "list prints recorded agents" {
+@test "list prints recorded agents + the actual (overridable) cap" {
 	_mk_record code-reviewer "$AGENTID" "$OTHER_SHA" 1
-	run bash "$AID" list
+	# Phase 2 CR-CLI fix: the cap must reflect PHASE1_RESUME_CAP (now passed via
+	# jq --arg), not a hardcoded /3 — env.PHASE1_RESUME_CAP was null (unexported)
+	# so list previously always showed /3 regardless of an override.
+	PHASE1_RESUME_CAP=5 run bash "$AID" list
 	[ "$status" -eq 0 ]
 	[[ $output == *"code-reviewer"* ]]
 	[[ $output == *"$AGENTID"* ]]
+	[[ $output == *"resume=1/5"* ]]
 }
 
 @test "unknown subcommand exits 2" {

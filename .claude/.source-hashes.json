@@ -67,7 +67,7 @@
     "hooks/phase0.5-gemini-prefilter.sh": "c7dcc6e0587cd844f206e1976c100e1312258fab5d23100c660763fed465685a",
     "hooks/phase0.5-launchers-all.sh": "fedace0d5ce94106d55d5681fab1c53f26072a5f5303da5fac512baa50ee8a42",
     "hooks/phase0.5-post-commit-rerun.sh": "846281391ef349ae1597b20faac203e535797dece41948811f3e86e513113a42",
-    "hooks/phase1-agent-id.sh": "ecfc09f836b26931c324c1b70b6835bb65901313d1c066887cfa57de55965b5e",
+    "hooks/phase1-agent-id.sh": "d349e63bfe198af374703501b0fb883c9648df4ffe4c354a5459bc2c966217c4",
     "hooks/phase1-agent-ids-session-clear.sh": "bb1f0fa36ce24333717046c70524cdc281367113a8d24d4375a2dbfb866b6e68",
     "hooks/phase1-before-cr.sh": "fbb3a35f373bc2111a92b1ae04025903abf9783137ad73139933b2b13a3fd468",
     "hooks/phase1-dashboard.sh": "5541a15593c9c249eaf0b7ad0e2637088bcfd5208cbe858e2afb32e356db75f4",
