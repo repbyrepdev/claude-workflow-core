@@ -231,6 +231,13 @@ JSON
 	[ "$(cat "$TEST_TMP/consumer/.github/pull_request_template.md")" = "## Summary" ]
 	# hooks/_lib still map under .claude/.
 	[ -f "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
+	# Idempotency (#232 r2 pr-test-analyzer): a second run sees the .github
+	# file already in place → clean, zero replacements (the verbatim-repo-root
+	# mapping + hash-compare are stable across runs).
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean=3"* ]]
+	[[ $output == *"replaced=0"* ]]
 }
 
 @test ".github override via bare relpath is honored (#232)" {

@@ -2,18 +2,25 @@
 set -euo pipefail
 # Introduced in #90 — producer-consumer hash-drift gate.
 #
-# Detects content drift between plugin-source files (hooks/*.sh,
-# _lib/*.sh under the plugin repo root) and consumer-repo siblings
-# (.claude/hooks/*.sh, .claude/_lib/*.sh).
+# Detects content drift between plugin-source files and their consumer-repo
+# siblings. Covered set (#232):
+#   - hooks/*.sh, _lib/*.sh — mirror at the consumer's .claude/hooks|_lib/.
+#   - the .github "process templates" declared `hashed: true` in
+#     scripts/bootstrap-manifest.yml (pull_request_template.md, commit-
+#     template.yml, ISSUE_TEMPLATE/*) — byte-SSOT; these map VERBATIM to the
+#     consumer repo root, NOT under .claude/. (labels/required-checks/labeler/
+#     workflows are template-with-overrides and are NOT hashed here.)
 #
 # Two modes:
-#   --generate (producer-side): compute SHA256 of each plugin source
-#       file, write to .claude/.source-hashes.json. Committed
-#       alongside source so consumers can verify against it after
-#       plugin install.
+#   --generate (producer-side): compute SHA256 of each plugin source file
+#       (hooks/ + _lib/ walked via find, plus the manifest's hashed:true
+#       .github files) and write to .claude/.source-hashes.json. Committed
+#       alongside source so consumers can verify against it after plugin
+#       install.
 #   --verify (consumer-side): for each entry in
 #       <plugin-cache>/.claude/.source-hashes.json, compute the local
-#       .claude/hooks|_lib/X.sh hash. Drift → warn.
+#       consumer-path hash (hooks/_lib → .claude/<path>; .github/* → <path>
+#       verbatim) and warn on drift.
 #
 # Override list: .claude/local-overrides.yml at consumer repo root
 # (YAML list of `<path>: <reason>` entries). Files in the override
@@ -119,7 +126,8 @@ _emit_hashed_entry() {
 }
 
 if [ "$MODE" = "generate" ]; then
-	# Producer mode: walk hooks/ and _lib/ relative to current repo.
+	# Producer mode: walk hooks/ and _lib/, plus the manifest's hashed:true
+	# .github files (#232), relative to the current repo.
 	REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 		echo "hash-drift: not in a git repo" >&2
 		exit 2
@@ -160,6 +168,22 @@ if [ "$MODE" = "generate" ]; then
 			rm -f "$tmp" "$entries_tmp"
 			exit 2
 		}
+		# Guard a malformed `hashed:` VALUE (e.g. a typo'd `ture`, or `yes`)
+		# from silently dropping coverage: yq's `== true` selector skips any
+		# non-`true` value, so a typo would exclude the file with NO signal
+		# (#232 silent-failure-hunter). Every declared `hashed` must be a real
+		# boolean — fail CLOSED on anything else.
+		bad_hashed=$(yq -r '.files[] | select(.hashed != null) | select((.hashed | tag) != "!!bool") | .path' "$MANIFEST") || {
+			echo "hash-drift: yq failed validating hashed: values in $MANIFEST" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		[ -z "$bad_hashed" ] || {
+			echo "hash-drift: non-boolean hashed: value(s) in $MANIFEST (typo? must be true/false):" >&2
+			printf '  %s\n' "$bad_hashed" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
 		GH_HASHED=$(yq -r '.files[] | select(.hashed == true) | .path' "$MANIFEST" | sort) || {
 			echo "hash-drift: yq failed enumerating hashed paths in $MANIFEST" >&2
 			rm -f "$tmp" "$entries_tmp"
@@ -173,6 +197,13 @@ if [ "$MODE" = "generate" ]; then
 				exit 2
 			}
 		done <<<"$GH_HASHED"
+	else
+		# Manifest absent — a generic (non-plugin) repo, OR the plugin's own
+		# manifest was moved/deleted. hooks/_lib still hash, but NO .github
+		# byte-SSOT coverage is produced. Emit a NOTE so a missing manifest
+		# can't silently drop .github coverage in a repo that expected it
+		# (#232 silent-failure-hunter).
+		echo "hash-drift: NOTE: $MANIFEST absent — hashing hooks/_lib only, no .github byte-SSOT coverage" >&2
 	fi
 	# shellcheck disable=SC2094  # tmp + entries_tmp are distinct files; rm -f below
 	{
@@ -321,8 +352,10 @@ _is_overridden() {
 	return 1
 }
 
-# For each entry in source-hashes, compare against consumer-local
-# .claude/<relpath> (works for any producer dir; currently hooks/+_lib/).
+# For each entry in source-hashes, compare against the consumer-local copy.
+# Path mapping (see the case statement below, #232): hooks/ and _lib/ mirror
+# under .claude/<relpath>; .github/* (and any other repo-root path) map
+# verbatim to the consumer root.
 # CR PR #90 r1: track processed-rows count + assert against manifest
 # size after the loop to catch partial jq-stream failures.
 drift_count=0
