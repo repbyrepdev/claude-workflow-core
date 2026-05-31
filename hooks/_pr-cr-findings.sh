@@ -249,24 +249,61 @@ WALKTHROUGH_BODY=$(echo "$WALKTHROUGH_BODY" | jq -r . 2>/dev/null || echo "")
 WALKTHROUGH_FAILURES=0
 WALKTHROUGH_WARNINGS=0
 if [ -n "$WALKTHROUGH_BODY" ]; then
-	# Parse the summary line "🚥 Pre-merge checks | ✅ N | ❌ M"
-	# M counts both "❌ Failed" AND "⚠ Warning" rows. For merge gating we only
-	# block on hard failures — warnings are informational (GitHub's own
-	# mergeStateStatus doesn't block on CR walkthrough warnings).
-	SUMMARY_FAIL=$(echo "$WALKTHROUGH_BODY" |
-		grep -oE "❌ [0-9]+" | head -1 | grep -oE "[0-9]+" || echo "0")
-	SUMMARY_FAIL=${SUMMARY_FAIL:-0}
-	if ! [ "$SUMMARY_FAIL" -eq "$SUMMARY_FAIL" ] 2>/dev/null; then
-		echo "ERROR: walkthrough body present but ❌ N count unparseable" >&2
-		echo "$WALKTHROUGH_BODY" | head -20 >&2
+	# CR's walkthrough summary line: "🚥 Pre-merge checks | ✅ N | ❌ M", where M
+	# counts both ❌ Failed AND ⚠ Warning rows. For merge gating we block only on
+	# hard failures (M - warnings); warnings are informational.
+	#
+	# v0.31 #230 + r1 hardening — the gate must FAIL CLOSED on any unparseable CR
+	# summary (the lone fail-OPEN this gate had; PR #302 class). The robustness:
+	#   * extract the count from the SUMMARY LINE only, not the whole body — a
+	#     decoy "❌ 0" elsewhere (e.g. a bolded legend) must not be matched (#230 r1
+	#     security-review).
+	#   * match the failure glyph as an ALTERNATION (CR may render ❌|❎|⛔|🚫) —
+	#     locale-robust vs a multibyte [class], and the SAME set drives both the
+	#     extractor and the drift-detector so they can't disagree (#230 r1 sfh).
+	#   * validate POSITIVELY: a real summary shows "✅ N". If the body has the
+	#     "Pre-merge checks" substring but no parseable summary line / no ✅ N, or a
+	#     failure glyph with no parseable count, FAIL CLOSED — do not certify 0.
+	#   * count ⚠ warnings only within the Pre-merge region (summary onward), not
+	#     the whole body — a "Warning" in unrelated prose must not inflate the count
+	#     and cancel real failures. A NEGATIVE (warnings > M) means the parse model
+	#     is wrong → fail closed, never clamp-to-clean.
+	PMG='❌|❎|⛔|🚫' # CR failure glyphs (alternation matches the whole glyph in any locale)
+	SUMMARY_LINE=$(printf '%s' "$WALKTHROUGH_BODY" | grep -F 'Pre-merge checks' | head -1) || true
+	if [ -z "$SUMMARY_LINE" ]; then
+		echo "ERROR: walkthrough body present but no 'Pre-merge checks' summary line parseable — failing closed" >&2
+		printf '%s\n' "$WALKTHROUGH_BODY" | head -20 >&2
 		exit 1
 	fi
-	# Count warning rows in the inner "Failed checks" table (status column
-	# contains "⚠️ Warning" / "⚠ Warning"). Hard failures = M - warnings.
-	WALKTHROUGH_WARNINGS=$(echo "$WALKTHROUGH_BODY" | grep -cE '⚠️?[[:space:]]*Warning' || true)
+	if ! printf '%s' "$SUMMARY_LINE" | grep -qE '✅[^0-9]{0,8}[0-9]+'; then
+		echo "ERROR: 'Pre-merge checks' summary present but no parseable '✅ N' — format drift; failing closed" >&2
+		printf '%s\n' "$SUMMARY_LINE" | head -5 >&2
+		exit 1
+	fi
+	SUMMARY_FAIL=$(printf '%s' "$SUMMARY_LINE" | grep -oE "(${PMG})[^0-9]{0,8}[0-9]+" | head -1 | grep -oE '[0-9]+') || true
+	if [ -z "$SUMMARY_FAIL" ]; then
+		if printf '%s' "$SUMMARY_LINE" | grep -qE "(${PMG})"; then
+			echo "ERROR: summary has a failure marker but no parseable count — format drift; failing closed" >&2
+			printf '%s\n' "$SUMMARY_LINE" | head -5 >&2
+			exit 1
+		fi
+		SUMMARY_FAIL=0 # ✅ N present, no failure glyph → genuinely zero
+	fi
+	if ! [ "$SUMMARY_FAIL" -eq "$SUMMARY_FAIL" ] 2>/dev/null; then
+		echo "ERROR: summary failure count unparseable (non-integer) — failing closed" >&2
+		printf '%s\n' "$SUMMARY_LINE" | head -5 >&2
+		exit 1
+	fi
+	# Warnings: scoped to the Pre-merge region (summary line onward), not the body.
+	PRE_MERGE_REGION=$(printf '%s' "$WALKTHROUGH_BODY" | awk '/Pre-merge checks/{f=1} f{print}')
+	WALKTHROUGH_WARNINGS=$(printf '%s' "$PRE_MERGE_REGION" | grep -cE '⚠️?[[:space:]]*Warning') || true
 	WALKTHROUGH_WARNINGS=${WALKTHROUGH_WARNINGS:-0}
 	WALKTHROUGH_FAILURES=$((SUMMARY_FAIL - WALKTHROUGH_WARNINGS))
-	[ "$WALKTHROUGH_FAILURES" -lt 0 ] && WALKTHROUGH_FAILURES=0
+	if [ "$WALKTHROUGH_FAILURES" -lt 0 ]; then
+		echo "ERROR: walkthrough warning count ($WALKTHROUGH_WARNINGS) exceeds total ❌ count ($SUMMARY_FAIL) — cannot reconcile CR summary; failing closed" >&2
+		printf '%s\n' "$SUMMARY_LINE" | head -5 >&2
+		exit 1
+	fi
 fi
 
 # ---- Source 3: Outside-diff-range comments in review bodies ----

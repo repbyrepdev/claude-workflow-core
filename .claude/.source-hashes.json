@@ -26,7 +26,7 @@
     "hooks/_lib.sh": "57ff0032f45b672fc9a501086bb6190ac5a8de99897a10175862a6401fddde44",
     "hooks/_otel-silence.sh": "606246aa6856494e99b2858fc07a230132a51aab2f3e624e52a67427b1d73e2b",
     "hooks/_phase1-collect-logs.sh": "488f2dac255ee29cb946df3e2411855b7d6c7de232318b8a91e3bf1937ca3b1b",
-    "hooks/_pr-cr-findings.sh": "e7b9cb17f03f50cd647d890f24f3d98dd36d3efd1b2ede768a93a09c792a5f38",
+    "hooks/_pr-cr-findings.sh": "3d797ee2e0da229dd46db76007e18ae734d3a81717817285f95d4e46132c76b3",
     "hooks/_read-actions-mode.sh": "afa5d5dff6a4bf41f77e106cf9dc84e35b26ebeefa7fbf2a7efedd25135d9b7d",
     "hooks/agent-relevant-files.sh": "812bb921f4be08cc28cf26f0437eef77f03b65283a564869576cf323ee699bc3",
     "hooks/auto-close-parent.sh": "475c9160d73e7ff7d1439af318934af90b21521ef47ed2b44cacf8bc0c76fc91",
