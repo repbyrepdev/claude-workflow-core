@@ -129,9 +129,10 @@ _run_hook() {
 }
 
 @test "leading-whitespace skip prefix is detected — refused (T17, #224)" {
-	# v0.31 #224: the old `^`-anchored SKIP_RE missed an indented prefix (heredoc
-	# body, indented continuation, copy-paste). `^[[:space:]]*` now catches it so
-	# it can't slip past the approval popup.
+	# v0.31 #224: the old `^`-anchored SKIP_RE missed a leading-whitespace prefix
+	# (indented copy-paste). `^[[:space:]]*` now catches whitespace before the
+	# first token so it can't slip past the approval popup. (Interior heredoc
+	# lines remain out of scope — `^` is not multiline; see T16.)
 	_run_hook "  LINT_GATE_SKIP=1 echo hi"
 	[ "$status" -eq 2 ]
 	[[ $output == *"LINT_GATE_SKIP"* ]]
