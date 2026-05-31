@@ -209,9 +209,20 @@ if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
 		# class as rg --pre, #191 r2). Plain `grep` (no such flag) covers
 		# search. git diff's `-O<orderfile>` (read) is fine — only --output
 		# writes, and that's screened above.
+		#
+		# v0.31 #225 (silent-failure-hunter #4): the sanctioned test runners
+		# scripts/test.sh + scripts/test-touched.sh are allowed so a Phase-1
+		# REVIEW subagent can verify behaviorally (red/green) WITHOUT resorting to
+		# PHASE1_DIRECTIVE_GUARD_SKIP. They are read-only w.r.t. source — they only
+		# write .claude/logs/bats-run.jsonl + temp dirs (verification I/O), not the
+		# productive commit/push/Edit work this guard exists to defer. Both the
+		# direct and `bash <runner>` forms match; the compound/redirect/exec-flag
+		# screen above still applies (so `scripts/test.sh; rm …` is still denied).
 		for _ro in \
 			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame)' \
-			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep'; do
+			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep' \
+			'(\./)?scripts/test(-touched)?\.sh' \
+			'bash[[:space:]]+(\./)?scripts/test(-touched)?\.sh'; do
 			if match_cmd_at_anchor "$_ro" "$CMD"; then
 				exit 0
 			fi

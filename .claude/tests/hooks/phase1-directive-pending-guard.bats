@@ -265,3 +265,32 @@ teardown() {
 	_setup_pending_repo
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config=auto --error f.sh"}}')" = allow ]
 }
+
+# --- v0.31 #225 (silent-failure-hunter #4): sanctioned test-runner carve-out ---
+# A Phase-1 REVIEW subagent must be able to verify behaviorally (run the
+# sanctioned test runners) WITHOUT PHASE1_DIRECTIVE_GUARD_SKIP. The runners are
+# read-only w.r.t. source (only write the bats log + temp dirs).
+
+@test "behavioral: sanctioned test runners ALLOWED while pending (#225)" {
+	_setup_pending_repo
+	for c in "scripts/test.sh" "scripts/test.sh .claude/tests/hooks/x.bats" "scripts/test-touched.sh" "./scripts/test-touched.sh" "bash scripts/test.sh" "bash scripts/test-touched.sh"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = allow ] || {
+			echo "expected ALLOW for test runner: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "behavioral: a test runner laundering a mutation is still DENIED (#225)" {
+	_setup_pending_repo
+	# The compound/redirect screen still applies — the carve-out is for the
+	# single simple runner invocation only.
+	for c in "scripts/test.sh; rm -rf x" "scripts/test-touched.sh && git push" "bash scripts/test.sh > out.txt"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY for laundered runner: $c (got $d)" >&2
+			false
+		}
+	done
+}
