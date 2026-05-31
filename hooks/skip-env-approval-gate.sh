@@ -88,7 +88,11 @@ rm -f "$_jq_err"
 # `foo=bar LINT_GATE_SKIP=1 cmd` can't fail the whole match → SKIP_VAR="" →
 # silent exit-0 let-through. Mirrors the sibling skill-bypass-guard ENV_PREFIX
 # (CR #634 #136). The skip-var alternation itself stays UPPERCASE by convention.
-SKIP_RE='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=([^[:space:]"'\'']+|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
+# v0.31 #224 CR-CLI r2 (critical): the LEADING-assignment unquoted value uses `*`
+# (not `+`) so an EMPTY assignment (`FOO= LINT_GATE_SKIP=1 cmd`) doesn't fail the
+# whole match → SKIP_VAR="" → silent let-through. The skip-var's OWN value keeps
+# `+` (an empty `*_SKIP=` is not a truthy bypass, so it need not be caught).
+SKIP_RE='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=([^[:space:]"'\'']*|"[^"]*"|'\''[^'\'']*'\'')[[:space:]]+)*(HOOK_ACK_CLEAR|[A-Z_][A-Z0-9_]*_SKIP|[A-Z_][A-Z0-9_]*_BYPASS)=([^[:space:]]+|"[^"]*"|'\''[^'\'']*'\'')'
 SKIP_VAR=""
 if [[ $CMD =~ $SKIP_RE ]]; then
 	SKIP_VAR="${BASH_REMATCH[4]}"

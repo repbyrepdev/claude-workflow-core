@@ -170,3 +170,12 @@ _run_hook() {
 	_run_hook "  echo LINT_GATE_SKIP is only mentioned"
 	[ "$status" -eq 0 ]
 }
+
+@test "EMPTY benign assignment before the skip is detected — refused (T22, #224 CR r2)" {
+	# CR-CLI critical: the leading-assignment unquoted value was `+` (one-or-more),
+	# so `FOO= LINT_GATE_SKIP=1 cmd` (empty value) failed the WHOLE match →
+	# SKIP_VAR="" → silent let-through. `*` (zero-or-more) closes it.
+	_run_hook "FOO= LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
