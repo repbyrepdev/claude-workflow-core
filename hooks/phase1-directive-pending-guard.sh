@@ -209,9 +209,23 @@ if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
 		# class as rg --pre, #191 r2). Plain `grep` (no such flag) covers
 		# search. git diff's `-O<orderfile>` (read) is fine — only --output
 		# writes, and that's screened above.
+		#
+		# v0.31 #225 (silent-failure-hunter #4): the sanctioned test runners
+		# scripts/test.sh + scripts/test-touched.sh are allowed so a Phase-1
+		# REVIEW subagent can verify behaviorally (red/green) WITHOUT resorting to
+		# PHASE1_DIRECTIVE_GUARD_SKIP. They are read-only w.r.t. source — they write
+		# only gitignored verification artifacts under .claude/ (bats-run.jsonl,
+		# test-run-summary.jsonl, the .review-cache ledger) + temp dirs, not the
+		# productive commit/push/Edit work this guard exists to defer. The single
+		# pattern accepts an optional env-prefix (e.g. `BASE=main
+		# scripts/test-touched.sh` — the documented scope-vs-main form) and the
+		# `bash <runner>` form, reusing the env-prefix idiom of the review-log
+		# allowlist above + _lib/cmd-anchor.sh. The compound/redirect/exec-flag
+		# screen above still runs FIRST (so `scripts/test.sh; rm …` is denied).
 		for _ro in \
 			'git[[:space:]]+(diff|log|show|status|rev-parse|for-each-ref|branch|merge-base|ls-files|cat-file|describe|blame)' \
-			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep'; do
+			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep' \
+			'([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(bash[[:space:]]+)?(\./)?scripts/test(-touched)?\.sh'; do
 			if match_cmd_at_anchor "$_ro" "$CMD"; then
 				exit 0
 			fi
