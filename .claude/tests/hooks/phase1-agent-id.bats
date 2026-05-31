@@ -188,11 +188,16 @@ _mk_record() {
 	[ "$status" -eq 2 ]
 }
 
-@test "list prints recorded agents + the actual (overridable) cap" {
+@test "list renders agent, agentId, and the cap value" {
 	_mk_record code-reviewer "$AGENTID" "$OTHER_SHA" 1
-	# Phase 2 CR-CLI fix: the cap must reflect PHASE1_RESUME_CAP (now passed via
-	# jq --arg), not a hardcoded /3 — env.PHASE1_RESUME_CAP was null (unexported)
-	# so list previously always showed /3 regardless of an override.
+	# Phase 1 r1 (pr-test-analyzer + comment-analyzer): this verifies list
+	# RENDERS the cap (now via jq --arg cap). It deliberately does NOT claim to
+	# discriminate --arg from the old `env.PHASE1_RESUME_CAP // "3"` form: a
+	# command-prefix `PHASE1_RESUME_CAP=5` EXPORTS the var, so jq's env. would
+	# also resolve it (both print 1/5). The --arg form is kept because it's the
+	# unambiguous one — independent of export semantics and of the // "3"
+	# fallback that happened to mask the env-null in the default case — not
+	# because this test can fail against the old form.
 	PHASE1_RESUME_CAP=5 run bash "$AID" list
 	[ "$status" -eq 0 ]
 	[[ $output == *"code-reviewer"* ]]
