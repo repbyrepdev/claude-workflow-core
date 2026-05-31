@@ -127,3 +127,55 @@ _run_hook() {
 	_run_hook 'echo "this line merely mentions LINT_GATE_SKIP=1 in prose"'
 	[ "$status" -eq 0 ]
 }
+
+@test "leading-whitespace skip prefix is detected — refused (T17, #224)" {
+	# v0.31 #224: the old `^`-anchored SKIP_RE missed a leading-whitespace prefix
+	# (indented copy-paste). `^[[:space:]]*` now catches whitespace before the
+	# first token so it can't slip past the approval popup. (Interior heredoc
+	# lines remain out of scope — `^` is not multiline; see T16.)
+	_run_hook "  LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "export-prefixed skip is detected — refused (T18, #224)" {
+	# v0.31 #224: `export LINT_GATE_SKIP=1; cmd` set the skip var for the gated
+	# tool within the same Bash call while sailing past the popup.
+	# `(export[[:space:]]+)?` now catches it; the skip var is BASH_REMATCH[4].
+	_run_hook "export LINT_GATE_SKIP=1; echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "export + benign env prefix before the skip is detected — refused (T19, #224 r2)" {
+	# pr-test-analyzer r1: locks the BASH_REMATCH[4] capture on the combined
+	# export + leading-assignment path (G1 export, G2 consumes FOO=1, G4 = skip).
+	_run_hook "export FOO=1 LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "lowercase benign prefix before the skip is detected — refused (T20, #224 r2)" {
+	# silent-failure-hunter r1: the old [A-Z_] leading-assignment class made a
+	# lowercase benign prefix fail the WHOLE match → SKIP_VAR="" → silent exit-0
+	# let-through. [A-Za-z_] closes that fail-open. This is the load-bearing case.
+	_run_hook "foo=bar LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}
+
+@test "indented BENIGN command (no skip var) is NOT gated (T21, #224 r2 negative)" {
+	# pr-test-analyzer r1: prove the new `^[[:space:]]*` anchor did not over-broaden
+	# — a leading-whitespace command with no top-level skip assignment stays allowed.
+	_run_hook "  echo LINT_GATE_SKIP is only mentioned"
+	[ "$status" -eq 0 ]
+}
+
+@test "EMPTY benign assignment before the skip is detected — refused (T22, #224 CR r2)" {
+	# CR-CLI critical: the leading-assignment unquoted value was `+` (one-or-more),
+	# so `FOO= LINT_GATE_SKIP=1 cmd` (empty value) failed the WHOLE match →
+	# SKIP_VAR="" → silent let-through. `*` (zero-or-more) closes it.
+	_run_hook "FOO= LINT_GATE_SKIP=1 echo hi"
+	[ "$status" -eq 2 ]
+	[[ $output == *"LINT_GATE_SKIP"* ]]
+}

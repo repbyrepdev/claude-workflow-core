@@ -48,3 +48,19 @@ _cmd_starts_with() {
 	run _cmd_starts_with "git push origin main" "gh pr merge"
 	[ "$status" -ne 0 ]
 }
+
+@test "REGRESSION (#224): deny message does not advertise SKILL_WRAPPER as a bypass" {
+	# v0.31 guard-self-defeat: the model-facing deny block must not teach
+	# `SKILL_WRAPPER=1 <cmd>` as an escape (it trains the exact bypass the gate
+	# exists to block). The SKILL_WRAPPER *exemption* logic + maintainer header
+	# stay; only the advertisement in the deny text is removed. SHIP_CYCLE_GATE_SKIP
+	# remains the one documented, audit-logged bypass.
+	# r2 (pr-test-analyzer): match the advert by SHAPE, not one exact string, so a
+	# rephrased re-introduction (`SKILL_WRAPPER=1 <command>` / `<x>` / no space)
+	# can't false-green. `SKILL_WRAPPER=1` followed by an arg placeholder `<` is
+	# the advert; the maintainer header uses an em-dash, not `<`, so it's safe.
+	run grep -qE 'SKILL_WRAPPER=1[[:space:]]*<' "$HOOK"
+	[ "$status" -ne 0 ]
+	run grep -qF 'SHIP_CYCLE_GATE_SKIP=1 <cmd>' "$HOOK"
+	[ "$status" -eq 0 ]
+}

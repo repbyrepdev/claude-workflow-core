@@ -250,8 +250,7 @@ Command: ${CMD_PREVIEW}...
 Required skill: ${SKILL}
 Why: ${REASON}
 To proceed: invoke the ${SKILL} skill (natural-language trigger like \"create an issue\" / \"open a PR\" / \"merge it\" / \"commit\", OR via the Skill tool with skill=\"${SKILL}\"). The skill handles template/labels/board-sync/post-action automation that raw command bypasses.
-Emergency override (skill broken / meta-PR touching skill itself): GH_SKILL_BYPASS_SKIP=1 <your-command> (bypass logged to stderr with source tag).
-Sanctioned skill-wrapper path: SKILL_WRAPPER=1 <your-command>. Skill run.sh wrappers set this internally."
+Emergency override (skill broken / meta-PR touching skill itself): GH_SKILL_BYPASS_SKIP=1 <your-command> (bypass logged to stderr with source tag)."
 	deny "$DIRECTIVE"
 fi
 
@@ -279,8 +278,7 @@ To proceed (in order of preference):
   3. scripts/test.sh
        Full suite (pre-push or weekly baseline).
 
-Emergency override (user-facing — audit-logged): GH_SKILL_BYPASS_SKIP=1 bats <file>
-Sanctioned wrapper path (skill internal): SKILL_WRAPPER=1 bats <file>"
+Emergency override (user-facing — audit-logged): GH_SKILL_BYPASS_SKIP=1 bats <file>"
 	deny "$BATS_DIRECTIVE"
 fi
 
