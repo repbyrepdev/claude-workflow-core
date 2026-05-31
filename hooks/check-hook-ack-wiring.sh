@@ -32,6 +32,20 @@ SETTINGS="${HOME}/.claude/settings.json"
 LIB_FRONTMATTER="$(dirname "$0")/../_lib/event-frontmatter.sh"
 LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 
+# v0.31 #228: scan the REPO's source hooks dir (resolved via REPO_ROOT), NOT
+# $(dirname "$0"). When this hook is wired via the pinned plugin-cache path,
+# `dirname $0` is the FROZEN cache copy — so the scan was blind to source-only
+# hooks added after the pinned version (exactly the orphan class this advisory
+# exists to catch). Plugin layout = hooks/; consumer layout = .claude/hooks/;
+# fall back to the running dir only when out-of-repo.
+if [ -d "$REPO_ROOT/hooks" ] && compgen -G "$REPO_ROOT/hooks/*.sh" >/dev/null; then
+	HOOKS_DIR="$REPO_ROOT/hooks"
+elif [ -d "$REPO_ROOT/.claude/hooks" ]; then
+	HOOKS_DIR="$REPO_ROOT/.claude/hooks"
+else
+	HOOKS_DIR="$(dirname "$0")"
+fi
+
 [ -f "$SETTINGS" ] || exit 0
 [ -f "$LIB_FRONTMATTER" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -44,7 +58,7 @@ source "$LIB_FRONTMATTER"
 # auto_register; auto_register==false means operator opted out of
 # automatic registration → don't warn.
 missing=""
-for hook in "$(dirname "$0")/"*.sh; do
+for hook in "$HOOKS_DIR/"*.sh; do
 	[ -f "$hook" ] || continue
 	base=${hook##*/}
 	event_frontmatter_skip_basename "$base" && continue
