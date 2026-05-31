@@ -40,7 +40,7 @@ PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
 
 LIST_SCRIPT="$(resolve_plugin_helper "hooks/list-phase1-agents.sh" 2>/dev/null || echo "")"
 if [ -z "$LIST_SCRIPT" ] || [ ! -x "$LIST_SCRIPT" ]; then
-	echo 'ERROR: list-phase1-agents.sh missing (checked $REPO_ROOT/.claude/hooks/ + plugin cache)' >&2
+	echo "ERROR: list-phase1-agents.sh missing (checked $REPO_ROOT/.claude/hooks/ + plugin cache)" >&2
 	exit 2
 fi
 

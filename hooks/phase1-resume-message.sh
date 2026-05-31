@@ -42,6 +42,16 @@ REJECTION_DIR="$REPO_ROOT/.claude/.session-state/prove-yourself"
 # Cap on rejection records embedded (alpha-sorted for determinism, matching
 # phase1-launcher.sh's rejection-list injection). Each field truncated below.
 REJECTION_CAP="${PHASE1_RESUME_REJECTION_CAP:-20}"
+# Phase 2 CR-CLI (same class as phase1-agent-id.sh's PHASE1_RESUME_CAP guard):
+# validate the cap is an integer. A non-integer override makes the `[ "$count"
+# -ge "$REJECTION_CAP" ]` test in _rejection_block error with "integer
+# expression expected" inside the `&&`/`if`, where set -e does NOT abort — so
+# `break` never fires, the cap is silently skipped, every rejection is embedded,
+# and each iteration emits stderr noise. Fall back to 20 on garbage.
+if ! [[ $REJECTION_CAP =~ ^[0-9]+$ ]]; then
+	echo "phase1-resume-message: WARN: PHASE1_RESUME_REJECTION_CAP='$REJECTION_CAP' is not an integer — falling back to 20" >&2
+	REJECTION_CAP=20
+fi
 
 _valid_agent() { [[ $1 =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; }
 _valid_sha() { [[ $1 =~ ^[0-9a-f]{6,40}$ ]]; }

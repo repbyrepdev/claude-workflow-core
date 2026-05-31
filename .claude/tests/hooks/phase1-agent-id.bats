@@ -411,3 +411,15 @@ _mk_corrupt() {
 	chmod 755 "$TMP/.claude/.session-state/prove-yourself"
 	[ "$status" -eq 3 ]
 }
+
+@test "resume-message: non-integer PHASE1_RESUME_REJECTION_CAP falls back to 20 (no cap-skip)" {
+	# Phase 2 CR-CLI fix: a garbage cap must not error the -ge test + silently
+	# skip the cap. Falls back to 20; all 3 (< 20) records still emit.
+	local i
+	for i in $(seq 1 3); do _mk_rejection "rej$i" "finding number $i here" "reason $i"; done
+	PHASE1_RESUME_REJECTION_CAP=abc run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[[ $output == *"falling back to 20"* ]]
+	count="$(printf '%s\n' "$output" | grep -c 'finding number')"
+	[ "$count" -eq 3 ]
+}
