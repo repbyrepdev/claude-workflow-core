@@ -24,7 +24,9 @@ set -euo pipefail
 # The refutation outcome is handled by the main loop per ship-pr-cycle
 # SKILL.md: a refutation re-dogfooded and upheld → record-fix (reopen +
 # fix in-PR); re-confirmed → record-rejection again with the counter-
-# evidence addressed in decision_data. No new prove-yourself action needed.
+# evidence addressed in decision_data. These EXISTING prove-yourself actions
+# (record-fix / record-rejection) MUST still be run — no NEW action *type* is
+# introduced; the refutation flow reuses them rather than adding a kind.
 #
 # Usage:
 #   phase1-resume-message.sh build <agent> <round> <base_ref> <head_sha>

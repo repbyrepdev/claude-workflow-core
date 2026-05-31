@@ -279,3 +279,131 @@ _mk_rejection() {
 	[ ! -d "$STORE" ]
 	[ -f "$TMP/.claude/.session-state/prove-yourself/keep.json" ]
 }
+
+# ---------------- Phase 1 r1 round-1 finding fixes + coverage gaps ----------------
+
+_mk_corrupt() {
+	mkdir -p "$STORE"
+	printf 'not valid json {{{ ' >"$STORE/$1.json"
+}
+
+@test "PHASE1_RESUME_CAP non-integer falls back to 3 (cap NOT silently disabled)" {
+	# resume_count 5 >= 3 → empty. Pre-fix, a garbage cap made the `-ge` test
+	# error (rc 2) inside the `if`, skipping the cap and emitting regardless.
+	_mk_record code-reviewer "$AGENTID" "$OTHER_SHA" 5
+	PHASE1_RESUME_CAP=abc run bash "$AID" directive code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[[ $output != *"SendMessage"* ]]
+}
+
+@test "directive with empty-string agentId falls through (no 'SendMessage to= ')" {
+	mkdir -p "$STORE"
+	printf '{"agent":"code-reviewer","agentId":"","sha":"%s","last_sha":"%s","resume_count":0}\n' "$OTHER_SHA" "$OTHER_SHA" >"$STORE/code-reviewer.json"
+	run bash "$AID" directive code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "get with empty-string agentId warns + emits no id" {
+	mkdir -p "$STORE"
+	printf '{"agent":"code-reviewer","agentId":"","sha":"%s"}\n' "$OTHER_SHA" >"$STORE/code-reviewer.json"
+	run bash "$AID" get code-reviewer
+	[ "$status" -eq 0 ]
+	[[ $output == *"missing/empty .agentId"* ]]
+	# stdout (the id itself) must be empty
+	run bash -c "bash '$AID' get code-reviewer 2>/dev/null"
+	[ -z "$output" ]
+}
+
+@test "directive with non-numeric resume_count does NOT abort (resets to 0, emits)" {
+	mkdir -p "$STORE"
+	printf '{"agent":"code-reviewer","agentId":"%s","sha":"%s","last_sha":"%s","resume_count":"abc"}\n' "$AGENTID" "$OTHER_SHA" "$OTHER_SHA" >"$STORE/code-reviewer.json"
+	run bash "$AID" directive code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[[ $output == *"SendMessage to=$AGENTID"* ]]
+	[[ $output == *"resume 1/3"* ]]
+}
+
+@test "directive rejects round=0 / bad base / bad head (rc 2)" {
+	_mk_record code-reviewer "$AGENTID" "$OTHER_SHA" 0
+	run bash "$AID" directive code-reviewer 0 main "$HEAD_SHA"
+	[ "$status" -eq 2 ]
+	run bash "$AID" directive code-reviewer 2 'bad;ref' "$HEAD_SHA"
+	[ "$status" -eq 2 ]
+	run bash "$AID" directive code-reviewer 2 main 'nothex'
+	[ "$status" -eq 2 ]
+}
+
+@test "corrupt record: directive falls through (rc 0, empty) — does not abort" {
+	_mk_corrupt code-reviewer
+	run bash "$AID" directive code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "corrupt record: get warns + rc 0" {
+	_mk_corrupt code-reviewer
+	run bash "$AID" get code-reviewer
+	[ "$status" -eq 0 ]
+	[[ $output == *"corrupt"* ]]
+}
+
+@test "corrupt record: resumed exits 3 and does NOT clobber the file" {
+	_mk_corrupt code-reviewer
+	before="$(cat "$STORE/code-reviewer.json")"
+	run bash "$AID" resumed code-reviewer "$HEAD_SHA"
+	[ "$status" -eq 3 ]
+	[ "$(cat "$STORE/code-reviewer.json")" = "$before" ]
+}
+
+@test "corrupt record: list prints a corrupt marker (rc 0)" {
+	_mk_corrupt code-reviewer
+	run bash "$AID" list
+	[ "$status" -eq 0 ]
+	[[ $output == *"corrupt record"* ]]
+}
+
+@test "end-to-end lifecycle: record → directive/resumed chain enforces the cap" {
+	bash "$AID" record code-reviewer "$AGENTID" "$OTHER_SHA"
+	h1="$(printf 'a%039d' 1 | tr ' ' 0)"
+	h2="$(printf 'c%039d' 2 | tr ' ' 0)"
+	h3="$(printf 'd%039d' 3 | tr ' ' 0)"
+	h4="$(printf 'e%039d' 4 | tr ' ' 0)"
+	run bash "$AID" directive code-reviewer 2 main "$h1"
+	[[ $output == *"resume 1/3"* ]]
+	bash "$AID" resumed code-reviewer "$h1"
+	run bash "$AID" directive code-reviewer 3 main "$h2"
+	[[ $output == *"resume 2/3"* ]]
+	bash "$AID" resumed code-reviewer "$h2"
+	run bash "$AID" directive code-reviewer 4 main "$h3"
+	[[ $output == *"resume 3/3"* ]]
+	bash "$AID" resumed code-reviewer "$h3"
+	run bash "$AID" directive code-reviewer 5 main "$h4"
+	[ -z "$output" ]
+}
+
+@test "resume-message: rejects bad head + unknown subcommand (rc 2)" {
+	run bash "$MSG" build code-reviewer 2 main 'nothex'
+	[ "$status" -eq 2 ]
+	run bash "$MSG" frobnicate
+	[ "$status" -eq 2 ]
+}
+
+@test "resume-message: one corrupt rejection record does NOT drop valid siblings" {
+	_mk_rejection good1 "real finding alpha here" "reason alpha"
+	mkdir -p "$TMP/.claude/.session-state/prove-yourself"
+	printf 'not json {{{' >"$TMP/.claude/.session-state/prove-yourself/corrupt.json"
+	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
+	[ "$status" -eq 0 ]
+	[[ $output == *"real finding alpha"* ]]
+}
+
+@test "resume-message: unreadable rejection dir fails loud (rc 3) [#193]" {
+	if [ "$(id -u)" -eq 0 ]; then skip "#193 rc-3 path relies on DAC perms, which root (uid 0) bypasses"; fi
+	mkdir -p "$TMP/.claude/.session-state/prove-yourself"
+	printf '{}' >"$TMP/.claude/.session-state/prove-yourself/x.json"
+	chmod 000 "$TMP/.claude/.session-state/prove-yourself"
+	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
+	chmod 755 "$TMP/.claude/.session-state/prove-yourself"
+	[ "$status" -eq 3 ]
+}

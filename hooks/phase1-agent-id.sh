@@ -55,6 +55,18 @@ STATE_DIR="$REPO_ROOT/.claude/.session-state/phase1-agent-ids"
 # Default 3 → fresh spawn + 3 resumes = 4 reviews of that agent across rounds
 # before forcing a fresh re-spawn to bound subagent context growth.
 PHASE1_RESUME_CAP="${PHASE1_RESUME_CAP:-3}"
+# Phase 1 r1 (code-reviewer/silent-failure-hunter): validate the cap is an
+# integer. Every other input here is regex-checked; an un-validated non-numeric
+# cap (e.g. PHASE1_RESUME_CAP=abc) makes the `[ "$resume_count" -ge "$cap" ]`
+# test error with "integer expression expected" (rc 2) — inside an `if`, set -e
+# does NOT abort, the rc is read as false, and the cap is silently SKIPPED,
+# defeating the exact context-overflow bound the cap exists for. The launcher
+# calls directive with 2>/dev/null so the diagnostic is invisible. Fall back to
+# the default on garbage rather than disable the cap.
+if ! [[ $PHASE1_RESUME_CAP =~ ^[0-9]+$ ]]; then
+	echo "phase1-agent-id: WARN: PHASE1_RESUME_CAP='$PHASE1_RESUME_CAP' is not an integer — falling back to 3" >&2
+	PHASE1_RESUME_CAP=3
+fi
 
 _usage() {
 	cat <<'EOF' >&2
@@ -144,13 +156,21 @@ cmd_get() {
 	local rec
 	rec=$(_record_file "$agent")
 	[ -f "$rec" ] || return 0
-	# jq -e exits 1 on null/false — distinct from rc=0 with empty stdout
-	# (file-missing). Here we already gated on -f, so missing key = corrupt.
-	if ! jq -re '.agentId // empty' "$rec" 2>/dev/null; then
-		# Corrupt or schema-drift record — surface, don't silently no-op.
-		echo "phase1-agent-id: WARN: record $rec missing .agentId (corrupt?)" >&2
+	# Phase 1 r1 (silent-failure-hunter): jq's `// empty` only triggers on
+	# null/false, NOT on an empty STRING — so a record with "agentId":"" makes
+	# jq exit 0 and print a blank line, which the old `if ! jq` form treated as
+	# success (echoing an empty agentId). Capture + explicit -z check so both a
+	# jq failure AND an empty agentId surface the corrupt-WARN and never echo an
+	# empty id as if valid. `|| id=""` is REQUIRED: on a corrupt record jq exits
+	# 4/5, and a bare `id=$(jq …)` would abort the script under `set -e` (the old
+	# `if ! jq` form was set-e-exempt; this assignment is not).
+	local id=""
+	id=$(jq -re '.agentId // empty' "$rec" 2>/dev/null) || id=""
+	if [ -z "$id" ]; then
+		echo "phase1-agent-id: WARN: record $rec missing/empty .agentId (corrupt?)" >&2
 		return 0
 	fi
+	printf '%s\n' "$id"
 }
 
 # Emit the per-agent line the launcher prints in its `*)` case. Either the
@@ -193,6 +213,14 @@ cmd_directive() {
 	agent_id=$(jq -re '.agentId // empty' "$rec" 2>/dev/null) || return 0
 	last_sha=$(jq -re '.last_sha // .sha // empty' "$rec" 2>/dev/null) || return 0
 	resume_count=$(jq -re '.resume_count // 0' "$rec" 2>/dev/null) || resume_count=0
+	# Phase 1 r1 (silent-failure-hunter): jq `// empty` lets an empty-STRING
+	# agentId through (rc 0, blank) — which would emit `SendMessage to= ` with
+	# no target; and a non-numeric resume_count (schema drift, e.g. "abc")
+	# would make the cap test below abort the helper under set -e. Guard both:
+	# an empty agentId means fall through to a fresh spawn; a non-numeric count
+	# resets to 0 (fresh resume budget).
+	[ -n "$agent_id" ] || return 0
+	[[ $resume_count =~ ^[0-9]+$ ]] || resume_count=0
 
 	# Cap check: after PHASE1_RESUME_CAP resumes, force a fresh spawn to
 	# bound subagent context growth (#193 caveat).

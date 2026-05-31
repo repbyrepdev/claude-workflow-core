@@ -107,3 +107,26 @@ _seed_record() {
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
 	[[ $output != *"resume bookkeeping"* ]]
 }
+
+@test "FLAG OFF round 2: output is BYTE-IDENTICAL to the pre-#193 launcher (safety contract)" {
+	# Phase 1 r1 (pr-test-analyzer HIGH): the whole #193 safety contract is
+	# "flag off ⇒ byte-identical to pre-#193". Prove it by EQUALITY, not just
+	# substring-absence: run the main-branch launcher and the HEAD launcher in
+	# the SAME fixture with the flag off and diff. To make the comparison fair
+	# both must resolve the same sibling hooks + _lib, so copy the whole HEAD
+	# hooks/ + _lib into the fixture and drop the pre-#193 launcher beside them.
+	_seed_record
+	cp -R "$REPO/hooks" "$TMP/hooks-copy"
+	cp -R "$REPO/_lib" "$TMP/_lib"
+	# `_lib` must sit at <launcher-dir>/../_lib for both launchers' source line.
+	mkdir -p "$TMP/run/hooks"
+	cp -R "$TMP/_lib" "$TMP/run/_lib"
+	cp "$TMP"/hooks-copy/*.sh "$TMP/run/hooks/" 2>/dev/null
+	git -C "$REPO" show main:hooks/phase1-launcher.sh >"$TMP/run/hooks/main-launcher.sh" 2>/dev/null ||
+		skip "#193 cannot read main:hooks/phase1-launcher.sh (shallow clone?)"
+	chmod +x "$TMP/run/hooks/main-launcher.sh" "$TMP/run/hooks/phase1-launcher.sh"
+	out_main=$(CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 bash "$TMP/run/hooks/main-launcher.sh" 2 2>/dev/null)
+	out_head=$(CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 bash "$TMP/run/hooks/phase1-launcher.sh" 2 2>/dev/null)
+	[ -n "$out_main" ]
+	[ "$out_main" = "$out_head" ]
+}

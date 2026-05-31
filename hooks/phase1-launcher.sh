@@ -677,23 +677,53 @@ for agent in $EFFECTIVE_AGENTS; do
 		_resume_line=""
 		_aid_helper="$(dirname "$0")/phase1-agent-id.sh"
 		if [ -x "$_aid_helper" ]; then
-			_resume_line=$("$_aid_helper" directive "$agent" "$ROUND" "$BASE_REF" "$SHA" 2>/dev/null || echo "")
-		fi
-		if [ -n "$_resume_line" ]; then
-			AGENT_RESUMED=1
-			echo "  $i. [RESUME] $_resume_line"
-			# Emit the peer-review message body (delta scope + dismissed
-			# findings with dogfood evidence + the new_findings / refutations /
-			# accepted_rejections response contract). Send VERBATIM as the
-			# SendMessage `message`. After a SUCCESSFUL resume, commit the
-			# event with: phase1-agent-id.sh resumed $agent $SHA (see footer).
-			_msg_helper="$(dirname "$0")/phase1-resume-message.sh"
-			if [ -x "$_msg_helper" ]; then
-				echo "       ↓ send VERBATIM as the SendMessage message body ↓"
-				"$_msg_helper" build "$agent" "$ROUND" "$BASE_REF" "$SHA" 2>/dev/null | sed 's/^/       /' || true
+			# Phase 1 r1 (silent-failure-hunter): capture directive's rc instead
+			# of `|| echo ""`. rc 2 = the launcher passed bad args to its own
+			# helper (a real contract bug, e.g. a malformed BASE_REF from the
+			# clean-SHA walk) — distinct from the intended empty-output no-op
+			# (rc 0: flag off / round 1 / cap / no delta). Surface rc 2; don't
+			# let it masquerade as a silent fall-through to fresh.
+			_dir_err=$(mktemp 2>/dev/null) || _dir_err=/dev/null
+			_dir_rc=0
+			_resume_line=$("$_aid_helper" directive "$agent" "$ROUND" "$BASE_REF" "$SHA" 2>"$_dir_err") || _dir_rc=$?
+			if [ "$_dir_rc" -eq 2 ]; then
+				echo "phase1-launcher: WARN: phase1-agent-id directive rc=2 for $agent (bad args/contract?): $(head -c 200 "$_dir_err" 2>/dev/null)" >&2
+				_resume_line=""
 			fi
+			[ "$_dir_err" != /dev/null ] && rm -f "$_dir_err"
+		fi
+		_fresh_line="  $i. Agent subagent_type=pr-review-toolkit:$agent — brief with git diff ${BASE_REF}..HEAD"
+		if [ -z "$_resume_line" ]; then
+			echo "$_fresh_line"
 		else
-			echo "  $i. Agent subagent_type=pr-review-toolkit:$agent — brief with git diff ${BASE_REF}..HEAD"
+			# Phase 1 r1 (silent-failure-hunter, HIGH): build the peer-review
+			# body UP FRONT + capture its rc before committing to a resume. The
+			# builder is fail-loud (rc 3) when its rejection scan breaks; the old
+			# `... 2>/dev/null | sed | … || true` discarded that rc AND the
+			# partial stdout still reached the operator — so a broken build
+			# silently dropped the dismissed-findings+dogfood-evidence block and
+			# the teammate re-litigated rejected findings, defeating the whole
+			# peer-review layer. On any build failure, downgrade to a FRESH spawn
+			# rather than emit a partial/empty resume body.
+			_msg_helper="$(dirname "$0")/phase1-resume-message.sh"
+			_body=""
+			_body_rc=0
+			if [ -x "$_msg_helper" ]; then
+				_body=$("$_msg_helper" build "$agent" "$ROUND" "$BASE_REF" "$SHA" 2>/dev/null) || _body_rc=$?
+			else
+				_body_rc=127
+			fi
+			if [ "$_body_rc" -ne 0 ] || [ -z "$_body" ]; then
+				echo "phase1-launcher: WARN: resume-message build failed (rc=$_body_rc) for $agent — using a fresh Agent instead of a partial resume body" >&2
+				echo "$_fresh_line (resume downgraded: message build failed)"
+			else
+				AGENT_RESUMED=1
+				echo "  $i. [RESUME] $_resume_line"
+				# Send the body VERBATIM as the SendMessage `message`. After a
+				# SUCCESSFUL resume, commit it: phase1-agent-id.sh resumed $agent $SHA (footer).
+				echo "       ↓ send VERBATIM as the SendMessage message body ↓"
+				printf '%s\n' "$_body" | sed 's/^/       /'
+			fi
 		fi
 		;;
 	esac
