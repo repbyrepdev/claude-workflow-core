@@ -2,18 +2,25 @@
 set -euo pipefail
 # Introduced in #90 — producer-consumer hash-drift gate.
 #
-# Detects content drift between plugin-source files (hooks/*.sh,
-# _lib/*.sh under the plugin repo root) and consumer-repo siblings
-# (.claude/hooks/*.sh, .claude/_lib/*.sh).
+# Detects content drift between plugin-source files and their consumer-repo
+# siblings. Covered set (#232):
+#   - hooks/*.sh, _lib/*.sh — mirror at the consumer's .claude/hooks|_lib/.
+#   - the .github "process templates" declared `hashed: true` in
+#     scripts/bootstrap-manifest.yml (pull_request_template.md, commit-
+#     template.yml, ISSUE_TEMPLATE/*) — byte-SSOT; these map VERBATIM to the
+#     consumer repo root, NOT under .claude/. (labels/required-checks/labeler/
+#     workflows are template-with-overrides and are NOT hashed here.)
 #
 # Two modes:
-#   --generate (producer-side): compute SHA256 of each plugin source
-#       file, write to .claude/.source-hashes.json. Committed
-#       alongside source so consumers can verify against it after
-#       plugin install.
+#   --generate (producer-side): compute SHA256 of each plugin source file
+#       (hooks/ + _lib/ walked via find, plus the manifest's hashed:true
+#       .github files) and write to .claude/.source-hashes.json. Committed
+#       alongside source so consumers can verify against it after plugin
+#       install.
 #   --verify (consumer-side): for each entry in
 #       <plugin-cache>/.claude/.source-hashes.json, compute the local
-#       .claude/hooks|_lib/X.sh hash. Drift → warn.
+#       consumer-path hash (hooks/_lib → .claude/<path>; .github/* → <path>
+#       verbatim) and warn on drift.
 #
 # Override list: .claude/local-overrides.yml at consumer repo root
 # (YAML list of `<path>: <reason>` entries). Files in the override
@@ -92,8 +99,35 @@ _hash_file() {
 	printf '%s\n' "$hex"
 }
 
+# Hash $1 and emit one JSON `  "path": "hash"` entry to stdout, prefixing a
+# comma after the first entry. Reads + mutates the generate-scoped globals
+# `first`, `tmp`, `entries_tmp`. A file that can't be hashed (or yields a
+# non-sha256 string) is a HARD error: clean the temps and exit 2 — never a
+# silent omission, which would punch a coverage hole in the consumer drift
+# gate. Only called inside the generate `{ }` redirect block.
+_emit_hashed_entry() {
+	local f=$1 hash
+	hash=$(_hash_file "$f") || {
+		echo "hash-drift: failed to hash $f" >&2
+		rm -f "$tmp" "$entries_tmp"
+		exit 2
+	}
+	# Hash-format validation: refuse anything that's not 64-char lowercase
+	# hex (sha256). Catches silently-broken _hash_file output before ship.
+	if ! [[ $hash =~ ^[0-9a-f]{64}$ ]]; then
+		echo "hash-drift: invalid hash for $f: '$hash' (expected 64-char lowercase sha256 hex)" >&2
+		rm -f "$tmp" "$entries_tmp"
+		exit 2
+	fi
+	if [ "$first" -eq 1 ]; then first=0; else printf ',\n'; fi
+	printf '  %s: %s' \
+		"$(jq -Rn --arg p "$f" '$p')" \
+		"$(jq -Rn --arg h "$hash" '$h')"
+}
+
 if [ "$MODE" = "generate" ]; then
-	# Producer mode: walk hooks/ and _lib/ relative to current repo.
+	# Producer mode: walk hooks/ and _lib/, plus the manifest's hashed:true
+	# .github files (#232), relative to the current repo.
 	REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 		echo "hash-drift: not in a git repo" >&2
 		exit 2
@@ -120,6 +154,57 @@ if [ "$MODE" = "generate" ]; then
 		rm -f "$tmp"
 		exit 2
 	}
+	# .github byte-SSOT coverage: read the files declared `hashed: true` in
+	# the bootstrap manifest — the single SSOT for what is byte-identical
+	# across repos. Producer-only; requires yq. Materialize the list NOW (and
+	# verify each declared file exists) so a yq parse failure or a missing
+	# declared file fails CLOSED before we emit a partial manifest. A silent
+	# coverage hole would disable the consumer drift gate for those files.
+	MANIFEST="scripts/bootstrap-manifest.yml"
+	GH_HASHED=""
+	if [ -f "$MANIFEST" ]; then
+		command -v yq >/dev/null 2>&1 || {
+			echo "hash-drift: yq required to read hashed paths from $MANIFEST" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		# Guard a malformed `hashed:` VALUE (e.g. a typo'd `ture`, or `yes`)
+		# from silently dropping coverage: yq's `== true` selector skips any
+		# non-`true` value, so a typo would exclude the file with NO signal
+		# (#232 silent-failure-hunter). Every declared `hashed` must be a real
+		# boolean — fail CLOSED on anything else.
+		bad_hashed=$(yq -r '.files[] | select(.hashed != null) | select((.hashed | tag) != "!!bool") | .path' "$MANIFEST") || {
+			echo "hash-drift: yq failed validating hashed: values in $MANIFEST" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		[ -z "$bad_hashed" ] || {
+			echo "hash-drift: non-boolean hashed: value(s) in $MANIFEST (typo? must be true/false):" >&2
+			printf '  %s\n' "$bad_hashed" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		GH_HASHED=$(yq -r '.files[] | select(.hashed == true) | .path' "$MANIFEST" | sort) || {
+			echo "hash-drift: yq failed enumerating hashed paths in $MANIFEST" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		}
+		while IFS= read -r ghf; do
+			[ -n "$ghf" ] || continue
+			[ -f "$ghf" ] || {
+				echo "hash-drift: manifest declares hashed file '$ghf' but it is missing under $REPO_ROOT — refusing a coverage hole" >&2
+				rm -f "$tmp" "$entries_tmp"
+				exit 2
+			}
+		done <<<"$GH_HASHED"
+	else
+		# Manifest absent — a generic (non-plugin) repo, OR the plugin's own
+		# manifest was moved/deleted. hooks/_lib still hash, but NO .github
+		# byte-SSOT coverage is produced. Emit a NOTE so a missing manifest
+		# can't silently drop .github coverage in a repo that expected it
+		# (#232 silent-failure-hunter).
+		echo "hash-drift: NOTE: $MANIFEST absent — hashing hooks/_lib only, no .github byte-SSOT coverage" >&2
+	fi
 	# shellcheck disable=SC2094  # tmp + entries_tmp are distinct files; rm -f below
 	{
 		printf '{\n'
@@ -128,21 +213,17 @@ if [ "$MODE" = "generate" ]; then
 			[ -d "$dir" ] || continue
 			while IFS= read -r f; do
 				[ -f "$f" ] || continue
-				hash=$(_hash_file "$f")
-				# Hash-format validation: refuse anything that's not
-				# 64-char lowercase hex (sha256). Catches silently-broken
-				# _hash_file output before the manifest ships.
-				if ! [[ $hash =~ ^[0-9a-f]{64}$ ]]; then
-					echo "hash-drift: invalid hash for $f: '$hash' (expected 64-char lowercase sha256 hex)" >&2
-					rm -f "$tmp" "$entries_tmp"
-					exit 2
-				fi
-				if [ $first -eq 1 ]; then first=0; else printf ',\n'; fi
-				printf '  %s: %s' \
-					"$(jq -Rn --arg p "$f" '$p')" \
-					"$(jq -Rn --arg h "$hash" '$h')"
+				_emit_hashed_entry "$f"
 			done < <(find "$dir" -name '*.sh' -type f | sort)
 		done
+		# .github byte-SSOT files (manifest `hashed: true`), validated above.
+		# Iterate the materialized list; emit alongside hooks/_lib so the
+		# producer-relative path (e.g. .github/commit-template.yml) lands in
+		# the same `files` map. --verify + refresh map it back to repo-root.
+		while IFS= read -r ghf; do
+			[ -n "$ghf" ] || continue
+			_emit_hashed_entry "$ghf"
+		done <<<"$GH_HASHED"
 		printf '\n}\n'
 	} >"$entries_tmp"
 	# Validate entries before wrapping.
@@ -271,8 +352,10 @@ _is_overridden() {
 	return 1
 }
 
-# For each entry in source-hashes, compare against consumer-local
-# .claude/<relpath> (works for any producer dir; currently hooks/+_lib/).
+# For each entry in source-hashes, compare against the consumer-local copy.
+# Path mapping (see the case statement below, #232): hooks/ and _lib/ mirror
+# under .claude/<relpath>; .github/* (and any other repo-root path) map
+# verbatim to the consumer root.
 # CR PR #90 r1: track processed-rows count + assert against manifest
 # size after the loop to catch partial jq-stream failures.
 drift_count=0
@@ -282,15 +365,21 @@ overridden_count=0
 processed_count=0
 DRIFT_REPORT=""
 while IFS=$'\t' read -r src_path src_hash; do
-	# Map producer-side <relpath> → consumer-side .claude/<relpath>.
-	# String prepend; works for any producer directory in source-
-	# hashes.json (currently hooks/ + _lib/).
+	# Map producer-relative <path> → consumer location. hooks/ and _lib/
+	# mirror under the consumer's .claude/; .github/ files (and any other
+	# repo-root path) map VERBATIM to the consumer root. Before #232 this
+	# hardcoded `.claude/$src_path`, which mis-resolved .github/* entries to
+	# a nonexistent `.claude/.github/*` — a silent missing-file that was
+	# never gated.
 	if [ -z "$src_path" ] || [ -z "$src_hash" ]; then
 		echo "hash-drift: malformed manifest row (empty path or hash)" >&2
 		exit 2
 	fi
 	processed_count=$((processed_count + 1))
-	consumer_path=".claude/$src_path"
+	case "$src_path" in
+	hooks/* | _lib/*) consumer_path=".claude/$src_path" ;;
+	*) consumer_path="$src_path" ;;
+	esac
 	if _is_overridden "$consumer_path"; then
 		overridden_count=$((overridden_count + 1))
 		continue

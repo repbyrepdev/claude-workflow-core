@@ -3,10 +3,18 @@ set -euo pipefail
 # Pre-commit gate: verify consumer files match plugin SSOT via
 # scripts/hash-drift.sh --verify.
 #
-# Catches drift at commit time so a consumer can't accidentally land
-# a change to a plugin-tracked file (.github/labels.yml, ISSUE_TEMPLATE,
-# workflows-source, etc.) without explicitly declaring the divergence
-# in .claude/local-overrides.yml. v0.25.0 #148.
+# Catches drift at commit time so a consumer can't accidentally land a
+# change to a byte-SSOT plugin-tracked file without explicitly declaring
+# the divergence in .claude/local-overrides.yml. v0.25.0 #148.
+#
+# Coverage (every path in the plugin's .claude/.source-hashes.json):
+#   - .claude/hooks/*.sh, .claude/_lib/*.sh (generic hooks + helpers)
+#   - .github process templates — byte-SSOT (#232): pull_request_template.md,
+#     commit-template.yml, ISSUE_TEMPLATE/{bug,feature,task,epic,brainstorm}.yml
+# NOT byte-gated here (template-with-overrides or per-repo — they legitimately
+# vary): .github/labels.yml (generic + per-repo domain block),
+# required-checks-list.yml, labeler.yml, .github/workflows/* (consumer slim
+# heredoc vs full plugin CI), and .pre-commit-config.yaml.
 #
 # Behavior:
 #   - Locates scripts/hash-drift.sh relative to the script's own location

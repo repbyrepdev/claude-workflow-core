@@ -196,3 +196,66 @@ JSON
 	[ "$status" -eq 0 ]
 	[ -x "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
 }
+
+# #232 — .github byte-SSOT files map VERBATIM to the consumer repo root (the
+# way hooks/_lib map under .claude/). Augment the fixture manifest with a
+# .github entry and assert the propagation target.
+_register_github_ssot() {
+	mkdir -p "$TEST_TMP/plugin/.github"
+	printf '## Summary\n' >"$TEST_TMP/plugin/.github/pull_request_template.md"
+	local hp ha hb
+	hp=$(shasum -a 256 "$TEST_TMP/plugin/.github/pull_request_template.md" | awk '{print $1}')
+	ha=$(shasum -a 256 "$TEST_TMP/plugin/_lib/file-a.sh" | awk '{print $1}')
+	hb=$(shasum -a 256 "$TEST_TMP/plugin/_lib/file-b.sh" | awk '{print $1}')
+	cat >"$TEST_TMP/plugin/.claude/.source-hashes.json" <<JSON
+{
+  "algorithm": "sha256",
+  "files": {
+    "_lib/file-a.sh": "$ha",
+    "_lib/file-b.sh": "$hb",
+    ".github/pull_request_template.md": "$hp"
+  }
+}
+JSON
+}
+
+@test "propagates .github SSOT file to consumer REPO ROOT, not under .claude/ (#232)" {
+	cd "$TEST_TMP/plugin" || return 1
+	_register_github_ssot
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	# .github file landed at the consumer REPO ROOT.
+	[ -f "$TEST_TMP/consumer/.github/pull_request_template.md" ]
+	# NOT under .claude/ (the pre-#232 mis-mapping that would silently miss).
+	[ ! -f "$TEST_TMP/consumer/.claude/.github/pull_request_template.md" ]
+	[ "$(cat "$TEST_TMP/consumer/.github/pull_request_template.md")" = "## Summary" ]
+	# hooks/_lib still map under .claude/.
+	[ -f "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
+	# Idempotency (#232 r2 pr-test-analyzer): a second run sees the .github
+	# file already in place → clean, zero replacements (the verbatim-repo-root
+	# mapping + hash-compare are stable across runs).
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean=3"* ]]
+	[[ $output == *"replaced=0"* ]]
+}
+
+@test ".github override via bare relpath is honored (#232)" {
+	cd "$TEST_TMP/plugin" || return 1
+	_register_github_ssot
+	cat >"$TEST_TMP/consumer/.claude/local-overrides.yml" <<'YAML'
+schema_version: 1
+overrides:
+  - path: .github/pull_request_template.md
+    category: domain-extension
+    reason: "consumer keeps its own PR template"
+    added: "2026-05-31"
+YAML
+	run scripts/refresh-from-source.sh --consumer alpha --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output == *"OVERRIDE"* ]]
+	[[ $output == *"pull_request_template.md"* ]]
+	[[ $output == *"overridden=1"* ]]
+	# file-a/file-b not overridden — still appear as DIFF.
+	[[ $output == *"file-a.sh"* ]]
+}

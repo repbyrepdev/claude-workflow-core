@@ -185,3 +185,193 @@ EOF
 	[[ $output == *"drifted"* ]]
 	[[ $output == *"foo.sh"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# #232 — .github byte-SSOT coverage (process templates declared `hashed: true`
+# in scripts/bootstrap-manifest.yml). Producer-side: generation hashes them.
+# Consumer-side: verify maps .github/* to the consumer REPO ROOT (not under
+# .claude/, the way hooks/_lib map).
+# ---------------------------------------------------------------------------
+
+# Producer with hooks/_lib AND a bootstrap-manifest declaring 3 hashed .github
+# process templates + 1 NON-hashed .github file (labels.yml, intentionally not
+# created — proves the selector only touches `hashed: true` and the missing-
+# file check is scoped to hashed entries).
+_make_producer_gh() {
+	local root=$1
+	(
+		cd "$root" || exit 1
+		git init -q
+		mkdir -p hooks _lib scripts .github/ISSUE_TEMPLATE
+		printf 'echo hook1\n' >hooks/foo.sh
+		printf 'echo lib1\n' >_lib/baz.sh
+		printf '## Summary\n' >.github/pull_request_template.md
+		printf 'schema:\n  subject:\n    max_length: 70\n' >.github/commit-template.yml
+		printf 'name: Bug\n' >.github/ISSUE_TEMPLATE/bug.yml
+		cat >scripts/bootstrap-manifest.yml <<'EOF'
+schema_version: 1
+files:
+  - path: .github/pull_request_template.md
+    mode: "644"
+    hashed: true
+  - path: .github/commit-template.yml
+    mode: "644"
+    hashed: true
+  - path: .github/ISSUE_TEMPLATE/bug.yml
+    mode: "644"
+    hashed: true
+  - path: .github/labels.yml
+    mode: "644"
+EOF
+	)
+}
+
+# Consumer mirror: hooks/_lib under .claude/, but .github/* VERBATIM at the
+# consumer root (the path-mapping under test).
+_make_consumer_gh() {
+	local consumer=$1 plugin=$2
+	(
+		cd "$consumer" || exit 1
+		git init -q
+		mkdir -p .claude/hooks .claude/_lib .github/ISSUE_TEMPLATE
+		cp "$plugin/hooks/foo.sh" .claude/hooks/foo.sh
+		cp "$plugin/_lib/baz.sh" .claude/_lib/baz.sh
+		cp "$plugin/.github/pull_request_template.md" .github/pull_request_template.md
+		cp "$plugin/.github/commit-template.yml" .github/commit-template.yml
+		cp "$plugin/.github/ISSUE_TEMPLATE/bug.yml" .github/ISSUE_TEMPLATE/bug.yml
+		mkdir -p plugin-cache/.claude
+		cp "$plugin/.claude/.source-hashes.json" plugin-cache/.claude/.source-hashes.json
+	)
+}
+
+@test "--generate hashes manifest hashed:true .github files, skips non-hashed (#232)" {
+	PRODUCER="$TEST_TMP/producer"
+	mkdir -p "$PRODUCER"
+	_make_producer_gh "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	M="$PRODUCER/.claude/.source-hashes.json"
+	# 2 (hooks/_lib) + 3 (hashed .github) = 5; labels.yml (not hashed) excluded.
+	[ "$(jq '.files | length' "$M")" -eq 5 ]
+	jq -e '.files[".github/pull_request_template.md"]' "$M"
+	jq -e '.files[".github/commit-template.yml"]' "$M"
+	jq -e '.files[".github/ISSUE_TEMPLATE/bug.yml"]' "$M"
+	# labels.yml is in the manifest but NOT hashed:true → must be absent.
+	run jq -e '.files[".github/labels.yml"]' "$M"
+	[ "$status" -ne 0 ]
+}
+
+@test "--generate FAILS CLOSED when a hashed:true file is missing (#232)" {
+	PRODUCER="$TEST_TMP/producer"
+	mkdir -p "$PRODUCER"
+	_make_producer_gh "$PRODUCER"
+	# Remove a DECLARED hashed file → coverage hole must abort generation.
+	rm "$PRODUCER/.github/commit-template.yml"
+	run bash -c "cd '$PRODUCER' && bash '$SCRIPT' --generate 2>&1"
+	[ "$status" -eq 2 ]
+	[[ $output == *"coverage hole"* || $output == *"missing"* ]]
+}
+
+@test "--verify clean: .github files map to consumer REPO ROOT (#232)" {
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer_gh "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer_gh "$CONSUMER" "$PRODUCER"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean"* ]]
+	[[ $output == *"5 files match"* ]]
+}
+
+@test "--verify .github drift → exit 1, reports repo-root path NOT .claude/.github (#232)" {
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer_gh "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer_gh "$CONSUMER" "$PRODUCER"
+	# Drift the consumer's .github commit-template.
+	printf 'schema:\n  subject:\n    max_length: 50\n' >"$CONSUMER/.github/commit-template.yml"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 1 ]
+	[[ $output == *"drifted from plugin source"* ]]
+	[[ $output == *".github/commit-template.yml"* ]]
+	# The pre-#232 bug signature: mapping .github under .claude/ would print
+	# `.claude/.github/...` and silently never find the file. Must NOT appear.
+	[[ $output != *".claude/.github"* ]]
+}
+
+@test "--verify .github file absent on consumer → not-installed, not drift (#232)" {
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer_gh "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer_gh "$CONSUMER" "$PRODUCER"
+	# Consumer never installed the issue template.
+	rm "$CONSUMER/.github/ISSUE_TEMPLATE/bug.yml"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean"* ]]
+	[[ $output == *"1 not-installed"* ]]
+}
+
+@test "--verify MIXED drift: hooks AND .github both drift → exit 1, both reported (#232 r2)" {
+	# pr-test-analyzer r1: single-category tests each flex only ONE arm of the
+	# path-mapping case. A mixed run is the only test proving both branches
+	# (.claude/ for hooks, verbatim for .github) fire correctly in ONE pass.
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer_gh "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer_gh "$CONSUMER" "$PRODUCER"
+	# Drift BOTH a hooks file AND a .github file.
+	printf 'echo DRIFTED\n' >"$CONSUMER/.claude/hooks/foo.sh"
+	printf 'schema:\n  subject:\n    max_length: 50\n' >"$CONSUMER/.github/commit-template.yml"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 1 ]
+	[[ $output == *".claude/hooks/foo.sh"* ]]        # hooks arm → under .claude/
+	[[ $output == *".github/commit-template.yml"* ]] # .github arm → repo root
+	[[ $output != *".claude/.github"* ]]             # never the mis-mapped form
+	[[ $output == *"2 file(s) drifted"* ]]           # both counted, mapping intact
+}
+
+@test "--generate FAILS CLOSED when yq missing but manifest present (#232 r2)" {
+	# pr-test-analyzer r1: the `command -v yq || exit 2` branch (manifest
+	# present, yq unavailable) must fail closed — never silently emit a
+	# hooks/_lib-only manifest that drops .github coverage. Build a PATH shim
+	# with every tool --generate needs EXCEPT yq so the branch fires.
+	PRODUCER="$TEST_TMP/producer"
+	mkdir -p "$PRODUCER"
+	_make_producer_gh "$PRODUCER"
+	SHIM="$TEST_TMP/shim"
+	mkdir -p "$SHIM"
+	for t in bash git jq find sort shasum sha256sum awk mktemp rm mkdir sed grep cat dirname env; do
+		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$SHIM/$t"
+	done
+	# Sanity: yq must NOT resolve under the shim PATH (else the test is moot).
+	run env PATH="$SHIM" bash -c 'command -v yq'
+	[ "$status" -ne 0 ]
+	# --generate with the yq-less PATH; manifest present → must exit 2.
+	run env PATH="$SHIM" bash -c "cd '$PRODUCER' && bash '$SCRIPT' --generate"
+	[ "$status" -eq 2 ]
+	[[ $output == *"yq required"* ]]
+}
+
+@test "--generate FAILS CLOSED on a non-boolean hashed: value (typo guard) (#232 r2)" {
+	# silent-failure-hunter r1: a typo'd `hashed: ture` (or `yes`) is parsed as
+	# a string, so yq's `== true` selector silently skips it → coverage hole
+	# with no signal. The tag-validation guard must catch it and exit 2.
+	PRODUCER="$TEST_TMP/producer"
+	mkdir -p "$PRODUCER"
+	_make_producer_gh "$PRODUCER"
+	# Corrupt one hashed value to a typo.
+	yq -i '(.files[] | select(.path == ".github/commit-template.yml") | .hashed) = "ture"' \
+		"$PRODUCER/scripts/bootstrap-manifest.yml"
+	run bash -c "cd '$PRODUCER' && bash '$SCRIPT' --generate"
+	[ "$status" -eq 2 ]
+	[[ $output == *"non-boolean hashed"* ]]
+	[[ $output == *".github/commit-template.yml"* ]]
+}

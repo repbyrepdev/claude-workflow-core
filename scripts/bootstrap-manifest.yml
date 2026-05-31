@@ -4,6 +4,19 @@
 #   schema_version: int — bump when removing/renaming a top-level section
 #   files[].path:   string  — relative to target repo root
 #   files[].mode:   string  — octal-as-string ("644", "755") — NOT decimal
+#   files[].scope:  string  — optional; "plugin" | "consumer" | "both"
+#     (absent ⇒ "both"). Consumer-only shims are skipped by
+#     --verify --scope=plugin.
+#   files[].hashed: bool — optional; true ⇒ this file is byte-SSOT (meant to
+#     be byte-identical in EVERY repo). hash-drift.sh --generate hashes these
+#     into .claude/.source-hashes.json, so refresh-from-source.sh re-propagates
+#     them AND hash-drift.sh --verify drift-gates the consumer copy. Absent/
+#     false ⇒ template-with-overrides or per-repo (bootstrap writes it once;
+#     it is NOT byte-gated). Only the .github "process templates" (PR / commit /
+#     issue) are hashed — labels/required-checks/labeler/workflows legitimately
+#     vary per repo and are propagated/gated by other mechanisms. A consumer
+#     that must customize a hashed file declares it in .claude/local-overrides.yml
+#     (makes the divergence explicit instead of silent drift).
 #   labels[].name:  string  — must match .github/labels.yml `name:`
 #   labels[].color: string  — 6-hex-digit, lowercase, no leading #
 #   labels[].description: string — optional; absent means "no description"
@@ -33,10 +46,25 @@ files:
   - path: .claude/hooks/review-log.sh
     mode: "755"
     scope: consumer
+  # Consumer-only: the per-repo override scaffold bootstrap writes for new
+  # consumers (v0.20.1 #147). Never byte-SSOT — its WHOLE PURPOSE is to record
+  # a consumer's intentional divergences — so it is scope:consumer + NOT hashed.
+  - path: .claude/local-overrides.yml
+    mode: "644"
+    scope: consumer
+  # .github process templates — byte-SSOT (hashed: true). These define the
+  # SAME PR / commit / issue experience in every repo; drift is gated by
+  # hash-drift --verify and healed by refresh-from-source. Repo-flavoring
+  # (commit examples, issue Area options) is handled via local-overrides.yml.
   - path: .github/pull_request_template.md
     mode: "644"
+    hashed: true
   - path: .github/commit-template.yml
     mode: "644"
+    hashed: true
+  # labels / required-checks / labeler: template-with-overrides or per-repo —
+  # NOT byte-gated (generic block + per-repo domain block / per-repo checks /
+  # per-repo path globs). Bootstrap writes them once.
   - path: .github/labels.yml
     mode: "644"
   - path: .github/required-checks-list.yml
@@ -45,14 +73,21 @@ files:
     mode: "644"
   - path: .github/ISSUE_TEMPLATE/bug.yml
     mode: "644"
+    hashed: true
   - path: .github/ISSUE_TEMPLATE/feature.yml
     mode: "644"
+    hashed: true
   - path: .github/ISSUE_TEMPLATE/task.yml
     mode: "644"
+    hashed: true
   - path: .github/ISSUE_TEMPLATE/epic.yml
     mode: "644"
+    hashed: true
   - path: .github/ISSUE_TEMPLATE/brainstorm.yml
     mode: "644"
+    hashed: true
+  # Cascade workflows: template-with-overrides (consumer slim heredoc vs full
+  # plugin CI) — NOT byte-equal, NOT hashed.
   - path: .github/workflows/gitleaks.yml
     mode: "644"
   - path: .github/workflows/pr-lint.yml
