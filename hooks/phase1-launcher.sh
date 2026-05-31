@@ -40,7 +40,7 @@ PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
 
 LIST_SCRIPT="$(resolve_plugin_helper "hooks/list-phase1-agents.sh" 2>/dev/null || echo "")"
 if [ -z "$LIST_SCRIPT" ] || [ ! -x "$LIST_SCRIPT" ]; then
-	echo "ERROR: list-phase1-agents.sh missing (checked \$REPO_ROOT/.claude/hooks/ + plugin cache)" >&2
+	echo 'ERROR: list-phase1-agents.sh missing (checked $REPO_ROOT/.claude/hooks/ + plugin cache)' >&2
 	exit 2
 fi
 
@@ -411,7 +411,7 @@ EFFECTIVE_COUNT=$(printf '%s' "$EFFECTIVE_AGENTS" | awk 'NF { c++ } END { print 
 # convergence" error the operator has to root-cause backwards. Pairs with
 # the gate's missing-agent rejection (gate is canonical safety net; this
 # is the source-level signal).
-if [[ "$ROUND" =~ ^[0-9]+$ ]]; then
+if [[ $ROUND =~ ^[0-9]+$ ]]; then
 	for skipped_agent in $SKIP_AGENTS; do
 		# v4.30 #772 Phase 2 r2 CR-CLI major: fail-closed on mktemp.
 		# Environments where mktemp fails are pathological (full /tmp,
@@ -455,7 +455,7 @@ fi
 # round N, diff state may have changed (fix commit between rounds), so
 # re-computing the effective set later would give a different answer
 # than what was actually launched.
-if [[ "$ROUND" =~ ^[0-9]+$ ]]; then
+if [[ $ROUND =~ ^[0-9]+$ ]]; then
 	REVIEW_LOG_DIR="$REPO_ROOT/.claude/review-log"
 	if ! mkdir -p "$REVIEW_LOG_DIR"; then
 		echo "phase1-launcher: FAIL — mkdir $REVIEW_LOG_DIR failed" >&2
@@ -621,6 +621,12 @@ fi
 
 i=1
 for agent in $EFFECTIVE_AGENTS; do
+	# v0.30.F (#193): per-agent flag — set to 1 only when this agent is
+	# emitted as a SendMessage RESUME (round N>1, eligible). Resumed agents
+	# carry their brief + the two-way rejection list inside the resume message
+	# body, so the post-case canonical-brief + one-way DO-NOT-RE-FLAG block
+	# are suppressed for them to avoid duplicate / conflicting instructions.
+	AGENT_RESUMED=0
 	case "$agent" in
 	security-review)
 		# v4.28-W3-L (#739): /security-review lives in
@@ -663,19 +669,49 @@ for agent in $EFFECTIVE_AGENTS; do
 		fi
 		;;
 	*)
-		echo "  $i. Agent subagent_type=pr-review-toolkit:$agent — brief with git diff ${BASE_REF}..HEAD"
+		# v0.30.F (#193): SendMessage resume on round N>1. `directive` is
+		# READ-ONLY + idempotent — empty output means fall through to the
+		# fresh-Agent line (flag off / round 1 / no record / cap reached /
+		# no new delta). Byte-identical to pre-#193 whenever it's empty, so
+		# the experimental path never changes behaviour for non-flag users.
+		_resume_line=""
+		_aid_helper="$(dirname "$0")/phase1-agent-id.sh"
+		if [ -x "$_aid_helper" ]; then
+			_resume_line=$("$_aid_helper" directive "$agent" "$ROUND" "$BASE_REF" "$SHA" 2>/dev/null || echo "")
+		fi
+		if [ -n "$_resume_line" ]; then
+			AGENT_RESUMED=1
+			echo "  $i. [RESUME] $_resume_line"
+			# Emit the peer-review message body (delta scope + dismissed
+			# findings with dogfood evidence + the new_findings / refutations /
+			# accepted_rejections response contract). Send VERBATIM as the
+			# SendMessage `message`. After a SUCCESSFUL resume, commit the
+			# event with: phase1-agent-id.sh resumed $agent $SHA (see footer).
+			_msg_helper="$(dirname "$0")/phase1-resume-message.sh"
+			if [ -x "$_msg_helper" ]; then
+				echo "       ↓ send VERBATIM as the SendMessage message body ↓"
+				"$_msg_helper" build "$agent" "$ROUND" "$BASE_REF" "$SHA" 2>/dev/null | sed 's/^/       /' || true
+			fi
+		else
+			echo "  $i. Agent subagent_type=pr-review-toolkit:$agent — brief with git diff ${BASE_REF}..HEAD"
+		fi
 		;;
 	esac
 	# v4.24-O: emit the canonical brief body as an indented block so Claude
 	# can copy it verbatim into the Agent tool invocation. Suppresses when
 	# the SSOT doesn't define one for this agent (keeps free-form fallback).
-	if resolved=$(_canonical_brief "$agent"); then
+	# v0.30.F (#193): also suppressed for RESUMED agents — they hold their
+	# brief in retained context, and the resume message scopes them to the
+	# delta, so a full-diff canonical brief would send a conflicting signal.
+	if [ "$AGENT_RESUMED" -eq 0 ] && resolved=$(_canonical_brief "$agent"); then
 		printf '%s\n' "$resolved" | sed 's/^/       /'
 	fi
 	# Anti-treadmill rejection-list injection (#757). One block per agent
 	# (cheap — same content for all). Suppressed on round 1 + when no
-	# rejections recorded.
-	if [ -n "$REJECTION_BLOCK" ]; then
+	# rejections recorded. v0.30.F (#193): also suppressed for RESUMED agents
+	# — the resume message already embeds these rejections in two-way (refute
+	# / accept) form, so the one-way DO-NOT-RE-FLAG block would duplicate it.
+	if [ -n "$REJECTION_BLOCK" ] && [ "$AGENT_RESUMED" -eq 0 ]; then
 		printf '\n       DO NOT RE-FLAG (already rejected this PR cycle):\n'
 		printf '%s\n' "$REJECTION_BLOCK" | sed 's/^/       /'
 	fi
@@ -698,6 +734,24 @@ is reserved for pre-push + weekly baseline). Iteration loop = scoped.
   (check \$? after agents converge; any bats failure = fix-same-round)
 
 EOF
+
+# v0.30.F (#193): agent-team resume bookkeeping. Flag-gated so output is
+# byte-identical to pre-#193 when the experimental flag is off.
+if [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}" = "1" ]; then
+	cat <<EOF
+v0.30.F (#193) — SendMessage resume bookkeeping (this round may RESUME agents above):
+  • After a FRESH Agent spawn, capture its agentId from the return JSON + record it:
+      .claude/hooks/phase1-agent-id.sh record <agent> <agentId> $SHA
+  • After a SUCCESSFUL [RESUME], commit the resume event (bumps cap counter):
+      .claude/hooks/phase1-agent-id.sh resumed <agent> $SHA
+  • If a [RESUME] FAILS (teammate not resumable), fall back to a fresh Agent, then:
+      .claude/hooks/phase1-agent-id.sh clear <agent>
+  • Resumed teammates reply with JSON {new_findings, refutations, accepted_rejections}.
+    review-log findings-count = len(new_findings). Handle refutations per
+    skills/ship-pr-cycle/SKILL.md (re-dogfood → reopen-as-fix OR re-confirm-rejection).
+
+EOF
+fi
 
 # v4.23-F (#552): CR-budget-aware Phase 2 skip directive. If the prepaid
 # CR bucket has <2 slots free when Phase 1 converges, skip local

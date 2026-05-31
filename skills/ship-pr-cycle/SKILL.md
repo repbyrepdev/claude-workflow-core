@@ -67,6 +67,23 @@ When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE 
 
 **Why operator-driven:** bash can't fire Claude agents. A future enhancement (#732) would wire a UserPromptSubmit hook that emits the directive into Claude's context after a post-commit cascade; until then, the operator runs the agent calls.
 
+## Phase 1 SendMessage resume — agent-team peer review (#193)
+
+Requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (the env that exposes the `SendMessage` tool). **Flag off → none of this fires; the launcher prints the normal fresh-Agent lines, byte-identical to pre-#193.** Mechanics live in the `phase1-*` hook family — `phase1-agent-id.sh` (agentId registry + read-only `directive` decision + `resumed` commit), `phase1-resume-message.sh` (peer-review message body), `phase1-agent-ids-session-clear.sh` (SessionStart staleness wipe).
+
+On round N>1 the launcher's agent line becomes `[RESUME] SendMessage to=<agentId> …` instead of a fresh `Agent`. The point: the resumed teammate keeps its prior file reads in context, so it re-reviews only the delta — and it argues back instead of one-way emitting. The main-loop protocol per round:
+
+1. **Fresh spawn (round 1, or any fall-through):** after the `Agent` returns, capture `agentId` from its result JSON and record it:
+   `.claude/hooks/phase1-agent-id.sh record <agent> <agentId> $SHA`
+2. **Resume (round N>1, `[RESUME]` line shown):** send the launcher-emitted message body VERBATIM as the `SendMessage` `message` (it already contains the delta scope + dismissed-findings-with-dogfood-evidence + the response contract). The teammate replies with a single JSON object:
+   - `new_findings` — issues in the delta only. `review-log` findings-count = `len(new_findings)`; triage each (apply-fix or prove-yourself reject) exactly as a fresh finding.
+   - `refutations` — dismissed findings it still believes, each with `counter_evidence` (a concrete repro the rejection's dogfood missed). For EACH: **re-dogfood against the counter-evidence.** If it reproduces → the finding is real: reopen it (fix in-PR + `prove-yourself-audit record-fix`). If the original rejection still holds → `prove-yourself-audit record-rejection` again with the counter-evidence addressed in `decision_data` (so the audit trail shows the dispute was weighed, not ignored). Either way, surface the refutation to the operator — never silently absorb it.
+   - `accepted_rejections` — dismissed findings whose evidence the teammate now accepts; they stay rejected (no action needed; they're already covered).
+   Then commit the resume event: `.claude/hooks/phase1-agent-id.sh resumed <agent> $SHA`
+3. **Resume failure** (SendMessage errors — teammate reaped / not resumable): fall back to a fresh `Agent`, then `.claude/hooks/phase1-agent-id.sh clear <agent>` so the next round records a new agentId.
+
+**Cap:** `PHASE1_RESUME_CAP` (default 3) consecutive resumes per agent, then the launcher forces a fresh spawn (bounds subagent context growth). **Staleness:** the SessionStart hook wipes the agentId registry every session — in-process teammates don't survive a restart, so a resume never targets a dead teammate from a prior session. **Round is clean** iff every agent's `new_findings` is empty (refutations/accepted_rejections don't change convergence — they route through prove-yourself, not review-log). Schema is prompt-format JSON (same as fresh Phase 1 agents — no StructuredOutput regression).
+
 ## Auto-fire after commit
 
 **Prerequisite:** the post-commit dispatcher must exist at `.claude/hooks/post-commit-ship-cycle.sh` in the consuming repo. The canonical implementation lives in the plugin at `hooks/post-commit-ship-cycle.sh`; consumer repos either:
