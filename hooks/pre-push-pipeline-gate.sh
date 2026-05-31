@@ -253,7 +253,7 @@ _scaler_says() {
 	[ -x "$scaler" ] || return 1
 	local r
 	r=$("$scaler" 2>/dev/null) || return 1
-	[[ "$r" =~ ^[0-9]+$ ]] || return 1
+	[[ $r =~ ^[0-9]+$ ]] || return 1
 	echo "$r"
 }
 
@@ -334,6 +334,38 @@ _auto_scale_min_rounds() {
 	fi
 }
 
+# v0.31 #228: fail-soft hook-wiring drift advisory. Defined ABOVE the
+# SOURCED_FOR_TEST early-return so bats can source + exercise it. Runs the orphan
+# detector (--strict exits 1 on any auto-register:true hook missing from
+# ~/.claude/settings.json) and WARNS to stderr — it NEVER blocks the push (the
+# wiring is per-machine; a hard block would wedge a fresh clone). Always rc 0.
+_orphan_hook_advisory() {
+	local repo_root="${1:-${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+	[ "${ORPHAN_HOOK_CHECK_SKIP:-0}" = "1" ] && return 0
+	local detect="$repo_root/scripts/discover-orphan-hooks.sh"
+	[ -x "$detect" ] || return 0
+	local out rc=0
+	out=$("$detect" --strict 2>&1) || rc=$?
+	# discover-orphan-hooks exit codes: 0=clean, 1=orphans found, 2=precondition
+	# error (missing settings.json / jq / hooks dir). #228 r1: distinguish them —
+	# a tooling/precondition error must NOT be framed as "drift" with a
+	# register-hook remediation that wouldn't resolve it (misleading on a fresh
+	# clone). All paths still return 0 — the advisory never blocks the push.
+	case "$rc" in
+	0) : ;; # clean — silent
+	1)
+		echo "pre-push-pipeline-gate: hook-wiring drift (advisory — NOT blocking the push):" >&2
+		printf '%s\n' "$out" | sed 's/^/  /' >&2
+		echo "  → Run: scripts/register-hook.sh --all-auto-register" >&2
+		;;
+	*)
+		echo "pre-push-pipeline-gate: orphan-hook check could not run (detector rc=$rc, advisory skipped):" >&2
+		printf '%s\n' "$out" | sed 's/^/  /' >&2
+		;;
+	esac
+	return 0
+}
+
 # v4.29 #792: hoist MIN_CLEAN_STREAK above SOURCED_FOR_TEST early-return
 # so bats can assert the default behaviorally (was source-grep only).
 MIN_CLEAN_STREAK="${PHASE1_MIN_CLEAN_STREAK:-1}"
@@ -342,6 +374,9 @@ MIN_CLEAN_STREAK="${PHASE1_MIN_CLEAN_STREAK:-1}"
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 [ -z "$REPO_ROOT" ] && exit 0
+
+# v0.31 #228: surface hook-wiring drift at the push checkpoint (fail-soft).
+_orphan_hook_advisory "$REPO_ROOT"
 
 LOG_DIR="$REPO_ROOT/.claude/review-log"
 ZERO="0000000000000000000000000000000000000000"

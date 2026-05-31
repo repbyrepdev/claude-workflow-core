@@ -32,6 +32,32 @@ SETTINGS="${HOME}/.claude/settings.json"
 LIB_FRONTMATTER="$(dirname "$0")/../_lib/event-frontmatter.sh"
 LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 
+# v0.31 #228: scan the REPO's source hooks dir (resolved via REPO_ROOT), NOT
+# $(dirname "$0") — which, wired via the pinned plugin-cache path, is the FROZEN
+# cache copy, blind to source-only hooks added after the pin.
+# #228 r1 (silent-failure-hunter): disambiguate plugin vs consumer by the PLUGIN
+# MARKER (.claude-plugin/plugin.json at the repo root), NOT mere presence of a
+# top-level hooks/ — a consumer with an unrelated top-level hooks/ dir must scan
+# .claude/hooks/, never be shadowed by it. NOTE: discover-orphan-hooks.sh
+# resolves its hooks dir DIFFERENTLY by design — it derives REPO_ROOT
+# script-relative ($SCRIPT_DIR/..), so its parent is already .claude/ in a
+# consumer and it is immune to this top-level-hooks shadow; this hook is a
+# cache-wired SessionStart hook so it must use git-toplevel + the plugin marker.
+if [ -f "$REPO_ROOT/.claude-plugin/plugin.json" ] && [ -d "$REPO_ROOT/hooks" ]; then
+	HOOKS_DIR="$REPO_ROOT/hooks" # plugin source layout
+elif [ -d "$REPO_ROOT/.claude/hooks" ]; then
+	HOOKS_DIR="$REPO_ROOT/.claude/hooks" # consumer layout
+elif [ -d "$REPO_ROOT/hooks" ]; then
+	HOOKS_DIR="$REPO_ROOT/hooks" # non-plugin repo with a top-level hooks/
+else
+	HOOKS_DIR="$(dirname "$0")" # out-of-repo fallback
+	case "$HOOKS_DIR" in
+	*/plugins/cache/*)
+		echo "check-hook-ack-wiring: not inside a source repo (cwd=$(pwd)); scanning the pinned cache copy — source-only hooks added after the pin are NOT visible. cd into the plugin source for a full scan." >&2
+		;;
+	esac
+fi
+
 [ -f "$SETTINGS" ] || exit 0
 [ -f "$LIB_FRONTMATTER" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -44,7 +70,7 @@ source "$LIB_FRONTMATTER"
 # auto_register; auto_register==false means operator opted out of
 # automatic registration → don't warn.
 missing=""
-for hook in "$(dirname "$0")/"*.sh; do
+for hook in "$HOOKS_DIR/"*.sh; do
 	[ -f "$hook" ] || continue
 	base=${hook##*/}
 	event_frontmatter_skip_basename "$base" && continue
