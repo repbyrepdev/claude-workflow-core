@@ -35,7 +35,7 @@
     "hooks/brainstorm-detect.sh": "3e3981af1eaca68c011ea994b8e45571582d83c87933dbebd065d3ffd06fb4ea",
     "hooks/capture-signal.sh": "00eebfcf498ba65470f8db9b65b516be3eb66746253b5ec7e50b3cebb1edb278",
     "hooks/check-gh-limits.sh": "6c0c7eade5ef551133e722130bc9d5cb2520b8c1e98c72dd85458bcdb8f8c0d6",
-    "hooks/check-hook-ack-wiring.sh": "5e96282c512ead7ae7061558c72691e8997b8253ee563b9df30446ab4f92044d",
+    "hooks/check-hook-ack-wiring.sh": "a2c4f6c43944998d9c943806920d04ba4d822dff6a22cb0ca62dedb315138933",
     "hooks/cleanup-orphan-poll-shells.sh": "9a4cb9a8aa2de994b833d00ddf8702b46e9ba2ee65434a371cd96c91ff1075a7",
     "hooks/context7-reminder.sh": "e48cc997f4bd4bb1190d45396e106d6641e702994ac7aad67546a8515e436ba1",
     "hooks/cr-auto-parse-poll.sh": "c533bef95f5307f9745ba87e856b3b6f73a9f67f4a965129559c4f10359ef65e",

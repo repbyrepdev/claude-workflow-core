@@ -38,7 +38,11 @@ LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 # #228 r1 (silent-failure-hunter): disambiguate plugin vs consumer by the PLUGIN
 # MARKER (.claude-plugin/plugin.json at the repo root), NOT mere presence of a
 # top-level hooks/ — a consumer with an unrelated top-level hooks/ dir must scan
-# .claude/hooks/, never be shadowed by it. Kept identical in discover-orphan-hooks.sh.
+# .claude/hooks/, never be shadowed by it. NOTE: discover-orphan-hooks.sh
+# resolves its hooks dir DIFFERENTLY by design — it derives REPO_ROOT
+# script-relative ($SCRIPT_DIR/..), so its parent is already .claude/ in a
+# consumer and it is immune to this top-level-hooks shadow; this hook is a
+# cache-wired SessionStart hook so it must use git-toplevel + the plugin marker.
 if [ -f "$REPO_ROOT/.claude-plugin/plugin.json" ] && [ -d "$REPO_ROOT/hooks" ]; then
 	HOOKS_DIR="$REPO_ROOT/hooks" # plugin source layout
 elif [ -d "$REPO_ROOT/.claude/hooks" ]; then
