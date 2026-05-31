@@ -269,11 +269,14 @@ teardown() {
 # --- v0.31 #225 (silent-failure-hunter #4): sanctioned test-runner carve-out ---
 # A Phase-1 REVIEW subagent must be able to verify behaviorally (run the
 # sanctioned test runners) WITHOUT PHASE1_DIRECTIVE_GUARD_SKIP. The runners are
-# read-only w.r.t. source (only write the bats log + temp dirs).
+# read-only w.r.t. source (they write only gitignored verification artifacts
+# under .claude/ + temp dirs).
 
 @test "behavioral: sanctioned test runners ALLOWED while pending (#225)" {
 	_setup_pending_repo
-	for c in "scripts/test.sh" "scripts/test.sh .claude/tests/hooks/x.bats" "scripts/test-touched.sh" "./scripts/test-touched.sh" "bash scripts/test.sh" "bash scripts/test-touched.sh"; do
+	# Direct, with-arg, -touched, ./-prefixed, bash-prefixed, bash ./-prefixed,
+	# and env-prefixed (BASE=main … is the documented scope-vs-main form).
+	for c in "scripts/test.sh" "scripts/test.sh .claude/tests/hooks/x.bats" "scripts/test-touched.sh" "./scripts/test-touched.sh" "bash scripts/test.sh" "bash scripts/test-touched.sh" "bash ./scripts/test.sh" "BASE=main scripts/test-touched.sh"; do
 		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
 		[ "$d" = allow ] || {
 			echo "expected ALLOW for test runner: $c (got $d)" >&2
@@ -290,6 +293,20 @@ teardown() {
 		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
 		[ "$d" = deny ] || {
 			echo "expected DENY for laundered runner: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "behavioral: test-runner near-misses (prefix/suffix/interpreter) are DENIED (#225)" {
+	_setup_pending_repo
+	# Pin the CMD_SEGMENT_ANCHOR + CMD_SEGMENT_END boundaries the carve-out relies
+	# on: a suffix past `.sh`, a non-separator prefix, a path-traversal prefix, and
+	# a non-bash interpreter must all still DENY (else the allowlist over-matches).
+	for c in "scripts/test.shX" "scripts/test.sh.bak" "xscripts/test.sh" "../scripts/test.sh" "sh scripts/test.sh"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY for near-miss: $c (got $d)" >&2
 			false
 		}
 	done
