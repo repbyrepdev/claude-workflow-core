@@ -84,3 +84,24 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	# Pin the unknown-action *) branch (distinct from the missing-jq exit 2).
 	[[ $output == *"unknown subcommand"* ]]
 }
+
+@test "prove-yourself-audit: record-fix --covers-count N writes covers_count:N to the audit log (#238)" {
+	# #238 (pr-test-analyzer r1, crit-8): _append_tracked_audit must PERSIST
+	# covers_count so the pre-push-gate's CR-coverage sum honors `--covers-count N`
+	# (was always null → defaulted to 1, silently dropping multi-finding coverage).
+	# Functional WRITER test — proves the producer (run.sh) writes the field the
+	# consumer (cr_phase2_clean_for_sha) reads; would FAIL if the run.sh fix were
+	# reverted (the prior bats hand-wrote the audit, so the writer was untested).
+	command -v jq >/dev/null || skip "jq required"
+	local repo audit
+	repo=$(mktemp -d -t pycovers.XXXXXX)
+	(cd "$repo" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
+	run bash -c "cd '$repo' && bash '$(_wrapper prove-yourself-audit)' record-fix --source cr --severity minor --covers-count 3 --finding-id t238 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0"
+	[ "$status" -eq 0 ]
+	audit="$repo/.claude/audit/prove-yourself.jsonl"
+	[ -f "$audit" ]
+	run jq -rs '[.[] | select(.finding_id=="t238")] | last | .covers_count' "$audit"
+	[ "$status" -eq 0 ]
+	[ "$output" = "3" ]
+	[ -d "$repo" ] && [[ $repo == */pycovers.* ]] && rm -rf "$repo"
+}

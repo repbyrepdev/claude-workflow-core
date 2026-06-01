@@ -5,8 +5,11 @@
 # findings==0 — but the local CR-CLI is non-deterministic on a large diff
 # (findings oscillate 4→1→0→1→4), so a substantively-clean PR could loop
 # forever chasing an LLM minor-tail. The cap mirrors phase1's scaler graduation
-# (#792): after `_scaler_rounds` CR-CLI runs on a given sha, advance to push and
-# defer the residual to the authoritative server-side CR-in-CI.
+# (#792): after `_scaler_rounds` CR-CLI runs on a given sha, the cap engages.
+# #238: the cap advances ONLY if every residual finding is ADDRESSED (the shared
+# cr_phase2_clean_for_sha coverage check — the SAME one the pre-push gate uses);
+# else it emits the address-residuals directive and stays, never riding past an
+# unaddressed finding of any severity.
 #
 # Drives `ship-pr-cycle.sh next` against a tmp git repo (same harness as
 # ship-pr-cycle-cr-conflict-check.bats). The findings>0 branch makes NO `gh`

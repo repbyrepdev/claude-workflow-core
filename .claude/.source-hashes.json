@@ -103,7 +103,7 @@
     "hooks/pr-trigger.sh": "506b9cb26ff0f948aa7134fb0fa4b0855ba265c6e35747b4163be975a2b497b2",
     "hooks/pre-compact-flush.sh": "a4d19a0065a13c8d7620b0e4340d2f787eec5422b0054948fc920566d0528eba",
     "hooks/pre-merge-cr-comments-gate.sh": "c7d0d0e758702e6a8174966862ffe22eb21985e9e67df1a8c6c926c5010d37bf",
-    "hooks/pre-push-pipeline-gate.sh": "2efa7ee15d528db5685c9fd1bf6511680faa19157cba21bc9d9eab72c1311aab",
+    "hooks/pre-push-pipeline-gate.sh": "f381875decadb39389cc3264f7461c4afbe7b726b6f7ee42d28f7a63d27ffa2a",
     "hooks/recreate-baseline-gate.sh": "72e73adfd3a07cc3ba2eacb2a5c9bc10629421f6c352d39478dc949699c18232",
     "hooks/restore-session-state.sh": "2a0b2bce980a7a6cf85fcbccfec1ac30c29f61ac2a3b9fe0ccf88515e0da2da8",
     "hooks/review-log.sh": "16b71f27317630a0af2e912d7ebd640bad5fec462f6597963ded024865572960",

@@ -194,11 +194,6 @@ _is_comments_only() {
 # Returns 0 + scaler's round count on stdout when delegation fires.
 # Returns 1 when no match OR findings>0 OR scaler missing — caller falls
 # back to the LOC tier.
-# v4.24-Q3 (#610): predicate form — returns 0 when CR CLI has a findings=0
-# entry for this SHA (the authorization signal for full gate delegation),
-# 1 otherwise. Shares `_scaler_says`'s log-parsing logic but drops the
-# scaler dependency so the gate can delegate even if the scaler script
-# is absent.
 # v0.32.7 (#238): the CR Phase 2 coverage check is now SSOT in
 # _lib/cr-phase2-coverage.sh, SHARED with ship-pr-cycle's Phase 2 round-cap so
 # the cap never advances to a push this gate would refuse (and the two can't

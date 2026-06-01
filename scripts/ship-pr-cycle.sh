@@ -1461,9 +1461,12 @@ cmd_next() {
 				# means "after N rounds you must ADDRESS the residuals (fix in-PR,
 				# or verified-false-positive → reject with evidence), not re-roll
 				# for a lucky 0". Fail-CLOSED if the shared lib didn't load.
-				local full_sha2
-				full_sha2=$(git rev-parse HEAD 2>/dev/null || echo "")
-				if command -v cr_phase2_clean_for_sha >/dev/null 2>&1 && cr_phase2_clean_for_sha "$full_sha2"; then
+				# #238 code-simplifier r1: reuse the already-resolved (fail-loud)
+				# head_sha — cr_phase2_clean_for_sha reduces its arg to short form
+				# internally, so a second `git rev-parse HEAD || echo ""` (a
+				# soft-fail the fail-loud head_sha resolution above deliberately
+				# rejects) would be redundant.
+				if command -v cr_phase2_clean_for_sha >/dev/null 2>&1 && cr_phase2_clean_for_sha "$head_sha"; then
 					_set_stage "push"
 					echo "→ phase2 round-cap reached ($p2runs/$cap) + all $findings residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push"
 					return 0

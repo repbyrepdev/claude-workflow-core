@@ -93,3 +93,15 @@ STUB
 	[[ $output == *"INTEGRATION STUB ORPHAN"* ]]
 	[ -d "$repo" ] && [[ $repo == */prepushint.* ]] && rm -rf "$repo"
 }
+
+@test "_cr_cli_clean_for_sha fails CLOSED when the coverage lib is unavailable (#238)" {
+	# #238: _cr_cli_clean_for_sha delegates to the shared cr_phase2_clean_for_sha
+	# (sourced from _lib/cr-phase2-coverage.sh). If that lib didn't source (the
+	# function is undefined), the wrapper MUST fail closed — non-zero + an error —
+	# never silently pass an unverified Phase 2. (The clean/covered/not-clean
+	# LOGIC is unit-tested in _lib/cr-phase2-coverage.bats.)
+	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
+	run _cr_cli_clean_for_sha 0123456789abcdef
+	[ "$status" -ne 0 ]
+	[[ $output == *"not sourced"* ]]
+}
