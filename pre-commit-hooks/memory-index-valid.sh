@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Pre-commit: validate memory/ directory integrity.
 #   1. Every memory file must have MEMORY.md index entry
 #   2. MEMORY.md entries must point to files that exist
@@ -6,8 +7,6 @@
 #   4. All memory files must have valid YAML frontmatter (name, description, type)
 #
 # Part of v3.19 meta-learning infrastructure (#239).
-
-set -u
 
 MEM_DIR="${MEMORY_DIR:-$HOME/.claude/projects/-Users-adamsfamily/memory}"
 INDEX="$MEM_DIR/MEMORY.md"
@@ -70,21 +69,24 @@ while IFS= read -r mf; do
 	fi
 done < <(find "$MEM_DIR" -maxdepth 1 -type f -name "feedback_*.md")
 
-# 4. Frontmatter validity
+# 4. Frontmatter validity. #251: accept each key top-level OR indented under a
+# `metadata:` block — the harness memory subsystem normalizes frontmatter to
+# `metadata:\n  type: <t>` (+ node_type), so a strict `^type:` rejected every
+# normalized memory. `^[[:space:]]*type:` matches both (and not `node_type:`).
 while IFS= read -r mf; do
 	base=$(basename "$mf")
 	[ "$base" = "MEMORY.md" ] && continue
-	head -10 "$mf" | grep -q "^name:" || {
+	head -10 "$mf" | grep -qE "^[[:space:]]*name:" || {
 		report="$report
   ✗ $base: missing 'name:' frontmatter"
 		errs=$((errs + 1))
 	}
-	head -10 "$mf" | grep -q "^description:" || {
+	head -10 "$mf" | grep -qE "^[[:space:]]*description:" || {
 		report="$report
   ✗ $base: missing 'description:' frontmatter"
 		errs=$((errs + 1))
 	}
-	head -10 "$mf" | grep -q "^type:" || {
+	head -10 "$mf" | grep -qE "^[[:space:]]*type:" || {
 		report="$report
   ✗ $base: missing 'type:' frontmatter"
 		errs=$((errs + 1))
