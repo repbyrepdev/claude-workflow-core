@@ -296,7 +296,11 @@ HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null || echo "")
 if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 	# #251: extract the failing hook(s) up-front so the cause is visible
 	# WITHOUT re-running the commit with full output capture (the prior pain).
-	FAILED_HOOKS=$(grep -nE "Failed$|^- hook id:|exit code:|✗ " "$COMMIT_OUT" 2>/dev/null | head -15)
+	# `|| true`: under the script's `set -euo pipefail`, grep's exit-1 on
+	# no-match (or head's SIGPIPE) would otherwise propagate via pipefail and
+	# ABORT here — making this very diagnostic block dead code on the no-match
+	# path (the bug #251 exists to fix). [phase1 r1 code-reviewer+silent-failure]
+	FAILED_HOOKS=$(grep -nE "Failed$|^- hook id:|exit code:|✗ " "$COMMIT_OUT" 2>/dev/null | head -15 || true)
 	# Commit did NOT land. Surface via hook-ack-pending so the next
 	# Bash call is blocked until the operator Reads the diagnostic.
 	# CR-in-CI #780 r2 trivial: use existing $REPO_ROOT (resolved at
