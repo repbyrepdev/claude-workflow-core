@@ -61,6 +61,9 @@ setup() {
 	# the real local-review.sh appends its own entry (its own contract/tests).
 	cat >"$ROOT/.claude/scripts/cr/local-review.sh" <<'STUB'
 #!/usr/bin/env bash
+# #284: drop a sentinel (relative to cwd = repo root) so the cache-HIT tests can
+# assert this stub was NOT invoked — the skip-invocation / 10-hr-budget contract.
+touch .claude/.local-review-ran 2>/dev/null || true
 printf '%s\n' '{"type":"complete","findings":2}'
 exit 1
 STUB
@@ -256,4 +259,77 @@ STUB
 	[[ $output == *"timed out unrecoverably"* ]]
 	[[ $output == *"advanced to push"* ]]
 	[ "$(_cur_stage)" = push ]
+}
+
+# --- v0.32.11 (#249-grp / #282): content-hash review cache integration --------
+# The cap tests above exercise the cache-MISS path (the fixture has no `main`
+# ref → phase2_review_cache_key returns empty → cache inactive → the CR-CLI stub
+# runs). These drive the cache-HIT path — the branch that was previously dead
+# code in this file — by seeding phase2-results.jsonl with the key for THIS
+# repo's review surface so the dispatch REUSES the count without invoking the
+# CR-CLI, then asserting the advance-on-coverage decision.
+
+# Seed the phase2 review-result cache. $1 = cached findings count. Renames the
+# default branch to `main` so the dispatch's `git diff main...HEAD` (BASE_BRANCH
+# defaults to main) resolves; main==HEAD → empty diff → the stable empty-blob
+# key, computed here exactly as the lib does (empty stdin → git hash-object).
+_seed_cache() {
+	(cd "$ROOT" && git branch -M main) || return 1
+	local key
+	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
+	mkdir -p "$ROOT/.claude/.review-cache"
+	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":%s}\n' \
+		"$key" "$SHA_SHORT" "$1" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
+}
+
+@test "phase2 content-hash cache HIT + 0 findings → advance to push, no CR-CLI (#282)" {
+	# Cache says 0 findings for this surface → reuse + advance, never invoking
+	# the CR-CLI stub (which would emit 2). findings==0 needs no coverage.
+	_seed_stage phase2
+	_seed_cache 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"cache HIT"* ]]
+	[[ $output == *"reusing 0 finding"* ]]
+	[[ $output == *"advanced to push"* ]]
+	[ "$(_cur_stage)" = push ]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
+}
+
+@test "phase2 content-hash cache HIT + residuals addressed → advance, no CR-CLI (#282)" {
+	# Cache says 2 findings; the prior MISS-run logged them (cr-local-review) and
+	# they're covered (prove-yourself) → the cache-HIT branch advances on
+	# coverage WITHOUT re-invoking the non-deterministic CR-CLI (the treadmill fix).
+	_seed_stage phase2
+	_seed_cache 2
+	_seed_log 1
+	_seed_coverage 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"cache HIT"* ]]
+	[[ $output == *"addressed"* ]]
+	[[ $output == *"advanced to push"* ]]
+	[ "$(_cur_stage)" = push ]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
+}
+
+@test "phase2 content-hash cache HIT + residuals NOT addressed → directive, stays (#282)" {
+	# Cache says 2 findings, logged but NOT covered → the cache-HIT branch must
+	# emit the address-residuals directive + stay; it must NEVER falsely advance
+	# on a hit (fail-closed via cr_phase2_clean_for_sha).
+	_seed_stage phase2
+	_seed_cache 2
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"cache HIT"* ]]
+	[[ $output == *"NOT all addressed"* ]]
+	[ "$(_cur_stage)" = phase2 ]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }

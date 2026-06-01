@@ -17,7 +17,7 @@
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",
     "_lib/cmd-anchor.sh": "54ad7902014df8cd66bd0c1142bfdfe8f583227875a519d0aa04f98abf1e2806",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
-    "_lib/content-hash-cache.sh": "2894518b7b3d06077b94d154bc9915da067214bcdbce47e9be18e1ede69da2c4",
+    "_lib/content-hash-cache.sh": "7cb1edfb39e1a5aa87c35afa2ccfac28139eec7f8c3763127b1b4da3d30297a1",
     "_lib/cr-phase2-coverage.sh": "b264646b81e07c18ec5eb01f10316a7b867c562b5f2e99ae5196d70772a85cd4",
     "_lib/dogfood-fingerprint.sh": "71eb4e8990307ccb52f9e45b90d77c2c9d6b0435b7e608c16982afd56a95b722",
     "_lib/epic-completeness-check.sh": "c95052f36570f73071394d51024f7db592eb70ddfd64d8ac03eb26a09e5f04c0",
