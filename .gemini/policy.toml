@@ -1,0 +1,73 @@
+# v4.28-W4 (#643) — Gemini CLI policy.toml deny block.
+#
+# Defense-in-depth beyond settings.json `tools.exclude` (deprecated).
+# Loaded via `gemini --policy .gemini/policy.toml -p "..."` from
+# .claude/hooks/phase0.5-gemini-prefilter.sh.
+#
+# Goal: Gemini CLI is a REVIEWER at Phase 0.5 — it should NEVER edit files,
+# execute shell commands, or write to disk. Read-only inspection only.
+#
+# Rule precedence (per https://geminicli.com/docs/core/policy-engine):
+# rules are evaluated in declaration order, first match wins.
+
+# DENY all write/edit operations — reviewer is read-only by contract.
+[[rule]]
+tool = "edit_file"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer is read-only — no file edits"
+
+[[rule]]
+tool = "create_file"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer is read-only — no file creation"
+
+[[rule]]
+tool = "write_file"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer is read-only — no file writes"
+
+[[rule]]
+tool = "delete_file"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer is read-only — no file deletion"
+
+# DENY shell command execution — reviewer should never run anything.
+[[rule]]
+tool = "shell"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer is read-only — no shell execution"
+
+[[rule]]
+tool = "execute_command"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer is read-only — no command execution"
+
+# DENY network calls beyond model API — prevent SSRF / data exfil.
+[[rule]]
+tool = "fetch_url"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer must not fetch external URLs"
+
+[[rule]]
+tool = "web_fetch"
+decision = "deny"
+reason = "Phase 0.5 Gemini reviewer must not fetch external URLs"
+
+# ALLOW read tools — necessary for reviewing diffs.
+[[rule]]
+tool = "read_file"
+decision = "allow"
+
+[[rule]]
+tool = "list_files"
+decision = "allow"
+
+[[rule]]
+tool = "search"
+decision = "allow"
+
+# Default-deny for any tool not explicitly allowed above.
+[[rule]]
+tool = "*"
+decision = "deny"
+reason = "Phase 0.5 reviewer policy: deny-by-default beyond read tools"

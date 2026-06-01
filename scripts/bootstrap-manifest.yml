@@ -43,6 +43,20 @@ files:
   - path: .coderabbit.base.yaml
     mode: "644"
     hashed: true
+  # AI-reviewer configs (#236, Wave H residual) — byte-IDENTICAL across every
+  # consumer (read-only Phase 0.5/0.7 reviewer policy + model settings; fully
+  # repo-AGNOSTIC, no overlay needed), so full verbatim byte-SSOT. hashed: true
+  # ⇒ the Wave G hash-drift engine gates + propagates them. Per-repo reviewer
+  # CONTEXT (AGENTS.md / GEMINI.md prose) stays per-repo — NOT here.
+  - path: .gemini/policy.toml
+    mode: "644"
+    hashed: true
+  - path: .gemini/settings.json
+    mode: "644"
+    hashed: true
+  - path: .codex/config.toml
+    mode: "644"
+    hashed: true
   # Consumer-only shims: the plugin itself doesn't need these because
   # it IS the plugin (its real skills live under skills/ship-pr-cycle/).
   # --verify --scope=both checks consumer paths; --verify --scope=plugin skips them.

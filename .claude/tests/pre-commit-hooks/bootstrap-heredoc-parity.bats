@@ -84,3 +84,24 @@ teardown() {
 	[ "$status" -ne 0 ]
 	[[ $output == *"live file missing: .coderabbit.base.yaml"* ]]
 }
+
+@test "gemini/codex AI-config paths are in the gate's PARITY_PATHS (#236)" {
+	# Behavioral parse of the actual array (CR r3 pattern) — the 3 byte-SSOT
+	# AI-reviewer configs must all be gated.
+	run _gate_parity_paths
+	[ "$status" -eq 0 ]
+	printf '%s\n' "$output" | grep -Fxq '.gemini/policy.toml'
+	printf '%s\n' "$output" | grep -Fxq '.gemini/settings.json'
+	printf '%s\n' "$output" | grep -Fxq '.codex/config.toml'
+}
+
+@test "drifting .codex/config.toml → gate fails with named drift (#236)" {
+	# Mutate ONLY the codex config; every other PARITY_PATHS file still matches,
+	# so the failure must isolate to .codex/config.toml — proving the gate
+	# actively byte-checks the new TOML entry (not just present in the array,
+	# and not silently skipped because it isn't YAML).
+	printf '\n# drift injected by test\n' >>"$SANDBOX/.codex/config.toml"
+	run bash -c "cd '$SANDBOX' && bash '$GATE'"
+	[ "$status" -ne 0 ]
+	[[ $output == *"drift in .codex/config.toml"* ]]
+}

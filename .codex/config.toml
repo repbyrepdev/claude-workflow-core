@@ -1,0 +1,34 @@
+# Codex CLI 0.125 — project-level config. NOT auto-discovered: 0.125 only loads
+# `$CODEX_HOME/config.toml` (default ~/.codex). Phase 0.7 launcher must export
+# CODEX_HOME=$REPO_ROOT/.codex before invoking `codex` to pick up these profiles.
+# Both profiles share read-only sandbox + never approval — Codex is a reviewer here.
+# Scoped for future Phase 0.7 of the local pre-push pipeline — not yet wired (see AGENTS.md).
+# Repo conventions live in AGENTS.md at repo root (auto-loaded by Codex when CODEX_HOME points at this dir).
+
+model = "gpt-5.3-codex"
+sandbox_mode = "read-only"
+approval_policy = "never"
+hide_agent_reasoning = true
+project_doc_max_bytes = 32768
+file_opener = "vscode"
+
+[history]
+persistence = "save-all"
+
+[profiles.review]
+# Substantive PRs. Inherits global model (gpt-5.3-codex) + sandbox_mode +
+# approval_policy; only effort/summary overrides here.
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+
+[profiles.fast-triage]
+# Renovate / docs-only / single-file PRs — cheap pass on the smallest tier.
+# Overrides global model (cheaper tier); other globals inherited.
+model = "gpt-5.4-mini"
+model_reasoning_effort = "low"
+model_reasoning_summary = "concise"
+
+[shell_environment_policy]
+# Never expose secrets to shell tools the model invokes.
+inherit = "core"
+exclude = ["AWS_*", "AZURE_*", "GCP_*", "GCLOUD_*", "DOCKER_*", "VAULT_*", "*_TOKEN", "*_KEY", "*_SECRET", "*_PASSWORD", "*_CREDENTIALS", "*_CERT*", "GH_TOKEN", "GITHUB_TOKEN", "DATABASE_URL", "AGE_*", "SOPS_*", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
