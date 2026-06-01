@@ -84,3 +84,49 @@ teardown() {
 	[ "$status" -ne 0 ]
 	[[ $output == *"live file missing: .coderabbit.base.yaml"* ]]
 }
+
+@test "gemini/codex AI-config paths are in the gate's PARITY_PATHS (#236)" {
+	# Behavioral parse of the actual array (CR r3 pattern) — the 3 byte-SSOT
+	# AI-reviewer configs must all be gated.
+	run _gate_parity_paths
+	[ "$status" -eq 0 ]
+	printf '%s\n' "$output" | grep -Fxq '.gemini/policy.toml'
+	printf '%s\n' "$output" | grep -Fxq '.gemini/settings.json'
+	printf '%s\n' "$output" | grep -Fxq '.codex/config.toml'
+}
+
+@test "drifting .codex/config.toml → gate fails with named drift (#236)" {
+	# Mutate ONLY the codex config; every other PARITY_PATHS file still matches,
+	# so the failure must isolate to .codex/config.toml — proving the gate
+	# actively byte-checks the new TOML entry (not just present in the array,
+	# and not silently skipped because it isn't YAML).
+	printf '\n# drift injected by test\n' >>"$SANDBOX/.codex/config.toml"
+	run bash -c "cd '$SANDBOX' && bash '$GATE'"
+	[ "$status" -ne 0 ]
+	[[ $output == *"drift in .codex/config.toml"* ]]
+}
+
+@test "drifting .gemini/settings.json → gate fails with named drift (#236)" {
+	# Drift-test the only JSON entry too (pr-test-analyzer #236): proves the
+	# gate's plain-text diff byte-checks .json the same as .yaml/.toml — the
+	# extraction + diff are format-agnostic, so a JSON entry isn't silently
+	# skipped. Appending any bytes diverges it from the bootstrap heredoc.
+	printf '\n' >>"$SANDBOX/.gemini/settings.json"
+	run bash -c "cd '$SANDBOX' && bash '$GATE'"
+	[ "$status" -ne 0 ]
+	[[ $output == *"drift in .gemini/settings.json"* ]]
+}
+
+@test "gemini/codex configs are declared hashed:true in the manifest (#236)" {
+	# pr-test-analyzer #236: byte-SSOT has TWO enforcement layers — PARITY_PATHS
+	# (the parity gate, drift-tested above) AND manifest hashed:true (consumed by
+	# the hash-drift engine + .source-hashes baseline). Assert the manifest layer
+	# too, so a future edit dropping hashed:true on one of these paths is caught
+	# (not only a dropped PARITY_PATHS entry).
+	local m="$PLUGIN/scripts/bootstrap-manifest.yml" p
+	for p in .gemini/policy.toml .gemini/settings.json .codex/config.toml; do
+		run yq -e ".files[] | select(.path == \"$p\") | .hashed" "$m"
+		[ "$status" -eq 0 ]
+		[ "$output" = "true" ]
+	done
+}

@@ -965,6 +965,124 @@ jobs:
           sync-labels: true
 EOF
 
+_write .gemini/policy.toml 644 <<'EOF'
+# v4.28-W4 (#643) — Gemini CLI policy.toml deny block.
+# SCHEMA CORRECTED (#236): the prior schema was WRONG and the deny rules were
+# no-ops. Per the official policy-engine reference
+# (https://geminicli.com/docs/reference/policy-engine):
+#   - field is `toolName` (NOT `tool`); an array of names is allowed
+#   - `decision` = "allow" | "deny" | "ask_user"
+#   - `denyMessage` (NOT `reason`)
+#   - numeric `priority` 0-999 — HIGHEST priority wins (NOT declaration order)
+#   - built-in tool names are e.g. read_file / read_many_files / list_directory
+#     / glob / search_file_content / write_file / replace / run_shell_command /
+#     web_fetch (NOT shell / execute_command / fetch_url / edit_file).
+#
+# Goal: Gemini CLI is a REVIEWER at Phase 0.5 — read-only inspection only; it
+# must NEVER edit files, run shell commands, or fetch the network. Loaded via
+# `gemini --policy .gemini/policy.toml -p "..."` from
+# .claude/hooks/phase0.5-gemini-prefilter.sh. This is defense-in-depth on top of
+# settings.json (approvalMode=plan + disableYoloMode), which is the primary
+# read-only enforcement.
+
+# ALLOW the read-only inspection tools the reviewer needs (highest priority).
+# search_file_content + grep_search are both listed defensively — a name the
+# registry does not have simply never matches, so listing both is harmless.
+[[rule]]
+toolName = ["read_file", "read_many_files", "list_directory", "glob", "search_file_content", "grep_search"]
+decision = "allow"
+priority = 100
+
+# DENY everything else (deny-by-default, lowest priority) — no write_file /
+# replace (edits), no run_shell_command (shell), no web_fetch / google_web_search
+# (network), no memory writes. Fail-closed: an un-enumerated tool is denied, so
+# the worst case is a degraded (over-restricted) review, never an escaped write.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 0
+denyMessage = "Phase 0.5 Gemini reviewer is read-only — only read/list/search tools are permitted (no writes, edits, shell, or network)."
+EOF
+
+_write .gemini/settings.json 644 <<'EOF'
+{
+  "model": {
+    "name": "gemini-2.5-flash"
+  },
+  "general": {
+    "defaultApprovalMode": "plan",
+    "checkpointing": {
+      "enabled": true
+    }
+  },
+  "telemetry": {
+    "enabled": false
+  },
+  "context": {
+    "fileName": ["AGENTS.md", "GEMINI.md"],
+    "fileFiltering": {
+      "respectGitIgnore": true,
+      "respectGeminiIgnore": true
+    }
+  },
+  "security": {
+    "disableYoloMode": true
+  },
+  "tools": {
+    "exclude": [
+      "run_shell_command(rm)",
+      "run_shell_command(sudo)",
+      "run_shell_command(dd)",
+      "run_shell_command(mkfs)",
+      "run_shell_command(chown)",
+      "run_shell_command(chmod)"
+    ]
+  },
+  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true blocks --approval-mode=yolo / --yolo override (per docs/cli/enterprise.md) so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude parameterized patterns block specific command prefixes (verified against docs/tools/shell.md). For belt-and-suspenders deny rules with priority + glob support, the Gemini policy engine accepts a separate policy.toml with [[rule]] deny blocks — see .gemini/policy.toml (#643).",
+  "ui": {
+    "hideTips": true,
+    "showLineNumbers": true
+  }
+}
+EOF
+
+_write .codex/config.toml 644 <<'EOF'
+# Codex CLI 0.125 — project-level config. NOT auto-discovered: 0.125 only loads
+# `$CODEX_HOME/config.toml` (default ~/.codex). Phase 0.7 launcher must export
+# CODEX_HOME=$REPO_ROOT/.codex before invoking `codex` to pick up these profiles.
+# Both profiles share read-only sandbox + never approval — Codex is a reviewer here.
+# Scoped for future Phase 0.7 of the local pre-push pipeline — not yet wired (see AGENTS.md).
+# Repo conventions live in AGENTS.md at repo root (auto-loaded by Codex when CODEX_HOME points at this dir).
+
+model = "gpt-5.3-codex"
+sandbox_mode = "read-only"
+approval_policy = "never"
+hide_agent_reasoning = true
+project_doc_max_bytes = 32768
+file_opener = "vscode"
+
+[history]
+persistence = "save-all"
+
+[profiles.review]
+# Substantive PRs. Inherits global model (gpt-5.3-codex) + sandbox_mode +
+# approval_policy; only effort/summary overrides here.
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+
+[profiles.fast-triage]
+# Renovate / docs-only / single-file PRs — cheap pass on the smallest tier.
+# Overrides global model (cheaper tier); other globals inherited.
+model = "gpt-5.4-mini"
+model_reasoning_effort = "low"
+model_reasoning_summary = "concise"
+
+[shell_environment_policy]
+# Never expose secrets to shell tools the model invokes.
+inherit = "core"
+exclude = ["AWS_*", "AZURE_*", "GCP_*", "GCLOUD_*", "DOCKER_*", "VAULT_*", "*_TOKEN", "*_KEY", "*_SECRET", "*_PASSWORD", "*_CREDENTIALS", "*_CERT*", "GH_TOKEN", "GITHUB_TOKEN", "DATABASE_URL", "AGE_*", "SOPS_*", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+EOF
+
 _write .coderabbit.base.yaml 644 <<'EOF'
 # CodeRabbit BASE config — canonical, repo-AGNOSTIC SSOT (#234, Wave H).
 # Docs: https://docs.coderabbit.ai/reference/configuration
