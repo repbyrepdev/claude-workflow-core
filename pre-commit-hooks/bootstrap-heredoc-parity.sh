@@ -38,6 +38,7 @@ PARITY_PATHS=(
 	".github/ISSUE_TEMPLATE/epic.yml"
 	".github/ISSUE_TEMPLATE/brainstorm.yml"
 	".github/pull_request_template.md"
+	".coderabbit.base.yaml"
 )
 
 # Only run when the commit touches the script, manifest, or any of the

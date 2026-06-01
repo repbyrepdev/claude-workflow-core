@@ -32,6 +32,15 @@ schema_version: 1
 files:
   - path: .pre-commit-config.yaml
     mode: "644"
+  # AI-reviewer SSOT — byte-identical canonical CodeRabbit base (#234, Wave H).
+  # hashed: true ⇒ the Wave G hash-drift engine gates + propagates it. The
+  # per-repo .coderabbit.yaml is composed from this + an optional
+  # .coderabbit.overlay.yaml by scripts/compose-coderabbit.sh (overlay scalars
+  # win, arrays append). The overlay + composed .coderabbit.yaml are per-repo
+  # (NOT gated, NOT in this manifest).
+  - path: .coderabbit.base.yaml
+    mode: "644"
+    hashed: true
   # Consumer-only shims: the plugin itself doesn't need these because
   # it IS the plugin (its real skills live under skills/ship-pr-cycle/).
   # --verify --scope=both checks consumer paths; --verify --scope=plugin skips them.

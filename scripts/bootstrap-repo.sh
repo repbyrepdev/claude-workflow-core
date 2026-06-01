@@ -32,6 +32,14 @@ set -euo pipefail
 #
 # Platform: macOS + Linux (no platform-specific calls).
 
+# Resolve the plugin's OWN script dir up-front — BEFORE any `cd "$TARGET"` —
+# so a relative invocation path can't break ${BASH_SOURCE[0]} resolution after
+# the working dir changes. Used to locate sibling helpers (compose-coderabbit.sh)
+# regardless of how bootstrap was invoked. (NOTE: the SCRIPT_DIR assignments
+# further down live INSIDE embedded heredocs — they are the consumer run.sh's
+# vars, not this script's.)
+PLUGIN_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 TARGET=""
 PIN_TAG="v0.8.5"
 DRY_RUN=0
@@ -953,6 +961,271 @@ jobs:
           sync-labels: true
 EOF
 
+_write .coderabbit.base.yaml 644 <<'EOF'
+# CodeRabbit BASE config — canonical, repo-AGNOSTIC SSOT (#234, Wave H).
+# Docs: https://docs.coderabbit.ai/reference/configuration
+#
+# This is the shared spine every repo's .coderabbit.yaml is built from. It is
+# byte-SSOT (registered `hashed: true` in scripts/bootstrap-manifest.yml, so
+# the Wave G #232 hash-drift engine propagates + drift-gates it). Update CR
+# review behavior HERE, in one place.
+#
+# COMPOSE MODEL (bootstrap-repo.sh + refresh-from-source.sh):
+#   .coderabbit.yaml = yq deep-merge( .coderabbit.base.yaml , .coderabbit.overlay.yaml )
+#   using `*+` semantics: overlay SCALARS win, overlay ARRAYS append to base.
+# A NEW repo with no overlay gets this file verbatim as its .coderabbit.yaml.
+#
+# OVERLAY (per-repo, consumer-owned `.coderabbit.overlay.yaml`) carries ONLY
+# repo-specific bits — never duplicate base keys there:
+#   - reviews.auto_review.path_filters       (repo source/asset paths)
+#   - reviews.auto_review.ignore_title_keywords (repo bot-PR titles)
+#   - reviews.labeling_instructions           (domain area:* PR labels)
+#   - reviews.path_instructions               (repo file-path review rules)
+#   - issue_enrichment.labeling.labeling_instructions (domain area:* issue labels)
+#   - tone_instructions                       (repo domain one-liner; overlay overrides)
+#   - knowledge_base.code_guidelines.filePatterns (repo-specific SSOT files; appended)
+#   - code_generation                         (repo-specific, if any)
+#
+# CANONICAL LABELING SPLIT (do NOT collapse — they are different CR features):
+#   reviews.labeling_instructions            → PR labels (by files changed)
+#   issue_enrichment.labeling.labeling_instructions → ISSUE labels (type/priority/area)
+
+language: en-US
+tone_instructions: >-
+  Direct and concise. Flag real correctness, security, and contract issues;
+  skip prose nitpicks. Prefer fail-closed. Recurring classes worth flagging:
+  hardcoded user paths, fail-open error suppression (`|| true`, `2>/dev/null`
+  swallowing real errors), and SSOT duplication. (Repos override this with a
+  domain-specific one-liner via .coderabbit.overlay.yaml.)
+early_access: true
+inheritance: false
+
+reviews:
+  profile: assertive
+  high_level_summary: true
+  high_level_summary_placeholder: "<!-- coderabbit:summary -->"
+  review_status: true
+  commit_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  poem: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: false
+  suggested_labels: true
+  suggested_reviewers: false
+  enable_prompt_for_ai_agents: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    base_branches:
+      - main
+    # Generic bot/rollback titles. Repos append their own (e.g. "Update Docker
+    # tag", "Update npm dependency") via overlay.
+    ignore_title_keywords:
+      - "rollback:"
+    ignore_usernames:
+      - "renovate[bot]"
+    # Generic doc/asset skips. Re-includes FIRST (order matters): SKILL.md +
+    # CLAUDE.md/AGENTS.md drive auto-invocation + operating rules, so they ARE
+    # reviewed. Repos append repo-specific source paths via overlay.
+    path_filters:
+      - ".claude/skills/**/*.md"
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - "GEMINI.md"
+      - "!**/*.md"
+      - "!LICENSE"
+      - "!.gitignore"
+      - "!.github/ISSUE_TEMPLATE/**"
+      - "!.github/release.yml"
+      - "!.claude/.session-state/**"
+      - "!.claude/audit/**"
+      - "!**/*.svg"
+      - "!**/*.png"
+
+  # PR labels — by which files changed. Universal area/type labels; repos
+  # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.
+  labeling_instructions:
+    - label: "area:hooks"
+      instructions: "Apply when PR touches .claude/hooks/ or pre-commit-hooks/."
+    - label: "area:skills"
+      instructions: "Apply when PR touches .claude/skills/ (or skills/)."
+    - label: "area:workflows"
+      instructions: "Apply when PR touches .github/workflows/."
+    - label: "area:infrastructure"
+      instructions: >-
+        Apply when PR touches scripts/, config/gates, _lib, .github SSOT
+        configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*,
+        .gitleaks.toml). Catch-all when no more-specific area matches.
+    - label: "type:test"
+      instructions: "Apply when PR is dominantly .bats / test files."
+    - label: "type:secrets"
+      instructions: "Apply when PR touches .gitleaks.toml, *.enc, or anything that could leak tokens."
+
+  # Universal path review rules. Repos append file-path rules for their own
+  # source trees (stacks/, coalesce/, *.sql, ...) via overlay.
+  path_instructions:
+    - path: ".claude/hooks/*.sh"
+      instructions: >-
+        Bash strict-mode hook. REQUIRE `set -euo pipefail` (or at minimum
+        `set -u`) within the first 20 lines after the shebang — `# event:` /
+        `# matcher:` frontmatter may sit between shebang and the strict-mode
+        line. REQUIRE paths resolved via `dirname "${BASH_SOURCE[0]}"`, not
+        caller CWD. REQUIRE JSON stdin parsed with `jq`, never grep/sed.
+        REQUIRE fail-closed on `git rev-parse` and auxiliary commands — `|| true`
+        / `2>/dev/null` silently swallow errors. FLAG hardcoded user paths,
+        `*"FOO=1"*` globs that fire on arbitrary argv, and `$VAR` interpolated
+        inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: when a
+        hook's event/matcher/exit-code contract changes, also inspect the
+        matching .claude/tests/hooks/<name>.bats for stale assertions.
+    - path: ".claude/skills/*/run.sh"
+      instructions: >-
+        Skill wrapper. REQUIRE `set -euo pipefail`. REQUIRE `SKILL_WRAPPER=1`
+        exported when invoking gh/git the skill-bypass-guard would otherwise
+        refuse. REQUIRE `--help` prints usage + exits 0. REQUIRE idempotent on
+        retry. FLAG missing argument bounds checks (`$2` under `set -u` with no
+        `[[ $# -lt 2 ]]` guard).
+    - path: ".github/workflows/*.yml"
+      instructions: >-
+        GitHub Actions workflow. REQUIRE top-level or per-job `permissions:`
+        (least-privilege; `contents: read` baseline). REQUIRE third-party
+        actions pinned to a full commit SHA, not a version tag. REQUIRE
+        actionlint clean. REQUIRE secrets via `${{ secrets.X }}`, never inline.
+    - path: ".gitleaks.toml"
+      instructions: >-
+        Secret-scan config shared by the local pre-commit hook and the gitleaks
+        Action. Allowlist must be CONSERVATIVE — question any new broad `paths`
+        entry, any `commits` entry, and any `stopwords` (stopwords risk false
+        negatives; prefer path allowlists). Must cover *.enc files.
+
+  tools:
+    shellcheck:
+      enabled: true
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    osvScanner:
+      enabled: true
+    semgrep:
+      enabled: true
+    markdownlint:
+      enabled: false # too noisy on CLAUDE.md/SKILL.md prose
+    languagetool:
+      enabled: false # ditto — silences "the the" on judgment-rule prose
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    # Universal SSOT files present in every repo. Repos append repo-specific
+    # guideline files (.claude/review-config.yml, .claude/ssot-checks.yml, ...)
+    # via overlay.
+    filePatterns:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - ".github/commit-template.yml"
+      - ".github/labels.yml"
+      - ".github/required-checks-list.yml"
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+
+# Issue labels (type/priority/area) — auto-applied on new/edited issues.
+# This is the CANONICAL location for ISSUE labeling (distinct from
+# reviews.labeling_instructions, which is PR labeling). Repos append domain
+# area:* labels via overlay.
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+  labeling:
+    auto_apply_labels: true
+    labeling_instructions:
+      # Type — required, exactly one.
+      - label: "bug"
+        instructions: >-
+          Apply when the issue describes broken/incorrect behavior or a
+          regression. Keywords: "broken", "fails", "crashes", "regression",
+          "not working", error messages quoted from logs.
+      - label: "enhancement"
+        instructions: >-
+          Apply when the issue requests new functionality or extends existing
+          features. Default for feature-style asks. Keywords: "add", "new",
+          "support for", "feature".
+      - label: "epic"
+        instructions: >-
+          Apply when the body has ≥3 occurrences of either `- [ ] #NNN`
+          (sub-issue ref) OR `- [ ] vX.Y.Z:` (version-stamped task). Multi-
+          phase work that decomposes into sub-issues.
+      - label: "documentation"
+        instructions: >-
+          Apply when the issue is solely about CLAUDE.md / SKILL.md / docs
+          updates with no code change.
+      - label: "question"
+        instructions: >-
+          Apply when the issue is a clarification request, not actionable work.
+      # Area — universal catch-all; repos add domain area:* via overlay.
+      - label: "area:infrastructure"
+        instructions: >-
+          CI/CD, scripts, .claude/ tooling, .github SSOT, repo-bootstrap
+          configs. Catch-all when no domain area matches.
+      # Priority — required, exactly one. NEVER apply bare `priority:p0`.
+      - label: "priority:p0-proposed"
+        instructions: >-
+          Production broken / active data loss / security-critical. NEVER apply
+          bare `priority:p0` — always `p0-proposed` for operator confirmation.
+      - label: "priority:p1"
+        instructions: >-
+          Blocking release, security-adjacent, or high-severity bug affecting
+          users.
+      - label: "priority:p2"
+        instructions: >-
+          Important, not blocking. Default for well-scoped features/tasks.
+          Non-critical bugs and epics default to p2.
+      - label: "priority:p3"
+        instructions: "Polish work — nice to have, can wait weeks."
+      - label: "priority:needs-triage"
+        instructions: >-
+          Apply when no area:* keyword matches the body — operator must
+          manually classify before further action.
+      # plan-me — triggers Issue Planner via auto_planning below.
+      - label: "plan-me"
+        instructions: >-
+          Apply when the issue is `enhancement`, `epic`, or a generic
+          well-scoped impl-ready task that benefits from structured phase
+          decomposition. SKIP when the issue is `bug` (diagnostic),
+          `documentation`, `question`, `brainstorm` (spec phase), already has
+          `plan-me` (idempotent), `no-plan` (opt-out), or has any `auto:*`
+          label (auto-generated — never plannable).
+  planning:
+    enabled: true
+    auto_planning:
+      enabled: true
+      # Repos append their own `!auto:*` exclusions (trivy, restore-sanity, ...)
+      # via overlay.
+      labels:
+        - "plan-me"
+        - "!bug"
+        - "!documentation"
+        - "!question"
+        - "!brainstorm"
+        - "!no-plan"
+        - "!auto:renovate"
+EOF
+
 # --- Apply labels via gh label create --------------------------------
 # Writing .github/labels.yml does not create labels on GitHub — that's
 # what label-sync.yml does, OR a manual `gh label create` per entry.
@@ -1015,6 +1288,45 @@ _apply_labels() {
 }
 
 _apply_labels
+
+# --- Compose .coderabbit.yaml from base [+ overlay] (#234) ------------
+# CodeRabbit reads .coderabbit.yaml. We ship the byte-SSOT .coderabbit.base.yaml
+# and compose the live config from it + an optional per-repo
+# .coderabbit.overlay.yaml. A fresh repo (no overlay) gets the base verbatim;
+# the base stays the single update point. Skips cleanly (NOTE, never silent)
+# when the base wasn't written (pre-existing, --no-force) or the composer is
+# unavailable.
+_compose_coderabbit() {
+	local base="$TARGET/.coderabbit.base.yaml"
+	local overlay="$TARGET/.coderabbit.overlay.yaml"
+	local out="$TARGET/.coderabbit.yaml"
+	[ -f "$base" ] || {
+		_log "NOTE: .coderabbit.base.yaml absent in target — skipping .coderabbit.yaml compose"
+		return 0
+	}
+	if [ "$DRY_RUN" = "1" ]; then
+		_log "[dry-run] would compose .coderabbit.yaml from base + optional overlay"
+		return 0
+	fi
+	local composer="$PLUGIN_SCRIPT_DIR/compose-coderabbit.sh"
+	if [ ! -x "$composer" ]; then
+		_log "NOTE: $composer not executable — skipping .coderabbit.yaml compose"
+		return 0
+	fi
+	local args=(--base "$base" --out "$out")
+	local suffix=""
+	if [ -f "$overlay" ]; then
+		args+=(--overlay "$overlay")
+		suffix=" + overlay"
+	fi
+	local cerr
+	if cerr=$("$composer" "${args[@]}" 2>&1); then
+		_log "  ✓ composed .coderabbit.yaml from base${suffix}"
+	else
+		_log "WARN: compose-coderabbit.sh failed — .coderabbit.yaml not composed: $cerr"
+	fi
+}
+_compose_coderabbit
 
 # --- Summary ---------------------------------------------------------
 _log ""
