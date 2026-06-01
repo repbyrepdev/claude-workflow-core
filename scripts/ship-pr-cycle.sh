@@ -61,6 +61,11 @@ BASE_BRANCH="${BASE_BRANCH-main}"
 # v0.6.5+ uses for phase hooks.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PLUGIN_LIB="$(cd "$SCRIPT_DIR/../_lib" 2>/dev/null && pwd || echo "")"
+# v0.32.12 (#283): no-op fallback for the next-step directive emitter —
+# overridden by _lib/ship-cycle-directives.sh when it sources below. Guarantees
+# _emit_stage_directive always exists so its call sites never error (set -e)
+# even if the lib is absent (consumer running an older cache, etc.).
+_emit_stage_directive() { :; }
 if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 	# shellcheck source=../_lib/resolve-plugin-helper.sh
 	. "$PLUGIN_LIB/resolve-plugin-helper.sh"
@@ -88,6 +93,20 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 		# undefined the phase2 `command -v` guards fall back to always-review).
 		. "$PLUGIN_LIB/content-hash-cache.sh" ||
 			echo "ship-pr-cycle: WARN: content-hash-cache.sh source returned non-zero — phase2 cache disabled (always-review fallback)" >&2
+	fi
+	# v0.32.12 (#283): hook-ack + directive-emitter libs for ack-enforced
+	# next-step directives. Source order matters: ship-cycle-directives.sh's
+	# _emit_stage_directive overrides the no-op fallback defined above. Guarded
+	# (|| warn) so a lib problem can't abort the orchestrator under set -e.
+	if [ -r "$PLUGIN_LIB/hook-ack.sh" ]; then
+		# shellcheck source=../_lib/hook-ack.sh
+		. "$PLUGIN_LIB/hook-ack.sh" ||
+			echo "ship-pr-cycle: WARN: hook-ack.sh source returned non-zero — #283 directives advisory-only" >&2
+	fi
+	if [ -r "$PLUGIN_LIB/ship-cycle-directives.sh" ]; then
+		# shellcheck source=../_lib/ship-cycle-directives.sh
+		. "$PLUGIN_LIB/ship-cycle-directives.sh" ||
+			echo "ship-pr-cycle: WARN: ship-cycle-directives.sh source returned non-zero — #283 directives stdout-only" >&2
 	fi
 	_shipcycle_resolve() {
 		# $1: rel path under .claude/ (e.g. "scripts/_common.sh"). Echoes
@@ -1184,6 +1203,7 @@ cmd_next() {
 					_set_stage "phase1"
 					echo "ship-pr-cycle: branch $_grad_branch already graduated past Phase 0.5/1 — skipping phase0.5 prefilter for this SHA"
 					echo "→ advanced to phase1"
+					_emit_stage_directive two-step-phase1
 					[ "$_grad_src_err" != "/dev/null" ] && rm -f "$_grad_src_err"
 					return 0
 				fi
@@ -1235,6 +1255,7 @@ cmd_next() {
 		0)
 			_set_stage "phase1"
 			echo "→ phase0.5 logged for $sha; advanced to phase1"
+			_emit_stage_directive two-step-phase1
 			;;
 		1 | 4)
 			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
@@ -2208,6 +2229,12 @@ EOF
 }
 
 cmd_resume() {
+	# v0.32.12 (#283): suppress per-transition next-step directives during the
+	# auto-walk. bash dynamic scope makes this local visible to cmd_next (called
+	# in the loop below), so _emit_stage_directive skips the ack-pending for
+	# intermediate stages — only the stage resume STOPS at surfaces a directive.
+	# shellcheck disable=SC2034  # read by _lib/ship-cycle-directives.sh via dynamic scope (not referenced in this file)
+	local SHIP_PR_IN_RESUME=1
 	# Auto-detect state + advance until operator-input or terminal.
 	# Stops on:
 	#   - _get_stage non-zero rc (corrupt state file, missing .stage)
