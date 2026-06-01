@@ -52,8 +52,12 @@ teardown() {
 
 @test ".coderabbit.base.yaml is in the gate's PARITY_PATHS array (#234 r1)" {
 	# Behavioral (CR r3): parse the actual PARITY_PATHS array — a raw file grep
-	# would be satisfied by a mere comment mention. Exact-line membership.
-	_gate_parity_paths | grep -Fxq '.coderabbit.base.yaml'
+	# would be satisfied by a mere comment mention. Assert status + output (CR
+	# r5: explicit run/status/output per this suite's Bats convention, not a
+	# bare-pipeline exit).
+	run _gate_parity_paths
+	[ "$status" -eq 0 ]
+	printf '%s\n' "$output" | grep -Fxq '.coderabbit.base.yaml'
 }
 
 @test "clean sandbox (all heredocs match live files) → gate passes (#234 r1)" {
