@@ -200,3 +200,28 @@ _seed_log() {
 	[[ $output == *"git rev-parse --short HEAD failed"* ]]
 	[ "$(_cur_stage)" = phase2 ]
 }
+
+@test "phase2 CR review timeout (local-review exit 4) → defers to server CR-in-CI, advances to push (#234)" {
+	# A CR review timeout (local-review.sh exit 4 — client-side `timeout` kill
+	# or CR's server-side recoverable:false timeout event) is not a code defect:
+	# the local CR-CLI can't complete on a large diff. phase2 must advance to
+	# push and defer to the AUTHORITATIVE server-side CR-in-CI, honoring CR's
+	# unrecoverable signal (no retry). Distinct from rate-limit (rc 3 → wait)
+	# and hard failure (rc 2 → halt).
+	_seed_stage phase2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	# Override the CR-CLI stub: emit a timeout event + exit 4 (the SSOT timeout
+	# contract local-review.sh now produces).
+	cat >"$ROOT/.claude/scripts/cr/local-review.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"error","errorType":"timeout","recoverable":false}'
+exit 4
+STUB
+	chmod +x "$ROOT/.claude/scripts/cr/local-review.sh"
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"timed out unrecoverably"* ]]
+	[[ $output == *"advanced to push"* ]]
+	[ "$(_cur_stage)" = push ]
+}

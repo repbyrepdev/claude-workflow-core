@@ -770,6 +770,17 @@ _phase2_run_cr_cli() {
 		rm -f "$stdout_file" "$stderr_file"
 		return 3
 	fi
+	# v0.32.x (#234): exit 4 = local-review.sh signaled a CR review TIMEOUT
+	# (client-side `timeout` kill or CR's server-side unrecoverable timeout
+	# event). Distinct from rate_limit (3) and hard failures (auth/malformed):
+	# the review couldn't complete, but that's a transient CR-backend limit on
+	# a large diff, NOT a code problem. Surface as rc=4 so the caller defers to
+	# the authoritative server-side CR-in-CI (mirrors the rc=3 defer contract).
+	if [ "$rc" -eq 4 ]; then
+		echo "ship-pr-cycle: phase 2 CR review TIMED OUT (local-review.sh exit 4) — deferring to server-side CR-in-CI" >&2
+		rm -f "$stdout_file" "$stderr_file"
+		return 4
+	fi
 	if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
 		echo "ship-pr-cycle: ERROR: local-review.sh failed with rc=$rc (not a findings-exit)" >&2
 		rm -f "$stdout_file" "$stderr_file"
@@ -1370,6 +1381,17 @@ cmd_next() {
 			echo "ship-pr-cycle: phase2 deferred — CR rate limit. Re-run after waitTime elapses." >&2
 			# _phase2_run_cr_cli emits the "See <log> for event details"
 			# hint conditionally (only when the JSONL was actually written).
+			return 0
+		fi
+		if [ "$rc" -eq 4 ]; then
+			# CR review timed out (local-review.sh exit 4) — the local CR-CLI
+			# cannot complete on this diff within its review budget. This is a
+			# transient CR-backend limit, NOT a code defect: advance to push and
+			# defer to the AUTHORITATIVE server-side CR-in-CI (which re-reviews
+			# the pushed branch). Mirrors the round-cap's defer philosophy; we
+			# honor CR's own recoverable:false signal and do not retry locally.
+			_set_stage "push"
+			echo "→ phase2 CR review timed out unrecoverably; deferring the review to the authoritative server-side CR-in-CI; advanced to push"
 			return 0
 		fi
 		if [ "$rc" -ne 0 ]; then

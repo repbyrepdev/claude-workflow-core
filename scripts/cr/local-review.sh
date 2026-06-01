@@ -124,13 +124,31 @@ command -v coderabbit >/dev/null 2>&1 || scm_fail "coderabbit CLI not installed 
 # can't differentiate "CR CLI converged clean" from "CR CLI never ran."
 TEE_OUT=$(mktemp -t cr-local-review.XXXXXX)
 trap 'rm -f "$TEE_OUT"' EXIT
-# Run pipeline with `|| true` so set -e doesn't abort on non-zero exits;
-# then ALWAYS read PIPESTATUS[0] (coderabbit's exit) regardless of tee's
-# fate. The prior `|| rc=${PIPESTATUS[0]}` form skipped the assignment
-# when the pipeline succeeded — correct under pipefail but fragile if
-# pipefail is ever removed. This form is explicit.
-coderabbit review --agent -t committed --base "$BASE" 2>&1 | tee "$TEE_OUT" || true
-rc=${PIPESTATUS[0]}
+# v0.32.x (#234): cap the local review's wall-time. CR's server-side review
+# can run ~60min on a large diff before emitting an unrecoverable timeout
+# event — wasted wall-clock for a PRE-PUSH convenience whose findings the
+# authoritative server-side CR-in-CI re-derives on push anyway. A client-side
+# timeout fails fast so ship-pr-cycle can defer to CR-in-CI (the exit-4 SSOT
+# contract below). Default 600s (~3x observed clean-run duration); override via
+# CR_LOCAL_REVIEW_TIMEOUT (0 disables). Prefer GNU `timeout`, fall back to
+# coreutils `gtimeout` (macOS via brew); if neither is present, run un-wrapped
+# and rely on CR's own server-side timeout event for the exit-4 signal.
+CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT:-600}"
+[[ $CR_REVIEW_TIMEOUT =~ ^[0-9]+$ ]] || CR_REVIEW_TIMEOUT=600
+TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+# Capture the review command's exit via `rc=0; … || rc=$?`. Under the `set -o
+# pipefail` on line 2, $? after a failed pipeline is its last non-zero exit —
+# coderabbit's findings-exit (1), or the `timeout` SIGTERM code (124) on a
+# client-side kill. The prior `… | tee … || true; rc=${PIPESTATUS[0]}` was
+# BUGGY: `|| true` runs `true`, which resets PIPESTATUS to [0], so rc was
+# always 0 on a failed pipeline — masking findings-exits AND the 124 timeout
+# signal this feature relies on. `|| rc=$?` reads the pipeline exit directly.
+rc=0
+if [ "$CR_REVIEW_TIMEOUT" -gt 0 ] && [ -n "$TIMEOUT_BIN" ]; then
+	"$TIMEOUT_BIN" "$CR_REVIEW_TIMEOUT" coderabbit review --agent -t committed --base "$BASE" 2>&1 | tee "$TEE_OUT" || rc=$?
+else
+	coderabbit review --agent -t committed --base "$BASE" 2>&1 | tee "$TEE_OUT" || rc=$?
+fi
 
 # #778: detect CR's server-side out-of-credits error and update the local
 # rate-budget tracker. Without this, the local rolling-window count stays
@@ -240,6 +258,30 @@ if [ "$_rate_limit_handled" -eq 1 ]; then
 	exit 3
 fi
 
+# v0.32.x (#234): timeout detection → exit 4 (SSOT contract, sibling to the
+# rate_limit exit-3 above). Either the client-side `timeout` killed CR
+# (rc=124 SIGTERM / 137 SIGKILL) OR CR emitted its own server-side
+# `{"type":"error","errorType":"timeout"}` event (recoverable:false). Both mean
+# the local review could not complete — a transient CR-backend limit on a large
+# diff, NOT a code defect. ship-pr-cycle's _phase2_run_cr_cli treats exit 4 as
+# "defer to the authoritative server-side CR-in-CI" (which re-reviews on push),
+# distinct from a hard failure (auth/malformed) or a findings count. Log the
+# attempt first (audit + round visibility), then exit 4.
+_timeout_detected=0
+if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
+	_timeout_detected=1
+elif [ -f "$TEE_OUT" ] && grep -qE '"errorType"[[:space:]]*:[[:space:]]*"timeout"' "$TEE_OUT"; then
+	_timeout_detected=1
+fi
+if [ "$_timeout_detected" -eq 1 ]; then
+	echo "" >&2
+	echo "local-review: CR review timed out (rc=$rc) — local review incomplete; deferring to authoritative server-side CR-in-CI (exit 4)" >&2
+	scm_log cr-local-review "$(jq -nc --arg base "$BASE" --argjson force "$FORCE" \
+		--argjson rc "$rc" --argjson findings 0 --argjson timeout true \
+		'{base: $base, force: $force, rc: $rc, findings: $findings, timeout: $timeout}')" || true
+	exit 4
+fi
+
 # Extract findings count from the terminal `{"type":"complete",...}` event.
 # Fall back to counting inline `{"type":"finding"}` lines if the complete
 # event is missing (e.g. CR aborted mid-review). Defaults to 0 on parse failure.
@@ -248,7 +290,7 @@ findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].fin
 # JSON key — jq -nc doesn't guarantee key order. Match `"type":"finding"`
 # with optional whitespace anywhere on the line.
 [ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
-[[ "$findings" =~ ^[0-9]+$ ]] || findings=0
+[[ $findings =~ ^[0-9]+$ ]] || findings=0
 
 # scm_log injects `sha` (short 7-char HEAD) into the log line — that's the
 # key the pre-push gate matches against. This fields object provides the
