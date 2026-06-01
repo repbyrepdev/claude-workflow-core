@@ -123,3 +123,38 @@ EOF
 	[ "$status" -eq 2 ]
 	[[ $output == *"unknown arg"* ]]
 }
+
+@test "fail-closed when overlay clobbers a base mapping-key with a scalar (#234 r1)" {
+	# silent-failure-hunter r1: `reviews: "x"` would, under `*+`, let the scalar
+	# win and silently gut the base reviews map. The type-clobber guard must
+	# reject it (exit 2), naming the offending key.
+	cat >"$TMP/ovl.yaml" <<'EOF'
+reviews: "gut-the-map"
+EOF
+	run "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
+	[ "$status" -eq 2 ]
+	[[ $output == *"non-mapping"* ]]
+	[[ $output == *"reviews"* ]]
+}
+
+@test "overlay that only ADDS to a base map (no clobber) is allowed (#234 r1)" {
+	# Guard must NOT false-positive: adding a key under reviews keeps it a map.
+	cat >"$TMP/ovl.yaml" <<'EOF'
+reviews:
+  poem: true
+EOF
+	run "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
+	[ "$status" -eq 0 ]
+	printf '%s\n' "$output" >"$TMP/out.yaml"
+	[ "$(yq -r '.reviews.poem' "$TMP/out.yaml")" = "true" ]
+	[ "$(yq -r '.reviews.profile' "$TMP/out.yaml")" = "assertive" ]
+}
+
+@test "fail-closed when yq is missing (#234 r1)" {
+	# pr-test-analyzer r1: the `command -v yq || exit 2` branch is otherwise
+	# untestable (setup requires yq). Run bash with an empty PATH so the yq
+	# lookup fails at the first precondition check, before any external tool.
+	run env PATH=/var/empty "$(command -v bash)" "$SCRIPT" --base "$BASE"
+	[ "$status" -eq 2 ]
+	[[ $output == *"yq required"* ]]
+}

@@ -23,9 +23,12 @@ set -euo pipefail
 #     --out      optional; write here atomically (.new + mv). Default: stdout.
 #
 # Exit codes:
-#   0 — composed (written or printed)
-#   2 — precondition error (yq missing, base missing/unparseable, overlay
-#       present-but-unparseable, write failure)
+#   0 — composed (written or printed). A present-but-NON-mapping overlay
+#       (empty / comments-only / unparseable) is NON-fatal: a NOTE is emitted
+#       and the base is used verbatim (exit 0).
+#   2 — precondition error: yq missing, base missing / not-a-mapping, an
+#       overlay that would clobber a base mapping-key with a non-mapping
+#       (deep-merge would gut the subtree), or a write failure.
 
 BASE=""
 OVERLAY=""
@@ -94,6 +97,26 @@ _overlay_usable() {
 
 result=""
 if _overlay_usable; then
+	# Type-clobber guard (#234 r1): _overlay_usable only checks the overlay's
+	# TOP level is a map. A nested key that sets a base MAPPING to a scalar
+	# (e.g. `reviews: "x"`) would, under `*+`, let the overlay scalar WIN and
+	# silently gut the whole base subtree. Reject any overlay that turns a base
+	# mapping-key into a non-mapping — fail CLOSED before composing.
+	clobbered=$(BASEF="$BASE" OVL="$OVERLAY" yq -n '
+		load(strenv(BASEF)) as $b | load(strenv(OVL)) as $o | ($b *+ $o) as $m
+		| [ $b | to_entries[] | select(.value | tag == "!!map") | .key ]
+		| map(select(($m[.] | tag) != "!!map")) | join(" ")
+	' 2>&1) || {
+		echo "compose-coderabbit: failed validating overlay type-compatibility:" >&2
+		printf '%s\n' "$clobbered" >&2
+		exit 2
+	}
+	if [ -n "$clobbered" ]; then
+		echo "compose-coderabbit: overlay sets base mapping key(s) to a non-mapping" >&2
+		echo "  (deep-merge would silently gut the base subtree): $clobbered" >&2
+		echo "  Keep those keys as mappings in the overlay, or override leaf scalars instead." >&2
+		exit 2
+	fi
 	# Deep-merge: overlay scalars win, arrays append. Pass the overlay path via
 	# the environment so a path with metacharacters can't break the yq filter.
 	if ! result=$(OVL="$OVERLAY" yq '. *+ load(strenv(OVL))' "$BASE" 2>&1); then

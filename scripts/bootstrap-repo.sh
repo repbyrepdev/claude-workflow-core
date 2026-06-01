@@ -39,6 +39,10 @@ set -euo pipefail
 # further down live INSIDE embedded heredocs — they are the consumer run.sh's
 # vars, not this script's.)
 PLUGIN_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Set to 1 by _compose_coderabbit on a genuine compose failure so the
+# end-of-run summary surfaces it (exit stays 0 — compose is best-effort, but
+# exit-code-only automation would otherwise miss the absent .coderabbit.yaml).
+COMPOSE_CR_FAILED=0
 
 TARGET=""
 PIN_TAG="v0.8.5"
@@ -1293,10 +1297,21 @@ _apply_labels
 # CodeRabbit reads .coderabbit.yaml. We ship the byte-SSOT .coderabbit.base.yaml
 # and compose the live config from it + an optional per-repo
 # .coderabbit.overlay.yaml. A fresh repo (no overlay) gets the base verbatim;
-# the base stays the single update point. Skips cleanly (NOTE, never silent)
-# when the base wasn't written (pre-existing, --no-force) or the composer is
-# unavailable.
+# the base stays the single update point.
+#
+# Order matters (#234 r1): the DRY_RUN preview comes FIRST — a real run writes
+# the base heredoc THEN composes, so on a fresh dir the preview must report
+# "would compose" rather than tripping the (not-yet-written) base-absent NOTE.
+# .coderabbit.yaml is a derived artifact but honors the same
+# skip-pre-existing-unless-force contract as _write, so a re-run never clobbers
+# a consumer's live config (edit the overlay + --force to regenerate). A true
+# compose failure WARNs + sets COMPOSE_CR_FAILED so the summary surfaces it
+# (exit-code-only automation would otherwise miss the absent .coderabbit.yaml).
 _compose_coderabbit() {
+	if [ "$DRY_RUN" = "1" ]; then
+		_log "[dry-run] would compose .coderabbit.yaml from base + optional overlay"
+		return 0
+	fi
 	local base="$TARGET/.coderabbit.base.yaml"
 	local overlay="$TARGET/.coderabbit.overlay.yaml"
 	local out="$TARGET/.coderabbit.yaml"
@@ -1304,13 +1319,15 @@ _compose_coderabbit() {
 		_log "NOTE: .coderabbit.base.yaml absent in target — skipping .coderabbit.yaml compose"
 		return 0
 	}
-	if [ "$DRY_RUN" = "1" ]; then
-		_log "[dry-run] would compose .coderabbit.yaml from base + optional overlay"
+	if [ -f "$out" ] && [ "$FORCE" != "1" ]; then
+		_log "  • .coderabbit.yaml exists — skipping compose (edit .coderabbit.overlay.yaml + --force to regenerate)"
+		SKIPPED_FILES+=(".coderabbit.yaml")
 		return 0
 	fi
 	local composer="$PLUGIN_SCRIPT_DIR/compose-coderabbit.sh"
 	if [ ! -x "$composer" ]; then
-		_log "NOTE: $composer not executable — skipping .coderabbit.yaml compose"
+		_log "WARN: $composer not executable — .coderabbit.yaml NOT composed"
+		COMPOSE_CR_FAILED=1
 		return 0
 	fi
 	local args=(--base "$base" --out "$out")
@@ -1323,7 +1340,8 @@ _compose_coderabbit() {
 	if cerr=$("$composer" "${args[@]}" 2>&1); then
 		_log "  ✓ composed .coderabbit.yaml from base${suffix}"
 	else
-		_log "WARN: compose-coderabbit.sh failed — .coderabbit.yaml not composed: $cerr"
+		_log "WARN: compose-coderabbit.sh failed — .coderabbit.yaml NOT composed: $cerr"
+		COMPOSE_CR_FAILED=1
 	fi
 }
 _compose_coderabbit
@@ -1334,6 +1352,13 @@ if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
 	_log "⚠ SKIPPED ${#SKIPPED_FILES[@]} pre-existing file(s) — content may be stale:"
 	for f in "${SKIPPED_FILES[@]}"; do _log "    - $f"; done
 	_log "    Re-run with --force to overwrite (e.g. after pin bump)."
+	_log ""
+fi
+if [ "$COMPOSE_CR_FAILED" = "1" ]; then
+	_log "⚠ .coderabbit.yaml was NOT composed — CodeRabbit will fall back to"
+	_log "    defaults until you compose it (scripts/compose-coderabbit.sh"
+	_log "    --base .coderabbit.base.yaml [--overlay .coderabbit.overlay.yaml]"
+	_log "    --out .coderabbit.yaml). See the WARN above for the cause."
 	_log ""
 fi
 if [ "$DRY_RUN" = "1" ]; then
