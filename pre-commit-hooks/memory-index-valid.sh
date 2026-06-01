@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Pre-commit: validate memory/ directory integrity.
 #   1. Every memory file must have MEMORY.md index entry
 #   2. MEMORY.md entries must point to files that exist
@@ -6,8 +7,6 @@
 #   4. All memory files must have valid YAML frontmatter (name, description, type)
 #
 # Part of v3.19 meta-learning infrastructure (#239).
-
-set -u
 
 MEM_DIR="${MEMORY_DIR:-$HOME/.claude/projects/-Users-adamsfamily/memory}"
 INDEX="$MEM_DIR/MEMORY.md"
