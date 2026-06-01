@@ -74,6 +74,16 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 		# shellcheck source=../_lib/cr-phase2-coverage.sh
 		. "$PLUGIN_LIB/cr-phase2-coverage.sh"
 	fi
+	# v0.32.11 (#249-grp): phase2 review-result cache (cap-reset treadmill
+	# fix) — provides phase2_review_cache_{key,get,put}. Best-effort: if it is
+	# absent/unloadable, phase2 simply always invokes the CR-CLI (the prior
+	# behavior), so a missing lib degrades gracefully rather than failing
+	# closed. REPO_ROOT is set at line 50 → the lib keys its ledger off the
+	# correct repo (incl. consumers running from the plugin cache).
+	if [ -r "$PLUGIN_LIB/content-hash-cache.sh" ]; then
+		# shellcheck source=../_lib/content-hash-cache.sh
+		. "$PLUGIN_LIB/content-hash-cache.sh"
+	fi
 	_shipcycle_resolve() {
 		# $1: rel path under .claude/ (e.g. "scripts/_common.sh"). Echoes
 		# absolute path; falls back to REPO_ROOT/.claude/$1 when resolver
@@ -1385,8 +1395,29 @@ cmd_next() {
 		# rc=3 (#760) → CR rate limit hit; surface as deferred-with-wait,
 		# do NOT advance, exit cleanly so post-commit-resume can retry
 		# once the budget refills.
-		local findings rc=0
-		findings=$(_phase2_run_cr_cli) || rc=$?
+		# v0.32.11 (#249-grp) cap-reset treadmill fix: consult the content-hash
+		# review-result cache BEFORE invoking the CR-CLI. If this exact review
+		# surface (committed diff vs base) was already reviewed, reuse the count
+		# — re-running CR's non-deterministic engine on identical content
+		# oscillates false-positives + burns the 10/hr budget (PR #254 burned 3
+		# reviews on one unchanged SHA). A new commit / main advancing → new
+		# hash → miss → fresh review. Best-effort: no key / no lib → exactly the
+		# prior always-review behavior.
+		local findings rc=0 p2_from_cache=0 p2_ckey="" p2_cached=""
+		if command -v phase2_review_cache_key >/dev/null 2>&1; then
+			p2_ckey=$(phase2_review_cache_key "$BASE_BRANCH")
+		fi
+		if [ -n "$p2_ckey" ]; then
+			p2_cached=$(phase2_review_cache_get "$p2_ckey")
+			if [[ $p2_cached =~ ^[0-9]+$ ]]; then
+				findings=$p2_cached
+				p2_from_cache=1
+				echo "→ phase2 content-hash cache HIT — review surface unchanged since the last CR-CLI pass; reusing $findings finding(s), skipping CR-CLI (saves 10/hr budget; deterministic)" >&2
+			fi
+		fi
+		if [ "$p2_from_cache" -eq 0 ]; then
+			findings=$(_phase2_run_cr_cli) || rc=$?
+		fi
 		if [ "$rc" -eq 3 ]; then
 			echo "ship-pr-cycle: phase2 deferred — CR rate limit. Re-run after waitTime elapses." >&2
 			# _phase2_run_cr_cli emits the "See <log> for event details"
@@ -1408,9 +1439,48 @@ cmd_next() {
 			echo "ship-pr-cycle: phase2 CR-CLI invocation failed (rc=$rc) — see output above" >&2
 			return "$rc"
 		fi
+		# v0.32.11 (#249-grp): record a fresh review's result for the content-
+		# hash treadmill cache (best-effort; never fails the review). A cache-hit
+		# review (p2_from_cache=1) is already in the ledger — don't re-record.
+		if [ "$p2_from_cache" -eq 0 ] && [ -n "$p2_ckey" ] &&
+			command -v phase2_review_cache_put >/dev/null 2>&1; then
+			phase2_review_cache_put "$p2_ckey" "$findings" \
+				"$(git rev-parse --short HEAD 2>/dev/null || echo "")"
+		fi
 		if [ "$findings" -eq 0 ]; then
 			_set_stage "push"
 			echo "→ phase2 CR-CLI clean (0 findings); advanced to push"
+		elif [ "$p2_from_cache" -eq 1 ]; then
+			# Content-hash cache HIT with residual findings: this exact surface
+			# was already reviewed. Re-reviewing identical content is wasteful +
+			# non-deterministic (the treadmill). Advance gated SOLELY on coverage
+			# — every residual addressed (real fix → new commit → new hash →
+			# fresh review; or verified-FP → prove-yourself rejection) → advance;
+			# else direct the operator to address them. No p2runs re-roll: the
+			# cap existed to tolerate the oscillation this cache now eliminates.
+			if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
+				echo "ship-pr-cycle: ERROR: coverage SSOT _lib/cr-phase2-coverage.sh did not load — cannot evaluate the phase2 cache-hit advance. (NOT advancing.)" >&2
+				return 2
+			fi
+			local hs
+			if ! hs=$(git rev-parse --short HEAD 2>/dev/null); then
+				echo "ship-pr-cycle: ERROR: phase2 cache-hit advance — git rev-parse --short HEAD failed" >&2
+				return 2
+			fi
+			if cr_phase2_clean_for_sha "$hs"; then
+				_set_stage "push"
+				echo "→ phase2 content-hash cache HIT + all $findings residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push"
+				return 0
+			fi
+			cat <<EOF
+ship-pr-cycle: phase2 content-hash cache HIT — the $findings finding(s) from the prior review of this IDENTICAL surface are NOT all addressed. Re-reviewing won't change them (same content). Address EACH, then re-run 'ship-pr-cycle.sh next':
+  - real issue → fix in-PR (commit; the new SHA changes the content hash → fresh review)
+  - verified FALSE-POSITIVE → record a rejection with evidence (covers this surface's findings, scoped to HEAD):
+      skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
+        --covers-count $findings --follow-up-issue <N> --finding-id <id> --finding-text "..." \\
+        --dogfood-cmd "..." --dogfood-output "..." --dogfood-rc 0 --external-authority "..." --reason "..."
+EOF
+			return 0
 		else
 			# Round-cap graduation (#234): phase2 CR-CLI findings on a large
 			# diff are a non-deterministic LLM minor-tail that need not hit 0

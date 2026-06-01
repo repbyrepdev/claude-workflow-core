@@ -45,7 +45,12 @@ set -euo pipefail
 # r1 code-reviewer #1: only set REPO_ROOT if caller hasn't (composes
 # cleanly with consumers that compute their own repo root, e.g.
 # local-review.sh + prove-yourself-audit do `git rev-parse` first).
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# v0.32.11 (#249-grp): the standalone fallback was `/../..` which OVERSHOOTS —
+# this lib lives at <repo>/_lib/, so dirname/.. IS the repo; dirname/../.. was
+# the parent OF the repo. Latent (every production caller pre-sets REPO_ROOT,
+# so the `:-` default never ran) but it broke standalone sourcing (tests, the
+# phase2 cache fns below). One level up from _lib/ is correct.
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CACHE_DIR="$REPO_ROOT/.claude/.review-cache"
 CACHE_LEDGER="$CACHE_DIR/ledger.jsonl"
 
@@ -184,4 +189,54 @@ cache_prune() {
 	fi
 	mv "$tmp" "$CACHE_LEDGER"
 	rm -f "$jq_err"
+}
+
+# --- Phase 2 review-result cache (v0.32.11 #249-grp: cap-reset treadmill fix) -
+# The per-file ledger above answers "is THIS file clean?". This separate,
+# coarser cache answers "what did the CR-CLI find for the WHOLE review
+# surface?" — the committed diff CR reviews under `-t committed --base <base>`
+# (= <base>...HEAD). ship-pr-cycle's phase2 consults it BEFORE invoking the
+# CR-CLI: an unchanged review surface reuses the prior findings count instead
+# of re-running CR's non-deterministic engine, which on identical content
+# oscillates false-positives + burns the 10/hr Pro Plus budget (the treadmill
+# that hit PR #254 across 3 re-reviews of one unchanged SHA). A new commit or
+# main advancing changes the hash → miss → fresh review (correct). Keyed on the
+# diff CONTENT, not the commit SHA, so a no-op amend/rebase that preserves
+# content still hits.
+PHASE2_RESULT_LEDGER="$CACHE_DIR/phase2-results.jsonl"
+
+# Emit the content hash of the phase2 review surface (committed diff vs base).
+# Empty output on ANY git failure → caller treats it as "no key" and always
+# reviews (fail-safe: a key we cannot compute is never a false hit).
+phase2_review_cache_key() {
+	local base=${1:-main}
+	local diff
+	# 3-dot: changes on this branch since it diverged from base — mirrors CR's
+	# committed-review surface. hash-object gives a stable content digest.
+	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>/dev/null) || return 0
+	printf '%s' "$diff" | git -C "$REPO_ROOT" hash-object --stdin 2>/dev/null || true
+}
+
+# Emit the cached findings count for a content-hash key (latest entry wins);
+# empty on miss. Always returns 0 — a miss is normal, not an error.
+phase2_review_cache_get() {
+	local key=$1
+	[ -n "$key" ] || return 0
+	[ -f "$PHASE2_RESULT_LEDGER" ] || return 0
+	jq -rs --arg k "$key" '
+		map(select(.content_hash == $k)) | if length == 0 then "" else (.[-1].findings | tostring) end
+	' "$PHASE2_RESULT_LEDGER" 2>/dev/null || return 0
+}
+
+# Record a phase2 review result. Best-effort — a write failure must never fail
+# the review (worst case is a future miss → one extra review, not data loss).
+phase2_review_cache_put() {
+	local key=$1 findings=$2 sha=${3:-}
+	[ -n "$key" ] || return 0
+	[[ $findings =~ ^[0-9]+$ ]] || return 0
+	_cache_init || return 0
+	local ts
+	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts=""
+	jq -nc --arg k "$key" --argjson f "$findings" --arg s "$sha" --arg ts "$ts" \
+		'{ts:$ts, content_hash:$k, sha:$s, findings:$f}' >>"$PHASE2_RESULT_LEDGER" 2>/dev/null || return 0
 }
