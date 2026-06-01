@@ -31,7 +31,7 @@
       "run_shell_command(chmod)"
     ]
   },
-  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true blocks --approval-mode=yolo / --yolo override (per docs/cli/enterprise.md) so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude parameterized patterns block specific command prefixes (verified against docs/tools/shell.md). For belt-and-suspenders deny rules with priority + glob support, the Gemini policy engine accepts a separate policy.toml with [[rule]] blocks (toolName=run_shell_command, commandPrefix=..., decision=deny, priority=100) — deferred to v4.28-P2 (#643).",
+  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true blocks --approval-mode=yolo / --yolo override (per docs/cli/enterprise.md) so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude parameterized patterns block specific command prefixes (verified against docs/tools/shell.md). For belt-and-suspenders deny rules with priority + glob support, the Gemini policy engine accepts a separate policy.toml with [[rule]] deny blocks — see .gemini/policy.toml (#643).",
   "ui": {
     "hideTips": true,
     "showLineNumbers": true
