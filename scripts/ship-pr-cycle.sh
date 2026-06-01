@@ -1380,8 +1380,24 @@ cmd_next() {
 			_set_stage "push"
 			echo "→ phase2 CR-CLI clean (0 findings); advanced to push"
 		else
+			# Round-cap graduation (#234): phase2 CR-CLI findings on a large
+			# diff are a non-deterministic LLM minor-tail that need not hit 0
+			# even when the code is substantively clean. Mirror phase1's scaler
+			# cap — after the round budget, advance to push: the residual is
+			# diminishing-returns noise and the SERVER-SIDE CR-in-CI is the
+			# authoritative merge gate. Count this-SHA CR-CLI runs from the log
+			# (each _phase2_run_cr_cli appends one entry, incl. the current one).
+			local cap p2runs
+			cap=$(_scaler_rounds)
+			p2runs=$(jq -rs --arg s "$(git rev-parse --short HEAD)" '[.[] | select(.sha == $s)] | length' "$REPO_ROOT/.claude/logs/cr-local-review.jsonl" 2>/dev/null || echo 1)
+			[ -n "$p2runs" ] || p2runs=1
+			if [ "$p2runs" -ge "$cap" ]; then
+				_set_stage "push"
+				echo "→ phase2 round-cap reached ($p2runs/$cap rounds) with $findings residual finding(s); deferring the minor-tail to the authoritative server-side CR-in-CI; advanced to push"
+				return 0
+			fi
 			cat <<EOF
-ship-pr-cycle: phase2 — CR-CLI returned $findings finding(s); cap = $(_scaler_rounds) rounds
+ship-pr-cycle: phase2 round $p2runs/$cap — CR-CLI returned $findings finding(s)
   DIRECTIVE FOR OPERATOR (Claude):
     Apply trivial fixes inline (regex tightening, mktemp /dev/null fallback,
     here-string idiom, comment fixes, log-msg updates, var renames).
