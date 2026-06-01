@@ -104,6 +104,10 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	(cd "$repo" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
 	run bash -c "cd '$repo' && bash '$(_wrapper prove-yourself-audit)' record-fix --source cr --severity minor --covers-count 3 --finding-id t238 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0"
 	[ "$status" -eq 0 ]
+	# CLI success-message contract — not just exit status + audit side-effect
+	# (#238 phase2 r2/3, CR minor). Asserted on this first `run` before the jq
+	# `run` below overwrites $output.
+	[[ $output == *"Recorded fix"* ]]
 	audit="$repo/.claude/audit/prove-yourself.jsonl"
 	[ -f "$audit" ]
 	run jq -rs '[.[] | select(.finding_id=="t238")] | last | .covers_count' "$audit"
