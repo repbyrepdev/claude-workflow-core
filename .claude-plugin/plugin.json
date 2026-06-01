@@ -1,7 +1,7 @@
 {
   "name": "claude-workflow-core",
   "description": "Portable Claude Code workflow plugin: skills, pre-commit hooks, _lib helpers, generic .claude/hooks, and portable scripts under .claude/scripts/. Dual-purpose: Claude Code plugin AND pre-commit hooks repo. The `version` field in this manifest is the canonical version (SSOT). See GitHub Releases / CHANGELOG for release notes.",
-  "version": "0.31.19",
+  "version": "0.32.0",
   "author": {
     "name": "Damien Adams",
     "url": "https://github.com/repbyrepdev"
