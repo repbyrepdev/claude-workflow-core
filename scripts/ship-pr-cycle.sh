@@ -1387,10 +1387,39 @@ cmd_next() {
 			# diminishing-returns noise and the SERVER-SIDE CR-in-CI is the
 			# authoritative merge gate. Count this-SHA CR-CLI runs from the log
 			# (each _phase2_run_cr_cli appends one entry, incl. the current one).
-			local cap p2runs
+			local cap p2runs cr_log head_sha
 			cap=$(_scaler_rounds)
-			p2runs=$(jq -rs --arg s "$(git rev-parse --short HEAD)" '[.[] | select(.sha == $s)] | length' "$REPO_ROOT/.claude/logs/cr-local-review.jsonl" 2>/dev/null || echo 1)
-			[ -n "$p2runs" ] || p2runs=1
+			# git/jq failures here must fail LOUD, not silently default the
+			# count (CR phase2 r1 CRITICAL on this block): a masked failure could
+			# wrongly advance — vacuously satisfying a small cap — or loop
+			# forever. Resolve the sha first, then count, fail-closed on either.
+			if ! head_sha=$(git rev-parse --short HEAD 2>/dev/null); then
+				echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-parse --short HEAD failed; cannot count CR-CLI runs" >&2
+				return 2
+			fi
+			cr_log="$REPO_ROOT/.claude/logs/cr-local-review.jsonl"
+			if [ ! -f "$cr_log" ]; then
+				# No run-log yet → legitimate first run: local-review.sh is the
+				# canonical appender, so an absent file means zero recorded runs
+				# for this sha (NOT a parse error to mask, NOT grounds to
+				# vacuously advance a cap of 1).
+				p2runs=0
+			else
+				local p2runs_err_file p2runs_rc=0
+				p2runs_err_file=$(mktemp -t ship-cycle-p2runs-err.XXXXXX) ||
+					scm_fail "mktemp for phase2 round-cap jq stderr failed"
+				p2runs=$(jq -rs --arg s "$head_sha" '[.[] | select(.sha == $s)] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
+				if [ "$p2runs_rc" -ne 0 ]; then
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
+					rm -f "$p2runs_err_file"
+					return 2
+				fi
+				rm -f "$p2runs_err_file"
+				if ! [[ $p2runs =~ ^[0-9]+$ ]]; then
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — non-numeric run count '$p2runs' from $cr_log" >&2
+					return 2
+				fi
+			fi
 			if [ "$p2runs" -ge "$cap" ]; then
 				_set_stage "push"
 				echo "→ phase2 round-cap reached ($p2runs/$cap rounds) with $findings residual finding(s); deferring the minor-tail to the authoritative server-side CR-in-CI; advanced to push"

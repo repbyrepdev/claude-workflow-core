@@ -144,16 +144,59 @@ _seed_log() {
 	[ "$(_cur_stage)" = push ]
 }
 
-@test "phase2 missing CR-CLI log → p2runs fallback=1, stays under cap (#234)" {
-	# The cap's `jq ... 2>/dev/null || echo 1` fallback: an absent log yields
-	# p2runs=1 (not empty/0), so the first run on a sha can't vacuously satisfy
-	# the cap. With cap=3, 1<3 → directive, no advance.
+@test "phase2 missing CR-CLI log → p2runs=0 (legit first run), stays (#234)" {
+	# CR phase2 r1 (CRITICAL fix): an absent log is a legitimate first run —
+	# local-review.sh is the canonical appender, so missing means zero recorded
+	# runs for this sha (p2runs=0), NOT a masked fallback to 1 that could
+	# vacuously satisfy a cap of 1. With cap=3, 0<3 → directive, no advance.
 	_seed_stage phase2
 	rm -f "$ROOT/.claude/logs/cr-local-review.jsonl"
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase2 round 1/3"* ]]
+	[[ $output == *"phase2 round 0/3"* ]]
+	[ "$(_cur_stage)" = phase2 ]
+}
+
+@test "phase2 corrupt CR-CLI log → jq fails closed (rc 2), no advance (#234 CR r1)" {
+	# The old `jq ... 2>/dev/null || echo 1` masked parse errors, silently
+	# trusting a corrupt log to drive the cap. Now jq runs without 2>/dev/null
+	# and a parse failure is fatal: rc 2, stage unchanged, diagnostic emitted.
+	_seed_stage phase2
+	mkdir -p "$ROOT/.claude/logs"
+	printf 'not valid json at all {{{\n' >"$ROOT/.claude/logs/cr-local-review.jsonl"
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"phase2 round-cap — jq failed"* ]]
+	[ "$(_cur_stage)" = phase2 ]
+}
+
+@test "phase2 cap — git rev-parse --short HEAD failure fails closed (#234 CR r1)" {
+	# The sha is resolved before counting; a git failure must halt (rc 2), not
+	# feed an empty --arg to jq and silently miscount. Selective git stub: fail
+	# ONLY `rev-parse --short` (the cap's sole use — verified) and delegate
+	# everything else (rev-parse --show-toplevel / --abbrev-ref) to real git.
+	_seed_stage phase2
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	local real_git
+	real_git=$(command -v git)
+	mkdir -p "$TEST_TMP/gitstub"
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'if [ "$1" = "rev-parse" ] && [ "$2" = "--short" ]; then'
+		echo '  echo "stub git: forced rev-parse --short failure" >&2; exit 1'
+		echo 'fi'
+		printf 'exec %q "$@"\n' "$real_git"
+	} >"$TEST_TMP/gitstub/git"
+	chmod +x "$TEST_TMP/gitstub/git"
+	PATH="$TEST_TMP/gitstub:$PATH"
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"git rev-parse --short HEAD failed"* ]]
 	[ "$(_cur_stage)" = phase2 ]
 }
