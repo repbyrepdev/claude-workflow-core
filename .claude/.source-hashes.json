@@ -65,6 +65,7 @@
     "hooks/lint-gate-bash.sh": "5204867da5ac9468e407ddbf051b4af2f8a0eca240491bdd0ddc6e9fef2e8d40",
     "hooks/list-agent-files.sh": "4f1f850dd1f196b05c245edc9ee34cab67bb38d6714138cecf01599675dd1062",
     "hooks/list-phase1-agents.sh": "3a14ea843b050fcc975bd07ef4098eef2ff3f862324b8c0ea3dd1f08223cc391",
+    "hooks/log-retention-session.sh": "10c708f03fc78ecf83d85f78aa0fdb31d5323426e3dc8e0a6c9ea84f4ab62906",
     "hooks/memory-guard.sh": "8225c2ce321a8968ef9a37013bb0d860e16862b0bf00fe769ecb826a16888bbc",
     "hooks/migrate-review-log-on-amend.sh": "c2d51504ea89fa6589e95af5fecec9cbdd91efc032ed5c35060fd817a101aafe",
     "hooks/monitor-misuse-block.sh": "0743b9a68a98d31961f454763ad2da6bcfbc1268e6ca40dcf9598f2f700e2057",
