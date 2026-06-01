@@ -294,6 +294,9 @@ set -e
 HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null || echo "")
 
 if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
+	# #251: extract the failing hook(s) up-front so the cause is visible
+	# WITHOUT re-running the commit with full output capture (the prior pain).
+	FAILED_HOOKS=$(grep -nE "Failed$|^- hook id:|exit code:|✗ " "$COMMIT_OUT" 2>/dev/null | head -15)
 	# Commit did NOT land. Surface via hook-ack-pending so the next
 	# Bash call is blocked until the operator Reads the diagnostic.
 	# CR-in-CI #780 r2 trivial: use existing $REPO_ROOT (resolved at
@@ -328,6 +331,9 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			echo "4. Commit-message validation drift: subject >70 chars, missing"
 			echo "   Co-Authored-By, etc."
 			echo ""
+			echo "=== FAILING HOOK(S) (extracted) ==="
+			printf '%s\n' "${FAILED_HOOKS:-(none matched — see full output below)}"
+			echo ""
 			echo "=== Last 80 lines of pre-commit output ==="
 			tail -80 "$COMMIT_OUT" 2>/dev/null
 		} >"$ACK_FILE_ABS" 2>/dev/null; then
@@ -344,6 +350,10 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 	# Operator-facing stderr always lands, even if ack persistence failed.
 	echo "" >&2
 	echo "git-commit: ERROR: commit did not land (HEAD unchanged)." >&2
+	if [ -n "${FAILED_HOOKS:-}" ]; then
+		echo "git-commit: blocked by (failing hook lines) —" >&2
+		printf '%s\n' "$FAILED_HOOKS" | sed 's/^/  /' >&2
+	fi
 	[ -n "$ACK_FILE" ] && echo "git-commit: diagnostic written to $ACK_FILE — Read it before retrying." >&2
 	echo "" >&2
 	exit 1

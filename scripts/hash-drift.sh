@@ -10,6 +10,10 @@ set -euo pipefail
 #     template.yml, ISSUE_TEMPLATE/*) — byte-SSOT; these map VERBATIM to the
 #     consumer repo root, NOT under .claude/. (labels/required-checks/labeler/
 #     workflows are template-with-overrides and are NOT hashed here.)
+#   - scripts/*.sh are NOT hashed (#247): consumers do NOT mirror them — the
+#     bootstrap consumer wrapper `exec`s the orchestrator from the plugin cache
+#     by PIN ($PLUGIN_CACHE/$PIN/scripts/...), so there is no consumer-side copy
+#     that could drift. Only mirrored files (hooks/_lib/.github-hashed) are tracked.
 #
 # Two modes:
 #   --generate (producer-side): compute SHA256 of each plugin source file
