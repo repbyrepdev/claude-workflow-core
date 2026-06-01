@@ -67,7 +67,9 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 	# v0.32.7 (#238): shared Phase 2 coverage SSOT (also sourced by the pre-push
 	# gate) so the round-cap can gate its advance on the SAME "findings=0 OR all
 	# addressed" check the gate uses — the cap never advances to a push the gate
-	# refuses. Absent → the cap's `command -v` guard fails-safe to a directive.
+	# refuses. Absent/unloadable → the cap use-site below fails CLOSED (clear
+	# error + rc 2), never a silent or misleading "findings unaddressed" degrade
+	# [#248 CR major: don't silently skip the declared coverage SSOT].
 	if [ -r "$PLUGIN_LIB/cr-phase2-coverage.sh" ]; then
 		# shellcheck source=../_lib/cr-phase2-coverage.sh
 		. "$PLUGIN_LIB/cr-phase2-coverage.sh"
@@ -1466,7 +1468,17 @@ cmd_next() {
 				# internally, so a second `git rev-parse HEAD || echo ""` (a
 				# soft-fail the fail-loud head_sha resolution above deliberately
 				# rejects) would be redundant.
-				if command -v cr_phase2_clean_for_sha >/dev/null 2>&1 && cr_phase2_clean_for_sha "$head_sha"; then
+				# #248 (CR major): the declared coverage SSOT is REQUIRED to make
+				# this cap decision. If it didn't load, fail CLOSED with a clear
+				# error — never the misleading "findings unaddressed" directive
+				# below, and never a silent advance. Scoped to the decision that
+				# needs it, so other stages (branch-ready/phase1/push/merge) still
+				# run (the pre-push gate independently fails-closed on the lib too).
+				if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
+					echo "ship-pr-cycle: ERROR: coverage SSOT _lib/cr-phase2-coverage.sh did not load — cannot evaluate the Phase 2 round-cap. Fix the plugin install / PLUGIN_LIB resolution, then re-run. (NOT advancing.)" >&2
+					return 2
+				fi
+				if cr_phase2_clean_for_sha "$head_sha"; then
 					_set_stage "push"
 					echo "→ phase2 round-cap reached ($p2runs/$cap) + all $findings residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push"
 					return 0
