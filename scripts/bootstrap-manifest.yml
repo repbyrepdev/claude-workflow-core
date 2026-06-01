@@ -59,6 +59,13 @@ files:
   - path: .codex/config.toml
     mode: "644"
     hashed: true
+  # Log/state retention SSOT (#250) — byte-identical across repos (the workflow's
+  # log set is repo-agnostic). hashed: true ⇒ Wave G hash-drift engine gates +
+  # propagates it. Read by scripts/maintain/log-retention.sh at runtime in EVERY
+  # repo (incl. the plugin itself — re-included in this repo's .gitignore).
+  - path: .claude/log-retention.yml
+    mode: "644"
+    hashed: true
   # Consumer-only shims: the plugin itself doesn't need these because
   # it IS the plugin (its real skills live under skills/ship-pr-cycle/).
   # --verify --scope=both checks consumer paths; --verify --scope=plugin skips them.
