@@ -48,8 +48,9 @@ set -euo pipefail
 # v0.32.11 (#249-grp): the standalone fallback was `/../..` which OVERSHOOTS —
 # this lib lives at <repo>/_lib/, so dirname/.. IS the repo; dirname/../.. was
 # the parent OF the repo. Latent (every production caller pre-sets REPO_ROOT,
-# so the `:-` default never ran) but it broke standalone sourcing (tests, the
-# phase2 cache fns below). One level up from _lib/ is correct.
+# so the `:-` default never ran) but it mis-resolved under any standalone
+# sourcing that leaves REPO_ROOT unset. (The bundled bats pre-set REPO_ROOT, so
+# they pin behavior rather than exercise this fallback.) One level up = repo.
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CACHE_DIR="$REPO_ROOT/.claude/.review-cache"
 CACHE_LEDGER="$CACHE_DIR/ledger.jsonl"
@@ -166,29 +167,40 @@ cache_evidence_stale() {
 cache_prune() {
 	local retention=${1:-30}
 	_cache_init
-	[ -s "$CACHE_LEDGER" ] || return 0
 	local cutoff
 	cutoff=$(date -u -v-"${retention}"d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
 		date -u -d "${retention} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || {
 		echo "cache_prune: cannot compute cutoff (date tool variant?)" >&2
 		return 1
 	}
-	local tmp jq_err jq_rc=0
-	tmp=$(mktemp) || {
-		echo "cache_prune: mktemp failed for tmp" >&2
-		return 1
-	}
-	jq_err=$(mktemp)
-	jq -c --arg cutoff "$cutoff" 'select(.ts >= $cutoff)' \
-		"$CACHE_LEDGER" >"$tmp" 2>"$jq_err" || jq_rc=$?
-	if [ "$jq_rc" -ne 0 ]; then
-		echo "cache_prune: jq prune failed for $CACHE_LEDGER (rc=$jq_rc):" >&2
-		cat "$jq_err" >&2
-		rm -f "$tmp" "$jq_err"
-		return 1
-	fi
-	mv "$tmp" "$CACHE_LEDGER"
-	rm -f "$jq_err"
+	# v0.32.11 (#249-grp): prune BOTH ledgers — the per-file ledger AND the
+	# phase2 review-result ledger (PHASE2_RESULT_LEDGER was previously never
+	# pruned, so it grew unbounded; latest-wins kept reads correct but the file
+	# still bloated). Per-ledger failures are isolated (continue + rc=1) so one
+	# bad file never skips the other.
+	local ledger rc=0
+	for ledger in "$CACHE_LEDGER" "$PHASE2_RESULT_LEDGER"; do
+		[ -s "$ledger" ] || continue
+		local tmp jq_err jq_rc=0
+		tmp=$(mktemp) || {
+			echo "cache_prune: mktemp failed for tmp ($ledger)" >&2
+			rc=1
+			continue
+		}
+		jq_err=$(mktemp)
+		jq -c --arg cutoff "$cutoff" 'select(.ts >= $cutoff)' \
+			"$ledger" >"$tmp" 2>"$jq_err" || jq_rc=$?
+		if [ "$jq_rc" -ne 0 ]; then
+			echo "cache_prune: jq prune failed for $ledger (rc=$jq_rc):" >&2
+			cat "$jq_err" >&2
+			rm -f "$tmp" "$jq_err"
+			rc=1
+			continue
+		fi
+		mv "$tmp" "$ledger"
+		rm -f "$jq_err"
+	done
+	return "$rc"
 }
 
 # --- Phase 2 review-result cache (v0.32.11 #249-grp: cap-reset treadmill fix) -
@@ -208,6 +220,10 @@ PHASE2_RESULT_LEDGER="$CACHE_DIR/phase2-results.jsonl"
 # Emit the content hash of the phase2 review surface (committed diff vs base).
 # Empty output on ANY git failure → caller treats it as "no key" and always
 # reviews (fail-safe: a key we cannot compute is never a false hit).
+# The key is the diff CONTENT only — deliberately NOT salted with the CR engine
+# / ruleset version: content-identity IS the dedup goal, and the server-side
+# CR-in-CI stays the authoritative merge gate. To force a re-review after a CR
+# engine/ruleset change, change the diff or clear PHASE2_RESULT_LEDGER.
 phase2_review_cache_key() {
 	local base=${1:-main}
 	local diff
@@ -223,9 +239,26 @@ phase2_review_cache_get() {
 	local key=$1
 	[ -n "$key" ] || return 0
 	[ -f "$PHASE2_RESULT_LEDGER" ] || return 0
-	jq -rs --arg k "$key" '
+	local out jq_err jq_rc=0
+	jq_err=$(mktemp 2>/dev/null) || jq_err=""
+	out=$(jq -rs --arg k "$key" '
 		map(select(.content_hash == $k)) | if length == 0 then "" else (.[-1].findings | tostring) end
-	' "$PHASE2_RESULT_LEDGER" 2>/dev/null || return 0
+	' "$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}") || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		# Corrupt ledger → treat as a MISS (fail-safe: forces a real review,
+		# never a false hit) BUT surface a breadcrumb so a persistently-corrupt
+		# ledger is visible instead of silently eating a review every cycle
+		# (matches this file's r2-sfh hardening; silent-failure-hunter conf4).
+		if [ -n "$jq_err" ] && [ -s "$jq_err" ]; then
+			echo "phase2_review_cache_get: jq read failed on $PHASE2_RESULT_LEDGER — treating as miss (fresh review): $(head -c 160 "$jq_err")" >&2
+		else
+			echo "phase2_review_cache_get: jq read failed on $PHASE2_RESULT_LEDGER — treating as miss (fresh review)" >&2
+		fi
+		[ -n "$jq_err" ] && rm -f "$jq_err"
+		return 0
+	fi
+	[ -n "$jq_err" ] && rm -f "$jq_err"
+	printf '%s' "$out"
 }
 
 # Record a phase2 review result. Best-effort — a write failure must never fail

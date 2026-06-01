@@ -91,3 +91,31 @@ teardown() {
 	K3=$(phase2_review_cache_key main)
 	[ "$K3" != "$K1" ]
 }
+
+@test "empty review surface → stable empty-blob key (not empty output)" {
+	(
+		cd "$TEST_TMP"
+		git init -q
+		git config user.email t@t.t
+		git config user.name t
+		printf 'x\n' >f.txt
+		git add f.txt
+		git commit -qm base
+		git branch -M main
+		git checkout -q -b feat # no new commits → main...HEAD diff is empty
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	# An empty surface hashes to git's well-known empty-blob SHA — a stable,
+	# valid key. Two empty surfaces ARE genuinely identical, so a shared key is
+	# safe (and phase2 is only reached with >=1 commit ahead anyway).
+	[ "$output" = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" ]
+}
+
+@test "malformed ledger line → clean miss + stderr breadcrumb (never a crash)" {
+	mkdir -p "$(dirname "$LEDGER")"
+	printf 'this is not json\n' >"$LEDGER"
+	run phase2_review_cache_get somekey
+	[ "$status" -eq 0 ]                 # best-effort: never fails caller
+	[[ $output == *"jq read failed"* ]] # surfaces a breadcrumb (fail-safe → fresh review)
+}

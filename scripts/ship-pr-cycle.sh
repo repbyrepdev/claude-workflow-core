@@ -78,8 +78,9 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 	# fix) — provides phase2_review_cache_{key,get,put}. Best-effort: if it is
 	# absent/unloadable, phase2 simply always invokes the CR-CLI (the prior
 	# behavior), so a missing lib degrades gracefully rather than failing
-	# closed. REPO_ROOT is set at line 50 → the lib keys its ledger off the
-	# correct repo (incl. consumers running from the plugin cache).
+	# closed. REPO_ROOT is already resolved above (from `git rev-parse
+	# --show-toplevel`) → the lib keys its ledger off the correct repo (incl.
+	# consumers running from the plugin cache).
 	if [ -r "$PLUGIN_LIB/content-hash-cache.sh" ]; then
 		# shellcheck source=../_lib/content-hash-cache.sh
 		. "$PLUGIN_LIB/content-hash-cache.sh"
@@ -1458,6 +1459,13 @@ cmd_next() {
 			# fresh review; or verified-FP → prove-yourself rejection) → advance;
 			# else direct the operator to address them. No p2runs re-roll: the
 			# cap existed to tolerate the oscillation this cache now eliminates.
+			# Edge (verified fail-CLOSED): if the key matched a review recorded
+			# under a DIFFERENT sha (content-identical rebase), the current sha
+			# has no cr-local-review entry → cr_phase2_clean_for_sha returns
+			# non-zero → we direct a re-verify, never falsely advance. The
+			# guard/advance shape below intentionally mirrors the round-cap
+			# branch's; kept inline (not extracted) so each path's distinct
+			# operator directive stays legible.
 			if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
 				echo "ship-pr-cycle: ERROR: coverage SSOT _lib/cr-phase2-coverage.sh did not load — cannot evaluate the phase2 cache-hit advance. (NOT advancing.)" >&2
 				return 2
