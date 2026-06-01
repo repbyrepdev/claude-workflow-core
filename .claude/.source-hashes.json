@@ -1,6 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
+    ".coderabbit.base.yaml": "5f7428606b647da08eaf18ee723dec83177e9675f242b180fb0fe9165b8abfe3",
     ".github/ISSUE_TEMPLATE/brainstorm.yml": "fcc13acd9367937e4194b3e357f2d47926624518b7d0c0d098fba03f7fdc6aa8",
     ".github/ISSUE_TEMPLATE/bug.yml": "8ad87096c71388728939d2898f6c2d0aaf6eb091ab835fe6a08a988744750253",
     ".github/ISSUE_TEMPLATE/epic.yml": "1ca4929ec446e7ed3c37fc4e16776c5dcfffc74859819cca738c794469cbfbb6",

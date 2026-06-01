@@ -12,9 +12,11 @@
 #     into .claude/.source-hashes.json, so refresh-from-source.sh re-propagates
 #     them AND hash-drift.sh --verify drift-gates the consumer copy. Absent/
 #     false ⇒ template-with-overrides or per-repo (bootstrap writes it once;
-#     it is NOT byte-gated). Only the .github "process templates" (PR / commit /
-#     issue) are hashed — labels/required-checks/labeler/workflows legitimately
-#     vary per repo and are propagated/gated by other mechanisms. A consumer
+#     it is NOT byte-gated). The hashed set is the cross-repo byte-SSOTs: the
+#     .github "process templates" (PR / commit / issue) AND the CodeRabbit base
+#     (.coderabbit.base.yaml, #234). labels/required-checks/labeler/workflows
+#     legitimately vary per repo and are propagated/gated by other mechanisms.
+#     A consumer
 #     that must customize a hashed file declares it in .claude/local-overrides.yml
 #     (makes the divergence explicit instead of silent drift).
 #   labels[].name:  string  — must match .github/labels.yml `name:`
@@ -32,6 +34,15 @@ schema_version: 1
 files:
   - path: .pre-commit-config.yaml
     mode: "644"
+  # AI-reviewer SSOT — byte-identical canonical CodeRabbit base (#234, Wave H).
+  # hashed: true ⇒ the Wave G hash-drift engine gates + propagates it. The
+  # per-repo .coderabbit.yaml is composed from this + an optional
+  # .coderabbit.overlay.yaml by scripts/compose-coderabbit.sh (overlay scalars
+  # win, arrays append). The overlay + composed .coderabbit.yaml are per-repo
+  # (NOT gated, NOT in this manifest).
+  - path: .coderabbit.base.yaml
+    mode: "644"
+    hashed: true
   # Consumer-only shims: the plugin itself doesn't need these because
   # it IS the plugin (its real skills live under skills/ship-pr-cycle/).
   # --verify --scope=both checks consumer paths; --verify --scope=plugin skips them.

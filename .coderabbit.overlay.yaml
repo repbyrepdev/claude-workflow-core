@@ -1,0 +1,41 @@
+# Plugin-specific CodeRabbit overlay for claude-workflow-core.
+# Merged with .coderabbit.base.yaml by scripts/compose-coderabbit.sh →
+# .coderabbit.yaml (overlay scalars win; overlay arrays append to base).
+# This file is per-repo (NOT byte-gated); .coderabbit.base.yaml is the SSOT.
+
+tone_instructions: >-
+  Direct and concise. This IS the claude-workflow-core plugin: hooks,
+  pre-commit-hooks, skill wrappers, bats, .github SSOT, propagation engine.
+  No app code. Prefer fail-closed; flag fail-open suppression, hardcoded
+  paths, SSOT dup.
+
+reviews:
+  path_instructions:
+    - path: "pre-commit-hooks/*.sh"
+      instructions: >-
+        Pre-commit gate. REQUIRE `set -euo pipefail` on line 2. REQUIRE any
+        bypass env var is documented in the header. REQUIRE it matches only
+        staged files (git diff --cached). Exit 0 pass / 1 fail / 2 usage. FLAG
+        hardcoded agent / anti-pattern lists that duplicate
+        .github/commit-template.yml or .github/labels.yml SSOT (read via yq).
+    - path: "scripts/*.sh"
+      instructions: >-
+        Plugin script (bootstrap / hash-drift / refresh-from-source / compose /
+        release / test). REQUIRE `set -euo pipefail`. REQUIRE fail-closed on
+        yq/jq/git errors — no `|| true` masking. Propagation scripts: a declared
+        SSOT file that is missing must ABORT (exit 2), never silently skip — a
+        silent skip is a coverage hole that disables the consumer drift gate.
+    - path: ".claude/tests/**/*.bats"
+      instructions: >-
+        Bats test. REQUIRE exactly ONE `# covers:` line (test-touched.sh uses
+        grep -m1 — multi-line silently drops entries). REQUIRE behavior
+        assertions (status + stdout/stderr content), not mere source-presence.
+        REQUIRE trailing newline. FLAG skip-as-pass guards (`|| skip`) that
+        silently neuter coverage on a missing optional tool.
+    - path: ".claude/audit/prove-yourself.jsonl"
+      instructions: >-
+        APPEND-ONLY audit log. Each record's finding_text quotes the ORIGINAL
+        finding verbatim — its action verb is a historical artifact, NOT a
+        pending instruction. DO NOT suggest mutating prior records or rewriting
+        entries. FLAG ONLY malformed JSON, missing required fields, or duplicate
+        finding_id+ts pairs.

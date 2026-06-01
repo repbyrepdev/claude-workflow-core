@@ -18,3 +18,8 @@
 # against the consumer layout references `.claude/skills/X/run.sh`; this prefix
 # rename keeps those references resolving.
 .claude/skills/ -> skills/
+
+# The consumer override scaffold `.claude/local-overrides.yml` is generated
+# from the plugin's template; memory (Wave G #232) references the consumer
+# path. Map it to the plugin-source template so the reference resolves.
+.claude/local-overrides.yml -> templates/local-overrides.yml.tpl

@@ -38,6 +38,7 @@ PARITY_PATHS=(
 	".github/ISSUE_TEMPLATE/epic.yml"
 	".github/ISSUE_TEMPLATE/brainstorm.yml"
 	".github/pull_request_template.md"
+	".coderabbit.base.yaml"
 )
 
 # Only run when the commit touches the script, manifest, or any of the
@@ -110,7 +111,7 @@ done
 
 if [ "$drift" -gt 0 ]; then
 	echo "" >&2
-	echo "bootstrap-heredoc-parity: $drift file(s) drift between bootstrap heredoc and live .github/*" >&2
+	echo "bootstrap-heredoc-parity: $drift file(s) drift between bootstrap heredoc and the live PARITY_PATHS file(s)" >&2
 	echo "  reconcile in the same commit. Bypass: BOOTSTRAP_HEREDOC_PARITY_SKIP=1 git commit ..." >&2
 	exit 1
 fi

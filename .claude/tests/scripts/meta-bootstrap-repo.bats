@@ -43,6 +43,12 @@ teardown() {
 	[ -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/run.sh" ]
 	[ -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/SKILL.md" ]
 	[ -f "$TEST_TMP/target/.claude/hooks/review-log.sh" ]
+	# #234: the byte-SSOT CodeRabbit base is written, AND the live
+	# .coderabbit.yaml is composed from it. With no per-repo overlay, the
+	# composed config must equal the base verbatim (compose-coderabbit.sh).
+	[ -f "$TEST_TMP/target/.coderabbit.base.yaml" ]
+	[ -f "$TEST_TMP/target/.coderabbit.yaml" ]
+	diff "$TEST_TMP/target/.coderabbit.base.yaml" "$TEST_TMP/target/.coderabbit.yaml"
 }
 
 @test "--target repo --verify-only on bootstrapped dir succeeds (re-runs clean)" {

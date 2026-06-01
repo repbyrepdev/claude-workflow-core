@@ -770,6 +770,17 @@ _phase2_run_cr_cli() {
 		rm -f "$stdout_file" "$stderr_file"
 		return 3
 	fi
+	# v0.32.x (#234): exit 4 = local-review.sh signaled a CR review TIMEOUT
+	# (client-side `timeout` kill or CR's server-side unrecoverable timeout
+	# event). Distinct from rate_limit (3) and hard failures (auth/malformed):
+	# the review couldn't complete, but that's a transient CR-backend limit on
+	# a large diff, NOT a code problem. Surface as rc=4 so the caller defers to
+	# the authoritative server-side CR-in-CI (mirrors the rc=3 defer contract).
+	if [ "$rc" -eq 4 ]; then
+		echo "ship-pr-cycle: phase 2 CR review TIMED OUT (local-review.sh exit 4) — deferring to server-side CR-in-CI" >&2
+		rm -f "$stdout_file" "$stderr_file"
+		return 4
+	fi
 	if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
 		echo "ship-pr-cycle: ERROR: local-review.sh failed with rc=$rc (not a findings-exit)" >&2
 		rm -f "$stdout_file" "$stderr_file"
@@ -1372,6 +1383,17 @@ cmd_next() {
 			# hint conditionally (only when the JSONL was actually written).
 			return 0
 		fi
+		if [ "$rc" -eq 4 ]; then
+			# CR review timed out (local-review.sh exit 4) — the local CR-CLI
+			# cannot complete on this diff within its review budget. This is a
+			# transient CR-backend limit, NOT a code defect: advance to push and
+			# defer to the AUTHORITATIVE server-side CR-in-CI (which re-reviews
+			# the pushed branch). Mirrors the round-cap's defer philosophy; we
+			# honor CR's own recoverable:false signal and do not retry locally.
+			_set_stage "push"
+			echo "→ phase2 CR review timed out unrecoverably; deferring the review to the authoritative server-side CR-in-CI; advanced to push"
+			return 0
+		fi
 		if [ "$rc" -ne 0 ]; then
 			echo "ship-pr-cycle: phase2 CR-CLI invocation failed (rc=$rc) — see output above" >&2
 			return "$rc"
@@ -1380,8 +1402,53 @@ cmd_next() {
 			_set_stage "push"
 			echo "→ phase2 CR-CLI clean (0 findings); advanced to push"
 		else
+			# Round-cap graduation (#234): phase2 CR-CLI findings on a large
+			# diff are a non-deterministic LLM minor-tail that need not hit 0
+			# even when the code is substantively clean. Mirror phase1's scaler
+			# cap — after the round budget, advance to push: the residual is
+			# diminishing-returns noise and the SERVER-SIDE CR-in-CI is the
+			# authoritative merge gate. Count this-SHA CR-CLI runs from the log
+			# (each _phase2_run_cr_cli appends one entry, incl. the current one).
+			local cap p2runs cr_log head_sha
+			cap=$(_scaler_rounds)
+			# git/jq failures here must fail LOUD, not silently default the
+			# count (CR phase2 r1 CRITICAL on this block): a masked failure could
+			# wrongly advance — vacuously satisfying a small cap — or loop
+			# forever. Resolve the sha first, then count, fail-closed on either.
+			if ! head_sha=$(git rev-parse --short HEAD 2>/dev/null); then
+				echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-parse --short HEAD failed; cannot count CR-CLI runs" >&2
+				return 2
+			fi
+			cr_log="$REPO_ROOT/.claude/logs/cr-local-review.jsonl"
+			if [ ! -f "$cr_log" ]; then
+				# No run-log yet → legitimate first run: local-review.sh is the
+				# canonical appender, so an absent file means zero recorded runs
+				# for this sha (NOT a parse error to mask, NOT grounds to
+				# vacuously advance a cap of 1).
+				p2runs=0
+			else
+				local p2runs_err_file p2runs_rc=0
+				p2runs_err_file=$(mktemp -t ship-cycle-p2runs-err.XXXXXX) ||
+					scm_fail "mktemp for phase2 round-cap jq stderr failed"
+				p2runs=$(jq -rs --arg s "$head_sha" '[.[] | select(.sha == $s)] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
+				if [ "$p2runs_rc" -ne 0 ]; then
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
+					rm -f "$p2runs_err_file"
+					return 2
+				fi
+				rm -f "$p2runs_err_file"
+				if ! [[ $p2runs =~ ^[0-9]+$ ]]; then
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — non-numeric run count '$p2runs' from $cr_log" >&2
+					return 2
+				fi
+			fi
+			if [ "$p2runs" -ge "$cap" ]; then
+				_set_stage "push"
+				echo "→ phase2 round-cap reached ($p2runs/$cap rounds) with $findings residual finding(s); deferring the minor-tail to the authoritative server-side CR-in-CI; advanced to push"
+				return 0
+			fi
 			cat <<EOF
-ship-pr-cycle: phase2 — CR-CLI returned $findings finding(s); cap = $(_scaler_rounds) rounds
+ship-pr-cycle: phase2 round $p2runs/$cap — CR-CLI returned $findings finding(s)
   DIRECTIVE FOR OPERATOR (Claude):
     Apply trivial fixes inline (regex tightening, mktemp /dev/null fallback,
     here-string idiom, comment fixes, log-msg updates, var renames).
