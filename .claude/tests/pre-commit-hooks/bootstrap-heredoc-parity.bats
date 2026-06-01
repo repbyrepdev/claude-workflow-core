@@ -8,6 +8,15 @@
 # sandbox (real bootstrap-repo.sh + manifest + every PARITY_PATHS live file) so
 # the baseline is clean, then mutates one file and asserts the gate fails.
 
+# Robustly extract the gate's PARITY_PATHS entries (CR r3): grep ALL quoted
+# tokens (handles inline arrays / multiple per line), skip comment + blank
+# lines, strip quotes. One path per line. Used by setup AND the membership
+# test so both mirror the gate's real array, not a raw file grep.
+_gate_parity_paths() {
+	awk '/^PARITY_PATHS=\(/{f=1; next} /^\)/{f=0} f && !/^[[:space:]]*#/' "$GATE" |
+		grep -oE '"[^"]+"' | tr -d '"'
+}
+
 setup() {
 	PLUGIN=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
 	GATE="$PLUGIN/pre-commit-hooks/bootstrap-heredoc-parity.sh"
@@ -28,8 +37,7 @@ setup() {
 		[ -n "$p" ] || continue
 		mkdir -p "$SANDBOX/$(dirname "$p")"
 		cp "$PLUGIN/$p" "$SANDBOX/$p"
-	done < <(awk '/^PARITY_PATHS=\(/{f=1; next} /^\)/{f=0} f' "$GATE" |
-		sed -E 's/^[[:space:]]*"([^"]+)".*/\1/')
+	done < <(_gate_parity_paths)
 }
 
 teardown() {
@@ -37,13 +45,18 @@ teardown() {
 	return 0
 }
 
-@test ".coderabbit.base.yaml is in PARITY_PATHS (#234 r1)" {
-	grep -qF '".coderabbit.base.yaml"' "$GATE"
+@test ".coderabbit.base.yaml is in the gate's PARITY_PATHS array (#234 r1)" {
+	# Behavioral (CR r3): parse the actual PARITY_PATHS array — a raw file grep
+	# would be satisfied by a mere comment mention. Exact-line membership.
+	_gate_parity_paths | grep -Fxq '.coderabbit.base.yaml'
 }
 
 @test "clean sandbox (all heredocs match live files) → gate passes (#234 r1)" {
 	run bash -c "cd '$SANDBOX' && bash '$GATE'"
 	[ "$status" -eq 0 ]
+	# Not just exit 0 (CR r3): assert no drift/missing markers leaked to output.
+	[[ $output != *"drift in"* ]]
+	[[ $output != *"live file missing"* ]]
 }
 
 @test "drifting .coderabbit.base.yaml → gate fails with named drift (#234 r1)" {
