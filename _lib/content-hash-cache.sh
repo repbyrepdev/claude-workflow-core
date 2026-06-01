@@ -187,7 +187,12 @@ cache_prune() {
 			rc=1
 			continue
 		}
-		jq_err=$(mktemp)
+		jq_err=$(mktemp) || {
+			echo "cache_prune: mktemp failed for jq_err ($ledger) — fail closed" >&2
+			rm -f "$tmp"
+			rc=1
+			continue
+		}
 		jq -c --arg cutoff "$cutoff" 'select(.ts >= $cutoff)' \
 			"$ledger" >"$tmp" 2>"$jq_err" || jq_rc=$?
 		if [ "$jq_rc" -ne 0 ]; then
@@ -197,7 +202,14 @@ cache_prune() {
 			rc=1
 			continue
 		fi
-		mv "$tmp" "$ledger"
+		# Checked rename: an unchecked mv could leave the ledger unpruned while
+		# the function reports success — fail closed for this ledger instead.
+		if ! mv "$tmp" "$ledger"; then
+			echo "cache_prune: mv failed for $ledger — left unpruned, fail closed" >&2
+			rm -f "$tmp" "$jq_err"
+			rc=1
+			continue
+		fi
 		rm -f "$jq_err"
 	done
 	return "$rc"

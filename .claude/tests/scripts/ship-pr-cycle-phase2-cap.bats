@@ -61,6 +61,9 @@ setup() {
 	# the real local-review.sh appends its own entry (its own contract/tests).
 	cat >"$ROOT/.claude/scripts/cr/local-review.sh" <<'STUB'
 #!/usr/bin/env bash
+# #284: drop a sentinel (relative to cwd = repo root) so the cache-HIT tests can
+# assert this stub was NOT invoked — the skip-invocation / 10-hr-budget contract.
+touch .claude/.local-review-ran 2>/dev/null || true
 printf '%s\n' '{"type":"complete","findings":2}'
 exit 1
 STUB
@@ -292,6 +295,7 @@ _seed_cache() {
 	[[ $output == *"reusing 0 finding"* ]]
 	[[ $output == *"advanced to push"* ]]
 	[ "$(_cur_stage)" = push ]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }
 
 @test "phase2 content-hash cache HIT + residuals addressed → advance, no CR-CLI (#282)" {
@@ -310,6 +314,7 @@ _seed_cache() {
 	[[ $output == *"addressed"* ]]
 	[[ $output == *"advanced to push"* ]]
 	[ "$(_cur_stage)" = push ]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }
 
 @test "phase2 content-hash cache HIT + residuals NOT addressed → directive, stays (#282)" {
@@ -326,4 +331,5 @@ _seed_cache() {
 	[[ $output == *"cache HIT"* ]]
 	[[ $output == *"NOT all addressed"* ]]
 	[ "$(_cur_stage)" = phase2 ]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }

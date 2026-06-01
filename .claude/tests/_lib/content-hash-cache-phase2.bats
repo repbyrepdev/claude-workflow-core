@@ -81,15 +81,44 @@ teardown() {
 		git add f.txt
 		git commit -qm change
 	)
-	K1=$(phase2_review_cache_key main)
-	K2=$(phase2_review_cache_key main)
-	[ -n "$K1" ]      # non-empty for a real (non-empty) diff
-	[ "$K1" = "$K2" ] # deterministic: same surface → same key
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	local K1="$output"
+	[ -n "$K1" ] # non-empty for a real (non-empty) diff
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	[ "$output" = "$K1" ] # deterministic: same surface → same key
 	# A further commit that changes content must change the key (cache miss →
 	# fresh review), which is what stops a stale-cache false hit.
 	(cd "$TEST_TMP" && printf 'three\n' >>f.txt && git add f.txt && git commit -qm more)
-	K3=$(phase2_review_cache_key main)
-	[ "$K3" != "$K1" ]
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	[ "$output" != "$K1" ] # content changed → key changed
+}
+
+@test "standalone fallback: REPO_ROOT unset resolves to repo root, not parent" {
+	# CR #284: the suite always pre-sets REPO_ROOT, so the fixed `:-` fallback
+	# (<repo>/_lib/.. = repo, was overshooting to the parent) could regress
+	# unnoticed. Source with REPO_ROOT unset and assert it resolves to the repo.
+	local expected
+	expected=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	run bash -c "unset REPO_ROOT; . '$LIB' && printf '%s' \"\$REPO_ROOT\""
+	[ "$status" -eq 0 ]
+	[ "$output" = "$expected" ]
+}
+
+@test "cache_prune prunes PHASE2_RESULT_LEDGER (old dropped, recent kept)" {
+	# CR #284: the new dual-ledger retention path was unpinned. Seed one ancient
+	# + one future-dated entry; prune drops the ancient, keeps the future one.
+	mkdir -p "$(dirname "$LEDGER")"
+	printf '{"ts":"2000-01-01T00:00:00Z","content_hash":"old","sha":"a","findings":1}\n' >"$LEDGER"
+	printf '{"ts":"2099-01-01T00:00:00Z","content_hash":"new","sha":"b","findings":0}\n' >>"$LEDGER"
+	run cache_prune 30
+	[ "$status" -eq 0 ]
+	run grep -c '"content_hash":"old"' "$LEDGER"
+	[ "$output" = "0" ] # ancient entry pruned
+	run grep -c '"content_hash":"new"' "$LEDGER"
+	[ "$output" = "1" ] # recent entry kept
 }
 
 @test "empty review surface → stable empty-blob key (not empty output)" {

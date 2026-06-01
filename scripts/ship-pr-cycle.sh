@@ -83,7 +83,11 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 	# consumers running from the plugin cache).
 	if [ -r "$PLUGIN_LIB/content-hash-cache.sh" ]; then
 		# shellcheck source=../_lib/content-hash-cache.sh
-		. "$PLUGIN_LIB/content-hash-cache.sh"
+		# Guard the source: a lib that returns non-zero at source-time must NOT
+		# abort the orchestrator under `set -e` (best-effort — if the fns end up
+		# undefined the phase2 `command -v` guards fall back to always-review).
+		. "$PLUGIN_LIB/content-hash-cache.sh" ||
+			echo "ship-pr-cycle: WARN: content-hash-cache.sh source returned non-zero — phase2 cache disabled (always-review fallback)" >&2
 	fi
 	_shipcycle_resolve() {
 		# $1: rel path under .claude/ (e.g. "scripts/_common.sh"). Echoes
@@ -1459,13 +1463,15 @@ cmd_next() {
 			# fresh review; or verified-FP → prove-yourself rejection) → advance;
 			# else direct the operator to address them. No p2runs re-roll: the
 			# cap existed to tolerate the oscillation this cache now eliminates.
-			# Edge (verified fail-CLOSED): if the key matched a review recorded
-			# under a DIFFERENT sha (content-identical rebase), the current sha
-			# has no cr-local-review entry → cr_phase2_clean_for_sha returns
-			# non-zero → we direct a re-verify, never falsely advance. The
-			# guard/advance shape below intentionally mirrors the round-cap
-			# branch's; kept inline (not extracted) so each path's distinct
-			# operator directive stays legible.
+			# #284 CR fix (deadlock): the cached review may have been recorded
+			# under a DIFFERENT sha (content-identical rebase/amend), leaving THIS
+			# sha with NO cr-local-review entry. cr_phase2_clean_for_sha is
+			# sha-scoped, so findings would be unknown → fail-closed FOREVER (the
+			# operator could never satisfy it — a true deadlock). The reconcile
+			# below synthesizes this sha's run-log entry from the cached count so a
+			# prove-yourself record CAN clear it, exactly as a real local-review
+			# run would have logged. Guard/advance shape mirrors the round-cap
+			# branch's; kept inline so each path's distinct directive stays legible.
 			if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
 				echo "ship-pr-cycle: ERROR: coverage SSOT _lib/cr-phase2-coverage.sh did not load — cannot evaluate the phase2 cache-hit advance. (NOT advancing.)" >&2
 				return 2
@@ -1474,6 +1480,16 @@ cmd_next() {
 			if ! hs=$(git rev-parse --short HEAD 2>/dev/null); then
 				echo "ship-pr-cycle: ERROR: phase2 cache-hit advance — git rev-parse --short HEAD failed" >&2
 				return 2
+			fi
+			local _crlog="$REPO_ROOT/.claude/logs/cr-local-review.jsonl" _have="false"
+			if [ -f "$_crlog" ]; then
+				_have=$(jq -rs --arg s "$hs" 'any(.sha == $s)' "$_crlog" 2>/dev/null || echo "false")
+			fi
+			if [ "$_have" != "true" ]; then
+				mkdir -p "$(dirname "$_crlog")" 2>/dev/null || true
+				jq -nc --arg s "$hs" --argjson f "$findings" \
+					'{sha:$s, findings:$f, source:"phase2-cache-reconcile"}' >>"$_crlog" 2>/dev/null ||
+					echo "ship-pr-cycle: WARN: cache-hit cr-local-review reconcile failed for $hs" >&2
 			fi
 			if cr_phase2_clean_for_sha "$hs"; then
 				_set_stage "push"
