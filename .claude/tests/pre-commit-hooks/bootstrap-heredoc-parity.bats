@@ -22,6 +22,11 @@ setup() {
 	GATE="$PLUGIN/pre-commit-hooks/bootstrap-heredoc-parity.sh"
 	[ -x "$GATE" ]
 	command -v git >/dev/null
+	# yq guard (CR r4): the gate itself SKIPS (exit 0) when yq is absent
+	# (bootstrap-heredoc-parity.sh:27). Without this, the "clean sandbox →
+	# gate passes" test would pass VACUOUSLY on a yq-less machine (the gate
+	# skipped, verified nothing). Require yq so the tests exercise real logic.
+	command -v yq >/dev/null
 	TMP=$(mktemp -d -t heredocparity.XXXXXX) || return 1
 	SANDBOX="$TMP/repo"
 	mkdir -p "$SANDBOX/scripts"
