@@ -97,33 +97,47 @@ _overlay_usable() {
 
 result=""
 if _overlay_usable; then
-	# Type-clobber guard (#234 r1): _overlay_usable only checks the overlay's
-	# TOP level is a map. A nested key that sets a base MAPPING to a scalar
-	# (e.g. `reviews: "x"`) would, under `*+`, let the overlay scalar WIN and
-	# silently gut the whole base subtree. Reject any overlay that turns a base
-	# mapping-key into a non-mapping — fail CLOSED before composing.
-	clobbered=$(BASEF="$BASE" OVL="$OVERLAY" yq -n '
-		load(strenv(BASEF)) as $b | load(strenv(OVL)) as $o | ($b *+ $o) as $m
-		| [ $b | to_entries[] | select(.value | tag == "!!map") | .key ]
-		| map(select(($m[.] | tag) != "!!map")) | join(" ")
-	' 2>&1) || {
-		echo "compose-coderabbit: failed validating overlay type-compatibility:" >&2
-		printf '%s\n' "$clobbered" >&2
+	# yq stderr → a temp file, NOT into the captured stdout var (#234 r2 cr
+	# minor): a yq warning merged via `2>&1` would corrupt the composed config
+	# / the clobber list. Capture stdout only; surface stderr on failure.
+	yqerr=$(mktemp -t compose-cr-yqerr.XXXXXX) || {
+		echo "compose-coderabbit: mktemp failed" >&2
 		exit 2
 	}
+	# Type-clobber guard (#234 r2 cr MAJOR — now RECURSIVE): _overlay_usable
+	# only checks the overlay's TOP level is a map. An overlay that turns a base
+	# MAPPING at ANY depth into a non-mapping (e.g. `reviews: "x"` OR
+	# `reviews: {auto_review: "x"}`) would, under `*+`, let the overlay value WIN
+	# and silently gut that subtree. Detect it: every map-path present in base
+	# must remain a map after merge (set-difference of base-map-paths minus
+	# merged-map-paths). Fail CLOSED before composing.
+	if ! clobbered=$(BASEF="$BASE" OVL="$OVERLAY" yq -n '
+		load(strenv(BASEF)) as $b | load(strenv(OVL)) as $o | ($b *+ $o) as $m
+		| ([ $b | .. | select(tag == "!!map") | (path | join(".")) ]) as $bm
+		| ([ $m | .. | select(tag == "!!map") | (path | join(".")) ]) as $mm
+		| ($bm - $mm) | join(" ")
+	' 2>"$yqerr"); then
+		echo "compose-coderabbit: failed validating overlay type-compatibility:" >&2
+		cat "$yqerr" >&2
+		rm -f "$yqerr"
+		exit 2
+	fi
 	if [ -n "$clobbered" ]; then
-		echo "compose-coderabbit: overlay sets base mapping key(s) to a non-mapping" >&2
+		echo "compose-coderabbit: overlay turns base mapping path(s) into a non-mapping" >&2
 		echo "  (deep-merge would silently gut the base subtree): $clobbered" >&2
-		echo "  Keep those keys as mappings in the overlay, or override leaf scalars instead." >&2
+		echo "  Keep those paths as mappings in the overlay, or override leaf scalars instead." >&2
+		rm -f "$yqerr"
 		exit 2
 	fi
-	# Deep-merge: overlay scalars win, arrays append. Pass the overlay path via
-	# the environment so a path with metacharacters can't break the yq filter.
-	if ! result=$(OVL="$OVERLAY" yq '. *+ load(strenv(OVL))' "$BASE" 2>&1); then
+	# Deep-merge: overlay scalars win, arrays append. Overlay path via env so a
+	# path with metacharacters can't break the yq filter.
+	if ! result=$(OVL="$OVERLAY" yq '. *+ load(strenv(OVL))' "$BASE" 2>"$yqerr"); then
 		echo "compose-coderabbit: yq merge failed:" >&2
-		printf '%s\n' "$result" >&2
+		cat "$yqerr" >&2
+		rm -f "$yqerr"
 		exit 2
 	fi
+	rm -f "$yqerr"
 elif [ -n "$OVERLAY" ] && [ -f "$OVERLAY" ]; then
 	# Overlay present but not a mapping (empty / comments only) — use base
 	# verbatim, but tell the operator so a malformed overlay isn't silent.

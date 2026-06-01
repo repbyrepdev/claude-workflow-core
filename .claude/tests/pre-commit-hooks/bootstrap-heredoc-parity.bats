@@ -20,18 +20,16 @@ setup() {
 	cp "$PLUGIN/scripts/bootstrap-repo.sh" "$SANDBOX/scripts/"
 	cp "$PLUGIN/scripts/bootstrap-manifest.yml" "$SANDBOX/scripts/"
 	# Copy every PARITY_PATHS live file faithfully so the baseline is clean.
+	# Read the list FROM the gate (no SSOT duplication — CR r2): extract the
+	# quoted entries between `PARITY_PATHS=(` and the closing `)`. If the gate's
+	# whitelist changes, this test mirrors it automatically.
 	local p
-	for p in \
-		.github/ISSUE_TEMPLATE/bug.yml \
-		.github/ISSUE_TEMPLATE/feature.yml \
-		.github/ISSUE_TEMPLATE/task.yml \
-		.github/ISSUE_TEMPLATE/epic.yml \
-		.github/ISSUE_TEMPLATE/brainstorm.yml \
-		.github/pull_request_template.md \
-		.coderabbit.base.yaml; do
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
 		mkdir -p "$SANDBOX/$(dirname "$p")"
 		cp "$PLUGIN/$p" "$SANDBOX/$p"
-	done
+	done < <(awk '/^PARITY_PATHS=\(/{f=1; next} /^\)/{f=0} f' "$GATE" |
+		sed -E 's/^[[:space:]]*"([^"]+)".*/\1/')
 }
 
 teardown() {

@@ -137,6 +137,19 @@ EOF
 	[[ $output == *"reviews"* ]]
 }
 
+@test "fail-closed on a NESTED clobber (overlay sets reviews.auto_review scalar) (#234 r2)" {
+	# CR r2 MAJOR: the guard must catch clobbers at ANY depth, not just the top
+	# level. base has reviews.auto_review as a map; overlay scalars it.
+	cat >"$TMP/ovl.yaml" <<'EOF'
+reviews:
+  auto_review: "boom"
+EOF
+	run "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
+	[ "$status" -eq 2 ]
+	[[ $output == *"non-mapping"* ]]
+	[[ $output == *"reviews.auto_review"* ]]
+}
+
 @test "overlay that only ADDS to a base map (no clobber) is allowed (#234 r1)" {
 	# Guard must NOT false-positive: adding a key under reviews keeps it a map.
 	cat >"$TMP/ovl.yaml" <<'EOF'
