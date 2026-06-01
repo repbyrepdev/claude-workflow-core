@@ -4,11 +4,10 @@
 # This file is per-repo (NOT byte-gated); .coderabbit.base.yaml is the SSOT.
 
 tone_instructions: >-
-  Direct and concise. This IS the claude-workflow-core plugin: bash hooks,
-  pre-commit-hooks, skill run.sh wrappers, bats, .github SSOT, and the
-  propagation engine (hash-drift / refresh-from-source / bootstrap / compose).
-  No app code. Prefer fail-closed; flag fail-open error suppression, hardcoded
-  user paths, and SSOT duplication.
+  Direct and concise. This IS the claude-workflow-core plugin: hooks,
+  pre-commit-hooks, skill wrappers, bats, .github SSOT, propagation engine.
+  No app code. Prefer fail-closed; flag fail-open suppression, hardcoded
+  paths, SSOT dup.
 
 reviews:
   path_instructions:

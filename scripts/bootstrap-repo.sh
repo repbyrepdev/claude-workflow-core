@@ -997,10 +997,8 @@ _write .coderabbit.base.yaml 644 <<'EOF'
 language: en-US
 tone_instructions: >-
   Direct and concise. Flag real correctness, security, and contract issues;
-  skip prose nitpicks. Prefer fail-closed. Recurring classes worth flagging:
-  hardcoded user paths, fail-open error suppression (`|| true`, `2>/dev/null`
-  swallowing real errors), and SSOT duplication. (Repos override this with a
-  domain-specific one-liner via .coderabbit.overlay.yaml.)
+  skip prose nitpicks. Prefer fail-closed. Recurring classes: hardcoded paths,
+  fail-open error suppression, SSOT duplication.
 early_access: true
 inheritance: false
 
