@@ -45,7 +45,12 @@ PLUGIN_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 COMPOSE_CR_FAILED=0
 
 TARGET=""
-PIN_TAG="v0.8.5"
+# v0.32.12 (#283/Wave J): default PIN_TAG to the plugin's CURRENT version (SSOT
+# = .claude-plugin/plugin.json) so a fresh bootstrap pins to the current release
+# instead of a hardcoded stale tag. --tag still overrides (parsed below).
+# Fail-safe: jq/file missing → v0.8.5 fallback (never aborts under set -e).
+_plugin_ver=$(jq -r '.version // empty' "$PLUGIN_SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null || echo "")
+PIN_TAG="v${_plugin_ver:-0.8.5}"
 DRY_RUN=0
 FORCE=0
 VERIFY=0

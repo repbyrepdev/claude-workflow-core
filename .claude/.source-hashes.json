@@ -1,7 +1,6 @@
 {
   "algorithm": "sha256",
   "files": {
-    ".claude/log-retention.yml": "a2770fe29f1cb9b25823a0dfe0fa07819e46a443f756c714894fd9c3000da472",
     ".coderabbit.base.yaml": "5f7428606b647da08eaf18ee723dec83177e9675f242b180fb0fe9165b8abfe3",
     ".codex/config.toml": "dc2544585ac5b695db435ec6d814005d311326d9814b82901c7bf46d9bdd9af3",
     ".gemini/policy.toml": "c9f74f98b608c1bd188d6c2bda7910bc405a23148a06bbe3339488f57c31729a",
