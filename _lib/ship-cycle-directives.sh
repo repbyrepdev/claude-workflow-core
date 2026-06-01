@@ -31,6 +31,15 @@ _emit_stage_directive() {
 	two-step-phase1)
 		body="Run 'scripts/ship-pr-cycle.sh next' AGAIN now. Advancing INTO phase1 and EMITTING the phase1 agent directive are SEPARATE next calls (the two-step trap). Do NOT fire phase1 agents yet — the 2nd next creates the directive + sentinel; agents fired before it are rejected ('outside active directive'). After that 2nd next: fire 5 READ-ONLY pr-review-toolkit agents + semgrep (a SINGLE bare command, no pipe) + security-review (Agent subagent_type=general-purpose, NOT Skill), then review-log.sh each."
 		;;
+	push-to-pr)
+		body="PR is pushed. Run 'scripts/ship-pr-cycle.sh next' again to watch CR-in-CI to terminal (it auto-polls). CR-in-CI is the SERVER-SIDE GitHub bot, INDEPENDENT of the 10/hr local CR-CLI budget — it posts findings as PR review COMMENTS (not always a required-check failure), so poll the PR comments + the summary comment, not just 'gh pr checks'. The CR summary comment flips to 'No actionable comments 🎉' when clean — read THAT. If you step away, ScheduleWakeup ~270s. NEVER post '@coderabbitai review' (no-op + noise)."
+		;;
+	merge-conflict)
+		body="Merge conflict on this PR. Resolve via CodeRabbit's resolver — run the cr-resolve-conflict skill ('run.sh --pr <N>'), which posts '@coderabbitai resolve merge conflict' + polls the outcome. Do NOT hand-resolve and do NOT spend the local CR-CLI budget on conflicts. If CR declines/times out (rc 2): 'git fetch origin && git rebase origin/<base>', resolve, push. Once the resolution commit lands, re-run 'next' — if CR resolved it server-side, pull first (--ff-only) so the merged result is re-reviewed before merge-gate."
+		;;
+	merge-gate)
+		body="merge-gate — the ONLY operator merge gate (per the 4-gate autonomy model). Before approving: confirm required checks are green AND CR is clean via the github-pr-merge skill's _pr-cr-findings.sh (ALL THREE buckets zero: unresolved current + stranded-outdated + walkthrough pre-merge). APPROVE=1 is the ONLY sanctioned proceed — never a *_SKIP. Merge via the github-pr-merge skill 'run.sh' (--squash --delete-branch). AFTER merge: reopen the convergence epic (#223), then remember merge != deploy — the rollout/verify step (consumer pin bumps, hash-drift --verify, refresh-from-source) is SEPARATE."
+		;;
 	*)
 		echo "_emit_stage_directive: unknown label '$label' — no directive emitted" >&2
 		return 0

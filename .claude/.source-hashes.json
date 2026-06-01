@@ -35,7 +35,7 @@
     "_lib/resolve-plugin-helper.sh": "1d8bb1173cb070717baa035b17a6ac9d94b356f587e1d539155809a1ba494cfa",
     "_lib/resolve-plugin-pin.sh": "e69d69552d12d9bbf4891b594e3cb3f5e882f8c59d23acae480effb9fd5ca82a",
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
-    "_lib/ship-cycle-directives.sh": "ec1963f433863e6ceb3254a840ba28ceae553da1af1de97de466ff203e4f0cb1",
+    "_lib/ship-cycle-directives.sh": "01af0e95ea4db6037aae9beb708cebcb12bb9e03290e4b792e9c3f7928c9f75f",
     "hooks/_lib.sh": "57ff0032f45b672fc9a501086bb6190ac5a8de99897a10175862a6401fddde44",
     "hooks/_otel-silence.sh": "606246aa6856494e99b2858fc07a230132a51aab2f3e624e52a67427b1d73e2b",
     "hooks/_phase1-collect-logs.sh": "488f2dac255ee29cb946df3e2411855b7d6c7de232318b8a91e3bf1937ca3b1b",

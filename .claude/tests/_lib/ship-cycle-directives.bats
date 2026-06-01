@@ -60,3 +60,26 @@ teardown() {
 	[[ $output == *"unknown label"* ]]
 	[ ! -s "$CALLS" ]
 }
+
+@test "push-to-pr directive prints + appends (server-side CR-in-CI reminder)" {
+	run _emit_stage_directive push-to-pr
+	[ "$status" -eq 0 ]
+	[[ $output == *"SERVER-SIDE"* ]]
+	[[ $output == *"@coderabbitai review"* ]] # the NEVER reminder
+	grep -q 'push-to-pr' "$CALLS"
+}
+
+@test "merge-conflict directive prints + appends (cr-resolve-conflict skill)" {
+	run _emit_stage_directive merge-conflict
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr-resolve-conflict"* ]]
+	grep -q 'merge-conflict' "$CALLS"
+}
+
+@test "merge-gate directive prints + appends (APPROVE=1 only + merge!=deploy)" {
+	run _emit_stage_directive merge-gate
+	[ "$status" -eq 0 ]
+	[[ $output == *"APPROVE=1"* ]]
+	[[ $output == *"merge != deploy"* ]]
+	grep -q 'merge-gate' "$CALLS"
+}

@@ -1787,6 +1787,7 @@ EOF
 		fi
 		_set_stage "cr-in-ci-wait"
 		echo "→ pushed; advanced to cr-in-ci-wait"
+		_emit_stage_directive push-to-pr
 		;;
 	cr-in-ci-wait)
 		# Watch the PR's CodeRabbit status check until terminal. Advance
@@ -2135,6 +2136,7 @@ EOF
 		if [ "$cc_merge" = "DIRTY" ] && [ "$cc_mergeable" = "CONFLICTING" ]; then
 			local cc_skill
 			cc_skill=$(_shipcycle_resolve skills/cr-resolve-conflict/run.sh)
+			_emit_stage_directive merge-conflict
 			cat <<EOF
 ship-pr-cycle: cr-conflict-check — PR #$cc_pr_num has a merge conflict (merge=$cc_merge).
 
@@ -2215,6 +2217,7 @@ EOF
 			fi
 		fi
 		echo "ship-pr-cycle: merge-gate — operator approves here"
+		_emit_stage_directive merge-gate
 		return 0
 		;;
 	merged)
