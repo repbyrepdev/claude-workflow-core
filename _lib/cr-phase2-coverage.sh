@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -u
+# NB: sourced lib → `set -u` (nounset) ONLY, intentionally NOT `set -euo
+# pipefail`. -e/-o pipefail would mutate the CALLERS' errexit (this is sourced
+# into ship-pr-cycle.sh + the pre-push gate, both already -euo pipefail), and
+# the functions here are explicitly fail-closed (every fallback is
+# `|| echo <sentinel>` that the guards reject, plus explicit `return 0/1`).
+# [#248 CR declined `set -euo pipefail` — sourced-lib convention.]
 # v0.32.7 (#238): SSOT for "is this sha's Phase 2 CR-CLI review clean — or are
 # all its findings ADDRESSED?". Sourced by BOTH:
 #   - hooks/pre-push-pipeline-gate.sh  (the push gate)
@@ -20,7 +26,11 @@ set -u
 
 cr_phase2_clean_for_sha() {
 	local sha=$1
-	local repo_root="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+	# #248 CR: fail CLOSED on an unresolvable repo root — do NOT fall back to
+	# pwd (which could point at an unrelated repo whose .claude/logs happen to
+	# exist, yielding a wrong clean/not-clean verdict).
+	local repo_root="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "")}"
+	[ -n "$repo_root" ] || return 1
 	local cr_log="$repo_root/.claude/logs/cr-local-review.jsonl"
 	[ -f "$cr_log" ] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
