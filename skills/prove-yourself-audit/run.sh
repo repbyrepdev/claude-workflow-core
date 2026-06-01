@@ -713,7 +713,7 @@ cmd_record_rejection() {
 	# CR-CI fix: propagate _append_tracked_audit failure. Helper returns
 	# 1 on mkdir/jq error (r13 fail-closed); without rc check, caller
 	# would print "✓ Recorded" after losing the persistent entry.
-	if ! _append_tracked_audit "rejection" "$finding_id" "$src" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id"; then
+	if ! _append_tracked_audit "rejection" "$finding_id" "$src" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count"; then
 		echo "ERROR: tracked audit append failed for $finding_id (state file at $state_file is intact, but audit log is missing this record)" >&2
 		exit 1
 	fi
@@ -982,7 +982,7 @@ cmd_record_fix() {
 
 	# v4.28-W4 (#710): append summary to tracked audit log.
 	# CR-CI fix: propagate failure (mirror record-rejection branch).
-	if ! _append_tracked_audit "fix" "$finding_id" "${src:-}" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id"; then
+	if ! _append_tracked_audit "fix" "$finding_id" "${src:-}" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count"; then
 		echo "ERROR: tracked audit append failed for $finding_id (state file at $state_file is intact, but audit log is missing this record)" >&2
 		exit 1
 	fi
@@ -1164,13 +1164,21 @@ shift
 # State-file (in $STATE_DIR) is gitignored per-session detail; audit
 # log (in $AUDIT_DIR/prove-yourself.jsonl) is tracked + persists.
 _append_tracked_audit() {
-	# args: kind finding_id source severity confidence finding_text state_file [cluster_id]
+	# args: kind finding_id source severity confidence finding_text state_file [cluster_id] [covers_count]
 	# v4.28-W5 #855 fix: 8th arg cluster_id (optional) — propagated to the
 	# tracked audit log so phase0.5-dedupe-against-audit.sh can suppress
 	# already-handled clusters by cluster_id (not just description-text
 	# substring, which breaks when agents reword across rounds).
 	local kind="$1" fid="$2" src="$3" sev="$4" conf="$5" ftext="$6" sfile="$7"
 	local cluster="${8:-}"
+	# v0.32.7 (#238): 9th arg covers_count MUST reach the tracked audit log —
+	# the pre-push-gate's CR-coverage query (and ship-pr-cycle's phase2 cap, via
+	# the shared _lib/cr-phase2-coverage.sh) sums `.covers_count` per record.
+	# Without writing it here it was always null → the gate defaulted each
+	# record to 1, so a `--covers-count N` (N>1) was silently dropped (one
+	# record covered only 1 finding). Fail-safe to 1 on missing/non-numeric.
+	local covers="${9:-1}"
+	[[ $covers =~ ^[1-9][0-9]*$ ]] || covers=1
 	# r2 fix: declare jq_err local so the tempfile path doesn't leak into
 	# caller scope (cmd_record_rejection / cmd_record_fix). Without
 	# `local`, a caller already using $jq_err would have its path
@@ -1241,6 +1249,7 @@ _append_tracked_audit() {
 		--arg evidence "$sfile_rel" \
 		--arg cluster "$cluster" \
 		--arg csha "$covered_sha" \
+		--argjson covers "$covers" \
 		'{ts:$ts, kind:$kind, finding_id:$fid, source:$src,
 		  severity: (if $sev != "" then $sev
 		             elif $conf == "" then null
@@ -1252,6 +1261,7 @@ _append_tracked_audit() {
 		  cluster_id: (if $cluster == "" then null else $cluster end),
 		  evidence_path:$evidence,
 		  evidence_persists:false,
+		  covers_count: $covers,
 		  covered_sha: (if $csha == "" then null else $csha end)}' \
 		>>"$AUDIT_FILE" 2>"$jq_err"; then
 		# CR-CI fix: fail closed on append failure (was WARN+return 0).

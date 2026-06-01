@@ -199,47 +199,29 @@ _is_comments_only() {
 # 1 otherwise. Shares `_scaler_says`'s log-parsing logic but drops the
 # scaler dependency so the gate can delegate even if the scaler script
 # is absent.
+# v0.32.7 (#238): the CR Phase 2 coverage check is now SSOT in
+# _lib/cr-phase2-coverage.sh, SHARED with ship-pr-cycle's Phase 2 round-cap so
+# the cap never advances to a push this gate would refuse (and the two can't
+# drift). Resolve + source via BASH_SOURCE so it works whether the gate is
+# executed (pre-push) or sourced-for-test (bats $0 = bats, not the gate).
+_ppg_cov_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd)/cr-phase2-coverage.sh"
+if [ -r "$_ppg_cov_lib" ]; then
+	# shellcheck source=../_lib/cr-phase2-coverage.sh
+	. "$_ppg_cov_lib"
+fi
+
+# v4.24-Q3 (#610): predicate form — rc 0 when this SHA's Phase 2 review is clean
+# (findings=0) OR all findings are addressed (delegates to the shared SSOT
+# above). Preserves the prior operator-visible acceptance line. Fail-CLOSED if
+# the shared lib didn't load (never silently pass an unverified Phase 2).
 _cr_cli_clean_for_sha() {
-	local sha=$1
-	local repo_root="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-	local cr_log="$repo_root/.claude/logs/cr-local-review.jsonl"
-	[ -f "$cr_log" ] || return 1
-	command -v jq >/dev/null 2>&1 || return 1
-	local short_sha
-	short_sha=$(printf '%s' "$sha" | cut -c1-7)
-	local latest_findings
-	latest_findings=$(jq -rs --arg s "$short_sha" \
-		'[.[] | select(.sha==$s)] | if length > 0 then (last.findings // -1) else -1 end' \
-		"$cr_log" 2>/dev/null || echo -1)
-	# v0.8.3 (CR critical on #33): reject non-numeric / missing / negative
-	# latest_findings BEFORE the coverage path. -1 means "no CR-CLI run
-	# for this SHA" which must fail-closed, not get whitewashed by old
-	# audit records.
-	case "$latest_findings" in
-	'' | *[!0-9]*)
+	if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
+		echo "pre-push-pipeline-gate: ERROR: _lib/cr-phase2-coverage.sh not sourced — cannot verify Phase 2 (fail-closed)" >&2
 		return 1
-		;;
-	esac
-	if [ "$latest_findings" = "0" ]; then
-		return 0
 	fi
-	# v0.8.2/v0.8.3 (FCP #55 + CR #33 followup): clean iff findings>0
-	# but every CR finding has a prove-yourself record SCOPED TO THIS
-	# SHA. Per CR review, scope by .covered_sha (recorded by writer
-	# when the rejection is for a specific commit) — not the whole
-	# audit history.
-	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl"
-	[ -f "$audit_log" ] || return 1
-	local cr_covered
-	cr_covered=$(jq -rs --arg s "$short_sha" '
-		[.[] | select(.source == "cr") | select((.covered_sha // "") | startswith($s))] |
-		map(.covers_count // 1) | add // 0
-	' "$audit_log" 2>/dev/null || echo 0)
-	if [ "${cr_covered:-0}" -ge "${latest_findings:-0}" ]; then
-		echo "pre-push-pipeline-gate: CR findings=$latest_findings on $short_sha covered by $cr_covered prove-yourself records (scoped to sha) — accepting." >&2
-		return 0
-	fi
-	return 1
+	cr_phase2_clean_for_sha "$1" || return 1
+	echo "pre-push-pipeline-gate: Phase 2 clean/covered for $(printf '%s' "$1" | cut -c1-7) (shared #238 coverage check) — accepting." >&2
+	return 0
 }
 
 _scaler_says() {

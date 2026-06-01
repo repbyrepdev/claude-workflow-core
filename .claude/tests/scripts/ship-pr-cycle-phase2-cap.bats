@@ -103,18 +103,45 @@ _seed_log() {
 	done
 }
 
-@test "phase2 findings>0 at round-cap (p2runs>=cap) advances to push (#234)" {
-	# 3 runs already logged for this sha, cap=3 → 3>=3 → graduate to push,
-	# deferring the residual minor-tail to server-side CR-in-CI.
+# #238: seed prove-yourself coverage so the shared cr_phase2_clean_for_sha sees
+# the run's findings (2, from the stub) as ADDRESSED — a source=cr record scoped
+# to the FULL sha (the lib matches covered_sha by short-sha prefix) covering N.
+_seed_coverage() {
+	mkdir -p "$ROOT/.claude/audit"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA" "${1:-2}" \
+		>"$ROOT/.claude/audit/prove-yourself.jsonl"
+}
+
+@test "phase2 at round-cap WITH all residuals addressed advances to push (#234/#238)" {
+	# 3 runs logged, cap=3 → 3>=3 AND every finding addressed (prove-yourself
+	# scoped to sha) → advance. #238: the cap now requires coverage to advance.
+	_seed_stage phase2
+	_seed_log 3
+	_seed_coverage 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"round-cap reached (3/3)"* ]]
+	[[ $output == *"addressed"* ]]
+	[[ $output == *"advanced to push"* ]]
+	[ "$(_cur_stage)" = push ]
+}
+
+@test "phase2 at round-cap but residuals NOT addressed → directive, stays (#238)" {
+	# 3 runs logged, cap=3, but NO prove-yourself coverage → the cap must NOT
+	# advance (never ride past unaddressed findings of any severity); emits the
+	# address-residuals directive + stays at phase2.
 	_seed_stage phase2
 	_seed_log 3
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (3/3 rounds)"* ]]
-	[[ $output == *"advanced to push"* ]]
-	[ "$(_cur_stage)" = push ]
+	[[ $output == *"round-cap reached (3/3) but"* ]]
+	[[ $output == *"NOT all addressed"* ]]
+	[[ $output == *"record-rejection"* ]]
+	[ "$(_cur_stage)" = phase2 ]
 }
 
 @test "phase2 findings>0 under cap (p2runs<cap) emits directive + stays (#234)" {
@@ -130,17 +157,19 @@ _seed_log() {
 	[ "$(_cur_stage)" = phase2 ]
 }
 
-@test "phase2 cap honors the scaler value, not a constant (#234)" {
-	# Prove cap = _scaler_rounds (dynamic). With ROUNDS=2 + 2 logged runs,
-	# 2>=2 advances — whereas the same 2 runs under the default cap=3 would
-	# still emit a directive (the test above). The cap tracks the scaler.
+@test "phase2 cap honors the scaler value, not a constant (#234/#238)" {
+	# Prove cap = _scaler_rounds (dynamic). ROUNDS=2 + 2 logged runs + addressed
+	# → 2>=2 advances; the same 2 runs under the default cap=3 would still emit a
+	# directive (the under-cap test). The cap tracks the scaler.
 	_seed_stage phase2
 	_seed_log 2
+	_seed_coverage 2
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=2
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (2/2 rounds)"* ]]
+	[[ $output == *"round-cap reached (2/2)"* ]]
+	[[ $output == *"advanced to push"* ]]
 	[ "$(_cur_stage)" = push ]
 }
 

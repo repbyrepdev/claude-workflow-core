@@ -64,6 +64,14 @@ PLUGIN_LIB="$(cd "$SCRIPT_DIR/../_lib" 2>/dev/null && pwd || echo "")"
 if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 	# shellcheck source=../_lib/resolve-plugin-helper.sh
 	. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+	# v0.32.7 (#238): shared Phase 2 coverage SSOT (also sourced by the pre-push
+	# gate) so the round-cap can gate its advance on the SAME "findings=0 OR all
+	# addressed" check the gate uses — the cap never advances to a push the gate
+	# refuses. Absent → the cap's `command -v` guard fails-safe to a directive.
+	if [ -r "$PLUGIN_LIB/cr-phase2-coverage.sh" ]; then
+		# shellcheck source=../_lib/cr-phase2-coverage.sh
+		. "$PLUGIN_LIB/cr-phase2-coverage.sh"
+	fi
 	_shipcycle_resolve() {
 		# $1: rel path under .claude/ (e.g. "scripts/_common.sh"). Echoes
 		# absolute path; falls back to REPO_ROOT/.claude/$1 when resolver
@@ -1443,8 +1451,33 @@ cmd_next() {
 				fi
 			fi
 			if [ "$p2runs" -ge "$cap" ]; then
-				_set_stage "push"
-				echo "→ phase2 round-cap reached ($p2runs/$cap rounds) with $findings residual finding(s); deferring the minor-tail to the authoritative server-side CR-in-CI; advanced to push"
+				# #238: advance at the round budget ONLY if every residual finding
+				# is ADDRESSED — the SAME shared coverage check the pre-push gate
+				# uses (cr_phase2_clean_for_sha: findings=0 OR all covered by
+				# prove-yourself records scoped to this sha). This keeps the cap
+				# and the gate consistent (never advance to a push the gate
+				# refuses) and — unlike the prior unconditional advance — never
+				# rides past an UNADDRESSED finding of ANY severity. The cap thus
+				# means "after N rounds you must ADDRESS the residuals (fix in-PR,
+				# or verified-false-positive → reject with evidence), not re-roll
+				# for a lucky 0". Fail-CLOSED if the shared lib didn't load.
+				local full_sha2
+				full_sha2=$(git rev-parse HEAD 2>/dev/null || echo "")
+				if command -v cr_phase2_clean_for_sha >/dev/null 2>&1 && cr_phase2_clean_for_sha "$full_sha2"; then
+					_set_stage "push"
+					echo "→ phase2 round-cap reached ($p2runs/$cap) + all $findings residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push"
+					return 0
+				fi
+				cat <<EOF
+ship-pr-cycle: phase2 round-cap reached ($p2runs/$cap) but the $findings residual finding(s) are NOT all addressed — NOT advancing (the cap will not ride past unaddressed findings of any severity).
+  Address EACH residual, then re-run 'ship-pr-cycle.sh next':
+    - real issue → fix in-PR (commit; the new SHA re-reviews)
+    - verified FALSE-POSITIVE → record a rejection with evidence (covers this run's findings, scoped to HEAD):
+        skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
+          --covers-count $findings --follow-up-issue <N> --finding-id <id> --finding-text "..." \\
+          --dogfood-cmd "..." --dogfood-output "..." --dogfood-rc 0 --external-authority "..." --reason "..."
+  (covered_sha auto = HEAD; --covers-count now reaches the audit log per #238.)
+EOF
 				return 0
 			fi
 			cat <<EOF
