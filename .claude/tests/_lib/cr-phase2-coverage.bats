@@ -7,6 +7,12 @@
 # → clean iff source=cr prove-yourself records scoped to the sha cover them
 # (sum covers_count >= findings, default 1); and FAIL-CLOSED on missing
 # log / missing audit / non-numeric findings (never whitewash).
+#
+# Each test also asserts `[ -z "$output" ]`: the function is documented SILENT
+# (callers emit their own messages — see the lib header), so any stray
+# stdout/stderr is a contract regression. `run` merges both streams into
+# $output, so this single assertion covers stdout AND stderr — bats has no
+# $error var, so do NOT assert on one. [#238 phase2 r1, CR major]
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/cr-phase2-coverage.sh"
@@ -34,6 +40,7 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	_log 0
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "findings>0 fully covered (covers_count >= findings) → clean" {
@@ -41,6 +48,7 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	_cover 2
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "findings>0 under-covered (covers_count < findings) → NOT clean" {
@@ -48,6 +56,7 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	_cover 1
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "findings>0 with NO prove-yourself audit log → NOT clean (fail-closed)" {
@@ -55,6 +64,7 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	# no $AUDIT file written
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "covers_count defaults to 1 when absent (pre-#238 records still count 1)" {
@@ -62,6 +72,7 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	printf '{"source":"cr","covered_sha":"%s"}\n' "$SHA" >>"$AUDIT" # no covers_count
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "latest entry wins (oscillation): last findings>covered → NOT clean" {
@@ -70,6 +81,7 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	_cover 2
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "coverage scoped by sha: a record for a DIFFERENT sha does not count" {
@@ -77,12 +89,14 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	printf '{"source":"cr","covered_sha":"deadbeefdeadbeef","covers_count":5}\n' >>"$AUDIT"
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "no cr-local-review.jsonl at all → NOT clean (fail-closed)" {
 	rm -f "$CR_LOG"
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "non-numeric latest findings → NOT clean (fail-closed, no whitewash)" {
@@ -90,4 +104,5 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 	_cover 9
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }

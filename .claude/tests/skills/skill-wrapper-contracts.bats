@@ -92,7 +92,13 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	# Functional WRITER test — proves the producer (run.sh) writes the field the
 	# consumer (cr_phase2_clean_for_sha) reads; would FAIL if the run.sh fix were
 	# reverted (the prior bats hand-wrote the audit, so the writer was untested).
-	command -v jq >/dev/null || skip "jq required"
+	# Fail CLOSED, not skip-as-pass: a skipped test counts as a bats "pass", so
+	# skipping on missing jq would silently neuter this writer-coverage contract.
+	# [#238 phase2 r1, CR major]
+	command -v jq >/dev/null 2>&1 || {
+		echo "jq required for the prove-yourself-audit covers_count contract test" >&2
+		return 1
+	}
 	local repo audit
 	repo=$(mktemp -d -t pycovers.XXXXXX)
 	(cd "$repo" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
