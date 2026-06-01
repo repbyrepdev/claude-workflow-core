@@ -967,78 +967,41 @@ EOF
 
 _write .gemini/policy.toml 644 <<'EOF'
 # v4.28-W4 (#643) — Gemini CLI policy.toml deny block.
+# SCHEMA CORRECTED (#236): the prior schema was WRONG and the deny rules were
+# no-ops. Per the official policy-engine reference
+# (https://geminicli.com/docs/reference/policy-engine):
+#   - field is `toolName` (NOT `tool`); an array of names is allowed
+#   - `decision` = "allow" | "deny" | "ask_user"
+#   - `denyMessage` (NOT `reason`)
+#   - numeric `priority` 0-999 — HIGHEST priority wins (NOT declaration order)
+#   - built-in tool names are e.g. read_file / read_many_files / list_directory
+#     / glob / search_file_content / write_file / replace / run_shell_command /
+#     web_fetch (NOT shell / execute_command / fetch_url / edit_file).
 #
-# Defense-in-depth beyond settings.json `tools.exclude` (deprecated).
-# Loaded via `gemini --policy .gemini/policy.toml -p "..."` from
-# .claude/hooks/phase0.5-gemini-prefilter.sh.
-#
-# Goal: Gemini CLI is a REVIEWER at Phase 0.5 — it should NEVER edit files,
-# execute shell commands, or write to disk. Read-only inspection only.
-#
-# Rule precedence (per https://geminicli.com/docs/core/policy-engine):
-# rules are evaluated in declaration order, first match wins.
+# Goal: Gemini CLI is a REVIEWER at Phase 0.5 — read-only inspection only; it
+# must NEVER edit files, run shell commands, or fetch the network. Loaded via
+# `gemini --policy .gemini/policy.toml -p "..."` from
+# .claude/hooks/phase0.5-gemini-prefilter.sh. This is defense-in-depth on top of
+# settings.json (approvalMode=plan + disableYoloMode), which is the primary
+# read-only enforcement.
 
-# DENY all write/edit operations — reviewer is read-only by contract.
+# ALLOW the read-only inspection tools the reviewer needs (highest priority).
+# search_file_content + grep_search are both listed defensively — a name the
+# registry does not have simply never matches, so listing both is harmless.
 [[rule]]
-tool = "edit_file"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer is read-only — no file edits"
-
-[[rule]]
-tool = "create_file"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer is read-only — no file creation"
-
-[[rule]]
-tool = "write_file"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer is read-only — no file writes"
-
-[[rule]]
-tool = "delete_file"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer is read-only — no file deletion"
-
-# DENY shell command execution — reviewer should never run anything.
-[[rule]]
-tool = "shell"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer is read-only — no shell execution"
-
-[[rule]]
-tool = "execute_command"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer is read-only — no command execution"
-
-# DENY network calls beyond model API — prevent SSRF / data exfil.
-[[rule]]
-tool = "fetch_url"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer must not fetch external URLs"
-
-[[rule]]
-tool = "web_fetch"
-decision = "deny"
-reason = "Phase 0.5 Gemini reviewer must not fetch external URLs"
-
-# ALLOW read tools — necessary for reviewing diffs.
-[[rule]]
-tool = "read_file"
+toolName = ["read_file", "read_many_files", "list_directory", "glob", "search_file_content", "grep_search"]
 decision = "allow"
+priority = 100
 
+# DENY everything else (deny-by-default, lowest priority) — no write_file /
+# replace (edits), no run_shell_command (shell), no web_fetch / google_web_search
+# (network), no memory writes. Fail-closed: an un-enumerated tool is denied, so
+# the worst case is a degraded (over-restricted) review, never an escaped write.
 [[rule]]
-tool = "list_files"
-decision = "allow"
-
-[[rule]]
-tool = "search"
-decision = "allow"
-
-# Default-deny for any tool not explicitly allowed above.
-[[rule]]
-tool = "*"
+toolName = "*"
 decision = "deny"
-reason = "Phase 0.5 reviewer policy: deny-by-default beyond read tools"
+priority = 0
+denyMessage = "Phase 0.5 Gemini reviewer is read-only — only read/list/search tools are permitted (no writes, edits, shell, or network)."
 EOF
 
 _write .gemini/settings.json 644 <<'EOF'
