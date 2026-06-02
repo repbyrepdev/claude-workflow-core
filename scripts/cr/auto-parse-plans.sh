@@ -217,7 +217,13 @@ _check_and_parse_issue() {
 		_log "label-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — issue may re-enter the poll"
 		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually to prevent re-parse" >&2
 	fi
-	gh issue edit "$issue" --add-label plan-parsed 2>/dev/null || true
+	# Add the plan-parsed marker as its OWN op. Warn on failure (mirrors the
+	# plan-me removal above) instead of swallowing it: a silent add-failure leaves
+	# the idempotency marker missing, so a re-acquired plan-me could re-parse.
+	if ! gh issue edit "$issue" --add-label plan-parsed 2>&1 | tail -1 >&2; then
+		_log "label-failed" "$issue" "warn" "plan-parsed add failed (parse succeeded) — idempotency marker missing"
+		echo "auto-parse-plans: WARN: plan-parsed add failed for #$issue — add manually to prevent re-parse" >&2
+	fi
 }
 
 if [ -n "$TARGET_ISSUE" ]; then

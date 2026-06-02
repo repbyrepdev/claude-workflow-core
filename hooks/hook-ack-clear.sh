@@ -44,8 +44,21 @@ fi
 # matches the Read'd file. Path normalization: hooks may write relative
 # paths (e.g. bats-gate writes ".claude/hooks/foo.sh") while the Read
 # tool always passes absolute paths. Match exact, REPO_ROOT-relative
-# form of the absolute target, OR basename suffix. Other entries
+# form of the absolute target, OR a path-aware suffix. Other entries
 # (different files OR no file) remain — they require their own Read.
+#
+# #223 (CR major): a sentinel fp that CARRIES directory segments (e.g. the
+# phase2-preread key "skills/ship-pr-cycle/SKILL.md") must match by its FULL
+# multi-segment suffix, NOT a bare basename. A bare-basename match let Reading
+# ANY unrelated SKILL.md clear the phase2-preread gate (basename collision —
+# SKILL.md is far from unique), bypassing the enforced preread. So: when fp
+# contains a `/`, require the absolute target to END WITH `/fp` (or equal it /
+# the repo-relative form). That still clears for BOTH the plugin path
+# (.../skills/ship-pr-cycle/SKILL.md) AND the consumer path
+# (.../.claude/skills/ship-pr-cycle/SKILL.md) — both end with the same
+# `skills/ship-pr-cycle/SKILL.md` suffix — while an unrelated other-skill
+# SKILL.md does not. fp with NO `/` (a genuine bare basename) keeps the
+# original basename behavior.
 # r8 SFH #1+#2: mktemp + awk error checks. Prior code did
 # unconditional `mv "$TMP" "$SENTINEL"` after awk; if mktemp failed,
 # awk failed, or $TMP ended up empty/partial, the mv silently wiped
@@ -65,12 +78,24 @@ if ! awk -F'\t' -v target="$FILE" -v target_rel="$TARGET_REL" -v target_base="$T
 		# Exact match against absolute or repo-relative form.
 		if (fp == target) next
 		if (target_rel != "" && fp == target_rel) next
-		# Basename match — fp is just the basename or ends with /basename.
+		# #223: a multi-segment fp (contains "/") must match by its FULL
+		# path suffix, not a bare basename — else any same-basename file
+		# (e.g. an unrelated SKILL.md) would clear it. The absolute target
+		# must END WITH "/fp" (the exact/rel arms above already handle the
+		# equal cases).
+		if (index(fp, "/") > 0) {
+			pneedle = "/" fp
+			ppos = length(target) - length(pneedle) + 1
+			if (ppos > 0 && substr(target, ppos) == pneedle) next
+			print; next
+		}
+		# Bare-basename fp (no "/"): match it as the basename or as a
+		# trailing /basename of the Read target.
 		if (target_base != "") {
 			if (fp == target_base) next
 			needle = "/" target_base
-			pos = length(fp) - length(needle) + 1
-			if (pos > 0 && substr(fp, pos) == needle) next
+			pos = length(target) - length(needle) + 1
+			if (pos > 0 && substr(target, pos) == needle) next
 		}
 		print
 	}

@@ -103,6 +103,9 @@ teardown() {
 	. "$LIB"
 	run resolve_plugin_helper "scripts/copilot/nonexistent.sh"
 	[ "$status" -eq 1 ]
+	# Behavior contract (CR #223): not-found returns rc 1 with NO output —
+	# neither a resolved path on stdout nor a warning on stderr (run merges both).
+	[ -z "$output" ]
 }
 
 @test "leading .claude/ prefix is stripped before resolution" {

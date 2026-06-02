@@ -94,16 +94,30 @@ while IFS= read -r -d '' f; do
 	# by #issue here to avoid that naming collision.) This is what let 9 markers
 	# pile up over a multi-day session — the SessionStart sweep cannot fire mid-
 	# session, but this guard runs on every Bash/Edit so it self-heals
-	# continuously. Capture find's rc (don't swallow it) + log the deletion so a
-	# mistaken cleanup is observable. Portable mtime via find -mtime (macOS+Linux).
-	_age_out=$(find "$f" -mmin +2880 -print 2>/dev/null) && _age_rc=0 || _age_rc=$? # 48h exact (CR #478 r5; -mtime +2 rounds to ~3d)
-	if [ "$_age_rc" -eq 0 ] && [ -n "$_age_out" ]; then
-		echo "phase1-directive-pending-guard: Layer 0 auto-removed stale (>2d) marker $sha" >&2
+	# continuously. The age test runs in the elif condition (set -e suppressed
+	# there) so a find error short-circuits to "keep the marker" rather than
+	# aborting; log the deletion so a mistaken cleanup is observable. Portable
+	# mtime via find -mmin (macOS+Linux).
+	#
+	# CR #223 (major): age-ALONE could nuke a LIVE round paused over a long
+	# weekend (>48h) — its marker SHA is the CURRENT HEAD, agents not yet fired —
+	# silently un-gating Edit/Write/commit. So gate the age-prune behind a
+	# stale-state predicate: NEVER age-prune a marker whose SHA == current HEAD
+	# (that is an active, possibly-paused round, not cruft). Non-HEAD aged markers
+	# (abandoned branches, squash-merge orphans the reachability layers below
+	# miss) remain Layer-0 eligible — that is the cruft Layer 0 exists to sweep.
+	_head_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	if [ -n "$_head_sha" ] && [ "$sha" = "$_head_sha" ]; then
+		: # active round on the current HEAD — skip age-prune; let Layers 1/2 decide
+	elif _age_out=$(find "$f" -mmin +2880 -print 2>/dev/null) && [ -n "$_age_out" ]; then
 		# CR #478 p2 (major): best-effort rm — under `set -euo pipefail` a failing
 		# rm (readonly fs / perms) would ABORT the guard mid-sweep, leaving later
 		# markers unprocessed AND the current Bash/Edit un-gated. Warn + keep
-		# scanning the remaining markers instead of dying.
+		# scanning the remaining markers instead of dying. Log the removal AFTER a
+		# successful rm so the "auto-removed" line never claims a deletion that the
+		# rm below actually failed to perform.
 		if _rm_err=$(rm -f "$f" 2>&1); then
+			echo "phase1-directive-pending-guard: Layer 0 auto-removed stale (>2d) marker $sha" >&2
 			continue
 		fi
 		echo "phase1-directive-pending-guard: WARN: Layer 0 rm failed for $sha (continuing): $_rm_err" >&2

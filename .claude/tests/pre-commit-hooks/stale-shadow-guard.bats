@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 # covers: pre-commit-hooks/stale-shadow-guard.sh
+#
+# CR #223: every pass-path test asserts BOTH channels — the gate is SILENT
+# (no stdout/stderr) when it passes, so success cases pair `[ "$status" -eq 0 ]`
+# with `[ -z "$output" ]`; failure cases assert the diagnostic naming the shadow.
 
 setup() {
 	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
@@ -46,6 +50,7 @@ teardown() {
 	git add README.md
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # no candidate staged → clean pass, silent
 }
 
 @test "FAILS when .claude/scripts shadow DIFFERS from canonical" {
@@ -75,6 +80,7 @@ teardown() {
 	git add .claude/scripts/copilot/try-free.sh
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # identical mirror → pass, no drift diagnostic
 }
 
 @test "passes when shadow has NO repo-root canonical (producer-local exemption)" {
@@ -86,6 +92,7 @@ teardown() {
 	git add .claude/scripts/local-only.sh
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # no canonical → producer-local exemption, silent pass
 }
 
 @test "compares the STAGED blob, not the worktree (add clean, then dirty worktree)" {
@@ -98,6 +105,7 @@ teardown() {
 	printf 'WORKTREE-ONLY-DRIFT\n' >>.claude/scripts/copilot/try-free.sh
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # staged blob is clean → pass, silent (worktree drift ignored)
 }
 
 @test "staged-blob drift is caught even when worktree matches canonical" {
@@ -109,6 +117,7 @@ teardown() {
 	cp scripts/copilot/try-free.sh .claude/scripts/copilot/try-free.sh # worktree now clean
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 1 ]
+	[[ $output == *".claude/scripts/copilot/try-free.sh"* ]] # names the drifting shadow
 }
 
 @test "bypass env STALE_SHADOW_GUARD_SKIP=1 lets a drifting shadow through" {
@@ -129,6 +138,7 @@ teardown() {
 	git rm -q .claude/scripts/copilot/try-free.sh
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # a staged deletion is not a candidate → silent pass
 }
 
 @test "precondition: not in a git repo → exit 2" {

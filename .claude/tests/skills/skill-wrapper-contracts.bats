@@ -36,6 +36,21 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	done
 }
 
+@test "bootstrap-repo: missing target dir exits 2 with usage (behavior, not grep)" {
+	# CR #223: the SKILL_WRAPPER grep above is a source-presence check; pair it
+	# with an EXECUTED behavior assertion for the new bootstrap-repo wrapper.
+	# Run from a throwaway cwd (the wrapper execs scripts/bootstrap-repo.sh,
+	# which exits 2 BEFORE any gh/network call when no <target-dir> is given).
+	local tmp
+	tmp=$(mktemp -d -t bsr-wrap.XXXXXX) || return 1
+	run bash -c "cd '$tmp' && bash '$(_wrapper bootstrap-repo)'"
+	[ -d "$tmp" ] && [[ $tmp == */bsr-wrap.* ]] && rm -rf "$tmp"
+	[ "$status" -eq 2 ]
+	# Pin the missing-target arg-guard specifically (the usage line + the error).
+	[[ $output == *"missing target directory"* ]]
+	[[ $output == *"usage"* ]]
+}
+
 @test "cr-plan: --help exits 0 with usage" {
 	run bash "$(_wrapper cr-plan)" --help
 	[ "$status" -eq 0 ]

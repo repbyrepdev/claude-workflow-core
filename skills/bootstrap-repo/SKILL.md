@@ -15,7 +15,7 @@ and pricing-team-toolkit, pinned to the plugin's CURRENT version (SSOT =
 .claude/skills/bootstrap-repo/run.sh <target-dir>              # scaffold
 .claude/skills/bootstrap-repo/run.sh <target-dir> --dry-run    # preview, no writes
 .claude/skills/bootstrap-repo/run.sh <target-dir> --tag vX.Y.Z # pin a specific version
-.claude/skills/bootstrap-repo/run.sh --verify                  # read-only drift check of an existing repo
+.claude/skills/bootstrap-repo/run.sh <target-dir> --verify [--scope plugin|consumer|both]  # read-only drift check of an existing repo
 ```
 
 The wrapper sets `SKILL_WRAPPER=1` and execs `scripts/bootstrap-repo.sh`.
@@ -27,7 +27,7 @@ The wrapper sets `SKILL_WRAPPER=1` and execs `scripts/bootstrap-repo.sh`.
 - `.claude/local-overrides.yml`
 - `.github/` — PR template, commit-template, labels, required-checks, `ISSUE_TEMPLATE/*`, labeler, gitleaks/pr-lint/pr-labeler workflows
 - `.gemini/`, `.codex/config.toml`, `.coderabbit.base.yaml` (+ composes `.coderabbit.yaml`)
-- applies labels via `gh label`
+- syncs labels via idempotent `gh label create --force` **only when the target already has a GitHub `origin` remote** — a fresh scaffold (no remote yet) defers this, NOTEs it, and lets `.github/workflows/label-sync.yml` apply them on first push (no remote mutation happens at scaffold time)
 
 ## After scaffolding (the script prints these)
 

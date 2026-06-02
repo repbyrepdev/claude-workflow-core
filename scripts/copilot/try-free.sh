@@ -96,6 +96,22 @@ TIMEOUT_CMD="timeout"
 if ! command -v timeout >/dev/null 2>&1 && command -v gtimeout >/dev/null 2>&1; then
 	TIMEOUT_CMD="gtimeout"
 fi
+# Fail fast if NEITHER timeout nor gtimeout exists: otherwise TIMEOUT_CMD stays
+# "timeout", every model invocation fails on the missing binary, and the loop
+# falls through to the misleading "auth/outage?" message below (#223). A clear
+# dependency error is far easier to triage. exit 1 = caller falls back.
+command -v "$TIMEOUT_CMD" >/dev/null 2>&1 || {
+	echo "copilot prefilter: requires a timeout wrapper (GNU 'timeout' or 'gtimeout') — install coreutils" >&2
+	exit 1
+}
+# Validate COPILOT_TIMEOUT_SEC up front (only defaulted before, never checked):
+# a malformed value makes `timeout <bad> copilot` fail for EVERY model → the same
+# misleading auth/outage fallback. Must be a positive integer.
+TIMEOUT_SEC="${COPILOT_TIMEOUT_SEC:-150}"
+[[ $TIMEOUT_SEC =~ ^[1-9][0-9]*$ ]] || {
+	echo "copilot prefilter: COPILOT_TIMEOUT_SEC must be a positive integer (got: '$TIMEOUT_SEC')" >&2
+	exit 2
+}
 
 # Try each model in order; first to succeed wins. A trailing EMPTY entry is
 # appended unconditionally = "use the CLI's default model" (no --model flag) —
@@ -106,7 +122,9 @@ fi
 IFS=',' read -ra MODEL_ARR <<<"$MODELS" || true
 MODEL_ARR+=("")
 for model in "${MODEL_ARR[@]}"; do
-	# Trim whitespace. An EMPTY model => omit --model => CLI default model.
+	# Strip ALL whitespace (model IDs contain none, so this also drops any stray
+	# internal spaces from a sloppy comma list). An EMPTY model => omit --model =>
+	# CLI default model.
 	model=$(printf '%s' "$model" | tr -d '[:space:]')
 	MODEL_ARG=()
 	[ -n "$model" ] && MODEL_ARG=(--model="$model")
@@ -117,7 +135,7 @@ for model in "${MODEL_ARR[@]}"; do
 	# expand possibly-empty arrays with the `+"${ARR[@]}"` guard. Copilot CLI's
 	# `-p` uses its arg directly and ignores stdin, so we DON'T pipe FULL_PROMPT
 	# into stdin (silent duplicate).
-	if OUTPUT=$("$TIMEOUT_CMD" "${COPILOT_TIMEOUT_SEC:-150}" copilot \
+	if OUTPUT=$("$TIMEOUT_CMD" "$TIMEOUT_SEC" copilot \
 		-p "$FULL_PROMPT" \
 		${MODEL_ARG[@]+"${MODEL_ARG[@]}"} \
 		"${SAFE_ARGS[@]}" \

@@ -14,6 +14,11 @@
 #
 # Each test builds a synthetic repo dir under a mktemp -d sandbox and sources
 # the lib fresh, so detection runs against the fixture, not the real repo.
+#
+# CR #223: each `run` asserts BOTH channels — repo_guard_require is SILENT on
+# both match (rc 0) and non-match (rc 1) so the paired check is `[ -z "$output" ]`;
+# repo_guard_current_repo always returns rc 0 so its `$output` checks are paired
+# with `[ "$status" -eq 0 ]`.
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/repo-guard.sh"
@@ -40,24 +45,28 @@ _mkrepo() {
 	d=$(_mkrepo media-server "git@github.com:acme/media-server.git")
 	run bash -c '. "$1"; cd "$2"; repo_guard_require media-server' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # match is silent (no stdout/stderr)
 }
 
 @test "non-matching repo → signals skip (rc 1)" {
 	d=$(_mkrepo media-server "git@github.com:acme/media-server.git")
 	run bash -c '. "$1"; cd "$2"; repo_guard_require pricing-team-toolkit' _ "$LIB" "$d"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # skip is silent too — the caller decides what to print
 }
 
 @test "multi-slug → matches any one of the given slugs (rc 0)" {
 	d=$(_mkrepo homelab "git@github.com:x/homelab.git")
 	run bash -c '. "$1"; cd "$2"; repo_guard_require media-server homelab pricing-team-toolkit' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "multi-slug with NO match → skip (rc 1)" {
 	d=$(_mkrepo some-other-repo "git@github.com:x/some-other-repo.git")
 	run bash -c '. "$1"; cd "$2"; repo_guard_require media-server homelab' _ "$LIB" "$d"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "no-origin → falls back to git toplevel dir basename" {
@@ -69,6 +78,7 @@ _mkrepo() {
 	# And require against that basename should match.
 	run bash -c '. "$1"; cd "$2"; repo_guard_require pricing-team-toolkit' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test 'not-in-git → falls back to $PWD basename' {
@@ -79,34 +89,42 @@ _mkrepo() {
 	[ "$output" = "coalesce-thing" ]
 	run bash -c '. "$1"; cd "$2"; repo_guard_require coalesce-thing' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "case-insensitive + owner-prefixed slug tolerance" {
 	d=$(_mkrepo Media-Server "https://github.com/Acme/Media-Server.git")
 	# detected slug is lowercased
 	run bash -c '. "$1"; cd "$2"; repo_guard_current_repo' _ "$LIB" "$d"
+	[ "$status" -eq 0 ]
 	[ "$output" = "media-server" ]
 	# UPPERCASE slug matches
 	run bash -c '. "$1"; cd "$2"; repo_guard_require MEDIA-SERVER' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	# owner-qualified slug matches
 	run bash -c '. "$1"; cd "$2"; repo_guard_require acme/media-server' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	# owner-qualified + .git slug matches
 	run bash -c '. "$1"; cd "$2"; repo_guard_require Acme/Media-Server.git' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "origin basename WINS over toplevel dir basename" {
 	# Working dir is named 'relocated-clone' but origin says media-server.
 	d=$(_mkrepo relocated-clone "git@github.com:acme/media-server.git")
 	run bash -c '. "$1"; cd "$2"; repo_guard_current_repo' _ "$LIB" "$d"
+	[ "$status" -eq 0 ]
 	[ "$output" = "media-server" ]
 	# Requiring the dir name should NOT match (origin is authoritative).
 	run bash -c '. "$1"; cd "$2"; repo_guard_require relocated-clone' _ "$LIB" "$d"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 	run bash -c '. "$1"; cd "$2"; repo_guard_require media-server' _ "$LIB" "$d"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "zero slugs → rc 2 (programming error, signalled)" {
@@ -128,5 +146,6 @@ _mkrepo() {
 @test "scp-style host:owner/repo url resolves to repo basename" {
 	d=$(_mkrepo whatever "git@github.com:acme/pricing-team-toolkit.git")
 	run bash -c '. "$1"; cd "$2"; repo_guard_current_repo' _ "$LIB" "$d"
+	[ "$status" -eq 0 ]
 	[ "$output" = "pricing-team-toolkit" ]
 }

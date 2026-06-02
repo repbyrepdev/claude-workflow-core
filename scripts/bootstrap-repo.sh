@@ -1603,9 +1603,11 @@ _compose_coderabbit
 #
 # Honors --dry-run (forwarded). NOT --force-gated: refresh is hash-diff driven
 # (copies only changed/missing files) and honors the consumer's
-# local-overrides.yml skip-list, so re-runs are safe + idempotent. Best-effort:
-# a refresh hiccup WARNs (surfaced in the summary) but does not fail the
-# bootstrap — the seed files are already written.
+# local-overrides.yml skip-list, so re-runs are safe + idempotent. FAIL-CLOSED on
+# a REAL install: a refresh failure (or a missing refresher) leaves an INCOMPLETE
+# repo, so it WARNs in the summary AND exits 2 (#223 CR-CLI r1) rather than
+# reporting success on a partial hook/_lib runtime. --dry-run writes nothing
+# (preview), so a hiccup there stays non-fatal (warn + continue).
 REFRESH_FAILED=0
 _sync_full_ssot() {
 	local refresher="$PLUGIN_SCRIPT_DIR/refresh-from-source.sh"

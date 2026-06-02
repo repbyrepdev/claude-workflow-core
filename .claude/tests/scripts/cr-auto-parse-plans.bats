@@ -57,6 +57,10 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
+	# CR #223: assert the OUTPUT channel too (not just the log file) — the epic
+	# is skipped on the `epic` label BEFORE the would-parse stderr line, so the
+	# "WOULD parse" message must be ABSENT from $output (stdout+stderr merged).
+	[[ $output != *"WOULD parse"* ]]
 	run grep -q '"event":"skip-epic"' "$LOG"
 	[ "$status" -eq 0 ]
 	run grep -q '"event":"would-parse"' "$LOG"
@@ -68,6 +72,9 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
+	# CR #223: the dry-run would-parse path emits a "WOULD parse" stderr line and
+	# never the epic-skip — assert both on the output channel.
+	[[ $output == *"WOULD parse issue #999"* ]]
 	run grep -q '"event":"would-parse"' "$LOG"
 	[ "$status" -eq 0 ]
 	run grep -q '"event":"skip-epic"' "$LOG"
@@ -101,6 +108,9 @@ teardown() {
 	chmod +x "$TEST_TMP/bin/gh"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_EDIT_LOG="$TEST_TMP/gh-edit.log" "$AP" --issue 777
 	[ "$status" -eq 0 ]
+	# CR #223: assert the parse progress message on the output channel too (not
+	# just the log/gh-edit side effects) so a stderr-message regression is caught.
+	[[ $output == *"parsed issue #777"* ]]
 	run grep -q '"event":"parsed"' "$LOG"
 	[ "$status" -eq 0 ]
 	# CR #478 r2: assert each flag independently (order-/coalescing-agnostic).
