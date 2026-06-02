@@ -77,3 +77,10 @@ copies.
 - Generic skills (git-commit, github-*) come from the enabled **marketplace plugin**,
   NOT copied per-repo — one SSOT source, no per-repo drift. This skill provides only
   the repo-local wiring the plugin can't deliver via the marketplace.
+
+## Auto-continue
+
+- **Bootstrap succeeded (empty/new repo)** → confirm with `meta-bootstrap.sh --target repo --verify-only -- <dir>` (full SSOT landed), then commit the scaffold
+- **Bootstrap succeeded (existing repo)** → review `git status`, commit the added SSOT files; bump the `.pre-commit-config.yaml` plugin `rev:` if a newer release exists
+- **refresh-from-source.sh missing on a real (non-dry-run) install** → bootstrap fails closed (exit 2); fix the broken plugin install before retrying — silently continuing would lay down an INCOMPLETE repo (#223)
+- **`--verify-only` reports drift** → re-run bootstrap (idempotent) to restore canonical files, or record intentional deltas in `.claude/local-overrides.yml`
