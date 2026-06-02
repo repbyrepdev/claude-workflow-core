@@ -1354,6 +1354,9 @@ cmd_next() {
 		if [ "$_grad_check_rc" -eq 0 ]; then
 			_set_stage "phase2"
 			echo "→ phase1 skipped (branch graduated past Phase 0.5/1); advanced to phase2"
+			# #223 PREREAD GATE: read the Phase 2 process SSOT before the
+			# CR-CLI loop (keys ack at skills/ship-pr-cycle/SKILL.md).
+			_emit_stage_directive phase2-preread
 			return 0
 		fi
 		# Graduation didn't fire — now do the convergence eval. CR r2:
@@ -1367,6 +1370,9 @@ cmd_next() {
 		if [ "$clean_streak" -ge "$cap" ]; then
 			_set_stage "phase2"
 			echo "→ phase1 converged ($clean_streak-clean-streak ≥ $cap cap); advanced to phase2"
+			# #223 PREREAD GATE: read the Phase 2 process SSOT before the
+			# CR-CLI loop (keys ack at skills/ship-pr-cycle/SKILL.md).
+			_emit_stage_directive phase2-preread
 		else
 			# v4.28-W4 (#732): write the directive ALSO to a marker file
 			# so the phase1-directive-emit UserPromptSubmit hook can
@@ -1755,17 +1761,14 @@ EOF
 				echo "ship-pr-cycle: push — SHIP_NO_PR=1 (manual PR control); staying at push. Re-run with SHIP_NO_PR unset once a PR exists."
 				return 0
 			fi
-			cat <<EOF
-ship-pr-cycle: push — branch pushed, but no open PR exists for '$branch'.
-
-Run the github-pr-creation skill to open one:
-
-  /github-pr-creation
-
-Then re-run 'ship-pr-cycle.sh next' from push to advance to cr-in-ci-wait.
-
-Opt-out (manual PR control): SHIP_NO_PR=1 ship-pr-cycle.sh next
-EOF
+			# #223 CREATION-TIME PREREAD GATE: no PR exists yet. The
+			# pr-create-preread arm prints the directive AND writes a
+			# hook-ack-pending keyed at .github/pull_request_template.md, so
+			# the next Bash/Edit/Write is BLOCKED until the operator Reads
+			# the template — the enforced preread that closes the "PR body
+			# drafted without reading the template" gap. Stay at push.
+			echo "ship-pr-cycle: push — branch pushed, but no open PR exists for '$branch'."
+			_emit_stage_directive pr-create-preread
 			return 0
 		else
 			local existing_pr_num existing_jq_err existing_jq_err_file existing_jq_rc=0

@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # covers: _lib/ship-cycle-directives.sh
+# shellcheck disable=SC2030,SC2031,SC2317  # bats @test subshells: per-test SHIP_PR_IN_RESUME mods + indirectly-invoked mock fns are intentional
 #
 # v0.32.12 (#283): the ship-pr-cycle next-step directive emitter. Locks:
 # _emit_stage_directive prints the directive to stdout; CALLS hook_ack_append
@@ -108,6 +109,83 @@ teardown() {
 	[[ $output == *"APPROVE=1"* ]]
 	[[ $output == *"merge != deploy"* ]]
 	grep -q 'merge-gate' "$CALLS"
+}
+
+@test "pr-create-preread prints directive naming the PR template" {
+	# #223 CREATION-TIME PREREAD GATE: the directive must name the template
+	# the operator has to Read before drafting the PR body.
+	run _emit_stage_directive pr-create-preread
+	[ "$status" -eq 0 ]
+	[[ $output == *"do NOT skip"* ]]
+	[[ $output == *"PREREAD GATE"* ]]
+	[[ $output == *".github/pull_request_template.md"* ]]
+	# Load-bearing: names the creation-skill SSOT too.
+	[[ $output == *"github-pr-creation"* ]]
+}
+
+@test "pr-create-preread writes ack-pending KEYED at the PR-template path" {
+	# The enforced preread: hook_ack_append's file_path (3rd field) MUST be
+	# the PR template, so a PostToolUse Read of that file clears the block.
+	# (The stub logs "<hook>\t<label>\t<file_path>" to $CALLS.)
+	run _emit_stage_directive pr-create-preread
+	[ "$status" -eq 0 ]
+	grep -q 'ship-pr-cycle-preread' "$CALLS"
+	grep -q 'pr-create-preread' "$CALLS"
+	# The 3rd tab-field (file_path) is the template — assert it precisely so a
+	# regression that keys the ack at a diagnostic file (the advisory pattern)
+	# instead of the template fails this test.
+	grep -qE $'\t''\.github/pull_request_template\.md$' "$CALLS"
+}
+
+@test "pr-create-preread under SHIP_PR_IN_RESUME=1 → stdout only, no ack" {
+	# Resume auto-walk must NOT register a (soon-stale) ack-pending; the
+	# directive still prints for the resume log.
+	export SHIP_PR_IN_RESUME=1
+	run _emit_stage_directive pr-create-preread
+	[ "$status" -eq 0 ]
+	[[ $output == *"PREREAD GATE"* ]]
+	[ ! -s "$CALLS" ]
+}
+
+@test "pr-create-preread does NOT use the diagnostic-file ack path" {
+	# Regression guard: the preread arm returns BEFORE the advisory
+	# diagnostic-file branch. If hook_ack_diagnostic_write were reached its
+	# stub path would appear in $CALLS as the file_path. Make the diagnostic
+	# writer FAIL — a preread arm that wrongly fell through would degrade to
+	# no-append, but a correct preread arm still appends the TEMPLATE path.
+	hook_ack_diagnostic_write() { return 1; }
+	run _emit_stage_directive pr-create-preread
+	[ "$status" -eq 0 ]
+	grep -qE $'\t''\.github/pull_request_template\.md$' "$CALLS"
+}
+
+@test "phase2-preread prints directive + keys ack at ship-pr-cycle SKILL.md" {
+	run _emit_stage_directive phase2-preread
+	[ "$status" -eq 0 ]
+	[[ $output == *"PREREAD GATE"* ]]
+	[[ $output == *"phase2"* ]]
+	[[ $output == *"skills/ship-pr-cycle/SKILL.md"* ]]
+	grep -q 'ship-pr-cycle-preread' "$CALLS"
+	grep -q 'phase2-preread' "$CALLS"
+	grep -qE $'\t''skills/ship-pr-cycle/SKILL\.md$' "$CALLS"
+}
+
+@test "phase2-preread under SHIP_PR_IN_RESUME=1 → stdout only, no ack" {
+	export SHIP_PR_IN_RESUME=1
+	run _emit_stage_directive phase2-preread
+	[ "$status" -eq 0 ]
+	[[ $output == *"PREREAD GATE"* ]]
+	[ ! -s "$CALLS" ]
+}
+
+@test "preread arm: hook_ack_append absent → stdout-only degradation (no crash)" {
+	# Mirrors the advisory-arm degradation test, but for the preread path:
+	# _emit_preread_ack guards on `command -v hook_ack_append`.
+	unset -f hook_ack_append
+	run _emit_stage_directive pr-create-preread
+	[ "$status" -eq 0 ]
+	[[ $output == *"PREREAD GATE"* ]] # directive still printed
+	[ ! -s "$CALLS" ]                 # no append, no crash
 }
 
 @test "hook-ack primitives absent → stdout-only degradation (status 0, no append)" {
