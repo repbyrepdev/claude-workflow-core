@@ -103,10 +103,10 @@ while IFS= read -r -d '' f; do
 		# rm (readonly fs / perms) would ABORT the guard mid-sweep, leaving later
 		# markers unprocessed AND the current Bash/Edit un-gated. Warn + keep
 		# scanning the remaining markers instead of dying.
-		if rm -f "$f" 2>/dev/null; then
+		if _rm_err=$(rm -f "$f" 2>&1); then
 			continue
 		fi
-		echo "phase1-directive-pending-guard: WARN: Layer 0 rm failed for $sha (continuing)" >&2
+		echo "phase1-directive-pending-guard: WARN: Layer 0 rm failed for $sha (continuing): $_rm_err" >&2
 	fi
 	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now
 	# reachable from origin/main. Catches merge-commit / fast-forward /

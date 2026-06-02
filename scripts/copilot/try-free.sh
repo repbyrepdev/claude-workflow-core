@@ -1,5 +1,5 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 # bats-required: 0
 # (Thin wrapper over the GitHub Copilot CLI — exercising it needs the CLI +
 #  network, so it carries no standalone bats; the ship-pr-cycle dogfoods it
@@ -101,7 +101,9 @@ fi
 # appended unconditionally = "use the CLI's default model" (no --model flag) —
 # the drift-proof fallback so phase0.5 keeps working through Copilot lineup
 # changes (#223).
-IFS=',' read -ra MODEL_ARR <<<"$MODELS"
+# `read` returns 1 at EOF (here-string has no trailing delimiter) but still
+# populates the array — `|| true` keeps it -e-safe (CR #478 r3 added set -e).
+IFS=',' read -ra MODEL_ARR <<<"$MODELS" || true
 MODEL_ARR+=("")
 for model in "${MODEL_ARR[@]}"; do
 	# Trim whitespace. An EMPTY model => omit --model => CLI default model.

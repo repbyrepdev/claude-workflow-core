@@ -103,6 +103,11 @@ teardown() {
 	[ "$status" -eq 0 ]
 	run grep -q '"event":"parsed"' "$LOG"
 	[ "$status" -eq 0 ]
-	run grep -qE 'issue edit 777 .*--add-label plan-parsed.*--remove-label plan-me' "$TEST_TMP/gh-edit.log"
+	# CR #478 r2: assert each flag independently (order-/coalescing-agnostic).
+	run grep -q 'issue edit 777' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+	run grep -q -- '--add-label plan-parsed' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+	run grep -q -- '--remove-label plan-me' "$TEST_TMP/gh-edit.log"
 	[ "$status" -eq 0 ]
 }

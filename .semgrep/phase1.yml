@@ -35,6 +35,7 @@ rules:
       include:
         - "*.sh"
         - "*.bash"
-    # (?:\\\n|[^\n])* spans `\`-continuation lines (CR #478 r1) so `curl ... \<NL>
-    # -k` is caught, while still stopping at a bare newline (no cross-command FP).
-    pattern-regex: '\bcurl\b(?:\\\n|[^\n])*[ \t](?:-k|--insecure)\b'
+    # (?:\\\n|[^\n;])* spans `\`-continuation lines (CR #478 r1) so `curl ... \<NL>
+    # -k` is caught, while stopping at a bare newline OR `;` (CR #478 r2) so a
+    # `curl x; other -k` second command can't be matched as curl's flag.
+    pattern-regex: '\bcurl\b(?:\\\n|[^\n;])*[ \t](?:-k|--insecure)\b'
