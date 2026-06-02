@@ -73,3 +73,36 @@ teardown() {
 	run grep -q '"event":"skip-epic"' "$LOG"
 	[ "$status" -ne 0 ]
 }
+
+@test "non-dry-run parse relabels plan-parsed + REMOVES plan-me (poll-bounding)" {
+	# CR #478 phase2 r1: the relabel path (post-parse `gh issue edit --add-label
+	# plan-parsed --remove-label plan-me`, which BOUNDS the poll set so parsed
+	# issues leave it) ran only under --dry-run, so it was never exercised. Stub
+	# cr-plan (no-op success) at the first-candidate path + capture the gh edit;
+	# assert BOTH the parse event and the exact relabel fire.
+	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: y","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z"}'
+	cd "$TEST_TMP"
+	# cr-plan resolves $REPO_ROOT/.claude/skills/cr-plan/run.sh first (REPO_ROOT
+	# == this tmp git repo) — stub it as a no-op success so parse "succeeds".
+	mkdir -p "$TEST_TMP/.claude/skills/cr-plan"
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'exit 0'
+	} >"$TEST_TMP/.claude/skills/cr-plan/run.sh"
+	chmod +x "$TEST_TMP/.claude/skills/cr-plan/run.sh"
+	# gh stub: `issue view` echoes the payload; `issue edit` is recorded (path via
+	# GH_EDIT_LOG env) so the relabel args can be asserted.
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
+		echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
+		echo 'exit 0'
+	} >"$TEST_TMP/bin/gh"
+	chmod +x "$TEST_TMP/bin/gh"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_EDIT_LOG="$TEST_TMP/gh-edit.log" "$AP" --issue 777
+	[ "$status" -eq 0 ]
+	run grep -q '"event":"parsed"' "$LOG"
+	[ "$status" -eq 0 ]
+	run grep -qE 'issue edit 777 .*--add-label plan-parsed.*--remove-label plan-me' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+}

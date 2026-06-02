@@ -35,4 +35,6 @@ rules:
       include:
         - "*.sh"
         - "*.bash"
-    pattern-regex: '\bcurl\b[^\n]*[ \t](?:-k|--insecure)\b'
+    # (?:\\\n|[^\n])* spans `\`-continuation lines (CR #478 r1) so `curl ... \<NL>
+    # -k` is caught, while still stopping at a bare newline (no cross-command FP).
+    pattern-regex: '\bcurl\b(?:\\\n|[^\n])*[ \t](?:-k|--insecure)\b'
