@@ -37,6 +37,10 @@ teardown() {
 	[[ $output == *"do NOT skip"* ]]
 	[[ $output == *"AGAIN"* ]]
 	[[ $output == *"two-step"* ]]
+	# F3 (#253 r1 pr-test-analyzer): lock the load-bearing trap instruction, not
+	# just the word "two-step" — a body rewrite that drops the warning must fail.
+	[[ $output == *"Do NOT fire phase1 agents"* ]]
+	[[ $output == *"2nd next"* ]]
 }
 
 @test "calls hook_ack_append with the label (not in resume)" {
@@ -46,7 +50,7 @@ teardown() {
 	grep -q 'two-step-phase1' "$CALLS"
 }
 
-@test "SHIP_PR_IN_RESUME=1 suppresses the ack-pending (stdout still prints)" {
+@test "SHIP_PR_IN_RESUME=1 (exported) suppresses the ack-pending (stdout still prints)" {
 	export SHIP_PR_IN_RESUME=1
 	run _emit_stage_directive two-step-phase1
 	[ "$status" -eq 0 ]
@@ -54,8 +58,30 @@ teardown() {
 	[ ! -s "$CALLS" ]                # hook_ack_append NOT called
 }
 
+@test "SHIP_PR_IN_RESUME via DYNAMIC SCOPE (local in caller) suppresses ack" {
+	# F7 (#253 r1): the real cmd_resume→cmd_next path sets `local
+	# SHIP_PR_IN_RESUME=1` and relies on bash dynamic scope — NOT an export.
+	# Prove a `local` in a caller is visible to _emit_stage_directive.
+	_outer() {
+		local SHIP_PR_IN_RESUME=1
+		_emit_stage_directive two-step-phase1
+	}
+	run _outer
+	[ "$status" -eq 0 ]
+	[[ $output == *"do NOT skip"* ]] # stdout still prints
+	[ ! -s "$CALLS" ]                # append suppressed via dynamic scope
+}
+
 @test "unknown label → warns, status 0, no ack-pending" {
 	run _emit_stage_directive bogus-label
+	[ "$status" -eq 0 ]
+	[[ $output == *"unknown label"* ]]
+	[ ! -s "$CALLS" ]
+}
+
+@test "no-arg (empty label) → warns, status 0, no ack-pending" {
+	# F4 (#253 r1): the `${1:-}` default routes a no-arg call to the `*)` arm.
+	run _emit_stage_directive
 	[ "$status" -eq 0 ]
 	[[ $output == *"unknown label"* ]]
 	[ ! -s "$CALLS" ]
@@ -82,4 +108,25 @@ teardown() {
 	[[ $output == *"APPROVE=1"* ]]
 	[[ $output == *"merge != deploy"* ]]
 	grep -q 'merge-gate' "$CALLS"
+}
+
+@test "hook-ack primitives absent → stdout-only degradation (status 0, no append)" {
+	# F5 (#253 r1): the `command -v hook_ack_diagnostic_write || return 0` guard
+	# is the advisory-only fallback when hook-ack.sh was NOT sourced. Unset the
+	# stubs to exercise it (setup always defines them otherwise).
+	unset -f hook_ack_diagnostic_write hook_ack_append
+	run _emit_stage_directive push-to-pr
+	[ "$status" -eq 0 ]
+	[[ $output == *"SERVER-SIDE"* ]] # directive still printed
+	[ ! -s "$CALLS" ]                # no append, no crash
+}
+
+@test "diagnostic-write failure → stdout-only degradation (status 0, no append)" {
+	# F6 (#253 r1): when hook_ack_diagnostic_write returns non-zero, the
+	# `$(...) || return 0` arm degrades to advisory — append NOT reached.
+	hook_ack_diagnostic_write() { return 1; }
+	run _emit_stage_directive push-to-pr
+	[ "$status" -eq 0 ]
+	[[ $output == *"SERVER-SIDE"* ]]
+	[ ! -s "$CALLS" ]
 }

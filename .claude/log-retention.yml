@@ -1,8 +1,9 @@
 # v4.28-W3-C — SSOT for log/state-file retention across the workflow.
 #
-# CANONICAL SOURCE: this file lives in the plugin (claude-workflow-core) and is
-# propagated to consumer repos by bootstrap-repo.sh (declared in
-# scripts/bootstrap-manifest.yml). Edit here; consumers receive it on bootstrap.
+# CANONICAL SOURCE: this file lives in the plugin (claude-workflow-core), tracked
+# via the .gitignore re-include so a clone of this repo has it. Consumer
+# propagation — adding it to bootstrap-repo.sh + scripts/bootstrap-manifest.yml so
+# consumers receive it on bootstrap — is a rollout follow-up (not yet wired). Edit here.
 #
 # Read by scripts/maintain/log-retention.sh (cron'd daily + post-merge fire).
 # All workflow log/state directories listed here so adding a new log requires

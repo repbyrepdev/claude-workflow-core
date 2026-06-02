@@ -74,3 +74,44 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[ ! -f "$RAN" ]
 }
+
+@test "non-numeric THROTTLE_S falls back to default (fresh marker → skip)" {
+	# F8 (#253 r1): a malformed override must sanitize to 86400, NOT error the
+	# `$((now - last)) -lt "$THROTTLE_S"` arithmetic.
+	mkdir -p "$(dirname "$MARKER")"
+	: >"$MARKER"
+	run env RETENTION_RAN="$RAN" LOG_RETENTION_THROTTLE_S=abc "$HOOK"
+	[ "$status" -eq 0 ]
+	[ ! -f "$RAN" ] # 'abc' → 86400 → fresh marker within window → skip (no arithmetic error)
+}
+
+@test "throttle-skip does not re-stamp the marker (mtime unchanged)" {
+	# F9 (#253 r1): the skip branch exits BEFORE the marker re-stamp, so a fresh
+	# marker's mtime must be left untouched — otherwise the window slides forward
+	# every session start and the throttle never actually expires.
+	mkdir -p "$(dirname "$MARKER")"
+	: >"$MARKER"
+	before=$(stat -f %m "$MARKER" 2>/dev/null || stat -c %Y "$MARKER" 2>/dev/null)
+	sleep 1 # ensure a re-stamp would land in a later whole second (mtime granularity)
+	run env RETENTION_RAN="$RAN" "$HOOK"
+	[ "$status" -eq 0 ]
+	[ ! -f "$RAN" ] # skipped
+	after=$(stat -f %m "$MARKER" 2>/dev/null || stat -c %Y "$MARKER" 2>/dev/null)
+	[ "$before" = "$after" ] # NOT re-stamped
+}
+
+@test "REPO_ROOT resolves via non-git fallback (cd SELF_DIR/..)" {
+	# F10 (#253 r1): outside a git worktree, git rev-parse fails and the hook must
+	# fall back to the canonicalized parent of its own dir (the code comment's
+	# justification). The other tests git-init $TMP, so this branch was untested.
+	NOGIT=$(mktemp -d -t logret-nogit.XXXXXX) || return 1
+	mkdir -p "$NOGIT/hooks" "$NOGIT/scripts/maintain"
+	cp "$HOOK_SRC" "$NOGIT/hooks/log-retention-session.sh"
+	chmod +x "$NOGIT/hooks/log-retention-session.sh"
+	cp "$TMP/scripts/maintain/log-retention.sh" "$NOGIT/scripts/maintain/log-retention.sh"
+	chmod +x "$NOGIT/scripts/maintain/log-retention.sh"
+	run env RETENTION_RAN="$NOGIT/ran" "$NOGIT/hooks/log-retention-session.sh"
+	[ "$status" -eq 0 ]
+	[ -f "$NOGIT/ran" ] # non-git tmpdir → rev-parse fails → cd-fallback → runs
+	rm -rf "$NOGIT"
+}

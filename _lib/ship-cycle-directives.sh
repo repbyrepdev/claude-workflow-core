@@ -21,9 +21,10 @@ set -u
 # no parallel system (#283).
 #
 # Bodies live here (one `case` arm each) so a directive is defined ONCE even
-# when emitted from multiple call sites. Add an arm per new stage/edge as #283
-# expands (round-complete, push, merge-gate, merge-conflict, skill-usage,
-# template/SSOT prereads, efficiency-grouping, ...).
+# when emitted from multiple call sites. IMPLEMENTED arms: two-step-phase1,
+# push-to-pr, merge-conflict, merge-gate. Add an arm per NEW stage/edge as #283
+# expands (round-complete, skill-usage, template/SSOT prereads,
+# efficiency-grouping, ...).
 
 _emit_stage_directive() {
 	local label=${1:-} body
