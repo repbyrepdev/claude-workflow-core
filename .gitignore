@@ -33,3 +33,9 @@ node_modules/
 # hash-drift.sh --verify (#140 — Sub 2 of #138). Must be committed
 # alongside source so each release pins a verifiable content baseline.
 !.claude/.source-hashes.json
+
+# Re-include .claude/log-retention.yml — SSOT for log/state retention (#250),
+# read by scripts/maintain/log-retention.sh at runtime + propagated to consumers
+# by bootstrap-repo.sh. Must be tracked so a fresh clone has it (else
+# log-retention.sh exits 2 on the missing SSOT — the bug #250 fixes).
+!.claude/log-retention.yml

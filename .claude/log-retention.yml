@@ -1,0 +1,74 @@
+# v4.28-W3-C — SSOT for log/state-file retention across the workflow.
+#
+# CANONICAL SOURCE: this file lives in the plugin (claude-workflow-core), tracked
+# via the .gitignore re-include so a clone of this repo has it. Consumer
+# propagation — adding it to bootstrap-repo.sh + scripts/bootstrap-manifest.yml so
+# consumers receive it on bootstrap — is a rollout follow-up (not yet wired). Edit here.
+#
+# Read by scripts/maintain/log-retention.sh (cron'd daily + post-merge fire).
+# All workflow log/state directories listed here so adding a new log requires
+# updating this file (drift catcher: a sub-issue checks `.claude/logs/` for
+# files not listed in any retention entry below).
+#
+# Schema:
+#   - path: <dir or file glob>
+#     format: <jsonl|json|dir>
+#       jsonl  → prune lines with `ts` field older than retention
+#       json   → prune .json files in dir with top-level `ts` field
+#                older than retention (file-level granularity)
+#       dir    → prune files within dir whose mtime is older than
+#                retention. dir holds heterogeneous files (.txt diags,
+#                .tar.gz archives, etc.) — the `dir` format is the
+#                "anything else" container; per-file content is opaque.
+#     retention_days: <int> — files/lines older than this are pruned
+#     scope_to_branch: <bool> — when true, only retain entries whose
+#       sha is reachable from main..HEAD (in addition to retention age)
+#
+# Only the 3 formats above (jsonl, json, dir) are supported; log-retention.sh
+# emits "unknown format" for any other value.
+
+retention:
+  - path: .claude/logs/bats-run.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/lint-run.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/dogfood-run.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/phase0.5-run.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/test-sh-scope-skip.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/commit-guard-skip.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/edit-corrupt-guard-skip.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/test-gate-skip.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/logs/prove-yourself-gate-skip.jsonl
+    format: jsonl
+    retention_days: 14
+  - path: .claude/review-log
+    format: dir
+    retention_days: 14
+    scope_to_branch: true
+  - path: .claude/.review-cache/ledger.jsonl
+    format: jsonl
+    retention_days: 30  # 30d matches cache_prune's documented retention; this entry IS the actual pruner via log-retention.sh.
+  - path: .claude/.review-cache/phase2-results.jsonl
+    format: jsonl
+    retention_days: 30  # v0.32.11 (#282) phase2 content-hash review cache; same 30d as the per-file ledger (cache_prune prunes both).
+  - path: .claude/.session-state/prove-yourself
+    format: json
+    retention_days: 30  # audit records keep longer for retroactive review
+  - path: .claude/.session-state/hook-ack
+    format: dir
+    retention_days: 7   # per-ack diagnostic artifacts (Option E); short window
+                        # since gate-fail diagnostics lose relevance fast
