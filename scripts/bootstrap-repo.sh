@@ -649,6 +649,20 @@ require_footer: "Co-Authored-By:"
 max_subject_length: 70
 EOF
 
+# --- .github/copilot-instructions.md ---------------------------------
+# Byte-SSOT (manifest hashed: true; bootstrap-heredoc-parity gated). Repo-
+# AGNOSTIC pointer that redirects GitHub Copilot to the repo-root AGENTS.md
+# (the unified non-Claude-CLI reviewer contract). Identical in every repo.
+_write .github/copilot-instructions.md 644 <<'EOF'
+# GitHub Copilot Instructions
+
+This repo uses a unified `AGENTS.md` at the repo root as the single source of truth for all non-Claude CLI agents (Copilot, Gemini, Codex).
+
+**See: [`AGENTS.md`](../AGENTS.md)** — repo purpose, reviewer contract, conventions, per-CLI invocation context.
+
+The "When invoked as Copilot (Phase 0.5)" section is specifically for you.
+EOF
+
 # --- .github/labels.yml ----------------------------------------------
 _write .github/labels.yml 644 <<'EOF'
 # Label catalog SSOT. Sync via `gh label create` or label-sync workflow.
@@ -1569,6 +1583,49 @@ _compose_coderabbit() {
 }
 _compose_coderabbit
 
+# --- Full SSOT sync: copy the byte-identical generic runtime ----------
+# The heredocs above seed only the per-repo-flavored + bootstrap-critical
+# files. The LARGE generic surface — every .claude/hooks/* runtime hook, the
+# _lib/* helpers they source, and the hashed .github/.coderabbit/.gemini/.codex
+# byte-SSOTs — lives in .claude/.source-hashes.json and is propagated by
+# refresh-from-source.sh (the same primitive that keeps existing consumers in
+# sync). Inlining ~100 hooks as heredocs would fork them from their SSOT, so we
+# CALL the propagator here instead: one `bootstrap-repo.sh <dir>` now lays the
+# repo down with the IDENTICAL hook/skill/gate runtime every other repo has —
+# no separate "now remember to run refresh-from-source" step. It also self-heals
+# any seed heredoc that has drifted from its hashed live source (the heredoc
+# writes first, then refresh overwrites with canonical bytes).
+#
+# Honors --dry-run (forwarded). NOT --force-gated: refresh is hash-diff driven
+# (copies only changed/missing files) and honors the consumer's
+# local-overrides.yml skip-list, so re-runs are safe + idempotent. Best-effort:
+# a refresh hiccup WARNs (surfaced in the summary) but does not fail the
+# bootstrap — the seed files are already written.
+REFRESH_FAILED=0
+_sync_full_ssot() {
+	local refresher="$PLUGIN_SCRIPT_DIR/refresh-from-source.sh"
+	if [ ! -x "$refresher" ]; then
+		_log "NOTE: refresh-from-source.sh not found/executable at $refresher — skipping full SSOT sync"
+		_log "      (seed files are written; run refresh-from-source.sh --consumer-path $TARGET to complete)"
+		return 0
+	fi
+	local args=(--consumer-path "$TARGET")
+	[ "$DRY_RUN" = "1" ] && args+=(--dry-run)
+	_log "syncing full generic SSOT (hooks/_lib + hashed configs) via refresh-from-source.sh..."
+	local rerr
+	if rerr=$("$refresher" "${args[@]}" 2>&1); then
+		# Echo the propagator's per-file lines through our logger so dry-run
+		# shows EVERY artifact it would lay down (completeness proof).
+		while IFS= read -r line; do [ -n "$line" ] && _log "  $line"; done <<<"$rerr"
+		_log "  ✓ full SSOT sync complete"
+	else
+		_log "WARN: refresh-from-source.sh exited non-zero — generic hook/_lib runtime may be incomplete:"
+		while IFS= read -r line; do [ -n "$line" ] && _log "    $line"; done <<<"$rerr"
+		REFRESH_FAILED=1
+	fi
+}
+_sync_full_ssot
+
 # --- Summary ---------------------------------------------------------
 _log ""
 if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
@@ -1582,6 +1639,13 @@ if [ "$COMPOSE_CR_FAILED" = "1" ]; then
 	_log "    defaults until you compose it (scripts/compose-coderabbit.sh"
 	_log "    --base .coderabbit.base.yaml [--overlay .coderabbit.overlay.yaml]"
 	_log "    --out .coderabbit.yaml). See the WARN above for the cause."
+	_log ""
+fi
+if [ "$REFRESH_FAILED" = "1" ]; then
+	_log "⚠ Full SSOT sync did NOT complete — the generic .claude/hooks/* +"
+	_log "    _lib/* runtime may be partial. Re-run after fixing the cause:"
+	_log "    scripts/refresh-from-source.sh --consumer-path $TARGET"
+	_log "    See the WARN above for the underlying error."
 	_log ""
 fi
 if [ "$DRY_RUN" = "1" ]; then

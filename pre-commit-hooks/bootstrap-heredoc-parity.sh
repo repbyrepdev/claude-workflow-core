@@ -38,6 +38,7 @@ PARITY_PATHS=(
 	".github/ISSUE_TEMPLATE/epic.yml"
 	".github/ISSUE_TEMPLATE/brainstorm.yml"
 	".github/pull_request_template.md"
+	".github/copilot-instructions.md"
 	".coderabbit.base.yaml"
 	".gemini/policy.toml"
 	".gemini/settings.json"

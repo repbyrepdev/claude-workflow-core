@@ -99,6 +99,12 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: stale-shadow-guard
+        name: stale-shadow — .claude/scripts|_lib copy must not drift from plugin canonical (#223)
+        entry: pre-commit-hooks/stale-shadow-guard.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: consumers-schema-check
         name: consumers-schema — .github/consumers.yml schema integrity (#141)
         entry: pre-commit-hooks/consumers-schema-check.sh

@@ -39,6 +39,37 @@ The wrapper sets `SKILL_WRAPPER=1` and execs `scripts/bootstrap-repo.sh`.
 6. Enable the marketplace plugin + add the repo to `MEMORY_DRIFT_EXTERNAL_ROOTS` (shell rc)
 7. Run `scripts/bootstrap-machine.sh` if the machine isn't wired yet
 
+## Conditional-SSOT hooks (repo-specific behavior, ONE SSOT file) — #223
+
+A hook that only makes sense in ONE repo (e.g. the homelab Fusion-e2e /
+Docker-deploy gates that belong to media-server, or the
+coalesce-gracie-only-gate that belongs to pricing-team-toolkit) must NOT be a
+local-only file living in that repo. A local-only hook can't be hash-tracked
+(`scripts/hash-drift.sh`), rots silently, and isn't propagated by bootstrap —
+the exact anti-pattern this plugin exists to kill.
+
+Instead, ship it as ONE plugin-SSOT file under `hooks/` that **self-skips**
+(cleanly no-ops) in every repo except its target(s), via `_lib/repo-guard.sh`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+# event: PreToolUse   (etc.)
+_RG_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
+# shellcheck source=../_lib/repo-guard.sh
+. "$_RG_LIB/repo-guard.sh"
+repo_guard_require media-server || exit 0      # self-skip outside media-server
+# ... target-repo-only hook body runs only here ...
+```
+
+Multiple targets: `repo_guard_require media-server homelab || exit 0`. Slug
+matching is case-insensitive and tolerant of a `.git` suffix and `owner/`
+prefix; detection prefers the git `origin` basename, then the git toplevel dir
+basename, then `$PWD` basename (never hard-errors a hook). Because the file
+lives under `hooks/`, it is hash-tracked + version-gated + bootstrap-shipped
+like every other plugin hook — one SSOT, drift-gated, with zero per-repo
+copies.
+
 ## Notes
 
 - `--verify` is read-only drift detection; `--force` overwrites (NEVER `--force` an

@@ -98,6 +98,14 @@ files:
   - path: .github/commit-template.yml
     mode: "644"
     hashed: true
+  # Copilot reviewer pointer — byte-SSOT (hashed: true). A tiny, fully
+  # repo-AGNOSTIC stub that redirects GitHub Copilot to the repo-root AGENTS.md
+  # (the unified non-Claude-CLI reviewer contract). Identical in every repo, so
+  # it joins the .gemini/.codex AI-reviewer byte-SSOT set (#236). Per-repo
+  # reviewer CONTEXT stays in AGENTS.md (per-repo), never here.
+  - path: .github/copilot-instructions.md
+    mode: "644"
+    hashed: true
   # labels / required-checks / labeler: template-with-overrides or per-repo —
   # NOT byte-gated (generic block + per-repo domain block / per-repo checks /
   # per-repo path globs). Bootstrap writes them once.
