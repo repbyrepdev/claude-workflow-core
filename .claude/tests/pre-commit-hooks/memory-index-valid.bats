@@ -60,6 +60,7 @@ EOF
 	_index proj_y.md
 	run env MEMORY_DIR="$MEM_TMP" MEMORY_CHECK=1 bash "$HOOK"
 	[ "$status" -eq 0 ]
+	[[ $output == *"memory index valid"* ]]
 }
 
 @test "node_type: alone (no type:) is rejected — the regex must not match node_type" {

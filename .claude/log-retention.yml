@@ -24,9 +24,8 @@
 #     scope_to_branch: <bool> — when true, only retain entries whose
 #       sha is reachable from main..HEAD (in addition to retention age)
 #
-# Note: a `file` format was scoped but never implemented — log-retention.sh
-# emits "unknown format" for it. Drop or implement; for now only the 3
-# above are supported.
+# Only the 3 formats above (jsonl, json, dir) are supported; log-retention.sh
+# emits "unknown format" for any other value.
 
 retention:
   - path: .claude/logs/bats-run.jsonl

@@ -45,12 +45,15 @@ PLUGIN_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 COMPOSE_CR_FAILED=0
 
 TARGET=""
-# v0.32.12 (#283/Wave J): default PIN_TAG to the plugin's CURRENT version (SSOT
-# = .claude-plugin/plugin.json) so a fresh bootstrap pins to the current release
-# instead of a hardcoded stale tag. --tag still overrides (parsed below).
-# Fail-safe: jq/file missing → v0.8.5 fallback (never aborts under set -e).
+# v0.32.12 (#283/Wave J), shipped in the v0.32.13 PR: default PIN_TAG to the
+# plugin's CURRENT version (SSOT = .claude-plugin/plugin.json) so a fresh
+# bootstrap pins to the current release instead of a hardcoded stale tag.
+# --tag still overrides (parsed below). FAIL-CLOSED (CR #283): if plugin.json is
+# missing/unparseable, PIN_TAG stays EMPTY here and a real bootstrap aborts after
+# arg-parsing (guard below) — never a silent stale fallback.
 _plugin_ver=$(jq -r '.version // empty' "$PLUGIN_SCRIPT_DIR/../.claude-plugin/plugin.json" 2>/dev/null || echo "")
-PIN_TAG="v${_plugin_ver:-0.8.5}"
+PIN_TAG=""
+[ -n "$_plugin_ver" ] && PIN_TAG="v${_plugin_ver}"
 DRY_RUN=0
 FORCE=0
 VERIFY=0
@@ -111,6 +114,15 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+
+# FAIL-CLOSED (CR #283): a real bootstrap MUST have resolved a pin tag — from
+# plugin.json (above) or --tag. Never silently pin to a stale hardcoded fallback.
+# --dry-run/--verify don't write the pin, so they tolerate an empty PIN_TAG (and
+# legitimately run without plugin.json present).
+if [ -z "$PIN_TAG" ] && [ "$DRY_RUN" != "1" ] && [ "$VERIFY" != "1" ]; then
+	echo "bootstrap-repo: ERROR: no pin tag resolved — .claude-plugin/plugin.json missing/unparseable AND no --tag vX.Y.Z given. Refusing a stale fallback pin; fix the manifest or pass --tag." >&2
+	exit 2
+fi
 
 if [ -z "$TARGET" ]; then
 	echo "error: missing target directory" >&2
