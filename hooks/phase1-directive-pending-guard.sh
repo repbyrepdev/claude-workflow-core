@@ -82,6 +82,20 @@ pending_count=0
 pending_list=""
 while IFS= read -r -d '' f; do
 	sha=$(basename "$f" .phase1-directive.txt)
+	# v0.32.13+ (#223) Layer 0: age-based stale cleanup. A phase1-directive
+	# marker is acted on within a session (agents fire within minutes); one
+	# still "pending" after 2 days is stale cruft (abandoned round, a squash-
+	# merge that left a local topic branch, or a cross-repo write) that Layers
+	# 1/2 miss — Layer 1 skips squash-merges (SHA is not an ancestor of
+	# origin/main) and Layer 2 keeps the marker while a stale LOCAL branch
+	# still contains the SHA. This is what let 9 markers pile up over a multi-
+	# day session — the SessionStart sweep cannot fire mid-session, but this
+	# guard runs on every Bash/Edit so it self-heals continuously. Portable
+	# mtime via find -mtime (macOS + Linux).
+	if [ -n "$(find "$f" -mtime +2 -print 2>/dev/null)" ]; then
+		rm -f "$f"
+		continue
+	fi
 	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now
 	# reachable from origin/main. Catches merge-commit / fast-forward /
 	# rebase-and-push-retaining-SHA flows. Squash-merge writes a NEW

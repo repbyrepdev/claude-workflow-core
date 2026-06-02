@@ -73,6 +73,15 @@ files:
   - path: .claude/hooks/review-log.sh
     mode: "755"
     scope: consumer
+  # Consumer-only: ship-pr-cycle runtime shims (#223) — the phase0.5 + post-
+  # commit stages invoke these stable paths; self-resolving shims to the
+  # plugin cache (same pattern as review-log.sh above). NOT hashed (consumer).
+  - path: .claude/hooks/phase0.5-copilot-prefilter.sh
+    mode: "755"
+    scope: consumer
+  - path: .claude/hooks/post-commit-ship-cycle.sh
+    mode: "755"
+    scope: consumer
   # Consumer-only: the per-repo override scaffold bootstrap writes for new
   # consumers (v0.20.1 #147). Never byte-SSOT — its WHOLE PURPOSE is to record
   # a consumer's intentional divergences — so it is scope:consumer + NOT hashed.

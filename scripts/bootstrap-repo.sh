@@ -495,6 +495,76 @@ fi
 exec "$TARGET_HOOK" "$@"
 EOF
 
+# --- .claude/hooks/ ship-pr-cycle runtime shims (#223) ---------------
+# ship-pr-cycle's phase0.5 + post-commit stages invoke these stable
+# .claude/hooks/ paths. Same self-resolving shim pattern as review-log.sh
+# above — each forwards to the plugin cache's same-named hook (+ its _lib
+# deps) so a consumer's cycle works WITHOUT copying the full hook tree. ptt
+# was bootstrapped before these existed, so its cycle broke at phase0.5.
+_write .claude/hooks/phase0.5-copilot-prefilter.sh 755 <<'EOF'
+#!/bin/bash
+set -euo pipefail
+# Self-naming shim → forwards to the plugin cache's hooks/<this-name> at the
+# pinned version. The real hook + its _lib deps live in the plugin cache.
+HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
+PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+shopt -s nullglob
+_resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
+shopt -u nullglob
+RESOLVE_LIB="${_resolve_candidates[0]:-}"
+if [ -z "$RESOLVE_LIB" ]; then
+	echo "$HOOK_NAME shim: plugin cache empty" >&2
+	exit 2
+fi
+# shellcheck source=/dev/null
+source "$RESOLVE_LIB"
+if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
+	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
+	exit 2
+fi
+TARGET_HOOK="$PLUGIN_CACHE/$PIN/hooks/$HOOK_NAME"
+if [ ! -x "$TARGET_HOOK" ]; then
+	echo "$HOOK_NAME shim: target hook missing at $TARGET_HOOK (run scripts/bootstrap-machine.sh)" >&2
+	exit 2
+fi
+exec "$TARGET_HOOK" "$@"
+EOF
+
+_write .claude/hooks/post-commit-ship-cycle.sh 755 <<'EOF'
+#!/bin/bash
+set -euo pipefail
+# Self-naming shim → forwards to the plugin cache's hooks/<this-name> at the
+# pinned version. The real hook + its _lib deps live in the plugin cache.
+HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
+PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+shopt -s nullglob
+_resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
+shopt -u nullglob
+RESOLVE_LIB="${_resolve_candidates[0]:-}"
+if [ -z "$RESOLVE_LIB" ]; then
+	echo "$HOOK_NAME shim: plugin cache empty" >&2
+	exit 2
+fi
+# shellcheck source=/dev/null
+source "$RESOLVE_LIB"
+if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
+	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
+	exit 2
+fi
+TARGET_HOOK="$PLUGIN_CACHE/$PIN/hooks/$HOOK_NAME"
+if [ ! -x "$TARGET_HOOK" ]; then
+	echo "$HOOK_NAME shim: target hook missing at $TARGET_HOOK (run scripts/bootstrap-machine.sh)" >&2
+	exit 2
+fi
+exec "$TARGET_HOOK" "$@"
+EOF
+
 # --- .claude/local-overrides.yml (v0.20.1 #147) -----------------------
 # Empty-stub by default; populate per-consumer after audit. Schema
 # validated by pre-commit-hooks/local-overrides-schema-check.sh.
