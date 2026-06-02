@@ -23,7 +23,7 @@ The wrapper sets `SKILL_WRAPPER=1` and execs `scripts/bootstrap-repo.sh`.
 ## What it writes (idempotent — skips existing)
 
 - `.pre-commit-config.yaml` — pinned plugin hooks (current version) + upstream linters
-- `.claude/skills/ship-pr-cycle/` + `.claude/hooks/review-log.sh` — consumer workflow shims
+- `.claude/skills/ship-pr-cycle/` + `.claude/hooks/{review-log,phase0.5-copilot-prefilter,post-commit-ship-cycle}.sh` — consumer workflow shims (the latter two are the ship-pr-cycle runtime shims, #223)
 - `.claude/local-overrides.yml`
 - `.github/` — PR template, commit-template, labels, required-checks, `ISSUE_TEMPLATE/*`, labeler, gitleaks/pr-lint/pr-labeler workflows
 - `.gemini/`, `.codex/config.toml`, `.coderabbit.base.yaml` (+ composes `.coderabbit.yaml`)

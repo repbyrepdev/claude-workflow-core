@@ -1,11 +1,16 @@
 #!/bin/bash
 set -uo pipefail
+# bats-required: 0
+# (Thin wrapper over the GitHub Copilot CLI — exercising it needs the CLI +
+#  network, so it carries no standalone bats; the ship-pr-cycle dogfoods it
+#  live. #223.)
 # v4.24 (#597): Copilot free-tier fallback chain helper.
 #
-# Invokes `copilot -p --model=$M` against stdin+prompt across the free-tier
-# model preference order until one succeeds, else falls back to no-output.
-# 0 premium requests consumed on Enterprise seats (gpt-4.1/gpt-5-mini/gpt-4o
-# all have 0x multiplier per 2026 Copilot billing table).
+# Invokes `copilot -p [--model=$M]` against a prompt, trying any configured
+# free-tier models then ALWAYS the CLI's configured DEFAULT model (#223) until
+# one succeeds. The old gpt-4.1/gpt-5-mini/gpt-4o "0x" IDs were RETIRED from
+# Copilot CLI 1.0.57 (its default is now claude-sonnet-4.6) — pinning them
+# silently disabled phase0.5; the default-model fallback is drift-proof.
 #
 # Usage:
 #   echo "$CONTEXT" | .claude/scripts/copilot/try-free.sh "prompt text"
@@ -16,7 +21,9 @@ set -uo pipefail
 #
 # Env overrides:
 #   COPILOT_FREE_MODELS   comma-separated preference order
-#                         (default: gpt-4.1,gpt-5-mini,gpt-4o)
+#                         (default: empty — appends the CLI default model as a
+#                         drift-proof fallback; the old gpt-* free IDs were
+#                         retired from Copilot CLI 1.0.57, #223)
 #   COPILOT_MODEL         pin to a single model (skips the chain)
 #
 # Graceful behavior:
@@ -57,11 +64,17 @@ Context:
 $CONTEXT"
 fi
 
-# Determine model preference chain.
+# Determine model preference chain. The old gpt-4.1/gpt-5-mini/gpt-4o "free"
+# IDs were RETIRED from the GitHub Copilot CLI (1.0.57's default is
+# claude-sonnet-4.6) — passing them yields `Model "X" from --model flag is not
+# available` and silently disabled phase0.5 (#223). So: honor an explicit
+# COPILOT_MODEL / COPILOT_FREE_MODELS override, then ALWAYS fall back to the
+# CLI's CONFIGURED DEFAULT model (an appended empty entry => no --model flag) so
+# a stale pinned ID can never again take the prefilter offline.
 if [ -n "${COPILOT_MODEL:-}" ]; then
 	MODELS="$COPILOT_MODEL"
 else
-	MODELS="${COPILOT_FREE_MODELS:-gpt-4.1,gpt-5-mini,gpt-4o}"
+	MODELS="${COPILOT_FREE_MODELS:-}"
 fi
 
 # Safety-default flags. Caller can extend via COPILOT_EXTRA_ARGS.
@@ -78,22 +91,24 @@ if ! command -v timeout >/dev/null 2>&1 && command -v gtimeout >/dev/null 2>&1; 
 	TIMEOUT_CMD="gtimeout"
 fi
 
-# Try each free model in order. First to succeed wins.
+# Try each model in order; first to succeed wins. A trailing EMPTY entry is
+# appended unconditionally = "use the CLI's default model" (no --model flag) —
+# the drift-proof fallback so phase0.5 keeps working through Copilot lineup
+# changes (#223).
 IFS=',' read -ra MODEL_ARR <<<"$MODELS"
+MODEL_ARR+=("")
 for model in "${MODEL_ARR[@]}"; do
-	# Trim whitespace
+	# Trim whitespace. An EMPTY model => omit --model => CLI default model.
 	model=$(printf '%s' "$model" | tr -d ' ')
-	[ -z "$model" ] && continue
+	MODEL_ARG=()
+	[ -n "$model" ] && MODEL_ARG=(--model="$model")
 
-	# Run copilot with this model. Timeout kept loose (60s) since free
-	# models are usually fast but GPT-4o occasionally spikes.
-	# Under set -u, `${ARR[@]}` on an empty array expands to unbound-var.
-	# Use the `+"${ARR[@]}"` conditional expansion so empty arrays are safe.
-	# Copilot CLI's `-p` uses its arg directly and ignores stdin, so we
-	# DON'T pipe FULL_PROMPT into stdin — it would be a silent duplicate.
+	# Timeout kept loose (60s). Under set -u, expand possibly-empty arrays with
+	# the `+"${ARR[@]}"` guard. Copilot CLI's `-p` uses its arg directly and
+	# ignores stdin, so we DON'T pipe FULL_PROMPT into stdin (silent duplicate).
 	if OUTPUT=$("$TIMEOUT_CMD" 60 copilot \
 		-p "$FULL_PROMPT" \
-		--model="$model" \
+		${MODEL_ARG[@]+"${MODEL_ARG[@]}"} \
 		"${SAFE_ARGS[@]}" \
 		${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
 		2>/dev/null); then
@@ -101,10 +116,9 @@ for model in "${MODEL_ARR[@]}"; do
 		printf '%s' "$OUTPUT"
 		exit 0
 	fi
-	# This model failed (not available, auth issue, timeout, paid tier,
-	# etc.) — continue to next.
+	# This model failed (retired ID, auth, timeout, paid tier) — try next.
 done
 
-# All models failed.
-echo "all copilot free models failed or unavailable" >&2
+# Even the CLI default model failed — a genuine outage or auth problem.
+echo "copilot prefilter: all candidate models AND the CLI default failed (auth/outage?)" >&2
 exit 1

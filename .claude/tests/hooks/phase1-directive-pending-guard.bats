@@ -76,6 +76,27 @@ teardown() {
 	[ "$rc" = deny ]
 }
 
+# --- v0.33.0 (#223) Layer 0 age-based self-heal -----------------------------
+@test "Layer 0: marker older than 2 days is auto-removed and the call ALLOWED" {
+	_setup_pending_repo
+	# Age the marker past the 2-day threshold (portable -t CCYYMMDDhhmm).
+	find "$TDIR/.claude/.session-state/ship-cycle" -name '*.phase1-directive.txt' \
+		-exec touch -t 202001010000 {} +
+	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')
+	[ "$rc" = allow ]
+	# Self-healed: the aged marker is gone (Layer 0 rm'd it before Layers 1/2).
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/
+	[[ $output != *.phase1-directive.txt* ]]
+}
+
+@test "Layer 0: a fresh (<2 days) marker is NOT age-removed and still DENIES" {
+	_setup_pending_repo
+	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')
+	[ "$rc" = deny ]
+	# Boundary: Layer 0 must NOT nuke an active-round marker (mtime ~now).
+	ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+}
+
 @test "behavioral: read-only git diff is ALLOWED while pending (#191)" {
 	_setup_pending_repo
 	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git diff main..HEAD"}}')

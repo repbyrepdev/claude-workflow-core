@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh
+# covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh skills/bootstrap-repo/run.sh
 #
 # v0.30.H (#196 slice 2): bats coverage for the 5 highest-risk untested skill
 # wrappers (they invoke gh/git and write to disk). Two contracts are locked:
@@ -21,9 +21,9 @@ setup() {
 
 _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 
-@test "all 5 high-risk skill wrappers export SKILL_WRAPPER=1 (bypass-guard contract)" {
+@test "all 6 high-risk skill wrappers export SKILL_WRAPPER=1 (bypass-guard contract)" {
 	local s r
-	for s in cr-plan cr-resolve-conflict github-epic-creation github-pr-creation prove-yourself-audit; do
+	for s in cr-plan cr-resolve-conflict github-epic-creation github-pr-creation prove-yourself-audit bootstrap-repo; do
 		r=$(_wrapper "$s")
 		[ -f "$r" ] || {
 			echo "missing wrapper: $r" >&2

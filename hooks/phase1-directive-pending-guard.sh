@@ -84,15 +84,21 @@ while IFS= read -r -d '' f; do
 	sha=$(basename "$f" .phase1-directive.txt)
 	# v0.32.13+ (#223) Layer 0: age-based stale cleanup. A phase1-directive
 	# marker is acted on within a session (agents fire within minutes); one
-	# still "pending" after 2 days is stale cruft (abandoned round, a squash-
-	# merge that left a local topic branch, or a cross-repo write) that Layers
-	# 1/2 miss — Layer 1 skips squash-merges (SHA is not an ancestor of
-	# origin/main) and Layer 2 keeps the marker while a stale LOCAL branch
-	# still contains the SHA. This is what let 9 markers pile up over a multi-
-	# day session — the SessionStart sweep cannot fire mid-session, but this
-	# guard runs on every Bash/Edit so it self-heals continuously. Portable
-	# mtime via find -mtime (macOS + Linux).
-	if [ -n "$(find "$f" -mtime +2 -print 2>/dev/null)" ]; then
+	# still "pending" after 2 days is stale cruft (an abandoned round, or a
+	# squash-merge that left a local topic branch) that the two in-guard
+	# self-heals BELOW miss — the #173 ancestor-of-origin/main check skips
+	# squash-merges (the SHA is not an ancestor) and the #174 reachable-from-
+	# any-ref check keeps the marker while a stale LOCAL branch still contains
+	# the SHA. (NB: the project's "Layer 2"/"Layer 3" are the github-pr-merge
+	# skill-side rm + the post-merge hook — NOT these in-guard checks; referenced
+	# by #issue here to avoid that naming collision.) This is what let 9 markers
+	# pile up over a multi-day session — the SessionStart sweep cannot fire mid-
+	# session, but this guard runs on every Bash/Edit so it self-heals
+	# continuously. Capture find's rc (don't swallow it) + log the deletion so a
+	# mistaken cleanup is observable. Portable mtime via find -mtime (macOS+Linux).
+	_age_out=$(find "$f" -mtime +2 -print 2>/dev/null) && _age_rc=0 || _age_rc=$?
+	if [ "$_age_rc" -eq 0 ] && [ -n "$_age_out" ]; then
+		echo "phase1-directive-pending-guard: Layer 0 auto-removed stale (>2d) marker $sha" >&2
 		rm -f "$f"
 		continue
 	fi

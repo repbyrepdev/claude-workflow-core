@@ -422,7 +422,10 @@ if [ -z "$RESOLVE_LIB" ] || [ ! -f "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB"
+source "$RESOLVE_LIB" || {
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+	exit 2
+}
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "error: could not resolve plugin pin from $CONFIG (key claude-workflow-core missing or malformed)" >&2
 	exit 2
@@ -480,7 +483,10 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB"
+source "$RESOLVE_LIB" || {
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+	exit 2
+}
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "error: could not resolve plugin pin from $CONFIG (key claude-workflow-core missing or malformed)" >&2
 	exit 2
@@ -524,7 +530,10 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB"
+source "$RESOLVE_LIB" || {
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+	exit 2
+}
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
 	exit 2
@@ -560,7 +569,10 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB"
+source "$RESOLVE_LIB" || {
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+	exit 2
+}
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
 	exit 2
