@@ -79,7 +79,11 @@ while IFS= read -r shadow; do
 
 	# Materialize the STAGED blob of the shadow (not the worktree copy) so an
 	# add-then-edit can't sneak a stale copy past the gate. Compare against the
-	# canonical's worktree content (the canonical is the SSOT being shadowed).
+	# canonical's WORKTREE content intentionally: this guard only fires in the
+	# PRODUCER (a consumer has no repo-root canonical, so the `-f` check above
+	# skips it), where the canonical IS the live SSOT a shadow must match — its
+	# index/staged state is irrelevant. Override a false positive with
+	# STALE_SHADOW_GUARD_SKIP=1.
 	if ! git show ":${shadow}" >"$STAGED_TMP" 2>/dev/null; then
 		echo "stale-shadow-guard: could not read staged blob for $shadow" >&2
 		exit 2

@@ -33,7 +33,7 @@
     "_lib/phase05-dedupe.sh": "35546f3ca75f21cb21759d8271180b798b5c7de5226def791df107104d2fa46d",
     "_lib/phase1-agent-prompt.sh": "db7da5ae704e66e507540bb557bc79aaf7bf88aeb3df3e051022f85bf144a198",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
-    "_lib/repo-guard.sh": "5b0ab16b40df9d486cca1e1baf33bbef1156745c4210e71da08496c1a4b205a4",
+    "_lib/repo-guard.sh": "3d3a8573b1e34a7411538bda2df7fedd33535c2c3ebd76a11b4019a72024a99d",
     "_lib/resolve-plugin-helper.sh": "003fe07d9440f4c3a00db5d698080ab0b398691ed3997dd3c35b0bfd1d72f96e",
     "_lib/resolve-plugin-pin.sh": "e69d69552d12d9bbf4891b594e3cb3f5e882f8c59d23acae480effb9fd5ca82a",
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",

@@ -24,7 +24,9 @@ set -uo pipefail
 #                         (default: empty — appends the CLI default model as a
 #                         drift-proof fallback; the old gpt-* free IDs were
 #                         retired from Copilot CLI 1.0.57, #223)
-#   COPILOT_MODEL         pin to a single model (skips the chain)
+#   COPILOT_MODEL         pin to a single model (tried FIRST, but the chain still
+#                         appends the CLI default as a final fallback — it does
+#                         NOT skip the chain; see #223)
 #
 # Graceful behavior:
 #   - `copilot` binary missing → exit 1 silently, no error

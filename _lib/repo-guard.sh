@@ -120,7 +120,11 @@ repo_guard_current_repo() {
 #   2 → called with zero slugs (programming error; fail-OPEN-ish but signalled)
 repo_guard_require() {
 	if [ "$#" -eq 0 ]; then
-		echo "repo-guard: repo_guard_require needs at least one repo-slug" >&2
+		echo "repo-guard: repo_guard_require needs at least one repo-slug (programming error)" >&2
+		# A `|| exit 0` caller would silently mask this misconfig as a harmless
+		# skip. Hard-exit when the lib is run directly; return 2 when sourced
+		# (normal path — caught by the hook's bats, not masked at runtime).
+		[ "${BASH_SOURCE[0]}" = "${0:-}" ] && exit 2
 		return 2
 	fi
 
