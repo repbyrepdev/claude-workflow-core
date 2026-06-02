@@ -101,7 +101,7 @@ IFS=',' read -ra MODEL_ARR <<<"$MODELS"
 MODEL_ARR+=("")
 for model in "${MODEL_ARR[@]}"; do
 	# Trim whitespace. An EMPTY model => omit --model => CLI default model.
-	model=$(printf '%s' "$model" | tr -d ' ')
+	model=$(printf '%s' "$model" | tr -d '[:space:]')
 	MODEL_ARG=()
 	[ -n "$model" ] && MODEL_ARG=(--model="$model")
 

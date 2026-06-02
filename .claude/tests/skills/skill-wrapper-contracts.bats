@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh skills/bootstrap-repo/run.sh
 #
-# v0.30.H (#196 slice 2): bats coverage for the 5 highest-risk untested skill
+# v0.30.H (#196 slice 2): bats coverage for the 6 highest-risk untested skill
 # wrappers (they invoke gh/git and write to disk). Two contracts are locked:
 #   1. Each wrapper `export SKILL_WRAPPER=1` — the whole reason these run.sh
 #      files exist (so their nested gh/git calls pass skill-bypass-guard). A
