@@ -122,6 +122,16 @@ _check_and_parse_issue() {
 		return 0
 	fi
 
+	# Skip if this issue is ITSELF an epic. Epics are cr-plan OUTPUTS, never
+	# parse INPUTS — parsing an epic re-decomposes it into a NESTED epic
+	# ("EPIC: EPIC: ..."), the runaway that created 800+ duplicate epics on
+	# 2026-06-02. An epic must never re-enter the parse pipeline, even if it
+	# re-acquired plan-me (e.g. via auto-triage of the just-created issue).
+	if printf '%s' "$data" | jq -e '.labels[] | select(.name == "epic")' >/dev/null 2>&1; then
+		_log "skip-epic" "$issue" "skip" "epic label present — epics are parse outputs, not inputs"
+		return 0
+	fi
+
 	# Require plan-me label (otherwise no plan to parse).
 	if ! printf '%s' "$data" | jq -e '.labels[] | select(.name == "plan-me")' >/dev/null 2>&1; then
 		_log "skip-no-plan-me" "$issue" "skip" "plan-me label absent"
@@ -195,10 +205,12 @@ _check_and_parse_issue() {
 	_log "parsed" "$issue" "ok" "epic+subs created"
 	echo "auto-parse-plans: ✓ parsed issue #$issue" >&2
 
-	# Apply plan-parsed label so we don't re-parse.
-	gh issue edit "$issue" --add-label plan-parsed 2>&1 | tail -1 >&2 || {
-		_log "label-failed" "$issue" "warn" "plan-parsed label add failed (parse succeeded)"
-		echo "auto-parse-plans: WARN: plan-parsed label add failed — parse already succeeded; manual label needed to prevent re-parse" >&2
+	# Mark plan-parsed AND drop plan-me so the source issue leaves the poll set.
+	# (Adding plan-parsed alone left every parsed issue in the plan-me poll
+	# forever — it grew to 500/cycle. Removing plan-me bounds the poll.)
+	gh issue edit "$issue" --add-label plan-parsed --remove-label plan-me 2>&1 | tail -1 >&2 || {
+		_log "label-failed" "$issue" "warn" "plan-parsed/plan-me relabel failed (parse succeeded)"
+		echo "auto-parse-plans: WARN: relabel failed — parse succeeded; manually add plan-parsed + remove plan-me to prevent re-parse" >&2
 	}
 }
 
