@@ -504,6 +504,10 @@ EOF
 _write .claude/hooks/phase0.5-copilot-prefilter.sh 755 <<'EOF'
 #!/bin/bash
 set -euo pipefail
+# auto-register: false
+# bats-required: 0
+# (Thin self-resolving shim: the real hook + its bats live in the plugin cache
+#  and are upstream-tested; this file only forwards. Not event-registered.)
 # Self-naming shim → forwards to the plugin cache's hooks/<this-name> at the
 # pinned version. The real hook + its _lib deps live in the plugin cache.
 HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
@@ -536,6 +540,10 @@ EOF
 _write .claude/hooks/post-commit-ship-cycle.sh 755 <<'EOF'
 #!/bin/bash
 set -euo pipefail
+# auto-register: false
+# bats-required: 0
+# (Thin self-resolving shim: the real hook + its bats live in the plugin cache
+#  and are upstream-tested; this file only forwards. Not event-registered.)
 # Self-naming shim → forwards to the plugin cache's hooks/<this-name> at the
 # pinned version. The real hook + its _lib deps live in the plugin cache.
 HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
