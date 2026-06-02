@@ -206,12 +206,18 @@ _check_and_parse_issue() {
 	echo "auto-parse-plans: ✓ parsed issue #$issue" >&2
 
 	# Mark plan-parsed AND drop plan-me so the source issue leaves the poll set.
-	# (Adding plan-parsed alone left every parsed issue in the plan-me poll
-	# forever — it grew to 500/cycle. Removing plan-me bounds the poll.)
-	gh issue edit "$issue" --add-label plan-parsed --remove-label plan-me 2>&1 | tail -1 >&2 || {
-		_log "label-failed" "$issue" "warn" "plan-parsed/plan-me relabel failed (parse succeeded)"
-		echo "auto-parse-plans: WARN: relabel failed — parse succeeded; manually add plan-parsed + remove plan-me to prevent re-parse" >&2
-	}
+	# CR #478 r4 (REVERSAL of an earlier wrong rejection): a single combined
+	# `--add-label plan-parsed --remove-label plan-me` fails WHOLESALE when the
+	# plan-parsed label is undefined (gh: "'plan-parsed' not found") -> plan-me is
+	# NOT removed -> the source re-enters the poll every cycle = runaway (observed
+	# 205 issues, #223). Fix: ensure the label exists, then remove plan-me as its
+	# OWN op so the poll-bounding can't be blocked by the marker-add failing.
+	gh label create plan-parsed --color ededed --description "cr-plan parsed this into an epic+subs" 2>/dev/null || true
+	if ! gh issue edit "$issue" --remove-label plan-me 2>&1 | tail -1 >&2; then
+		_log "label-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — issue may re-enter the poll"
+		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually to prevent re-parse" >&2
+	fi
+	gh issue edit "$issue" --add-label plan-parsed 2>/dev/null || true
 }
 
 if [ -n "$TARGET_ISSUE" ]; then
