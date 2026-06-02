@@ -87,10 +87,13 @@ _emit_stage_directive() {
 	phase2-preread)
 		# #223 PREREAD GATE at phase2 entry — read the Phase 2 process SSOT
 		# before running the local CR-CLI loop. preread keys the ack at the
-		# ship-pr-cycle SKILL.md (the Phase 2 procedure lives there).
+		# ship-pr-cycle SKILL.md (the Phase 2 procedure lives there). The plugin
+		# ships it at skills/ship-pr-cycle/SKILL.md; a CONSUMER repo has it at
+		# .claude/skills/ship-pr-cycle/SKILL.md (#223 r1 code-reviewer) —
+		# hook-ack-clear's basename match clears the block when EITHER is Read.
 		preread="skills/ship-pr-cycle/SKILL.md"
 		body="PREREAD GATE — advanced INTO phase2 (local CR-CLI review loop). BEFORE running CR, Read the Phase 2 process so you apply the cap/cache/prove-yourself discipline correctly:
-    1. Read skills/ship-pr-cycle/SKILL.md  (← reading THIS file clears the block below; see the [phase2] section + 'Phase 2 / CR findings' rule)
+    1. Read the ship-pr-cycle SKILL.md — skills/ship-pr-cycle/SKILL.md in the plugin, or .claude/skills/ship-pr-cycle/SKILL.md in a consumer repo (← reading it clears the block below; see the [phase2] section + 'Phase 2 / CR findings' rule)
   Until you Read it, the next Bash/Edit/Write is BLOCKED (hook-ack pending). Phase 2 invokes the local CR-CLI via the cap from phase1-scaler; the content-hash cache short-circuits re-review of an unchanged surface (don't burn the 10/hr budget). On findings: apply OR reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire — do NOT advance with open findings. Then re-run 'scripts/ship-pr-cycle.sh next'."
 		;;
 	*)

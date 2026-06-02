@@ -51,8 +51,15 @@ cd "$REPO_ROOT"
 # Staged shadow candidates: .claude/scripts/** or .claude/_lib/** (any depth).
 # --diff-filter=ACMR (added/copied/modified/renamed) — a deletion removes a
 # shadow and can't drift, so it's not a candidate.
-STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null |
-	grep -E '^\.claude/(scripts|_lib)/' || true)
+# #223 r1 (silent-failure-hunter): capture `git diff` + its rc SEPARATELY from
+# the grep so a genuine git failure (corrupt index, partial repo) fails CLOSED
+# (exit 2) instead of being masked as "no shadow staged" — a piped
+# `git ... | grep ... || true` swallows BOTH the grep-no-match AND the git error.
+_staged_all=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null) || {
+	echo "stale-shadow-guard: git diff --cached failed — refusing (fail-closed)" >&2
+	exit 2
+}
+STAGED=$(printf '%s\n' "$_staged_all" | grep -E '^\.claude/(scripts|_lib)/' || true)
 
 if [ -z "$STAGED" ]; then
 	exit 0

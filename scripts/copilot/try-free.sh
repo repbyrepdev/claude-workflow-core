@@ -27,6 +27,10 @@ set -uo pipefail
 #   COPILOT_MODEL         pin to a single model (tried FIRST, but the chain still
 #                         appends the CLI default as a final fallback — it does
 #                         NOT skip the chain; see #223)
+#   COPILOT_TIMEOUT_SEC   per-model timeout in seconds (default 150). The old
+#                         hard-coded 60s timed out the agentic CLI default model
+#                         (claude-sonnet-4.6) on a real diff — #223 phase0.5
+#                         dogfood logged rc=124 (timeout) for all 5 agents.
 #
 # Graceful behavior:
 #   - `copilot` binary missing → exit 1 silently, no error
@@ -105,10 +109,13 @@ for model in "${MODEL_ARR[@]}"; do
 	MODEL_ARG=()
 	[ -n "$model" ] && MODEL_ARG=(--model="$model")
 
-	# Timeout kept loose (60s). Under set -u, expand possibly-empty arrays with
-	# the `+"${ARR[@]}"` guard. Copilot CLI's `-p` uses its arg directly and
-	# ignores stdin, so we DON'T pipe FULL_PROMPT into stdin (silent duplicate).
-	if OUTPUT=$("$TIMEOUT_CMD" 60 copilot \
+	# Timeout configurable via COPILOT_TIMEOUT_SEC (default 150s). The old
+	# hard-coded 60s timed out the agentic default model (claude-sonnet-4.6) on a
+	# real diff (#223 phase0.5 dogfood: rc=124 for all 5 agents). Under set -u,
+	# expand possibly-empty arrays with the `+"${ARR[@]}"` guard. Copilot CLI's
+	# `-p` uses its arg directly and ignores stdin, so we DON'T pipe FULL_PROMPT
+	# into stdin (silent duplicate).
+	if OUTPUT=$("$TIMEOUT_CMD" "${COPILOT_TIMEOUT_SEC:-150}" copilot \
 		-p "$FULL_PROMPT" \
 		${MODEL_ARG[@]+"${MODEL_ARG[@]}"} \
 		"${SAFE_ARGS[@]}" \

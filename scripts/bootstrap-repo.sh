@@ -11,7 +11,7 @@ set -euo pipefail
 #     .github/required-checks-list.yml)
 #   - Install pre-commit hooks: `pre-commit install`
 #
-# Files written:
+# Files written (SEED set — the full generic runtime is then synced, see below):
 #   .pre-commit-config.yaml          — pinned plugin + minimal upstream hooks
 #   .claude/skills/ship-pr-cycle/    — consumer wrapper for plugin orchestrator
 #   .claude/hooks/review-log.sh      — shim that delegates to plugin
@@ -20,6 +20,11 @@ set -euo pipefail
 #   .github/labels.yml               — label catalog stub
 #   .github/required-checks-list.yml — required-checks SSOT
 #   .github/ISSUE_TEMPLATE/{bug,feature,task,epic,brainstorm}.yml
+# The above are the per-repo-flavored + bootstrap-critical SEEDS only. The LARGE
+# generic surface (~100 .claude/hooks/* runtime hooks, _lib/* helpers, and the
+# hashed .gemini/.codex/.coderabbit/.github byte-SSOTs) is laid down right after
+# by _sync_full_ssot() → refresh-from-source.sh; the authoritative file list is
+# .claude/.source-hashes.json (NOT this comment — kept short to avoid drift).
 #
 # Idempotent: every file write checks for existing first; --force flag
 # overrides. --dry-run shows what would be created without mutating.
@@ -1629,6 +1634,16 @@ _sync_full_ssot() {
 		_log "WARN: refresh-from-source.sh exited non-zero — generic hook/_lib runtime may be incomplete:"
 		while IFS= read -r line; do [ -n "$line" ] && _log "    $line"; done <<<"$rerr"
 		REFRESH_FAILED=1
+		# #223 r1 (silent-failure-hunter): a FAILED refresh on a REAL install
+		# leaves the SAME incomplete-repo end-state as a MISSING refresher (which
+		# fail-closes with exit 2 above) — so fail-closed here too, rather than
+		# reporting exit 0 "success" on a partial hook/_lib runtime that exit-code-
+		# driven automation would treat as a clean bootstrap. Dry-run writes
+		# nothing (preview), so it stays non-fatal (warn + continue).
+		if [ "${DRY_RUN:-0}" != "1" ]; then
+			_log "ERROR: aborting — refusing to report success on an INCOMPLETE repo (#223). Fix the cause + re-run: scripts/refresh-from-source.sh --consumer-path $TARGET"
+			exit 2
+		fi
 	fi
 }
 _sync_full_ssot
