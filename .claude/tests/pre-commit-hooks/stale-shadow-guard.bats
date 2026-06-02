@@ -136,7 +136,10 @@ teardown() {
 	cp "$HOOK" "$NOGIT/stale-shadow-guard.sh"
 	chmod +x "$NOGIT/stale-shadow-guard.sh"
 	cd "$NOGIT" || return 1
-	run ./stale-shadow-guard.sh
+	# CR #478 p2: $TMPDIR can live inside a git worktree on some systems, so a
+	# bare run could discover an ancestor repo and never hit the exit-2 branch.
+	# GIT_CEILING_DIRECTORIES stops git's upward repo discovery at $NOGIT.
+	run env GIT_CEILING_DIRECTORIES="$NOGIT" ./stale-shadow-guard.sh
 	cd /tmp || true
 	rm -rf "$NOGIT"
 	[ "$status" -eq 2 ]

@@ -89,7 +89,7 @@
     "hooks/phase1-dashboard.sh": "5541a15593c9c249eaf0b7ad0e2637088bcfd5208cbe858e2afb32e356db75f4",
     "hooks/phase1-dedup.sh": "ebc9ab3f72f5f2497060d946bc7edc739c9789236354889f60de484f95628d3a",
     "hooks/phase1-directive-emit.sh": "26ad9f4c4f54947484925e06b964ca6a60ae4b39dd799cc5cc69ca0ba6e43abf",
-    "hooks/phase1-directive-pending-guard.sh": "0cea9bae98a35251b73a0c39cfd37fda5b2edd154cd5697f58caa637d701a29a",
+    "hooks/phase1-directive-pending-guard.sh": "563c5a097689a499443efd523cf53d4beeab8193374992a2e5428490e497b95c",
     "hooks/phase1-launch-completeness-gate.sh": "e2d95bb1f03466cfb3f43ee9b7653efd42e0528372afd06d5cd3b8ad50ff6d2e",
     "hooks/phase1-launcher.sh": "f15e73fc2135d395b63fb3d09a49f516ecaee09ff4546a9e3e9e90d6f739fb60",
     "hooks/phase1-log-pending-gate.sh": "8c0dc3e58326c321b236dddec1270528a69121e8b0d4eaff07adfa6d7f5a5b0c",

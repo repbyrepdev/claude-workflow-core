@@ -99,8 +99,14 @@ while IFS= read -r -d '' f; do
 	_age_out=$(find "$f" -mtime +2 -print 2>/dev/null) && _age_rc=0 || _age_rc=$?
 	if [ "$_age_rc" -eq 0 ] && [ -n "$_age_out" ]; then
 		echo "phase1-directive-pending-guard: Layer 0 auto-removed stale (>2d) marker $sha" >&2
-		rm -f "$f"
-		continue
+		# CR #478 p2 (major): best-effort rm — under `set -euo pipefail` a failing
+		# rm (readonly fs / perms) would ABORT the guard mid-sweep, leaving later
+		# markers unprocessed AND the current Bash/Edit un-gated. Warn + keep
+		# scanning the remaining markers instead of dying.
+		if rm -f "$f" 2>/dev/null; then
+			continue
+		fi
+		echo "phase1-directive-pending-guard: WARN: Layer 0 rm failed for $sha (continuing)" >&2
 	fi
 	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now
 	# reachable from origin/main. Catches merge-commit / fast-forward /

@@ -70,8 +70,13 @@ STAGED_TMP=$(mktemp -t stale-shadow.XXXXXX) || {
 	echo "stale-shadow-guard: mktemp failed" >&2
 	exit 2
 }
+# CR #478 p2: second temp for the STAGED canonical blob (see comparison below).
+CANON_TMP=$(mktemp -t stale-shadow-canon.XXXXXX) || {
+	echo "stale-shadow-guard: mktemp failed" >&2
+	exit 2
+}
 # shellcheck disable=SC2329,SC2317  # invoked via trap registered below
-_cleanup() { rm -f "$STAGED_TMP"; }
+_cleanup() { rm -f "$STAGED_TMP" "$CANON_TMP"; }
 trap _cleanup EXIT INT TERM HUP
 
 drifts=()
@@ -85,18 +90,26 @@ while IFS= read -r shadow; do
 	[ -f "$canonical" ] || continue
 
 	# Materialize the STAGED blob of the shadow (not the worktree copy) so an
-	# add-then-edit can't sneak a stale copy past the gate. Compare against the
-	# canonical's WORKTREE content intentionally: this guard only fires in the
-	# PRODUCER (a consumer has no repo-root canonical, so the `-f` check above
-	# skips it), where the canonical IS the live SSOT a shadow must match — its
-	# index/staged state is irrelevant. Override a false positive with
-	# STALE_SHADOW_GUARD_SKIP=1.
+	# add-then-edit can't sneak a stale copy past the gate. This guard only fires
+	# in the PRODUCER (a consumer has no repo-root canonical, so the `-f` check
+	# above skips it). Override a false positive with STALE_SHADOW_GUARD_SKIP=1.
 	if ! git show ":${shadow}" >"$STAGED_TMP" 2>/dev/null; then
 		echo "stale-shadow-guard: could not read staged blob for $shadow" >&2
 		exit 2
 	fi
 
-	if ! cmp -s "$STAGED_TMP" "$canonical"; then
+	# CR #478 p2: compare against what's BEING COMMITTED as the canonical — the
+	# STAGED canonical blob (`git show :canonical`, == HEAD's when the canonical
+	# isn't itself staged) — NOT the worktree, which may carry unstaged edits the
+	# staged shadow legitimately matches (a false positive). Fall back to the
+	# worktree only if the canonical has no index entry (shouldn't happen here:
+	# the `-f` check above already proved a repo-root canonical exists).
+	if git show ":${canonical}" >"$CANON_TMP" 2>/dev/null; then
+		_canon_cmp="$CANON_TMP"
+	else
+		_canon_cmp="$canonical"
+	fi
+	if ! cmp -s "$STAGED_TMP" "$_canon_cmp"; then
 		drifts+=("$shadow  (canonical: $canonical)")
 	fi
 done <<<"$STAGED"
