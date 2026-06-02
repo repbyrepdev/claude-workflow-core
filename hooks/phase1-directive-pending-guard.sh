@@ -96,7 +96,7 @@ while IFS= read -r -d '' f; do
 	# session, but this guard runs on every Bash/Edit so it self-heals
 	# continuously. Capture find's rc (don't swallow it) + log the deletion so a
 	# mistaken cleanup is observable. Portable mtime via find -mtime (macOS+Linux).
-	_age_out=$(find "$f" -mtime +2 -print 2>/dev/null) && _age_rc=0 || _age_rc=$?
+	_age_out=$(find "$f" -mmin +2880 -print 2>/dev/null) && _age_rc=0 || _age_rc=$? # 48h exact (CR #478 r5; -mtime +2 rounds to ~3d)
 	if [ "$_age_rc" -eq 0 ] && [ -n "$_age_out" ]; then
 		echo "phase1-directive-pending-guard: Layer 0 auto-removed stale (>2d) marker $sha" >&2
 		# CR #478 p2 (major): best-effort rm — under `set -euo pipefail` a failing

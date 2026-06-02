@@ -70,14 +70,16 @@ STAGED_TMP=$(mktemp -t stale-shadow.XXXXXX) || {
 	echo "stale-shadow-guard: mktemp failed" >&2
 	exit 2
 }
+# CR #478 r5: register the cleanup trap RIGHT AFTER the first temp (both names
+# guarded with :-) so STAGED_TMP can't leak if the CANON_TMP mktemp below fails.
+# shellcheck disable=SC2329,SC2317  # invoked via trap registered below
+_cleanup() { rm -f "${STAGED_TMP:-}" "${CANON_TMP:-}"; }
+trap _cleanup EXIT INT TERM HUP
 # CR #478 p2: second temp for the STAGED canonical blob (see comparison below).
 CANON_TMP=$(mktemp -t stale-shadow-canon.XXXXXX) || {
 	echo "stale-shadow-guard: mktemp failed" >&2
 	exit 2
 }
-# shellcheck disable=SC2329,SC2317  # invoked via trap registered below
-_cleanup() { rm -f "$STAGED_TMP" "$CANON_TMP"; }
-trap _cleanup EXIT INT TERM HUP
 
 drifts=()
 while IFS= read -r shadow; do

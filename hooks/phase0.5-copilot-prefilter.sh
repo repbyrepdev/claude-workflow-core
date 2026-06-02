@@ -88,11 +88,11 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 
 if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
-	echo 'phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)' >&2
+	echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 fi
 if [ -z "$COPILOT_HELPER" ] || [ ! -x "$COPILOT_HELPER" ]; then
-	echo 'phase0.5: try-free.sh helper missing (checked $REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — install Copilot CLI first' >&2
+	echo "phase0.5: try-free.sh helper missing (checked $REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — install Copilot CLI first" >&2
 	exit 1
 fi
 [ -x "$DEDUP_HOOK" ] || {
