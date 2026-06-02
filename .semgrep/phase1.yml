@@ -1,0 +1,38 @@
+# Phase-1 LOCAL semgrep ruleset (#478). Registry-independent: the public
+# semgrep.dev registry (--config auto / p/bash) is unreachable in some
+# environments (10s HTTP timeout), which silently failed every phase1 round.
+# These rules are bundled + run fully offline:
+#   semgrep scan --config .semgrep/phase1.yml --metrics off --disable-version-check <files>
+# Rules use `generic` + `pattern-regex` (re2 — NO lookaround/backrefs) so they
+# need no language parser and catch real shell footguns this bash/workflow repo
+# cares about. shellcheck (pre-commit) + the phase1 review agents are the
+# primary review; this is the supplementary structural pass that used to need
+# the network. Add rules conservatively — keep false positives near zero.
+rules:
+  - id: phase1-network-pipe-to-shell
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Piping a network fetch directly into a shell executes unverified remote
+      code. Download to a file, verify it, then run it.
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+    pattern-regex: '(?:curl|wget)[^\n|]*\|[ \t]*(?:sudo[ \t]+)?(?:ba|z|d)?sh\b'
+
+  # NOTE: an `eval $var` rule was tried + dropped — it false-positived on safe
+  # shell-option save/restore (`eval "$_prev_globstar"`), and a regex can't tell
+  # trusted from untrusted eval. shellcheck (SC2086/SC2294) + the review agents
+  # cover eval risk with context the regex lacks. Keep this ruleset near-zero-FP.
+  - id: phase1-curl-insecure-tls
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      curl -k / --insecure disables TLS certificate verification (MITM risk).
+      Fix the trust store instead of skipping verification.
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+    pattern-regex: '\bcurl\b[^\n]*[ \t](?:-k|--insecure)\b'
