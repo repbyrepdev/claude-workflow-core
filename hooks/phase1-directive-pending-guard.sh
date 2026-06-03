@@ -80,6 +80,9 @@ rm -f "$find_err"
 
 pending_count=0
 pending_list=""
+# HEAD is invariant across markers — resolve ONCE here rather than per-iteration
+# (CR-CLI). The age-prune predicate inside the loop reads $_head_sha.
+_head_sha=$(git rev-parse HEAD 2>/dev/null) || _head_sha=""
 while IFS= read -r -d '' f; do
 	sha=$(basename "$f" .phase1-directive.txt)
 	# v0.32.13+ (#223) Layer 0: age-based stale cleanup. A phase1-directive
@@ -106,7 +109,7 @@ while IFS= read -r -d '' f; do
 	# (that is an active, possibly-paused round, not cruft). Non-HEAD aged markers
 	# (abandoned branches, squash-merge orphans the reachability layers below
 	# miss) remain Layer-0 eligible — that is the cruft Layer 0 exists to sweep.
-	_head_sha=$(git rev-parse HEAD 2>/dev/null) || _head_sha=""
+	# ($_head_sha is hoisted above the loop — HEAD is invariant across markers.)
 	if [ -z "$_head_sha" ]; then
 		: # git HEAD unverifiable — fail-CLOSED: do NOT age-prune (the marker may be
 		# a live round; mirrors the rc-capture bail at the top of this hook). CR-CLI

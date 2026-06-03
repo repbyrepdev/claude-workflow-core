@@ -5,11 +5,11 @@ set -euo pipefail
 # Thin wrapper over scripts/bootstrap-repo.sh; sets SKILL_WRAPPER=1 so the
 # skill-bypass-guard honors the `gh label` calls the scaffold makes.
 #
-# Usage:
+# Usage (target-dir is REQUIRED in every mode, incl. --verify):
 #   .claude/skills/bootstrap-repo/run.sh <target-dir>             # scaffold
 #   .claude/skills/bootstrap-repo/run.sh <target-dir> --dry-run   # preview only
 #   .claude/skills/bootstrap-repo/run.sh <target-dir> --tag vX.Y.Z
-#   .claude/skills/bootstrap-repo/run.sh --verify [--scope plugin|consumer|both]
+#   .claude/skills/bootstrap-repo/run.sh <target-dir> --verify [--scope plugin|consumer|both]
 #
 # See SKILL.md for the post-scaffold checklist.
 export SKILL_WRAPPER=1

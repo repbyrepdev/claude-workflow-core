@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+# bats-required: 0
+# (Orchestration wrapper over gh + CodeRabbit + git — fires @coderabbitai
+#  autofix, polls the gh API, pulls autofix commits, restores exec bits, waits
+#  for CR re-review. Exercised LIVE in the ship-pr-cycle cr-autofix stage; not
+#  unit-testable without full gh/CR/network mocking. #223 CR-CLI r7.)
 # v4.24-R (#605) — automated CR autofix cycle.
 # v4.27 (#632) — extended:
 #   - wait-for-CR-rereview on autofix HEAD (item #8)
@@ -29,6 +34,7 @@ CYCLE_TIMEOUT=600
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--pr)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --pr requires a value" >&2
 			exit 2
@@ -37,6 +43,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--max-cycles)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --max-cycles requires a value" >&2
 			exit 2
@@ -45,6 +52,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--poll)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --poll requires a value" >&2
 			exit 2
@@ -53,6 +61,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--timeout)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --timeout requires a value" >&2
 			exit 2
@@ -119,7 +128,7 @@ _exec_bit_restore_local() {
 	for f in "${restored_files[@]}"; do
 		rel="${f#"$REPO_ROOT/"}"
 		if git -C "$REPO_ROOT" ls-files -s "$rel" 2>/dev/null | awk '{print $1}' | grep -qx 100644; then
-			git -C "$REPO_ROOT" update-index --chmod=+x "$rel" 2>/dev/null && index_dirty=1 || true
+			if git -C "$REPO_ROOT" update-index --chmod=+x "$rel" 2>/dev/null; then index_dirty=1; fi
 		fi
 	done
 	[ "$index_dirty" = "1" ] || return 0
@@ -266,7 +275,11 @@ _phase05_fallback() {
 	fi
 	echo "autofix-cycle: running Phase 0.5 fallback (free-tier Copilot, 0 CR slots)" >&2
 	local exit_code=0
-	"$prefilter" --base main 2>&1 | tail -5 >&2 || exit_code=$?
+	# stdin </dev/null: the prefilter calls try-free.sh, whose `[ ! -t 0 ] && cat`
+	# blocks on an unbounded read when stdin is a non-tty pipe with no data (here
+	# stdin would be inherited from autofix-cycle's caller). The prefilter pipes no
+	# context, so closing stdin avoids the COPILOT_TIMEOUT_SEC hang (#223 CR-CLI).
+	"$prefilter" --base main </dev/null 2>&1 | tail -5 >&2 || exit_code=$?
 	return $exit_code
 }
 
@@ -281,7 +294,7 @@ while [ "$cycle" -le "$MAX_CYCLES" ]; do
 	# Each autofix cycle consumes ~2 CR slots (1 to fire autofix, 1 for
 	# the re-review). Check budget before committing to a cycle.
 	remaining=$(_budget_remaining)
-	if [ -n "$remaining" ] && [[ "$remaining" =~ ^[0-9]+$ ]]; then
+	if [ -n "$remaining" ] && [[ $remaining =~ ^[0-9]+$ ]]; then
 		case "$remaining" in
 		0)
 			# Out of budget: fall back to Phase 0.5 free-tier and wait.

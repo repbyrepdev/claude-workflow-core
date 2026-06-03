@@ -54,8 +54,16 @@ command -v copilot >/dev/null 2>&1 || {
 	exit 1
 }
 
-# Read stdin context (diff, commit log, etc.) if present. Non-blocking: if
-# caller didn't pipe anything, CONTEXT stays empty and the prompt is all.
+# Read stdin context (diff, commit log, etc.) if present. The `cat` is correct
+# when a caller PIPES real context. But it is NOT truly non-blocking: when stdin
+# is a non-tty pipe that is OPEN but carries NO data (e.g. a detached/background
+# launch that inherited the parent's stdin), `cat` blocks until EOF — which never
+# arrives — hanging until any outer timeout fires (rc=124). CALLERS THAT PIPE NO
+# CONTEXT MUST CLOSE STDIN with `</dev/null` (the prefilter detached launches +
+# autofix-cycle fallback do this — #223 CR-CLI). Detecting "data available"
+# portably is unreliable, so the contract lives on the caller side; do NOT add a
+# blanket `exec </dev/null` here — that would break the legitimate piped-context
+# path (github-pr-creation / git-commit / epic-creation all pipe a diff/log in).
 CONTEXT=""
 if [ ! -t 0 ]; then
 	CONTEXT=$(cat)

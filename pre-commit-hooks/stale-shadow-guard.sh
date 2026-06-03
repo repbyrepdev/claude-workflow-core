@@ -75,8 +75,13 @@ git diff --cached --name-only -z --diff-filter=ACMR >"$NAMES_TMP" 2>/dev/null ||
 # Cheap early-exit when nothing under .claude/scripts|_lib is staged. The `tr`
 # is for this presence check ONLY; the authoritative per-file filter is the
 # NUL-safe `case` in the loop below.
-if ! tr '\0' '\n' <"$NAMES_TMP" | grep -qE '^\.claude/(scripts|_lib)/'; then
+_present_rc=0
+tr '\0' '\n' <"$NAMES_TMP" | grep -qE '^\.claude/(scripts|_lib)/' || _present_rc=$?
+if [ "$_present_rc" -eq 1 ]; then
 	exit 0
+elif [ "$_present_rc" -ne 0 ]; then
+	echo "stale-shadow-guard: presence-check grep failed (rc=$_present_rc) — refusing (fail-closed)" >&2
+	exit 2
 fi
 
 # Per-candidate staged-blob comparison against the repo-root canonical.

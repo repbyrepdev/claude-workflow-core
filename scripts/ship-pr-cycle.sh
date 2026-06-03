@@ -1352,11 +1352,15 @@ cmd_next() {
 			[ "$_grad_err" != /dev/null ] && rm -f "$_grad_err"
 		fi
 		if [ "$_grad_check_rc" -eq 0 ]; then
+			# #223 PREREAD GATE: read the Phase 2 process SSOT before the
+			# CR-CLI loop (keys ack at skills/ship-pr-cycle/SKILL.md). Emit
+			# BEFORE _set_stage so the stdout directive + (when NOT in a
+			# resume auto-walk) the ack-pending are produced ahead of the
+			# stage flip; the SHIP_PR_IN_RESUME suppression inside the emitter
+			# is unchanged (resume's stop/auto-walk semantics untouched).
+			_emit_stage_directive phase2-preread
 			_set_stage "phase2"
 			echo "→ phase1 skipped (branch graduated past Phase 0.5/1); advanced to phase2"
-			# #223 PREREAD GATE: read the Phase 2 process SSOT before the
-			# CR-CLI loop (keys ack at skills/ship-pr-cycle/SKILL.md).
-			_emit_stage_directive phase2-preread
 			return 0
 		fi
 		# Graduation didn't fire — now do the convergence eval. CR r2:
@@ -1368,11 +1372,15 @@ cmd_next() {
 		# When scaler returns 1 (small/trivial diff), one clean round is
 		# enough; demanding 2 was costing extra rounds on every pin bump.
 		if [ "$clean_streak" -ge "$cap" ]; then
+			# #223 PREREAD GATE: read the Phase 2 process SSOT before the
+			# CR-CLI loop (keys ack at skills/ship-pr-cycle/SKILL.md). Emit
+			# BEFORE _set_stage so the stdout directive + (when NOT in a
+			# resume auto-walk) the ack-pending are produced ahead of the
+			# stage flip; the SHIP_PR_IN_RESUME suppression inside the emitter
+			# is unchanged (resume's stop/auto-walk semantics untouched).
+			_emit_stage_directive phase2-preread
 			_set_stage "phase2"
 			echo "→ phase1 converged ($clean_streak-clean-streak ≥ $cap cap); advanced to phase2"
-			# #223 PREREAD GATE: read the Phase 2 process SSOT before the
-			# CR-CLI loop (keys ack at skills/ship-pr-cycle/SKILL.md).
-			_emit_stage_directive phase2-preread
 		else
 			# v4.28-W4 (#732): write the directive ALSO to a marker file
 			# so the phase1-directive-emit UserPromptSubmit hook can

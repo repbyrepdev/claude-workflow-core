@@ -1620,8 +1620,13 @@ _sync_full_ssot() {
 			_log "NOTE: refresh-from-source.sh not found at $refresher — dry-run previews seed files only (full SSOT sync not shown)"
 			return 0
 		fi
-		_log "ERROR: refresh-from-source.sh missing/non-executable at $refresher — plugin install is broken; aborting before producing an INCOMPLETE repo (#223)"
-		exit 2
+		# #223 CR-CLI: a REAL install with no refresher IS a broken plugin →
+		# fail-closed. DEFER the exit (set the flag + return) so the end-of-run
+		# summary's REFRESH_FAILED block still runs for real installs; the
+		# deferred `exit 2` fires AFTER the summary (see _sync_full_ssot caller).
+		_log "ERROR: refresh-from-source.sh missing/non-executable at $refresher — plugin install is broken; refusing to report success on an INCOMPLETE repo (#223)"
+		REFRESH_FAILED=1
+		return 0
 	fi
 	local args=(--consumer-path "$TARGET")
 	[ "${DRY_RUN:-0}" = "1" ] && args+=(--dry-run)
@@ -1638,13 +1643,16 @@ _sync_full_ssot() {
 		REFRESH_FAILED=1
 		# #223 r1 (silent-failure-hunter): a FAILED refresh on a REAL install
 		# leaves the SAME incomplete-repo end-state as a MISSING refresher (which
-		# fail-closes with exit 2 above) — so fail-closed here too, rather than
+		# also sets REFRESH_FAILED above) — so fail-closed here too, rather than
 		# reporting exit 0 "success" on a partial hook/_lib runtime that exit-code-
 		# driven automation would treat as a clean bootstrap. Dry-run writes
 		# nothing (preview), so it stays non-fatal (warn + continue).
+		# #223 CR-CLI: the actual `exit 2` is DEFERRED to AFTER the end-of-run
+		# summary (see the _sync_full_ssot caller below) so the REFRESH_FAILED
+		# summary block runs for REAL installs too, not just dry-runs — otherwise
+		# an immediate exit here skipped the operator-facing remediation summary.
 		if [ "${DRY_RUN:-0}" != "1" ]; then
-			_log "ERROR: aborting — refusing to report success on an INCOMPLETE repo (#223). Fix the cause + re-run: scripts/refresh-from-source.sh --consumer-path $TARGET"
-			exit 2
+			_log "ERROR: refusing to report success on an INCOMPLETE repo (#223). Fix the cause + re-run: scripts/refresh-from-source.sh --consumer-path $TARGET"
 		fi
 	fi
 }
@@ -1671,6 +1679,17 @@ if [ "$REFRESH_FAILED" = "1" ]; then
 	_log "    scripts/refresh-from-source.sh --consumer-path $TARGET"
 	_log "    See the WARN above for the underlying error."
 	_log ""
+	# #223 CR-CLI: DEFERRED fail-closed. A REAL install with a failed/missing
+	# refresh is an INCOMPLETE repo — exit 2 so exit-code-driven automation never
+	# treats it as a clean bootstrap. Deferred to HERE (after the summary above)
+	# so the operator-facing remediation summary always prints first; previously
+	# the in-function `exit 2` skipped this summary for real installs. Dry-runs
+	# never set REFRESH_FAILED for a real failure (they only preview), so this
+	# fires only on a genuine real-install failure — but guard on DRY_RUN anyway
+	# so the dry-run "complete" path below is never pre-empted.
+	if [ "$DRY_RUN" != "1" ]; then
+		exit 2
+	fi
 fi
 if [ "$DRY_RUN" = "1" ]; then
 	_log "bootstrap-repo dry-run complete. Re-run without --dry-run to apply."

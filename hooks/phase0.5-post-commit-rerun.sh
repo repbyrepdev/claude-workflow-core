@@ -183,13 +183,19 @@ DETACH_LOG="$LOG_DIR/phase0.5-post-commit-rerun-${HEAD_SHA:0:8}.log"
 # "$PREFILTER" ]` at line 42, `command -v setsid` below) and exec
 # (the file could be deleted/PATH could change in that window).
 # Operator should tail DETACH_LOG when investigating phase0.5 misses.
+# stdin MUST be /dev/null: the detached prefilter calls scripts/copilot/try-free.sh,
+# whose `if [ ! -t 0 ]; then CONTEXT=$(cat); fi` blocks on an unbounded `cat` read
+# until COPILOT_TIMEOUT_SEC fires (rc=124) when stdin is an open non-tty pipe with
+# no data (the detached git-hook stdin). The prefilter passes its prompt as $1 and
+# pipes NO context, so closing stdin here is correct + is the root-cause fix for the
+# recurring phase0.5 prefilter timeouts (#223 CR-CLI).
 if command -v setsid >/dev/null 2>&1; then
-	(setsid nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" >"$DETACH_LOG" 2>&1 &) ||
+	(setsid nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" </dev/null >"$DETACH_LOG" 2>&1 &) ||
 		echo "phase0.5-post-commit-rerun: WARN: failed to detach prefilter via setsid+nohup" >&2
 else
 	# setsid is GNU/coreutils only — fall back to plain nohup on systems
 	# without it (rare but defensive).
-	(nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" >"$DETACH_LOG" 2>&1 &) ||
+	(nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" </dev/null >"$DETACH_LOG" 2>&1 &) ||
 		echo "phase0.5-post-commit-rerun: WARN: failed to detach prefilter via nohup fallback" >&2
 fi
 
