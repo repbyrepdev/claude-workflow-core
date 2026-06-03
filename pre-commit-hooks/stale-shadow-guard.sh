@@ -51,17 +51,31 @@ cd "$REPO_ROOT"
 # Staged shadow candidates: .claude/scripts/** or .claude/_lib/** (any depth).
 # --diff-filter=ACMR (added/copied/modified/renamed) — a deletion removes a
 # shadow and can't drift, so it's not a candidate.
-# #223 r1 (silent-failure-hunter): capture `git diff` + its rc SEPARATELY from
-# the grep so a genuine git failure (corrupt index, partial repo) fails CLOSED
-# (exit 2) instead of being masked as "no shadow staged" — a piped
-# `git ... | grep ... || true` swallows BOTH the grep-no-match AND the git error.
-_staged_all=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null) || {
+# #223 r1 (silent-failure-hunter): capture `git diff` + its rc SEPARATELY so a
+# genuine git failure (corrupt index, partial repo) fails CLOSED (exit 2) rather
+# than being masked as "no shadow staged".
+# CR-CLI r3: NUL-delimited (-z) output into a temp file so we keep that rc check
+# AND iterate NUL-safely — a staged path with an embedded newline can't be split
+# into two names or slip past the filter. (A temp file is the portable route:
+# `grep -z` is GNU-only and bash strips NULs in $(...) command substitution.)
+NAMES_TMP=$(mktemp -t stale-shadow-names.XXXXXX) || {
+	echo "stale-shadow-guard: mktemp failed" >&2
+	exit 2
+}
+# Register cleanup right after the first temp (all names :- guarded) so nothing
+# leaks if a later mktemp fails (CR #478 r5).
+# shellcheck disable=SC2329,SC2317  # invoked via trap registered below
+_cleanup() { rm -f "${NAMES_TMP:-}" "${STAGED_TMP:-}" "${CANON_TMP:-}"; }
+trap _cleanup EXIT INT TERM HUP
+git diff --cached --name-only -z --diff-filter=ACMR >"$NAMES_TMP" 2>/dev/null || {
 	echo "stale-shadow-guard: git diff --cached failed — refusing (fail-closed)" >&2
 	exit 2
 }
-STAGED=$(printf '%s\n' "$_staged_all" | grep -E '^\.claude/(scripts|_lib)/' || true)
 
-if [ -z "$STAGED" ]; then
+# Cheap early-exit when nothing under .claude/scripts|_lib is staged. The `tr`
+# is for this presence check ONLY; the authoritative per-file filter is the
+# NUL-safe `case` in the loop below.
+if ! tr '\0' '\n' <"$NAMES_TMP" | grep -qE '^\.claude/(scripts|_lib)/'; then
 	exit 0
 fi
 
@@ -70,11 +84,6 @@ STAGED_TMP=$(mktemp -t stale-shadow.XXXXXX) || {
 	echo "stale-shadow-guard: mktemp failed" >&2
 	exit 2
 }
-# CR #478 r5: register the cleanup trap RIGHT AFTER the first temp (both names
-# guarded with :-) so STAGED_TMP can't leak if the CANON_TMP mktemp below fails.
-# shellcheck disable=SC2329,SC2317  # invoked via trap registered below
-_cleanup() { rm -f "${STAGED_TMP:-}" "${CANON_TMP:-}"; }
-trap _cleanup EXIT INT TERM HUP
 # CR #478 p2: second temp for the STAGED canonical blob (see comparison below).
 CANON_TMP=$(mktemp -t stale-shadow-canon.XXXXXX) || {
 	echo "stale-shadow-guard: mktemp failed" >&2
@@ -82,19 +91,28 @@ CANON_TMP=$(mktemp -t stale-shadow-canon.XXXXXX) || {
 }
 
 drifts=()
-while IFS= read -r shadow; do
+while IFS= read -r -d '' shadow; do
 	[ -n "$shadow" ] || continue
+	# NUL-safe per-file scope filter (authoritative; the tr-grep above is only a
+	# cheap presence check). Skip anything outside .claude/scripts|_lib.
+	case "$shadow" in
+	.claude/scripts/* | .claude/_lib/*) ;;
+	*) continue ;;
+	esac
 	# Map shadow → canonical: strip the leading `.claude/` segment.
 	canonical="${shadow#.claude/}"
 
-	# No canonical at the repo root ⇒ legitimately-local file, NOT a shadow.
-	# This is the producer-local exemption (e.g. .claude/review-config.yml).
-	[ -f "$canonical" ] || continue
+	# No canonical in the INDEX ⇒ legitimately-local file, NOT a shadow (the
+	# producer-local exemption, e.g. .claude/review-config.yml). CR-CLI r3: gate
+	# on the index (git cat-file -e :canonical), NOT the worktree [ -f ] — keeps
+	# it consistent with the staged-blob comparison below, so a canonical staged
+	# but absent from the worktree (add-then-rm) is still compared.
+	git cat-file -e ":${canonical}" 2>/dev/null || continue
 
 	# Materialize the STAGED blob of the shadow (not the worktree copy) so an
 	# add-then-edit can't sneak a stale copy past the gate. This guard only fires
-	# in the PRODUCER (a consumer has no repo-root canonical, so the `-f` check
-	# above skips it). Override a false positive with STALE_SHADOW_GUARD_SKIP=1.
+	# in the PRODUCER (a consumer has no repo-root canonical, so the cat-file
+	# check above skips it). Override a false positive with STALE_SHADOW_GUARD_SKIP=1.
 	if ! git show ":${shadow}" >"$STAGED_TMP" 2>/dev/null; then
 		echo "stale-shadow-guard: could not read staged blob for $shadow" >&2
 		exit 2
@@ -103,9 +121,8 @@ while IFS= read -r shadow; do
 	# CR #478 p2: compare against what's BEING COMMITTED as the canonical — the
 	# STAGED canonical blob (`git show :canonical`, == HEAD's when the canonical
 	# isn't itself staged) — NOT the worktree, which may carry unstaged edits the
-	# staged shadow legitimately matches (a false positive). Fall back to the
-	# worktree only if the canonical has no index entry (shouldn't happen here:
-	# the `-f` check above already proved a repo-root canonical exists).
+	# staged shadow legitimately matches (a false positive). The cat-file check
+	# above already proved an index entry exists, so this git show succeeds.
 	if git show ":${canonical}" >"$CANON_TMP" 2>/dev/null; then
 		_canon_cmp="$CANON_TMP"
 	else
@@ -114,7 +131,7 @@ while IFS= read -r shadow; do
 	if ! cmp -s "$STAGED_TMP" "$_canon_cmp"; then
 		drifts+=("$shadow  (canonical: $canonical)")
 	fi
-done <<<"$STAGED"
+done <"$NAMES_TMP"
 
 if [ ${#drifts[@]} -gt 0 ]; then
 	echo "stale-shadow-guard: ${#drifts[@]} drifting shadow(s) of plugin-canonical helper(s):" >&2

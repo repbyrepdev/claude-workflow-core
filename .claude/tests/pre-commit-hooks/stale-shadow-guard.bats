@@ -155,3 +155,17 @@ teardown() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"git working tree"* ]]
 }
+
+@test "canonical staged but absent from worktree is still compared (r3 index check)" {
+	cd "$TEST_TMP" || return 1
+	# Stage a DRIFTING shadow, then delete the canonical from the WORKTREE while
+	# its index/HEAD entry remains. The index-based existence check (git cat-file
+	# -e :canonical) must still see the canonical and CATCH the drift — the old
+	# worktree [ -f ] test would skip it and miss the drift.
+	printf '#!/bin/bash\necho STAGED-SHADOW-DRIFT\n' >.claude/scripts/copilot/try-free.sh
+	git add .claude/scripts/copilot/try-free.sh
+	rm scripts/copilot/try-free.sh # gone from worktree, still in index + HEAD
+	run pre-commit-hooks/stale-shadow-guard.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *".claude/scripts/copilot/try-free.sh"* ]]
+}
