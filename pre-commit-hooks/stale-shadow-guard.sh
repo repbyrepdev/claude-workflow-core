@@ -32,13 +32,22 @@ set -euo pipefail
 # SSOT resolves).
 #
 # Exit codes (this is a pre-commit hook — it takes no user args, so it has no
-# "usage" mode; exit 2 is intentionally repurposed for precondition errors
-# rather than the conventional 2=usage meaning):
+# "usage" mode; exit 2 is repurposed for fail-closed precondition errors rather
+# than the conventional 2=usage meaning). This MATCHES the repo's established
+# pre-commit-hook convention for arg-less gates — see the near-identical
+# pre-commit-hooks/edit-corruption-guard.sh (not-in-git-repo → exit 2) and the
+# documented contract in pre-commit-hooks/source-hashes-regen-gate.sh
+# ("2 — precondition error (jq missing, hash-drift.sh missing, etc.)"), plus
+# bats-gate.sh / check-ssot-drift.sh. The .coderabbit.yaml `pre-commit-hooks/*.sh`
+# guideline's "2 usage" is the conventional default; it does not forbid reusing 2
+# for a fail-closed abort, which the `scripts/*.sh` guideline ("ABORT exit 2")
+# and these sibling hooks all do. Normalizing these to exit 1 would make THIS
+# hook the lone outlier vs. its siblings:
 #   0 — passed (no shadow staged, OR shadow has no canonical, OR shadow ==
 #       canonical, OR bypass)
 #   1 — a staged shadow DIFFERS from its plugin canonical (drift)
-#   2 — precondition error (not in a git repo, mktemp/git-show failure);
-#       intentional deviation from 2=usage, see note above
+#   2 — fail-closed precondition error (not in a git repo, mktemp/git-show
+#       failure); deliberate reuse of 2 for abort, matching sibling hooks above
 
 if [ "${STALE_SHADOW_GUARD_SKIP:-0}" = "1" ]; then
 	echo "stale-shadow-guard: STALE_SHADOW_GUARD_SKIP=1 — bypassing (audit-logged)" >&2

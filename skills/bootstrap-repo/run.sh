@@ -8,6 +8,7 @@ set -euo pipefail
 # Usage (target-dir is REQUIRED in every mode, incl. --verify):
 #   skills/bootstrap-repo/run.sh <target-dir>             # scaffold
 #   skills/bootstrap-repo/run.sh <target-dir> --dry-run   # preview only
+#   skills/bootstrap-repo/run.sh <target-dir> --apply-labels  # also sync .github/labels.yml to the target's GitHub remote (opt-in)
 #   skills/bootstrap-repo/run.sh <target-dir> --tag vX.Y.Z
 #   skills/bootstrap-repo/run.sh <target-dir> --verify [--scope plugin|consumer|both]
 #

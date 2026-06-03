@@ -86,8 +86,14 @@ EOF
 	mkdir -p "$TEST_TMP/target-default"
 	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-default\" 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"label sync skipped"* ]]
-	[[ $output == *"--apply-labels"* ]]
-	[[ $output != *"no GitHub remote yet"* ]]
-	[[ $output != *"applying labels from"* ]]
+	# CR-CLI #1607: bootstrap-repo.sh logs "label sync SKIPPED" (uppercase);
+	# the old lowercase glob never matched. AND: bats 1.13.0 only fails a test
+	# on the LAST command's rc (no set -e in test bodies), so a bare mid-body
+	# `[[ ]]` is silently ignored — every assertion below MUST be `|| return 1`
+	# (verified: a false mid-body `[[ ]]` reports `ok`, a `|| return 1` reports
+	# `not ok`). Without this the test was green even with an impossible glob.
+	[[ $output == *"label sync SKIPPED"* ]] || return 1
+	[[ $output == *"--apply-labels"* ]] || return 1
+	[[ $output != *"no GitHub remote yet"* ]] || return 1
+	[[ $output != *"applying labels from"* ]] || return 1
 }

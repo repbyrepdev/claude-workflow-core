@@ -96,6 +96,21 @@ done
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd; })
 
+# CR-CLI #1607: load the plugin-cache helper resolver so _phase05_fallback can
+# resolve review-config.yml the SAME way hooks/phase0.5-copilot-prefilter.sh
+# does (consumer .claude/ copy → plugin cache), instead of only checking
+# $REPO_ROOT/.claude/. This script lives at scripts/cr/ (plugin) or
+# .claude/scripts/cr/ (consumer), so the plugin _lib sibling is ../../_lib.
+# Guarded + best-effort (mirrors scripts/ship-pr-cycle.sh): if the lib is
+# absent (older consumer cache), _phase05_fallback falls back to the direct
+# $REPO_ROOT/.claude path.
+_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN_LIB="$(cd "$_SCRIPT_DIR/../../_lib" 2>/dev/null && pwd || echo "")"
+if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
+	# shellcheck source=../../_lib/resolve-plugin-helper.sh
+	. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+fi
+
 _exec_bit_restore_local() {
 	# v4.28-W3-C (#672): restore exec bits + commit LOCALLY ONLY. Push
 	# is split out so the cycle can wait for CR's autofix-only re-review
@@ -301,7 +316,16 @@ _phase05_fallback() {
 	# (yq missing, malformed YAML, unreadable) we must NOT silently prefilter
 	# against the wrong base — error to stderr + skip the prefilter (return
 	# non-zero) so a misconfigured SSOT can't quietly diff against main.
-	local review_config="$REPO_ROOT/.claude/review-config.yml"
+	# CR-CLI #1607: resolve review-config.yml through resolve_plugin_helper (the
+	# SAME resolver phase0.5-copilot-prefilter.sh uses) so a consumer that pulls
+	# review-config.yml from the plugin cache (no local .claude/ copy) reads its
+	# base_ref instead of being treated as "absent" → wrong "main" default. Falls
+	# back to the direct $REPO_ROOT/.claude path when the resolver isn't loaded.
+	local review_config=""
+	if command -v resolve_plugin_helper >/dev/null 2>&1; then
+		review_config="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
+	fi
+	[ -n "$review_config" ] || review_config="$REPO_ROOT/.claude/review-config.yml"
 	local base_ref="main"
 	if [ -f "$review_config" ]; then
 		if ! command -v yq >/dev/null 2>&1; then

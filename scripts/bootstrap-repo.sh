@@ -1568,8 +1568,15 @@ _apply_labels() {
 # label-sync workflow, so there is no auto-sync-on-first-push — the NOTE gives
 # accurate manual recovery instead. --dry-run still previews inside _apply_labels
 # (its own guard).
+# CR-CLI #1607: _apply_labels can `return 2` on a label-apply failure. A BARE
+# call here under `set -euo pipefail` would ABORT the script BEFORE _sync_full_ssot
+# + .coderabbit.yaml compose run → a partial bootstrap. Capture the rc instead
+# (the only set-e-safe idiom) and DEFER the fail-closed `exit 2` until AFTER the
+# end-of-run summary (mirrors the REFRESH_FAILED deferred-exit below), so the
+# scaffold + summary still complete and the operator sees the full picture.
+LABEL_RC=0
 if [ "$APPLY_LABELS" = "1" ] || [ "$DRY_RUN" = "1" ]; then
-	_apply_labels
+	_apply_labels || LABEL_RC=$?
 else
 	_log "NOTE: label sync SKIPPED — no remote label mutation performed."
 	_log "      To sync .github/labels.yml to GitHub: re-run scripts/bootstrap-repo.sh <target> --apply-labels,"
@@ -1751,6 +1758,22 @@ if [ "$REFRESH_FAILED" = "1" ]; then
 	if [ "$DRY_RUN" != "1" ]; then
 		exit 2
 	fi
+fi
+# CR-CLI #1607: DEFERRED fail-closed for a label-apply failure (LABEL_RC from the
+# _apply_labels call site above). A failed `gh label` apply must not report a
+# clean bootstrap, but it must ALSO not abort before _sync_full_ssot + the
+# .coderabbit.yaml compose + this summary — so the exit is deferred to here, after
+# the scaffold is otherwise complete. Ordered AFTER the REFRESH_FAILED block
+# (refresh failure is the more fundamental incompleteness) and BEFORE the
+# success message so "complete" never prints on a label failure. _apply_labels
+# returns 0 in --dry-run, so this only fires on a real apply; guard DRY_RUN anyway.
+if [ "$LABEL_RC" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then
+	_log "⚠ Label sync FAILED (rc=$LABEL_RC) — the scaffold completed but"
+	_log "    .github/labels.yml was NOT fully applied to the remote. Re-run after"
+	_log "    fixing the cause: scripts/bootstrap-repo.sh $TARGET --apply-labels"
+	_log "    See the label-apply error above."
+	_log ""
+	exit 2
 fi
 if [ "$DRY_RUN" = "1" ]; then
 	_log "bootstrap-repo dry-run complete. Re-run without --dry-run to apply."

@@ -56,7 +56,14 @@ MANIFEST=".claude/.source-hashes.json"
 # (code-reviewer #140 r1: `git rm hooks/foo.sh` left manifest stale).
 # Snapshot the staged list once: both the regex match AND the manifest
 # hashed-path match (#223 phase2) read from it.
-STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null || true)
+# Fail-closed (CR-CLI #1607): a `|| true` here would mask a git/index error
+# (corrupt index, partial repo) as an EMPTY staged list → step-1 finds nothing
+# tracked → exit 0 false-pass that leaves the manifest stale. Capture the rc
+# and abort (exit 2 = precondition error, per this hook's contract above).
+if ! STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null); then
+	echo "source-hashes-regen-gate: git diff --cached failed — refusing (fail-closed)" >&2
+	exit 2
+fi
 TRACKED_STAGED=$(printf '%s\n' "$STAGED_ALL" |
 	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh|\.semgrep/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.ya?ml)$' || true)
 
