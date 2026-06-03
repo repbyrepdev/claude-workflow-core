@@ -76,7 +76,11 @@ git diff --cached --name-only -z --diff-filter=ACMR >"$NAMES_TMP" 2>/dev/null ||
 # is for this presence check ONLY; the authoritative per-file filter is the
 # NUL-safe `case` in the loop below.
 _present_rc=0
-tr '\0' '\n' <"$NAMES_TMP" | grep -qE '^\.claude/(scripts|_lib)/' || _present_rc=$?
+# grep WITHOUT -q (CR-CLI r8): -q exits early on first match → tr gets SIGPIPE →
+# under `set -o pipefail` the pipeline rc becomes 141 (not grep's 0), which would
+# wrongly trip the fail-closed branch for a PRESENT candidate. Draining grep via
+# >/dev/null preserves its intended rc (0 match / 1 no-match / 2 error).
+tr '\0' '\n' <"$NAMES_TMP" | grep -E '^\.claude/(scripts|_lib)/' >/dev/null || _present_rc=$?
 if [ "$_present_rc" -eq 1 ]; then
 	exit 0
 elif [ "$_present_rc" -ne 0 ]; then

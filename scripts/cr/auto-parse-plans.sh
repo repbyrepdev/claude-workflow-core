@@ -213,16 +213,21 @@ _check_and_parse_issue() {
 	# 205 issues, #223). Fix: ensure the label exists, then remove plan-me as its
 	# OWN op so the poll-bounding can't be blocked by the marker-add failing.
 	gh label create plan-parsed --color ededed --description "cr-plan parsed this into an epic+subs" 2>/dev/null || true
-	if ! gh issue edit "$issue" --remove-label plan-me 2>&1 | tail -1 >&2; then
-		_log "label-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — issue may re-enter the poll"
-		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually to prevent re-parse" >&2
-	fi
-	# Add the plan-parsed marker as its OWN op. Warn on failure (mirrors the
-	# plan-me removal above) instead of swallowing it: a silent add-failure leaves
-	# the idempotency marker missing, so a re-acquired plan-me could re-parse.
+	# Add the plan-parsed idempotency marker FIRST (CR-CLI r8): the skip-guard
+	# above ("skip if plan-parsed present") gates re-parse on ANY issue carrying
+	# plan-parsed, so setting it BEFORE removing plan-me means a FAILED remove
+	# can't cause a runaway — a lingering plan-me is harmless once plan-parsed is
+	# present. Its OWN op (not combined) so the marker-add can't be blocked.
 	if ! gh issue edit "$issue" --add-label plan-parsed 2>&1 | tail -1 >&2; then
 		_log "label-failed" "$issue" "warn" "plan-parsed add failed (parse succeeded) — idempotency marker missing"
 		echo "auto-parse-plans: WARN: plan-parsed add failed for #$issue — add manually to prevent re-parse" >&2
+	fi
+	# THEN drop plan-me so the source leaves the poll set. If THIS fails, the
+	# plan-parsed marker added above still prevents re-parse (skip-guard) — so no
+	# runaway, just a harmless lingering plan-me.
+	if ! gh issue edit "$issue" --remove-label plan-me 2>&1 | tail -1 >&2; then
+		_log "label-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — harmless, plan-parsed already gates re-parse"
+		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually (harmless; plan-parsed gates re-parse)" >&2
 	fi
 }
 

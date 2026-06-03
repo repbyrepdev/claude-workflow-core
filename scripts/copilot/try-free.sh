@@ -143,12 +143,14 @@ for model in "${MODEL_ARR[@]}"; do
 	# expand possibly-empty arrays with the `+"${ARR[@]}"` guard. Copilot CLI's
 	# `-p` uses its arg directly and ignores stdin, so we DON'T pipe FULL_PROMPT
 	# into stdin (silent duplicate).
+	# stderr is NOT redirected (CR-CLI r8): copilot's auth / rate-limit / network /
+	# timeout errors must reach the caller (the prefilter logs them) — a prior
+	# 2>/dev/null hid WHY every model "failed". stdout is still captured to OUTPUT.
 	if OUTPUT=$("$TIMEOUT_CMD" "$TIMEOUT_SEC" copilot \
 		-p "$FULL_PROMPT" \
 		${MODEL_ARG[@]+"${MODEL_ARG[@]}"} \
 		"${SAFE_ARGS[@]}" \
-		${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-		2>/dev/null); then
+		${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}); then
 		# Got a response — emit and exit 0.
 		printf '%s' "$OUTPUT"
 		exit 0
