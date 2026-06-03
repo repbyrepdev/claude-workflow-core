@@ -31,11 +31,14 @@ set -euo pipefail
 # reviewed intentional override; prefer deleting the shadow so the canonical
 # SSOT resolves).
 #
-# Exit codes:
+# Exit codes (this is a pre-commit hook — it takes no user args, so it has no
+# "usage" mode; exit 2 is intentionally repurposed for precondition errors
+# rather than the conventional 2=usage meaning):
 #   0 — passed (no shadow staged, OR shadow has no canonical, OR shadow ==
 #       canonical, OR bypass)
 #   1 — a staged shadow DIFFERS from its plugin canonical (drift)
-#   2 — precondition error (not in a git repo, mktemp/git-show failure)
+#   2 — precondition error (not in a git repo, mktemp/git-show failure);
+#       intentional deviation from 2=usage, see note above
 
 if [ "${STALE_SHADOW_GUARD_SKIP:-0}" = "1" ]; then
 	echo "stale-shadow-guard: STALE_SHADOW_GUARD_SKIP=1 — bypassing (audit-logged)" >&2

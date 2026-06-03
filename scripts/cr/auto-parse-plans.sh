@@ -217,11 +217,12 @@ _check_and_parse_issue() {
 	# Fall back to the known values if yq or labels.yml is unavailable — the
 	# create is still just a DEFENSIVE existence-ensure (the relabel below fails
 	# wholesale if the label is undefined); label-sync reconciles metadata from
-	# the SSOT regardless.
+	# the SSOT regardless. Keep the two literal fallbacks below in sync with
+	# the .github/labels.yml plan-parsed entry (color + description).
 	local _labels_yml="$REPO_ROOT/.github/labels.yml"
 	local pp_color="6e7681" pp_desc="cr-plan parsed this into an epic+subs"
 	if command -v yq >/dev/null 2>&1 && [ -f "$_labels_yml" ]; then
-		pp_color=$(yq -r '(.[] | select(.name == "plan-parsed") | .color) // "6e7681"' "$_labels_yml" 2>/dev/null | tr -d '"') || pp_color="6e7681"
+		pp_color=$(yq -r '(.[] | select(.name == "plan-parsed") | .color) // "6e7681"' "$_labels_yml" 2>/dev/null) || pp_color="6e7681"
 		pp_desc=$(yq -r '(.[] | select(.name == "plan-parsed") | .description) // "cr-plan parsed this into an epic+subs"' "$_labels_yml" 2>/dev/null) || pp_desc="cr-plan parsed this into an epic+subs"
 		[ -n "$pp_color" ] || pp_color="6e7681"
 		[ -n "$pp_desc" ] || pp_desc="cr-plan parsed this into an epic+subs"
