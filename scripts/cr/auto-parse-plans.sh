@@ -212,12 +212,20 @@ _check_and_parse_issue() {
 	# NOT removed -> the source re-enters the poll every cycle = runaway (observed
 	# 205 issues, #223). Fix: ensure the label exists, then remove plan-me as its
 	# OWN op so the poll-bounding can't be blocked by the marker-add failing.
-	# SSOT for plan-parsed's metadata (name/color/description) is
-	# .github/labels.yml; label-sync reconciles it. This is a DEFENSIVE
-	# existence-ensure only (the relabel below fails wholesale if the label is
-	# undefined) — it asserts NO canonical color/description here. The minimal
-	# --color is kept solely because `gh label create` requires one; ededed
-	# mirrors the SSOT entry but is not the source of truth for it.
+	# plan-parsed's metadata SSOT is .github/labels.yml; read color/description
+	# FROM it (CR-CLI follow-on) so this create doesn't hardcode a second copy.
+	# Fall back to the known values if yq or labels.yml is unavailable — the
+	# create is still just a DEFENSIVE existence-ensure (the relabel below fails
+	# wholesale if the label is undefined); label-sync reconciles metadata from
+	# the SSOT regardless.
+	local _labels_yml="$REPO_ROOT/.github/labels.yml"
+	local pp_color="ededed" pp_desc="cr-plan parsed this into an epic+subs"
+	if command -v yq >/dev/null 2>&1 && [ -f "$_labels_yml" ]; then
+		pp_color=$(yq -r '(.[] | select(.name == "plan-parsed") | .color) // "ededed"' "$_labels_yml" 2>/dev/null | tr -d '"') || pp_color="ededed"
+		pp_desc=$(yq -r '(.[] | select(.name == "plan-parsed") | .description) // "cr-plan parsed this into an epic+subs"' "$_labels_yml" 2>/dev/null) || pp_desc="cr-plan parsed this into an epic+subs"
+		[ -n "$pp_color" ] || pp_color="ededed"
+		[ -n "$pp_desc" ] || pp_desc="cr-plan parsed this into an epic+subs"
+	fi
 	#
 	# Capture create output+rc (CR-CLI) instead of swallowing ALL failures via
 	# `2>/dev/null || true`. BUT do NOT fail-closed on non-zero: `gh label create`
@@ -230,7 +238,7 @@ _check_and_parse_issue() {
 	# label-create blip is worse than proceeding). The `if !` form captures rc
 	# under `set -e` (a bare `lc_out=$(...)` would abort the script on non-zero).
 	local lc_out=""
-	if ! lc_out=$(gh label create plan-parsed --color ededed 2>&1); then
+	if ! lc_out=$(gh label create plan-parsed --color "$pp_color" --description "$pp_desc" 2>&1); then
 		if printf '%s' "$lc_out" | grep -qi 'already exists'; then
 			: # benign — label already present; nothing to do
 		else

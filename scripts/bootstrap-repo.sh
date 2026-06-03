@@ -53,9 +53,9 @@ PLUGIN_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 COMPOSE_CR_FAILED=0
 
 TARGET=""
-# v0.32.12 (#283/Wave J), shipped in the v0.32.13 PR: default PIN_TAG to the
-# plugin's CURRENT version (SSOT = .claude-plugin/plugin.json) so a fresh
-# bootstrap pins to the current release instead of a hardcoded stale tag.
+# #283 (Wave J): default PIN_TAG to the plugin's CURRENT version (SSOT =
+# .claude-plugin/plugin.json) so a fresh bootstrap pins to the current release
+# instead of a hardcoded stale tag (the pin is version-agnostic — derived, not literal).
 # --tag still overrides (parsed below). FAIL-CLOSED (CR #283): if plugin.json is
 # missing/unparseable, PIN_TAG stays EMPTY here and a real bootstrap aborts after
 # arg-parsing (guard below) — never a silent stale fallback.

@@ -85,7 +85,7 @@ pending_list=""
 _head_sha=$(git rev-parse HEAD 2>/dev/null) || _head_sha=""
 while IFS= read -r -d '' f; do
 	sha=$(basename "$f" .phase1-directive.txt)
-	# v0.32.13+ (#223) Layer 0: age-based stale cleanup. A phase1-directive
+	# (#223) Layer 0: age-based stale cleanup. A phase1-directive
 	# marker is acted on within a session (agents fire within minutes); one
 	# still "pending" after 2 days is stale cruft (an abandoned round, or a
 	# squash-merge that left a local topic branch) that the two in-guard

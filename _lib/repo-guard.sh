@@ -78,8 +78,9 @@ _repo_guard_normalize_slug() {
 	# a mixed/upper `.GIT` suffix would survive the lowercase-AT-END ordering
 	# (`repo.GIT` never matched the lowercase `.git` strip, so the suffix
 	# stayed on). Folding case first means `repo.GIT`/`repo.Git` → `repo`.
-	# bash 4 ${,,} is the repo standard (see _lib/bash4-features-check.sh), but
-	# fall back to tr on bash 3 since the expansion is a parse-time error there.
+	# Lowercase via tr UNCONDITIONALLY (NOT bash 4 ${,,}): ${,,} is a parse-time
+	# error on bash 3, so tr keeps this lib portable under the #!/bin/bash shebang
+	# without tripping bash4-features-check.
 	if [ -n "$raw" ]; then
 		raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')
 	fi
