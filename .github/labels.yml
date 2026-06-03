@@ -8,7 +8,8 @@
 #   * Once Sub 6 #144 ships: `.github/workflows/label-sync.yml` will run on
 #     push to main that changes this file.
 #
-# 8-color Primer palette (every label below uses ONE of these 8 hex codes;
+# 9-color Primer palette (every label below uses ONE of these 9 hex codes —
+# 8 Primer hues plus the neutral `ededed` automation marker;
 # bats test .claude/tests/github/labels-yml.bats asserts the mapping):
 #   Red     cf222e  priority:p0 · priority:p1 · bug · major
 #                   · auto:trivy-scan · auto:trivy-post-merge

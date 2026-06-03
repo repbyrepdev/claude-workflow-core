@@ -60,7 +60,10 @@ teardown() {
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 1 ]
 	[[ $output == *".claude/scripts/copilot/try-free.sh"* ]]
-	[[ $output == *"scripts/copilot/try-free.sh"* ]] # names the canonical too
+	# Anchor on the hook's actual emitted format ("  - <shadow>  (canonical: <c>)")
+	# — a bare "scripts/copilot/try-free.sh" substring is tautological (it's also a
+	# substring of the SHADOW path), so it can't prove the canonical was named.
+	[[ $output == *"canonical: scripts/copilot/try-free.sh"* ]] # names the canonical too
 	[[ $output == *"#223"* ]]
 }
 
@@ -71,7 +74,9 @@ teardown() {
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 1 ]
 	[[ $output == *".claude/_lib/helper.sh"* ]]
-	[[ $output == *"_lib/helper.sh"* ]] # names the canonical too (parity w/ scripts test)
+	# Anchor on the emitted "(canonical: <c>)" format — bare "_lib/helper.sh" is a
+	# substring of the shadow path too, so it's tautological (parity w/ scripts test).
+	[[ $output == *"canonical: _lib/helper.sh"* ]] # names the canonical too
 	[[ $output == *"#223"* ]]
 }
 

@@ -51,7 +51,7 @@ MANIFEST=".claude/.source-hashes.json"
 # 1. Any tracked file staged? --diff-filter=ACMRD includes deletions
 # (code-reviewer #140 r1: `git rm hooks/foo.sh` left manifest stale).
 TRACKED_STAGED=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null |
-	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh|\.semgrep/[A-Za-z0-9_.-]+\.yml)$' || true)
+	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh|\.semgrep/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.yml)$' || true)
 
 if [ -z "$TRACKED_STAGED" ]; then
 	# No tracked changes — nothing to verify

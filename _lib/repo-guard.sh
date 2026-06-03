@@ -74,12 +74,19 @@ _repo_guard_normalize_slug() {
 	# Strip a `:` segment too — covers scp-style `git@host:owner/repo` after
 	# the `/`-strip leaves nothing, and bare `host:repo` shorthand.
 	raw="${raw##*:}"
-	# Strip a trailing `.git`.
-	raw="${raw%.git}"
-	# Lowercase (bash 4 ${,,} is available — repo standard targets bash 4+,
-	# but guard against bash 3 by falling back to tr).
+	# Lowercase BEFORE stripping the trailing `.git` (CR-CLI #223 follow-on):
+	# a mixed/upper `.GIT` suffix would survive the lowercase-AT-END ordering
+	# (`repo.GIT` never matched the lowercase `.git` strip, so the suffix
+	# stayed on). Folding case first means `repo.GIT`/`repo.Git` → `repo`.
+	# bash 4 ${,,} is the repo standard (see _lib/bash4-features-check.sh), but
+	# fall back to tr on bash 3 since the expansion is a parse-time error there.
 	if [ -n "$raw" ]; then
-		printf '%s' "$raw" | tr '[:upper:]' '[:lower:]'
+		raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')
+	fi
+	# Strip a trailing `.git` (now case-folded, so `.GIT`/`.Git` are covered).
+	raw="${raw%.git}"
+	if [ -n "$raw" ]; then
+		printf '%s' "$raw"
 	fi
 }
 

@@ -54,8 +54,12 @@ resolve_plugin_helper() {
 	canonical="$plugin_root/$rel"
 
 	# Consumer-shipped copy wins (allows overrides + matches legacy behavior).
-	if [ -n "${REPO_ROOT:-}" ] && [ -e "$REPO_ROOT/.claude/$rel" ]; then
-		local local_copy="$REPO_ROOT/.claude/$rel"
+	# Compute the consumer path ONCE (#223 follow-on DRY) so the -e test and the
+	# downstream uses can't drift. ${REPO_ROOT:-} keeps it set -u-safe in a hook
+	# sourced under `set -u` where REPO_ROOT may be unset (the -n guard below
+	# then short-circuits before the path is ever used).
+	local local_copy="${REPO_ROOT:-}/.claude/$rel"
+	if [ -n "${REPO_ROOT:-}" ] && [ -e "$local_copy" ]; then
 		# #223 stale-shadow detection: these helper paths are NOT tracked in
 		# .claude/.source-hashes.json, so a drifting local copy silently
 		# shadows the canonical SSOT and goes uncaught (a stale

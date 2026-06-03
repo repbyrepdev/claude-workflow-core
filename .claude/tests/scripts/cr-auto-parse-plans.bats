@@ -135,3 +135,48 @@ teardown() {
 	ie_line=$(grep -n -- 'issue edit' "$TEST_TMP/gh-edit.log" | head -1 | cut -d: -f1)
 	[ -n "$lc_line" ] && [ -n "$ie_line" ] && [ "$lc_line" -lt "$ie_line" ]
 }
+
+@test "plan-parsed ADD failure is non-fatal AND plan-me removal still runs (marker-first)" {
+	# CR #223 follow-on: the relabel detection must NOT depend on `set -o
+	# pipefail`, and a FAILED `--add-label plan-parsed` must be non-fatal AND must
+	# NOT abort the subsequent `--remove-label plan-me` (the marker-first design
+	# still drops plan-me so the poll set is bounded). Stub gh so ONLY the
+	# add-label-plan-parsed edit returns non-zero; all other gh calls behave
+	# normally + log their args.
+	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: z","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z"}'
+	cd "$TEST_TMP"
+	# cr-plan no-op success (parse "succeeds") so we reach the relabel block.
+	mkdir -p "$TEST_TMP/.claude/skills/cr-plan"
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'exit 0'
+	} >"$TEST_TMP/.claude/skills/cr-plan/run.sh"
+	chmod +x "$TEST_TMP/.claude/skills/cr-plan/run.sh"
+	# Bespoke gh stub: issue view echoes the payload; `issue edit` args are
+	# logged; the --add-label plan-parsed edit FAILS (exit 1) while every other
+	# edit (e.g. --remove-label plan-me) succeeds. label create logs + succeeds.
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
+		echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then'
+		echo '  echo "$*" >>"$GH_EDIT_LOG"'
+		echo '  case "$*" in *"--add-label plan-parsed"*) echo "gh: add-label failed (stub)" >&2; exit 1 ;; esac'
+		echo '  exit 0'
+		echo 'fi'
+		echo 'if [ "$1" = "label" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
+		echo 'exit 0'
+	} >"$TEST_TMP/bin/gh"
+	chmod +x "$TEST_TMP/bin/gh"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_EDIT_LOG="$TEST_TMP/gh-edit.log" "$AP" --issue 777
+	# Non-fatal: the script still exits 0 even though the marker-add failed.
+	[ "$status" -eq 0 ]
+	# Operator-facing WARN on the output channel.
+	[[ $output == *"WARN: plan-parsed add failed"* ]]
+	# Structured log records the failure event.
+	run grep -q '"event":"label-failed"' "$LOG"
+	[ "$status" -eq 0 ]
+	# The marker-first design: the --remove-label plan-me edit STILL runs after
+	# the add fails (so the poll set is bounded even on a marker-add failure).
+	run grep -q -- '--remove-label plan-me' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+}

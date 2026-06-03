@@ -157,8 +157,9 @@ setup() {
 
 # Phase 1 r1 code-reviewer + comment-analyzer: cross-check palette
 # comment block against the data. Every color used in labels.yml must
-# appear in the 8-color palette comment near the top of the file.
-@test "every label color is in the 8-color Primer palette comment" {
+# appear in the palette comment near the top of the file (9 hex codes:
+# 8 Primer hues + the neutral `ededed` automation marker).
+@test "every label color is in the Primer palette comment" {
 	palette_colors=$(grep -oE '^#[[:space:]]*[A-Za-z]+[[:space:]]+[0-9a-fA-F]{6}' "$LABELS" |
 		grep -oE '[0-9a-fA-F]{6}$' |
 		sort -u)

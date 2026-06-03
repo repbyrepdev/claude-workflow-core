@@ -224,14 +224,24 @@ _check_and_parse_issue() {
 	# plan-parsed, so setting it BEFORE removing plan-me means a FAILED remove
 	# can't cause a runaway — a lingering plan-me is harmless once plan-parsed is
 	# present. Its OWN op (not combined) so the marker-add can't be blocked.
-	if ! gh issue edit "$issue" --add-label plan-parsed 2>&1 | tail -1 >&2; then
+	#
+	# Capture gh's combined output+rc DIRECTLY (CR-CLI #223 follow-on): the
+	# previous `gh ... 2>&1 | tail -1 >&2` form put gh in a pipeline, so failure
+	# detection relied on `set -o pipefail` to surface gh's non-zero rc (without
+	# it the `if` only sees tail's rc, which is ~always 0 → a failed relabel
+	# would be silently swallowed). Capturing into $out and testing gh's own rc
+	# makes the WARN/log fire regardless of the pipefail option's state.
+	local add_out remove_out
+	if ! add_out=$(gh issue edit "$issue" --add-label plan-parsed 2>&1); then
+		printf '%s\n' "$add_out" | tail -1 >&2
 		_log "label-failed" "$issue" "warn" "plan-parsed add failed (parse succeeded) — idempotency marker missing"
 		echo "auto-parse-plans: WARN: plan-parsed add failed for #$issue — add manually to prevent re-parse" >&2
 	fi
 	# THEN drop plan-me so the source leaves the poll set. If THIS fails, the
 	# plan-parsed marker added above still prevents re-parse (skip-guard) — so no
 	# runaway, just a harmless lingering plan-me.
-	if ! gh issue edit "$issue" --remove-label plan-me 2>&1 | tail -1 >&2; then
+	if ! remove_out=$(gh issue edit "$issue" --remove-label plan-me 2>&1); then
+		printf '%s\n' "$remove_out" | tail -1 >&2
 		_log "label-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — harmless, plan-parsed already gates re-parse"
 		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually (harmless; plan-parsed gates re-parse)" >&2
 	fi
