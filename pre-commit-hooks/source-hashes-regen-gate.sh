@@ -13,7 +13,7 @@ set -euo pipefail
 #   1. List staged files matching scripts/hash-drift.sh's tracked dirs:
 #        hooks/*.sh
 #        _lib/*.sh
-#        .semgrep/*.yml   (#478 — offline Phase-1 ruleset, mirrored verbatim)
+#        .semgrep/*.yml / *.yaml   (#478 — offline Phase-1 ruleset, mirrored verbatim)
 #      (The .github byte-SSOT files are gated by step 3's full regenerate-
 #      and-diff below, not this step-1 grep. More dirs may land later.)
 #   2. If any tracked file is staged AND .claude/.source-hashes.json is
@@ -51,7 +51,7 @@ MANIFEST=".claude/.source-hashes.json"
 # 1. Any tracked file staged? --diff-filter=ACMRD includes deletions
 # (code-reviewer #140 r1: `git rm hooks/foo.sh` left manifest stale).
 TRACKED_STAGED=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null |
-	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh|\.semgrep/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.yml)$' || true)
+	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh|\.semgrep/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.ya?ml)$' || true)
 
 if [ -z "$TRACKED_STAGED" ]; then
 	# No tracked changes — nothing to verify

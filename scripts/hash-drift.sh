@@ -238,7 +238,7 @@ if [ "$MODE" = "generate" ]; then
 			while IFS= read -r f; do
 				[ -f "$f" ] || continue
 				_emit_hashed_entry "$f"
-			done < <(find .semgrep -name '*.yml' -type f | sort)
+			done < <(find .semgrep \( -name '*.yml' -o -name '*.yaml' \) -type f | sort)
 		fi
 		# .github byte-SSOT files (manifest `hashed: true`), validated above.
 		# Iterate the materialized list; emit alongside hooks/_lib so the

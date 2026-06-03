@@ -1561,14 +1561,17 @@ _apply_labels() {
 }
 
 # OPT-IN gate (default OFF): only mutate the remote label set when the operator
-# explicitly passed --apply-labels. Otherwise NOTE that sync is deferred to the
-# label-sync workflow on first push, so a plain scaffold performs NO gh label
-# remote write. --dry-run still previews inside _apply_labels (its own guard).
+# explicitly passed --apply-labels. Otherwise NOTE that label sync is SKIPPED, so
+# a plain scaffold performs NO gh label remote write. Bootstrap does NOT seed a
+# label-sync workflow, so there is no auto-sync-on-first-push — the NOTE gives
+# accurate manual recovery instead. --dry-run still previews inside _apply_labels
+# (its own guard).
 if [ "$APPLY_LABELS" = "1" ] || [ "$DRY_RUN" = "1" ]; then
 	_apply_labels
 else
-	_log "NOTE: label sync skipped (pass --apply-labels to sync .github/labels.yml to GitHub now;"
-	_log "      otherwise .github/workflows/label-sync.yml applies them on first push)"
+	_log "NOTE: label sync SKIPPED — no remote label mutation performed."
+	_log "      To sync .github/labels.yml to GitHub: re-run scripts/bootstrap-repo.sh <target> --apply-labels,"
+	_log "      or add/run a label-sync workflow in the target repo."
 fi
 
 # --- Compose .coderabbit.yaml from base [+ overlay] (#234) ------------

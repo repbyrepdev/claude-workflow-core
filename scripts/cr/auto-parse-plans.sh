@@ -218,7 +218,26 @@ _check_and_parse_issue() {
 	# undefined) — it asserts NO canonical color/description here. The minimal
 	# --color is kept solely because `gh label create` requires one; ededed
 	# mirrors the SSOT entry but is not the source of truth for it.
-	gh label create plan-parsed --color ededed 2>/dev/null || true
+	#
+	# Capture create output+rc (CR-CLI) instead of swallowing ALL failures via
+	# `2>/dev/null || true`. BUT do NOT fail-closed on non-zero: `gh label create`
+	# exits non-zero on the BENIGN "already exists" case — the COMMON path, since
+	# the label usually already exists — so aborting there would break the poller
+	# every run. Treat already-exists as a no-op (the label is present, which is
+	# all this ensure needs); for any OTHER create failure, WARN + log but still
+	# continue (the downstream --add-label plan-parsed capture warns if the marker
+	# truly can't be set; aborting the whole batch poll for one issue's transient
+	# label-create blip is worse than proceeding). The `if !` form captures rc
+	# under `set -e` (a bare `lc_out=$(...)` would abort the script on non-zero).
+	local lc_out=""
+	if ! lc_out=$(gh label create plan-parsed --color ededed 2>&1); then
+		if printf '%s' "$lc_out" | grep -qi 'already exists'; then
+			: # benign — label already present; nothing to do
+		else
+			_log "label-create-failed" "$issue" "warn" "plan-parsed create failed (non-benign): $(printf '%s' "$lc_out" | tail -c 200)"
+			echo "auto-parse-plans: WARN: plan-parsed label create failed for #$issue (continuing): $(printf '%s' "$lc_out" | tail -1)" >&2
+		fi
+	fi
 	# Add the plan-parsed idempotency marker FIRST (CR-CLI r8): the skip-guard
 	# above ("skip if plan-parsed present") gates re-parse on ANY issue carrying
 	# plan-parsed, so setting it BEFORE removing plan-me means a FAILED remove
