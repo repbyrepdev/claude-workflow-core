@@ -13,13 +13,22 @@
 
 # Writes the PATH-stubbed `gh` to $TEST_TMP/bin/gh. `gh issue view` echoes
 # $GH_VIEW_JSON; pass "edit-log" to ALSO record `gh issue edit` AND `gh label`
-# args to $GH_EDIT_LOG (the relabel assertions read it). Other gh calls no-op.
+# args to $GH_EDIT_LOG (the relabel assertions read it). An optional 2nd arg
+# (a case-glob) makes any `gh issue edit` whose "$*" matches it exit 1 AFTER
+# logging — to exercise the relabel-failure branches. Other gh calls no-op.
 _write_gh_stub() {
+	local fail_glob="${2:-}"
 	{
 		echo '#!/usr/bin/env bash'
 		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
 		if [ "${1:-}" = "edit-log" ]; then
-			echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
+			echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then'
+			echo '  echo "$*" >>"$GH_EDIT_LOG"'
+			if [ -n "$fail_glob" ]; then
+				echo "  case \"\$*\" in $fail_glob) echo \"gh: edit failed (stub)\" >&2; exit 1 ;; esac"
+			fi
+			echo '  exit 0'
+			echo 'fi'
 			echo 'if [ "$1" = "label" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
 		fi
 		echo 'exit 0'
@@ -152,21 +161,9 @@ teardown() {
 		echo 'exit 0'
 	} >"$TEST_TMP/.claude/skills/cr-plan/run.sh"
 	chmod +x "$TEST_TMP/.claude/skills/cr-plan/run.sh"
-	# Bespoke gh stub: issue view echoes the payload; `issue edit` args are
-	# logged; the --add-label plan-parsed edit FAILS (exit 1) while every other
-	# edit (e.g. --remove-label plan-me) succeeds. label create logs + succeeds.
-	{
-		echo '#!/usr/bin/env bash'
-		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
-		echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then'
-		echo '  echo "$*" >>"$GH_EDIT_LOG"'
-		echo '  case "$*" in *"--add-label plan-parsed"*) echo "gh: add-label failed (stub)" >&2; exit 1 ;; esac'
-		echo '  exit 0'
-		echo 'fi'
-		echo 'if [ "$1" = "label" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
-		echo 'exit 0'
-	} >"$TEST_TMP/bin/gh"
-	chmod +x "$TEST_TMP/bin/gh"
+	# Reuse the shared stub with a fail-glob so ONLY the --add-label plan-parsed
+	# edit returns non-zero (after logging); every other gh call behaves normally.
+	_write_gh_stub edit-log '*"--add-label plan-parsed"*'
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_EDIT_LOG="$TEST_TMP/gh-edit.log" "$AP" --issue 777
 	# Non-fatal: the script still exits 0 even though the marker-add failed.
 	[ "$status" -eq 0 ]
@@ -178,5 +175,9 @@ teardown() {
 	# The marker-first design: the --remove-label plan-me edit STILL runs after
 	# the add fails (so the poll set is bounded even on a marker-add failure).
 	run grep -q -- '--remove-label plan-me' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+	# The marker-add WAS attempted (the stub logs the args BEFORE failing it) —
+	# proves the failure path ran through the real add op, not a skip.
+	run grep -q -- '--add-label plan-parsed' "$TEST_TMP/gh-edit.log"
 	[ "$status" -eq 0 ]
 }
