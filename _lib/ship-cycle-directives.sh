@@ -90,7 +90,10 @@ _emit_stage_directive() {
 		# ship-pr-cycle SKILL.md (the Phase 2 procedure lives there). The plugin
 		# ships it at skills/ship-pr-cycle/SKILL.md; a CONSUMER repo has it at
 		# .claude/skills/ship-pr-cycle/SKILL.md (#223 r1 code-reviewer) —
-		# hook-ack-clear's basename match clears the block when EITHER is Read.
+		# hook-ack-clear's path-SUFFIX match clears the block when EITHER is Read:
+		# both absolute paths end with the same `/skills/ship-pr-cycle/SKILL.md`
+		# suffix (dogfood-verified, CR-CLI r1), while an unrelated same-basename
+		# SKILL.md does NOT clear it (the basename-collision the suffix match fixed).
 		preread="skills/ship-pr-cycle/SKILL.md"
 		body="PREREAD GATE — advanced INTO phase2 (local CR-CLI review loop). BEFORE running CR, Read the Phase 2 process so you apply the cap/cache/prove-yourself discipline correctly:
     1. Read the ship-pr-cycle SKILL.md — skills/ship-pr-cycle/SKILL.md in the plugin, or .claude/skills/ship-pr-cycle/SKILL.md in a consumer repo (← reading it clears the block below; see the [phase2] section + 'Phase 2 / CR findings' rule)

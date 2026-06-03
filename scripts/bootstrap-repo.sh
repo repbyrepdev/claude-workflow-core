@@ -1624,7 +1624,7 @@ _sync_full_ssot() {
 		exit 2
 	fi
 	local args=(--consumer-path "$TARGET")
-	[ "$DRY_RUN" = "1" ] && args+=(--dry-run)
+	[ "${DRY_RUN:-0}" = "1" ] && args+=(--dry-run)
 	_log "syncing full generic SSOT (hooks/_lib + hashed configs) via refresh-from-source.sh..."
 	local rerr
 	if rerr=$("$refresher" "${args[@]}" 2>&1); then

@@ -106,8 +106,13 @@ while IFS= read -r -d '' f; do
 	# (that is an active, possibly-paused round, not cruft). Non-HEAD aged markers
 	# (abandoned branches, squash-merge orphans the reachability layers below
 	# miss) remain Layer-0 eligible — that is the cruft Layer 0 exists to sweep.
-	_head_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-	if [ -n "$_head_sha" ] && [ "$sha" = "$_head_sha" ]; then
+	_head_sha=$(git rev-parse HEAD 2>/dev/null) || _head_sha=""
+	if [ -z "$_head_sha" ]; then
+		: # git HEAD unverifiable — fail-CLOSED: do NOT age-prune (the marker may be
+		# a live round; mirrors the rc-capture bail at the top of this hook). CR-CLI
+		# r1 (major): the prior `|| echo ""` was fail-OPEN — an empty _head_sha fell
+		# through to age-prune, which could nuke a live round when git was unreadable.
+	elif [ "$sha" = "$_head_sha" ]; then
 		: # active round on the current HEAD — skip age-prune; let Layers 1/2 decide
 	elif _age_out=$(find "$f" -mmin +2880 -print 2>/dev/null) && [ -n "$_age_out" ]; then
 		# CR #478 p2 (major): best-effort rm — under `set -euo pipefail` a failing

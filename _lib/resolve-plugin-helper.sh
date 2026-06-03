@@ -42,7 +42,15 @@ resolve_plugin_helper() {
 	# branch) so the consumer-copy branch can compare against it and warn on a
 	# stale shadow.
 	local plugin_root canonical
-	plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+	plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || plugin_root=""
+	# Fail loud if the cd/pwd failed (e.g. the plugin dir was moved/deleted mid-
+	# run): an empty plugin_root would otherwise build canonical="/$rel" — an
+	# absolute path at filesystem root that masks the real failure as a benign
+	# "not found" (#223 CR-CLI r1). return 2 = hard error (matches the bad-arg path).
+	if [ -z "$plugin_root" ]; then
+		echo "resolve_plugin_helper: cannot resolve plugin root from ${BASH_SOURCE[0]} (cd/pwd failed)" >&2
+		return 2
+	fi
 	canonical="$plugin_root/$rel"
 
 	# Consumer-shipped copy wins (allows overrides + matches legacy behavior).
