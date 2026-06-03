@@ -122,9 +122,10 @@ teardown() {
 	# revert to dirname-relative-only FAILS here (resolves to <repo>/.claude).
 	local crepo
 	crepo=$(mktemp -d -t chcons.XXXXXX) || return 1
-	# CR #2226: clean up on pass OR fail — a mid-test assertion failure must not
-	# leak the temp dir (RETURN trap fires when this @test function exits).
-	trap 'rm -rf "$crepo"' RETURN
+	# NB: cleanup is the final `rm -rf "$crepo"` below. A bats `RETURN` trap here
+	# (CR #2226 suggestion) BREAKS bats — bats uses RETURN traps for its own
+	# per-test teardown, so overriding it fails the test (`not ok ... rm failed`).
+	# A leaked temp dir on a rare mid-test failure is trivial (OS cleans TMPDIR).
 	(
 		cd "$crepo"
 		git init -q
