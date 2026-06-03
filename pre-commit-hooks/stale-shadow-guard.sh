@@ -150,8 +150,17 @@ while IFS= read -r -d '' shadow; do
 		echo "stale-shadow-guard: could not read staged canonical blob for $canonical (unexpected — cat-file said it exists)" >&2
 		exit 2
 	fi
-	if ! cmp -s "$STAGED_TMP" "$CANON_TMP"; then
+	# CR-CLI (#223): distinguish a REAL content drift (cmp rc==1) from a cmp
+	# ERROR (rc>1, e.g. an unreadable temp file) — the latter must fail loud,
+	# not be silently recorded as drift. `|| cmp_rc=$?` is the only set-e-safe
+	# capture idiom (a bare `cmp; cmp_rc=$?` would abort under set -e on rc!=0).
+	cmp_rc=0
+	cmp -s "$STAGED_TMP" "$CANON_TMP" || cmp_rc=$?
+	if [ "$cmp_rc" -eq 1 ]; then
 		drifts+=("$shadow  (canonical: $canonical)")
+	elif [ "$cmp_rc" -gt 1 ]; then
+		echo "stale-shadow-guard: cmp errored (rc=$cmp_rc) comparing staged '$shadow' vs canonical '$canonical' (tmp: $STAGED_TMP vs $CANON_TMP)" >&2
+		exit 2
 	fi
 done <"$NAMES_TMP"
 

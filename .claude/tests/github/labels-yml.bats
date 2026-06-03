@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: .github/labels.yml .github/labels-spec.md
+# covers: .github/labels.yml .github/labels-spec.md scripts/cr/auto-parse-plans.sh
 
 setup() {
 	# r2 silent-failure-hunter: capture cd-stderr so a cd failure (perm
@@ -195,4 +195,46 @@ setup() {
 			return 1
 		}
 	done
+}
+
+# CR-CLI (#223): mechanical parity gate. scripts/cr/auto-parse-plans.sh hardcodes
+# fallback literals (pp_color/pp_desc) for the plan-parsed label, used to seed the
+# label when yq/labels.yml is unavailable at create time. Those literals MUST match
+# this labels.yml SSOT entry or the defensive create seeds metadata that drifts from
+# canonical. Enforce it here so a one-sided edit fails the suite — the mechanical
+# replacement for the "keep in sync" source comment in auto-parse-plans.sh.
+@test "auto-parse-plans.sh plan-parsed fallbacks match labels.yml SSOT" {
+	script="${REPO_ROOT}/scripts/cr/auto-parse-plans.sh"
+	[ -f "$script" ] || {
+		echo "FAIL: auto-parse-plans.sh not at $script" >&2
+		return 1
+	}
+	# Extract the two fallback literals from the `local pp_color=... pp_desc=...` line.
+	fb_line=$(grep -E 'local pp_color="[^"]+" pp_desc="[^"]+"' "$script") || {
+		echo "FAIL: could not find the pp_color/pp_desc fallback line in $script" >&2
+		return 1
+	}
+	fb_color=$(sed -E 's/.*pp_color="([^"]+)".*/\1/' <<<"$fb_line")
+	fb_desc=$(sed -E 's/.*pp_desc="([^"]+)".*/\1/' <<<"$fb_line")
+	[ -n "$fb_color" ] && [ -n "$fb_desc" ] || {
+		echo "FAIL: failed to extract fallback color/desc from: $fb_line" >&2
+		return 1
+	}
+	# Read the SSOT values with the SAME yq query the script uses.
+	yml_color=$(yq -r '.[] | select(.name == "plan-parsed") | .color' "$LABELS") || {
+		echo "FAIL: yq failed reading plan-parsed color from $LABELS" >&2
+		return 1
+	}
+	yml_desc=$(yq -r '.[] | select(.name == "plan-parsed") | .description' "$LABELS") || {
+		echo "FAIL: yq failed reading plan-parsed description from $LABELS" >&2
+		return 1
+	}
+	[ "$fb_color" = "$yml_color" ] || {
+		echo "FAIL: pp_color fallback '$fb_color' != labels.yml plan-parsed color '$yml_color'" >&2
+		return 1
+	}
+	[ "$fb_desc" = "$yml_desc" ] || {
+		echo "FAIL: pp_desc fallback '$fb_desc' != labels.yml plan-parsed desc '$yml_desc'" >&2
+		return 1
+	}
 }
