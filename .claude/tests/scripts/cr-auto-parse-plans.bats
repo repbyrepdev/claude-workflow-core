@@ -12,14 +12,15 @@
 # shellcheck disable=SC2030,SC2031
 
 # Writes the PATH-stubbed `gh` to $TEST_TMP/bin/gh. `gh issue view` echoes
-# $GH_VIEW_JSON; pass "edit-log" to ALSO record `gh issue edit` args to
-# $GH_EDIT_LOG (the relabel assertions read it). All other gh calls no-op.
+# $GH_VIEW_JSON; pass "edit-log" to ALSO record `gh issue edit` AND `gh label`
+# args to $GH_EDIT_LOG (the relabel assertions read it). Other gh calls no-op.
 _write_gh_stub() {
 	{
 		echo '#!/usr/bin/env bash'
 		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
 		if [ "${1:-}" = "edit-log" ]; then
 			echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
+			echo 'if [ "$1" = "label" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
 		fi
 		echo 'exit 0'
 	} >"$TEST_TMP/bin/gh"
@@ -123,5 +124,10 @@ teardown() {
 	run grep -q -- '--add-label plan-parsed' "$TEST_TMP/gh-edit.log"
 	[ "$status" -eq 0 ]
 	run grep -q -- '--remove-label plan-me' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+	# CR-CLI r4: assert the label-create too — the runaway root-fix ensures the
+	# plan-parsed label EXISTS before the relabel (a missing label was what let
+	# the combined relabel fail wholesale -> plan-me stayed -> re-parse runaway).
+	run grep -q -- 'label create.*plan-parsed' "$TEST_TMP/gh-edit.log"
 	[ "$status" -eq 0 ]
 }

@@ -71,6 +71,8 @@ teardown() {
 	run pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 1 ]
 	[[ $output == *".claude/_lib/helper.sh"* ]]
+	[[ $output == *"_lib/helper.sh"* ]] # names the canonical too (parity w/ scripts test)
+	[[ $output == *"#223"* ]]
 }
 
 @test "passes when shadow is IDENTICAL to canonical (non-drifting mirror)" {
@@ -124,7 +126,7 @@ teardown() {
 	cd "$TEST_TMP" || return 1
 	printf '#!/bin/bash\necho STALE\n' >.claude/scripts/copilot/try-free.sh
 	git add .claude/scripts/copilot/try-free.sh
-	STALE_SHADOW_GUARD_SKIP=1 run pre-commit-hooks/stale-shadow-guard.sh
+	run env STALE_SHADOW_GUARD_SKIP=1 pre-commit-hooks/stale-shadow-guard.sh
 	[ "$status" -eq 0 ]
 	[[ $output == *"STALE_SHADOW_GUARD_SKIP"* ]]
 }

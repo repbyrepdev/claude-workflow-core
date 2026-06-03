@@ -41,9 +41,11 @@ rules:
     # (?:\\\n|[^\n;])* spans `\`-continuation lines (CR #478 r1) so `curl ... \<NL>
     # -k` is caught, while stopping at a bare newline OR `;` (CR #478 r2) so a
     # `curl x; other -k` second command can't be matched as curl's flag. The
-    # short-flag branch -[A-Za-z]*k[A-Za-z]* matches `k` bundled with other flags
-    # (e.g. `curl -ksS`) which a bare `-k` alternation silently missed (CR-CLI r1).
-    pattern-regex: '\bcurl\b(?:\\\n|[^\n;])*[ \t](?:--insecure|-[A-Za-z]*k[A-Za-z]*)\b'
+    # short-flag branch matches `k` bundled with other flags (e.g. `curl -ksS`)
+    # which a bare `-k` alternation missed (CR-CLI r1). The [^oO \t\n] right before
+    # `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — avoiding that
+    # FP without lookbehind, which re2 lacks (CR-CLI r4).
+    pattern-regex: '\bcurl\b(?:\\\n|[^\n;])*[ \t](?:--insecure|-(?:[A-Za-z]*[^oO \t\n])?k[A-Za-z]*)\b'
 
   - id: phase1-wget-insecure-tls
     languages: [generic]
