@@ -261,7 +261,7 @@ _check_and_parse_issue() {
 	local add_out remove_out
 	if ! add_out=$(gh issue edit "$issue" --add-label plan-parsed 2>&1); then
 		printf '%s\n' "$add_out" | tail -1 >&2
-		_log "label-failed" "$issue" "warn" "plan-parsed add failed (parse succeeded) — idempotency marker missing"
+		_log "label-add-failed" "$issue" "warn" "plan-parsed add failed (parse succeeded) — idempotency marker missing"
 		echo "auto-parse-plans: WARN: plan-parsed add failed for #$issue — add manually to prevent re-parse" >&2
 	fi
 	# THEN drop plan-me so the source leaves the poll set. If THIS fails, the
@@ -269,7 +269,7 @@ _check_and_parse_issue() {
 	# runaway, just a harmless lingering plan-me.
 	if ! remove_out=$(gh issue edit "$issue" --remove-label plan-me 2>&1); then
 		printf '%s\n' "$remove_out" | tail -1 >&2
-		_log "label-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — harmless, plan-parsed already gates re-parse"
+		_log "label-remove-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — harmless, plan-parsed already gates re-parse"
 		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually (harmless; plan-parsed gates re-parse)" >&2
 	fi
 }

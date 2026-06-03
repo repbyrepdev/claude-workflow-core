@@ -10,7 +10,7 @@ set -euo pipefail
 #     template.yml, ISSUE_TEMPLATE/*) — byte-SSOT; these map VERBATIM to the
 #     consumer repo root, NOT under .claude/. (labels/required-checks/labeler/
 #     workflows are template-with-overrides and are NOT hashed here.)
-#   - .semgrep/*.yml (#478) — the offline Phase-1 ruleset is plugin-SSOT config
+#   - .semgrep/*.yml + *.yaml (#478) — the offline Phase-1 ruleset is plugin-SSOT config
 #     a consumer copies VERBATIM to its repo-root .semgrep/ (NOT under .claude/),
 #     so it CAN drift and is tracked. Maps to the consumer root like .github/*.
 #   - scripts/*.sh + pre-commit-hooks/*.sh are NOT hashed (#247): consumers do

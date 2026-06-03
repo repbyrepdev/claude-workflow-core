@@ -170,7 +170,7 @@ teardown() {
 	# Operator-facing WARN on the output channel.
 	[[ $output == *"WARN: plan-parsed add failed"* ]]
 	# Structured log records the failure event.
-	run grep -q '"event":"label-failed"' "$LOG"
+	run grep -q '"event":"label-add-failed"' "$LOG"
 	[ "$status" -eq 0 ]
 	# The marker-first design: the --remove-label plan-me edit STILL runs after
 	# the add fails (so the poll set is bounded even on a marker-add failure).
