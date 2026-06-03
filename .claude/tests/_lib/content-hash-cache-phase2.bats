@@ -101,7 +101,10 @@ teardown() {
 	# (<repo>/_lib/.. = repo, was overshooting to the parent) could regress
 	# unnoticed. Source with REPO_ROOT unset and assert it resolves to the repo.
 	local expected
-	expected=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	# pwd -P (physical): git rev-parse --show-toplevel resolves symlinks, so a
+	# symlinked checkout would false-fail a logical-pwd assertion (CR #2226;
+	# mirrors the consumer-layout test below).
+	expected=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd -P)
 	run bash -c "unset REPO_ROOT; . '$LIB' && printf '%s' \"\$REPO_ROOT\""
 	[ "$status" -eq 0 ]
 	[ "$output" = "$expected" ]
