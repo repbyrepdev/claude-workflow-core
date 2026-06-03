@@ -435,10 +435,17 @@ shopt -u nullglob
 # first — a bare ${arr[0]} sorts strings, so 0.34.x lands AFTER 0.6.x/0.8.x and
 # the OLDEST cache wins. resolve-plugin-pin.sh is byte-identical across cached
 # versions today, but pinning to an arbitrary stale version is fragile; sort -V
-# picks the highest semver dir.
+# picks the highest semver dir. sort -V is unsupported on older BSD/macOS sort,
+# so fall back to the first candidate — the resolve-pin lib is byte-identical
+# across cached versions, so any copy parses the pin identically (the version
+# sort is a nicety, not a correctness requirement).
 RESOLVE_LIB=""
 if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
-	RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
 fi
 
 if [ -z "$RESOLVE_LIB" ] || [ ! -f "$RESOLVE_LIB" ]; then
@@ -506,9 +513,17 @@ shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
 # Pick the NEWEST cached version (version-sorted), not lexicographically-first.
+# sort -V is unsupported on older BSD/macOS sort, so fall back to the first
+# candidate — the resolve-pin lib is byte-identical across cached versions, so
+# any copy parses the pin identically (the version sort is a nicety, not a
+# correctness requirement).
 RESOLVE_LIB=""
 if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
-	RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
 fi
 if [ -z "$RESOLVE_LIB" ]; then
 	echo "review-log.sh shim: plugin cache empty" >&2
@@ -560,9 +575,17 @@ shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
 # Pick the NEWEST cached version (version-sorted), not lexicographically-first.
+# sort -V is unsupported on older BSD/macOS sort, so fall back to the first
+# candidate — the resolve-pin lib is byte-identical across cached versions, so
+# any copy parses the pin identically (the version sort is a nicety, not a
+# correctness requirement).
 RESOLVE_LIB=""
 if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
-	RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
 fi
 if [ -z "$RESOLVE_LIB" ]; then
 	echo "$HOOK_NAME shim: plugin cache empty" >&2
@@ -606,9 +629,17 @@ shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
 # Pick the NEWEST cached version (version-sorted), not lexicographically-first.
+# sort -V is unsupported on older BSD/macOS sort, so fall back to the first
+# candidate — the resolve-pin lib is byte-identical across cached versions, so
+# any copy parses the pin identically (the version sort is a nicety, not a
+# correctness requirement).
 RESOLVE_LIB=""
 if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
-	RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
 fi
 if [ -z "$RESOLVE_LIB" ]; then
 	echo "$HOOK_NAME shim: plugin cache empty" >&2
@@ -1208,7 +1239,7 @@ _write .gemini/settings.json 644 <<'EOF'
       "run_shell_command(chmod)"
     ]
   },
-  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true blocks --approval-mode=yolo / --yolo override (per docs/cli/enterprise.md) so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude is a blocklist that uses simple PREFIX matching on the command (docs/tools/shell: 'prefix matching is used'); run_shell_command(rm) blocks any command whose run_shell_command argument starts with rm. NOTE: tools.exclude is DEPRECATED in favor of the Policy Engine (docs/reference/policy-engine; the 'deny' decision supersedes it) and string-based blocks are weaker than allowlisting — so the AUTHORITATIVE deny rules with priority + glob support live in .gemini/policy.toml [[rule]] deny blocks (#643); these exclude entries are a secondary, defense-in-depth layer.",
+  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true forces every tool execution to require explicit confirmation, blocking the --approval-mode=yolo / --yolo override so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude is a blocklist that uses simple PREFIX matching on the command; run_shell_command(rm) blocks any command whose run_shell_command argument starts with rm. NOTE: tools.exclude is DEPRECATED in favor of the Policy Engine (the 'deny' decision supersedes it) and string-based blocks are weaker than allowlisting — so the AUTHORITATIVE deny rules with priority + glob support live in .gemini/policy.toml [[rule]] deny blocks (#643); these exclude entries are a secondary, defense-in-depth layer.",
   "ui": {
     "hideTips": true,
     "showLineNumbers": true
