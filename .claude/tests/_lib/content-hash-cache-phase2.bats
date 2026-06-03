@@ -107,6 +107,40 @@ teardown() {
 	[ "$output" = "$expected" ]
 }
 
+@test "consumer layout: REPO_ROOT unset → git rev-parse root, CACHE_DIR not doubled .claude (#2224)" {
+	# CR #2224 (critical): the dirname-relative fallback is LAYOUT-DEPENDENT. In
+	# the PLUGIN this lib lives at <repo>/_lib/ (dirname/.. = repo, correct); in
+	# CONSUMERS it lives at <repo>/.claude/_lib/ (dirname/.. = <repo>/.claude, one
+	# level too shallow → CACHE_DIR became <repo>/.claude/.claude/.review-cache).
+	# The fix prefers `git rev-parse --show-toplevel`, which is correct in BOTH
+	# layouts. Reproduce the CONSUMER layout: copy the lib to <repo>/.claude/_lib/,
+	# source with REPO_ROOT unset, assert REPO_ROOT = the true repo root and
+	# CACHE_DIR = <repo>/.claude/.review-cache (NOT the doubled-.claude path). A
+	# revert to dirname-relative-only FAILS here (resolves to <repo>/.claude).
+	local crepo
+	crepo=$(mktemp -d -t chcons.XXXXXX) || return 1
+	(
+		cd "$crepo"
+		git init -q
+		mkdir -p .claude/_lib
+		cp "$LIB" .claude/_lib/content-hash-cache.sh
+	)
+	# True repo root (resolve symlinks: macOS /tmp → /private/tmp, matching what
+	# `git rev-parse --show-toplevel` returns).
+	local expected
+	expected=$(cd "$crepo" && pwd -P)
+	run bash -c "unset REPO_ROOT; . '$crepo/.claude/_lib/content-hash-cache.sh' && printf '%s\n%s' \"\$REPO_ROOT\" \"\$CACHE_DIR\""
+	[ "$status" -eq 0 ]
+	local got_root got_cache
+	got_root=$(printf '%s' "$output" | sed -n '1p')
+	got_cache=$(printf '%s' "$output" | sed -n '2p')
+	[ "$got_root" = "$expected" ]
+	[ "$got_cache" = "$expected/.claude/.review-cache" ]
+	# Explicit anti-regression: the doubled-.claude path must NOT appear.
+	[[ $got_cache != *"/.claude/.claude/"* ]]
+	rm -rf "$crepo"
+}
+
 @test "cache_prune prunes PHASE2_RESULT_LEDGER (old dropped, recent kept)" {
 	# CR #284: the new dual-ledger retention path was unpinned. Seed one ancient
 	# + one future-dated entry; prune drops the ancient, keeps the future one.

@@ -33,9 +33,20 @@ set -euo pipefail
 #       consumer-path hash (hooks/_lib → .claude/<path>; .github/* → <path>
 #       verbatim) and warn on drift.
 #
-# Override list: .claude/local-overrides.yml at consumer repo root
-# (YAML list of `<path>: <reason>` entries). Files in the override
-# list are skipped from drift checks.
+# Override list: .claude/local-overrides.yml at consumer repo root.
+# STRUCTURED schema (v0.34.29 #2224) — canonical shape in
+# templates/local-overrides.yml.tpl, schema-gated by
+# pre-commit-hooks/local-overrides-schema-check.sh:
+#   overrides:
+#     - path: <consumer-relpath>
+#       category: <domain-extension|superset|temp-divergence|legacy>
+#       reason: <text>
+#       added: <YYYY-MM-DD>
+# Parsed via `yq '.overrides[].path'` (see consumer-verify block below) — only
+# the `path` of each entry is treated as an override; the sibling metadata keys
+# (schema_version/category/reason/added) are NOT mistaken for override paths.
+# Files whose consumer path matches an `overrides[].path` are skipped from
+# drift checks.
 #
 # Usage:
 #   scripts/hash-drift.sh --generate         # producer mode
