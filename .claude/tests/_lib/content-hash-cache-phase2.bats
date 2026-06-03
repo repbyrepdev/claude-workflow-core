@@ -122,6 +122,9 @@ teardown() {
 	# revert to dirname-relative-only FAILS here (resolves to <repo>/.claude).
 	local crepo
 	crepo=$(mktemp -d -t chcons.XXXXXX) || return 1
+	# CR #2226: clean up on pass OR fail — a mid-test assertion failure must not
+	# leak the temp dir (RETURN trap fires when this @test function exits).
+	trap 'rm -rf "$crepo"' RETURN
 	(
 		cd "$crepo"
 		git init -q
