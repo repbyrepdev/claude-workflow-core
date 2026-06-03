@@ -44,3 +44,17 @@ rules:
     # short-flag branch -[A-Za-z]*k[A-Za-z]* matches `k` bundled with other flags
     # (e.g. `curl -ksS`) which a bare `-k` alternation silently missed (CR-CLI r1).
     pattern-regex: '\bcurl\b(?:\\\n|[^\n;])*[ \t](?:--insecure|-[A-Za-z]*k[A-Za-z]*)\b'
+
+  - id: phase1-wget-insecure-tls
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      wget --no-check-certificate disables TLS certificate verification (MITM
+      risk). Fix the trust store instead of skipping verification.
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+    # Mirror the curl-insecure rule: span `\`-continuation lines, stop at a bare
+    # newline OR `;` so a second command after `wget x;` is not matched (CR-CLI r2).
+    pattern-regex: '\bwget\b(?:\\\n|[^\n;])*[ \t]--no-check-certificate\b'

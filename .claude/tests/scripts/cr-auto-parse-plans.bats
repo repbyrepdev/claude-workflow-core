@@ -11,6 +11,21 @@
 # tmp git repo, mirroring cr-local-review.bats.
 # shellcheck disable=SC2030,SC2031
 
+# Writes the PATH-stubbed `gh` to $TEST_TMP/bin/gh. `gh issue view` echoes
+# $GH_VIEW_JSON; pass "edit-log" to ALSO record `gh issue edit` args to
+# $GH_EDIT_LOG (the relabel assertions read it). All other gh calls no-op.
+_write_gh_stub() {
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
+		if [ "${1:-}" = "edit-log" ]; then
+			echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
+		fi
+		echo 'exit 0'
+	} >"$TEST_TMP/bin/gh"
+	chmod +x "$TEST_TMP/bin/gh"
+}
+
 setup() {
 	PLUGIN=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
 	AP="$PLUGIN/scripts/cr/auto-parse-plans.sh"
@@ -31,14 +46,9 @@ setup() {
 		echo "FATAL: fixture init failed" >&2
 		return 1
 	}
-	# gh stub: the --issue --dry-run path only calls `gh issue view`; echo the
-	# per-test JSON from $GH_VIEW_JSON. All other gh calls are benign no-ops.
-	{
-		echo '#!/usr/bin/env bash'
-		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
-		echo 'exit 0'
-	} >"$TEST_TMP/bin/gh"
-	chmod +x "$TEST_TMP/bin/gh"
+	# gh stub: the --issue --dry-run path only calls `gh issue view` (echoes
+	# $GH_VIEW_JSON); all other gh calls are benign no-ops.
+	_write_gh_stub
 	LOG="$TEST_TMP/.claude/logs/cr-auto-parse.jsonl"
 }
 
@@ -97,15 +107,9 @@ teardown() {
 		echo 'exit 0'
 	} >"$TEST_TMP/.claude/skills/cr-plan/run.sh"
 	chmod +x "$TEST_TMP/.claude/skills/cr-plan/run.sh"
-	# gh stub: `issue view` echoes the payload; `issue edit` is recorded (path via
-	# GH_EDIT_LOG env) so the relabel args can be asserted.
-	{
-		echo '#!/usr/bin/env bash'
-		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
-		echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then echo "$*" >>"$GH_EDIT_LOG"; exit 0; fi'
-		echo 'exit 0'
-	} >"$TEST_TMP/bin/gh"
-	chmod +x "$TEST_TMP/bin/gh"
+	# gh stub WITH edit-logging: `issue view` echoes the payload; `issue edit`
+	# args are recorded to $GH_EDIT_LOG so the relabel can be asserted.
+	_write_gh_stub edit-log
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_EDIT_LOG="$TEST_TMP/gh-edit.log" "$AP" --issue 777
 	[ "$status" -eq 0 ]
 	# CR #223: assert the parse progress message on the output channel too (not

@@ -60,6 +60,10 @@ set -u
 #   are compared apples-to-apples.
 _repo_guard_normalize_slug() {
 	local raw="${1:-}"
+	# Strip trailing slashes FIRST (CR-CLI r2): a dir like "/path/repo/" would
+	# otherwise reduce to empty under the ${raw##*/} basename strip below,
+	# mis-detecting the repo as empty so repo_guard_require never matches.
+	while [ -n "$raw" ] && [ "$raw" != "${raw%/}" ]; do raw="${raw%/}"; done
 	# Drop everything up to and including the last `/` (owner prefix, or a
 	# full URL path). Leaves the bare repo name.
 	raw="${raw##*/}"

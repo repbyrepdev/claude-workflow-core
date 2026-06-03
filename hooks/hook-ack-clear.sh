@@ -93,7 +93,11 @@ if ! awk -F'\t' -v target="$FILE" -v target_rel="$TARGET_REL" -v target_base="$T
 		# trailing /basename of the Read target.
 		if (target_base != "") {
 			if (fp == target_base) next
-			needle = "/" target_base
+			# CR-CLI r2 (critical): build needle from fp (the sentinel basename),
+			# NOT target_base. The Read target ALWAYS ends with its own basename,
+			# so "/" target_base matched unconditionally — clearing EVERY bare-
+			# basename ack on ANY Read. Mirror the multi-segment branch above.
+			needle = "/" fp
 			pos = length(target) - length(needle) + 1
 			if (pos > 0 && substr(target, pos) == needle) next
 		}

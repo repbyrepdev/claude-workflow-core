@@ -45,7 +45,7 @@ set -u
 # the (already-printed) stdout directive if hook-ack infra is unavailable or
 # we are inside a resume auto-walk. Mirrors _emit_stage_directive's guards.
 _emit_preread_ack() {
-	local label=${1:-} preread=${2:-} body=${3:-}
+	local label=${1:-} preread=${2:-}
 	[ -n "$preread" ] || return 0
 	# Auto-walk (cmd_resume) suppresses the ack-pending; the caller's stdout
 	# print still fires so the resume log carries the directive for context.
@@ -115,7 +115,7 @@ _emit_stage_directive() {
 	# enforced preread. Returns here so the diagnostic-file path below (used by
 	# the advisory arms) is not also taken.
 	if [ -n "$preread" ]; then
-		_emit_preread_ack "$label" "$preread" "$body"
+		_emit_preread_ack "$label" "$preread"
 		return 0
 	fi
 	# Best-effort ack-enforcement: any failure degrades to the stdout print
