@@ -124,16 +124,24 @@ _exec_bit_restore_local() {
 		return 0 # nothing to restore
 	fi
 
-	local rel index_dirty=0
+	local rel index_dirty=0 update_failed=0
 	for f in "${restored_files[@]}"; do
 		rel="${f#"$REPO_ROOT/"}"
 		if git -C "$REPO_ROOT" ls-files -s "$rel" 2>/dev/null | awk '{print $1}' | grep -qx 100644; then
 			# stderr NOT suppressed (CR-CLI): a failing update-index (e.g. path not
-			# in index) should be visible, not swallowed. index_dirty stays unset on
-			# failure via the if-guard.
-			if git -C "$REPO_ROOT" update-index --chmod=+x "$rel"; then index_dirty=1; fi
+			# in index) must be visible, not swallowed. CR #1607: fail-closed — a
+			# stripped exec bit that can't be re-staged is the exact breakage this
+			# helper exists to prevent, so record the failure and abort the cycle
+			# (return 1) rather than silently pushing a partial exec-bit restore.
+			if git -C "$REPO_ROOT" update-index --chmod=+x "$rel"; then
+				index_dirty=1
+			else
+				echo "autofix-cycle: 'git update-index --chmod=+x $rel' failed — cannot re-stage exec bit" >&2
+				update_failed=1
+			fi
 		fi
 	done
+	[ "$update_failed" = "0" ] || return 1
 	[ "$index_dirty" = "1" ] || return 0
 
 	echo "autofix-cycle: committing exec-bit restorations (LOCAL ONLY — push deferred until after re-review)" >&2
@@ -281,17 +289,30 @@ _phase05_fallback() {
 	# #223 CR-CLI: derive the prefilter base ref from review-config.yml's
 	# base_ref SSOT (matching phase0.5-post-commit-rerun.sh) instead of
 	# hardcoding `main`, so a repo whose mainline isn't `main` prefilters
-	# against the right base. Falls back to "main" when review-config is
-	# absent / yq is unavailable / base_ref is unset, preserving prior behavior.
+	# against the right base.
+	#
+	# CR #1607 fail-closed: distinguish ABSENT config from PARSE ERROR. When
+	# review-config.yml is genuinely absent we default to "main" (prior
+	# behavior, a sane convention). But when the file EXISTS yet can't be read
+	# (yq missing, malformed YAML, unreadable) we must NOT silently prefilter
+	# against the wrong base — error to stderr + skip the prefilter (return
+	# non-zero) so a misconfigured SSOT can't quietly diff against main.
 	local review_config="$REPO_ROOT/.claude/review-config.yml"
 	local base_ref="main"
-	if [ -f "$review_config" ] && command -v yq >/dev/null 2>&1; then
+	if [ -f "$review_config" ]; then
+		if ! command -v yq >/dev/null 2>&1; then
+			echo "autofix-cycle: yq required to read $review_config — skipping Phase 0.5 prefilter (fail-closed)" >&2
+			return 2
+		fi
 		local cfg_base
-		cfg_base=$(yq -r '.base_ref // "main"' "$review_config" 2>/dev/null || echo "main")
+		if ! cfg_base=$(yq -r '.base_ref // empty' "$review_config"); then
+			echo "autofix-cycle: failed parsing base_ref from $review_config — skipping Phase 0.5 prefilter (fail-closed)" >&2
+			return 2
+		fi
+		# An explicit empty/absent base_ref key in a parseable file keeps the
+		# "main" default (the file is readable, the key is just unset).
 		[ -n "$cfg_base" ] && [ "$cfg_base" != "null" ] && base_ref="$cfg_base"
 	fi
-	# Guard against an empty base ref (e.g. a malformed override) — default to main.
-	[ -n "$base_ref" ] || base_ref="main"
 	# stdin </dev/null: the prefilter calls try-free.sh, whose `[ ! -t 0 ] && cat`
 	# blocks on an unbounded read when stdin is a non-tty pipe with no data (here
 	# stdin would be inherited from autofix-cycle's caller). The prefilter pipes no

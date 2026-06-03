@@ -28,7 +28,7 @@ The wrapper sets `SKILL_WRAPPER=1` and execs `scripts/bootstrap-repo.sh`.
 - `.claude/local-overrides.yml`
 - `.github/` — PR template, commit-template, labels, required-checks, `ISSUE_TEMPLATE/*`, labeler, gitleaks/pr-lint/pr-labeler workflows
 - `.gemini/`, `.codex/config.toml`, `.coderabbit.base.yaml` (+ composes `.coderabbit.yaml`)
-- does **NOT** mutate the target's GitHub label set by default. Label sync is an explicit **opt-in** via `--apply-labels` (a remote write, so it sits behind a flag). Without the flag the scaffold NOTEs that sync is skipped and lets `.github/workflows/label-sync.yml` apply labels on first push. Even WITH `--apply-labels`, the sync is still skipped-with-NOTE unless the target already has a GitHub `origin` remote (plus gh + yq present + `labels.yml` exists); when it runs it is idempotent (`gh label create --force` upserts)
+- does **NOT** mutate the target's GitHub label set by default. Label sync is an explicit **opt-in** via `--apply-labels` (a remote write, so it sits behind a flag). Without the flag the scaffold NOTEs that sync is skipped; labels are only applied once you re-run with `--apply-labels` or add/run a `label-sync.yml` workflow yourself. Even WITH `--apply-labels`, the sync is still skipped-with-NOTE unless the target already has a GitHub `origin` remote (plus gh + yq present + `labels.yml` exists); when it runs it is idempotent (`gh label create --force` upserts)
 
 ## After scaffolding (the script prints these)
 

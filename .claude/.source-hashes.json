@@ -13,7 +13,7 @@
     ".github/commit-template.yml": "c0b837fc506ac12f302f401b459a9f9d5249dffc71449349fad5303a1eae9cea",
     ".github/copilot-instructions.md": "1aadc3c02071462289200092e3593d9a3c0bee6d81b48a0c69ddde02d5250f0b",
     ".github/pull_request_template.md": "d96e4af3aa81082d0701bca24456f00238371b57357f8efe23e4682f14bedf2d",
-    ".semgrep/phase1.yml": "cd1c542b1b2befa96462da785d601c0e2b5d5e62380f8feb1c5480ea4e2c27e5",
+    ".semgrep/phase1.yml": "7cdf745e3e708b8a43b15877febf4ca0a7ffad7747cb0d07dd77935fb9b0acce",
     "_lib/bash-safety-check.sh": "8b02ff4595ef404ea2f33fa9f09ce5439cfb6e59e2df2e51a67334578327ed4a",
     "_lib/bash4-features-check.sh": "3d0a27aa98d369e7fa482472eba8192128f4e4db42d275b1b7096d9610a18dbc",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",

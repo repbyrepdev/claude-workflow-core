@@ -59,9 +59,22 @@ _extract_heredoc() {
 
 # CR #1607: label sync is OPT-IN via --apply-labels. WITH the flag on a
 # no-remote target, _apply_labels runs and hits its no-remote skip-NOTE.
+# Hermetic: _apply_labels only reaches the no-remote branch AFTER both
+# `command -v gh` and `command -v yq` succeed, so shim both on PATH (no-op
+# stubs) — otherwise the result depends on the runner image's gh/yq presence.
 @test "_apply_labels NOTE on no-remote target (gh present, --apply-labels)" {
 	mkdir -p "$TEST_TMP/target-no-remote"
-	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" --apply-labels 2>&1"
+	mkdir -p "$TEST_TMP/bin"
+	cat >"$TEST_TMP/bin/gh" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	cat >"$TEST_TMP/bin/yq" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	chmod +x "$TEST_TMP/bin/gh" "$TEST_TMP/bin/yq"
+	run env PATH="$TEST_TMP/bin:$PATH" bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" --apply-labels 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output == *"no GitHub remote yet"* ]]
 }
