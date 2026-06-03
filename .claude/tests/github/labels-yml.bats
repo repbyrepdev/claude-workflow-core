@@ -209,15 +209,13 @@ setup() {
 		echo "FAIL: auto-parse-plans.sh not at $script" >&2
 		return 1
 	}
-	# Extract the two fallback literals from the `local pp_color=... pp_desc=...` line.
-	fb_line=$(grep -E 'local pp_color="[^"]+" pp_desc="[^"]+"' "$script") || {
-		echo "FAIL: could not find the pp_color/pp_desc fallback line in $script" >&2
-		return 1
-	}
-	fb_color=$(sed -E 's/.*pp_color="([^"]+)".*/\1/' <<<"$fb_line")
-	fb_desc=$(sed -E 's/.*pp_desc="([^"]+)".*/\1/' <<<"$fb_line")
+	# Extract each fallback literal INDEPENDENTLY (CR-CLI #223: robust to
+	# reformatting/reordering — don't require both on a single line). The script
+	# uses double-quoted literals: pp_color="..." and pp_desc="...".
+	fb_color=$(grep -oE 'pp_color="[^"]+"' "$script" | head -1 | sed -E 's/pp_color="([^"]+)"/\1/')
+	fb_desc=$(grep -oE 'pp_desc="[^"]+"' "$script" | head -1 | sed -E 's/pp_desc="([^"]+)"/\1/')
 	[ -n "$fb_color" ] && [ -n "$fb_desc" ] || {
-		echo "FAIL: failed to extract fallback color/desc from: $fb_line" >&2
+		echo "FAIL: could not extract pp_color/pp_desc literals from $script" >&2
 		return 1
 	}
 	# Read the SSOT values with the SAME yq query the script uses.

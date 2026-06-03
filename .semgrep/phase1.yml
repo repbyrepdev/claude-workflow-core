@@ -48,7 +48,7 @@ rules:
         - "*.sh"
         - "*.bash"
     # (?:\\\n|[^\n|;])* spans `\`-continuation lines (CR #478 r1) so `curl ... \<NL>
-    # -k` is caught, while stopping at a bare newline OR `|` OR `;` so a
+    # -k` is caught, while stopping at a bare newline OR `|` OR `;` OR `&` so a
     # `curl x; other -k` second command can't be matched as curl's flag. The `|`
     # exclusion (CR-CLI) keeps the span from crossing a pipe so a PIPED command's
     # flag (e.g. `curl https://x | grep -k`) isn't misattributed to curl. The
@@ -56,7 +56,9 @@ rules:
     # which a bare `-k` alternation missed (CR-CLI r1). The [^oO \t\n] right before
     # `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — a char-class
     # exclusion deliberately kept simpler than a PCRE lookbehind (CR-CLI r4).
-    pattern-regex: '\bcurl\b(?:\\\n|[^\n|;])*[ \t](?:--insecure|-(?:[A-Za-z]*[^oO \t\n])?k[A-Za-z]*)\b'
+    # `&` in the span class (CR-CLI #223) stops at `&&`/`&` so `curl x && y -k`
+    # can't match `-k` as curl's flag (mirrors the wget + network-pipe rules).
+    pattern-regex: '\bcurl\b(?:\\\n|[^\n|;&])*[ \t](?:--insecure|-(?:[A-Za-z]*[^oO \t\n])?k[A-Za-z]*)\b'
 
   - id: phase1-wget-insecure-tls
     languages: [generic]
@@ -69,7 +71,7 @@ rules:
         - "*.sh"
         - "*.bash"
     # Mirror the curl-insecure rule: span `\`-continuation lines, stop at a bare
-    # newline OR `|` OR `;` so a second command after `wget x;` is not matched
-    # (CR-CLI r2) and the span can't cross a pipe into a PIPED command's flag
-    # (e.g. `wget https://x | grep --no-check-certificate` isn't wget's) (CR-CLI).
-    pattern-regex: '\bwget\b(?:\\\n|[^\n|;])*[ \t]--no-check-certificate\b'
+    # newline OR `|` OR `;` OR `&` so a second command after `wget x;` / `wget x &&`
+    # is not matched (CR-CLI r2/#223) and the span can't cross a pipe into a PIPED
+    # command's flag (e.g. `wget https://x | grep --no-check-certificate`) (CR-CLI).
+    pattern-regex: '\bwget\b(?:\\\n|[^\n|;&])*[ \t]--no-check-certificate\b'
