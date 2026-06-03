@@ -241,10 +241,26 @@ PHASE2_RESULT_LEDGER="$CACHE_DIR/phase2-results.jsonl"
 # engine/ruleset change, change the diff or clear PHASE2_RESULT_LEDGER.
 phase2_review_cache_key() {
 	local base=${1:-main}
-	local diff
+	local diff d_err d_rc=0
 	# 3-dot: changes on this branch since it diverged from base — mirrors CR's
 	# committed-review surface. hash-object gives a stable content digest.
-	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>/dev/null) || return 0
+	# v0.34.29 (CR-in-CI #2226): mirror the hash-object hardening below — a git
+	# diff failure (bad base ref / degraded object DB) was a silent fail-open
+	# (the exact pattern this PR kills); capture stderr + emit a breadcrumb on
+	# non-zero rc, still returning empty (fail-safe: caller does a fresh review,
+	# never a false cache hit).
+	d_err=$(mktemp 2>/dev/null) || d_err=""
+	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>"${d_err:-/dev/null}") || d_rc=$?
+	if [ "$d_rc" -ne 0 ]; then
+		if [ -n "$d_err" ] && [ -s "$d_err" ]; then
+			echo "phase2_review_cache_key: git diff failed — no cache key (forces a fresh review): $(head -c 160 "$d_err")" >&2
+		else
+			echo "phase2_review_cache_key: git diff failed — no cache key (forces a fresh review)" >&2
+		fi
+		[ -n "$d_err" ] && rm -f "$d_err"
+		return 0
+	fi
+	[ -n "$d_err" ] && rm -f "$d_err"
 	# v0.34.29 (#2224, ptt #102): a bare `|| true` swallowed hash-object
 	# failure silently — an empty key → caller always reviews (fail-safe) but
 	# with ZERO operator signal that key computation is broken (e.g. a degraded
