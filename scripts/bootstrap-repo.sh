@@ -1537,8 +1537,8 @@ _apply_labels() {
 	_log "applying labels from .github/labels.yml via gh label create --force..."
 	# Materialize names outside process subst so yq rc is checkable.
 	if ! names=$(yq -r '.[].name' "$TARGET/.github/labels.yml" 2>&1); then
-		_log "WARN: yq failed to parse .github/labels.yml: $(head -1 <<<"$names")"
-		return 0
+		_log "ERROR: yq failed to parse .github/labels.yml: $(head -1 <<<"$names")"
+		return 2
 	fi
 	while IFS= read -r name; do
 		[ -z "$name" ] && continue
@@ -1556,10 +1556,10 @@ _apply_labels() {
 		failed=$((failed + 1))
 	done <<<"$names"
 	if [ "$failed" -gt 0 ]; then
-		_log "  ✓ applied $count label(s), $failed failed"
-	else
-		_log "  ✓ applied $count label(s)"
+		_log "  ✗ applied $count label(s), $failed FAILED — failing closed (a broken/mismatched labels.yml must not report success, #223)"
+		return 2
 	fi
+	_log "  ✓ applied $count label(s)"
 }
 
 # OPT-IN gate (default OFF): only mutate the remote label set when the operator

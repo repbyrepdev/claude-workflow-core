@@ -321,7 +321,7 @@ No prose. No markdown fence. Just the array."
 	# (claude-sonnet-4.6) on real diffs (dogfood logged rc=124 for all 5 agents).
 	_helper_err=$(mktemp)
 	_helper_rc=0
-	raw=$("$COPILOT_HELPER" "$full_prompt" 2>"$_helper_err") || _helper_rc=$?
+	raw=$("$COPILOT_HELPER" "$full_prompt" </dev/null 2>"$_helper_err") || _helper_rc=$?
 	if [ "$_helper_rc" -ne 0 ]; then
 		_err_excerpt=$(head -c 500 "$_helper_err" | tr '\n' ' ' | tr -d '"')
 		# v4.28-W3 r3 SFH: distinguish failure modes in audit log + always
