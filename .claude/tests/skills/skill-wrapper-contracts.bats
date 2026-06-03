@@ -44,11 +44,13 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	local tmp
 	tmp=$(mktemp -d -t bsr-wrap.XXXXXX) || return 1
 	run bash -c "cd '$tmp' && bash '$(_wrapper bootstrap-repo)'"
-	[ -d "$tmp" ] && [[ $tmp == */bsr-wrap.* ]] && rm -rf "$tmp"
+	# Assert FIRST, clean up AFTER — and make cleanup non-fatal so a failed rm
+	# (or an already-removed dir) can't mask the assertions below (CR-CLI r6).
 	[ "$status" -eq 2 ]
 	# Pin the missing-target arg-guard specifically (the usage line + the error).
 	[[ $output == *"missing target directory"* ]]
 	[[ $output == *"usage"* ]]
+	if [ -d "$tmp" ] && [[ $tmp == */bsr-wrap.* ]]; then rm -rf "$tmp"; fi
 }
 
 @test "cr-plan: --help exits 0 with usage" {

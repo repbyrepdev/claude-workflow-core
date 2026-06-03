@@ -125,9 +125,13 @@ teardown() {
 	[ "$status" -eq 0 ]
 	run grep -q -- '--remove-label plan-me' "$TEST_TMP/gh-edit.log"
 	[ "$status" -eq 0 ]
-	# CR-CLI r4: assert the label-create too — the runaway root-fix ensures the
-	# plan-parsed label EXISTS before the relabel (a missing label was what let
-	# the combined relabel fail wholesale -> plan-me stayed -> re-parse runaway).
+	# CR-CLI r4+r6: assert the label-create AND its PRECEDENCE — the runaway
+	# root-fix creates the plan-parsed label BEFORE the relabel (a missing label
+	# was what made the combined relabel fail wholesale -> plan-me stayed ->
+	# re-parse runaway). Prove label-create's log line precedes the first edit.
 	run grep -q -- 'label create.*plan-parsed' "$TEST_TMP/gh-edit.log"
 	[ "$status" -eq 0 ]
+	lc_line=$(grep -n -- 'label create.*plan-parsed' "$TEST_TMP/gh-edit.log" | head -1 | cut -d: -f1)
+	ie_line=$(grep -n -- 'issue edit' "$TEST_TMP/gh-edit.log" | head -1 | cut -d: -f1)
+	[ -n "$lc_line" ] && [ -n "$ie_line" ] && [ "$lc_line" -lt "$ie_line" ]
 }
