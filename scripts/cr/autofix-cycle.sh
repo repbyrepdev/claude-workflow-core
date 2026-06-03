@@ -70,7 +70,11 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,16p' "$0"
+		# Print the user-facing description + Usage block (lines 14-27);
+		# skip the internal orchestration note + bats-required + changelog
+		# at lines 3-13 (#223 phase2 — the prior 4,16p truncated mid-sentence
+		# and showed internal notes instead of Usage).
+		sed -n '14,27p' "$0"
 		exit 0
 		;;
 	[0-9]*)

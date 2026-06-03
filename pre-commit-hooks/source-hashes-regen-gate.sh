@@ -10,12 +10,16 @@ set -euo pipefail
 # operator's intentional change as drift.
 #
 # Algorithm:
-#   1. List staged files matching scripts/hash-drift.sh's tracked dirs:
+#   1. List staged files matching scripts/hash-drift.sh's tracked set:
 #        hooks/*.sh
 #        _lib/*.sh
 #        .semgrep/*.yml / *.yaml   (#478 — offline Phase-1 ruleset, mirrored verbatim)
-#      (The .github byte-SSOT files are gated by step 3's full regenerate-
-#      and-diff below, not this step-1 grep. More dirs may land later.)
+#        + every `hashed: true` path in scripts/bootstrap-manifest.yml
+#          (#223 phase2 — .github process templates, .coderabbit.base.yaml,
+#           .gemini/*, .codex/*). Derived from the manifest SSOT so this set
+#           tracks hash-drift.sh's exactly; previously step 1 omitted these,
+#           so a lone hashed .github change exited 0 before step 3 ran. More
+#           dirs may land later.
 #   2. If any tracked file is staged AND .claude/.source-hashes.json is
 #      NOT also staged, refuse the commit with a remediation pointer.
 #   3. As belt-and-suspenders: run `scripts/hash-drift.sh --generate`
@@ -50,8 +54,35 @@ MANIFEST=".claude/.source-hashes.json"
 
 # 1. Any tracked file staged? --diff-filter=ACMRD includes deletions
 # (code-reviewer #140 r1: `git rm hooks/foo.sh` left manifest stale).
-TRACKED_STAGED=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null |
+# Snapshot the staged list once: both the regex match AND the manifest
+# hashed-path match (#223 phase2) read from it.
+STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null || true)
+TRACKED_STAGED=$(printf '%s\n' "$STAGED_ALL" |
 	grep -E '^(hooks/[A-Za-z0-9_.-]+\.sh|_lib/[A-Za-z0-9_.-]+\.sh|\.semgrep/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.ya?ml)$' || true)
+
+# Also fire on the byte-SSOT files declared `hashed: true` in the bootstrap
+# manifest (#223 phase2 — CR MAJOR). hash-drift.sh hashes hooks/_lib/.semgrep
+# PLUS every manifest `hashed: true` path (.github process templates,
+# .coderabbit.base.yaml, .gemini/*, .codex/*). The step-1 regex above only
+# covered hooks/_lib/.semgrep, so staging ONLY a hashed .github file (no
+# manifest restage) left TRACKED_STAGED empty → exit 0 BEFORE the step-3
+# regenerate-and-diff ran → the manifest went stale silently (consumer
+# hash-drift --verify would then false-flag it as drift). Derive the hashed
+# set from the SAME manifest SSOT hash-drift uses so the two can't diverge.
+# If yq or the manifest is unavailable, fall back to the regex-only set (step 3
+# still guards once entry occurs via a hooks/_lib/.semgrep change).
+BOOTSTRAP_MANIFEST="scripts/bootstrap-manifest.yml"
+if command -v yq >/dev/null 2>&1 && [ -f "$BOOTSTRAP_MANIFEST" ]; then
+	HASHED_PATHS=$(yq -r '.files[] | select(.hashed == true) | .path' "$BOOTSTRAP_MANIFEST" 2>/dev/null || true)
+	if [ -n "$HASHED_PATHS" ]; then
+		HASHED_STAGED=$(printf '%s\n' "$STAGED_ALL" |
+			grep -Fxf <(printf '%s\n' "$HASHED_PATHS") || true)
+		if [ -n "$HASHED_STAGED" ]; then
+			TRACKED_STAGED=$(printf '%s\n%s\n' "$TRACKED_STAGED" "$HASHED_STAGED" |
+				grep -v '^$' | sort -u)
+		fi
+	fi
+fi
 
 if [ -z "$TRACKED_STAGED" ]; then
 	# No tracked changes — nothing to verify

@@ -82,7 +82,11 @@ teardown() {
 	run resolve_plugin_helper "$REL"
 	[ "$status" -eq 0 ]
 	[ "$output" = "$LOCAL_COPY" ]
-	[[ $output != *"WARNING"* ]]
+	# #223 phase2: assert on the stable warning marker ("#223 possible stale
+	# override shadow") that the IDENTICAL case must NOT emit, rather than the
+	# generic "WARNING" token — ties the assertion to the exact stale-shadow
+	# string in resolve-plugin-helper.sh:74.
+	[[ $output != *"#223"* ]]
 }
 
 @test "no local copy + canonical exists → plugin-cache fallback" {
