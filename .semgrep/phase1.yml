@@ -31,7 +31,14 @@ rules:
     # `echo`, not from the fetch. (Tradeoff: a URL with a literal `&` in its query
     # string also ends the span, but such a `curl 'http://x?a=1&b=2' | sh` is rare
     # vs the chained-command FP, and the near-zero-FP goal favors the exclusion.)
-    pattern-regex: '(?:curl|wget)(?:\\\n|[^\n|;&])*\|[ \t]*(?:sudo[ \t]+)?(?:sh|bash|dash|zsh|dsh)\b'
+    # v0.34.29 (#2224, CR minor): `dsh` was NOT a typo for `dash` (dash is
+    # already covered) — it is an obscure tool; dropped. Added the genuinely-
+    # missing common interactive/login shells (ksh, fish, csh, tcsh). Longest
+    # alternatives first (tcsh before csh, bash before sh) by convention; each
+    # branch is `\b`-anchored so a substring like the `sh` in `bash` can't
+    # mis-match. Tested against curl|wget piped to every listed shell + the
+    # grep/python/`&&`-chained non-matches under the real semgrep engine.
+    pattern-regex: '(?:curl|wget)(?:\\\n|[^\n|;&])*\|[ \t]*(?:sudo[ \t]+)?(?:bash|dash|tcsh|zsh|ksh|csh|fish|sh)\b'
 
   # NOTE: an `eval $var` rule was tried + dropped — it false-positived on safe
   # shell-option save/restore (`eval "$_prev_globstar"`), and a regex can't tell
@@ -53,12 +60,18 @@ rules:
     # exclusion (CR-CLI) keeps the span from crossing a pipe so a PIPED command's
     # flag (e.g. `curl https://x | grep -k`) isn't misattributed to curl. The
     # short-flag branch matches `k` bundled with other flags (e.g. `curl -ksS`)
-    # which a bare `-k` alternation missed (CR-CLI r1). The [^oO \t\n] right before
-    # `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — a char-class
-    # exclusion deliberately kept simpler than a PCRE lookbehind (CR-CLI r4).
-    # `&` in the span class (CR-CLI #223) stops at `&&`/`&` so `curl x && y -k`
-    # can't match `-k` as curl's flag (mirrors the wget + network-pipe rules).
-    pattern-regex: '\bcurl\b(?:\\\n|[^\n|;&])*[ \t](?:--insecure|-(?:[A-Za-z]*[^oO \t\n])?k[A-Za-z]*)\b'
+    # which a bare `-k` alternation missed (CR-CLI r1). The exclusion class right
+    # before `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — a
+    # char-class exclusion deliberately kept simpler than a PCRE lookbehind
+    # (CR-CLI r4). v0.34.29 (#2224, CR minor): added `-` to the class
+    # ([^oO \t\n] → [^-oO \t\n]) so the second hyphen of a long flag can't be
+    # consumed there — this stopped `--key`/`--krb5` (and any `--k…` long flag)
+    # false-positiving as the short `-k` insecure flag. Verified under the real
+    # semgrep engine: `--key`/`--krb5` no longer match while `-k`/`-ksS`/
+    # `--insecure` still do. `&` in the span class (CR-CLI #223) stops at
+    # `&&`/`&` so `curl x && y -k` can't match `-k` as curl's flag (mirrors the
+    # wget + network-pipe rules).
+    pattern-regex: '\bcurl\b(?:\\\n|[^\n|;&])*[ \t](?:--insecure|-(?:[A-Za-z]*[^-oO \t\n])?k[A-Za-z]*)\b'
 
   - id: phase1-wget-insecure-tls
     languages: [generic]

@@ -43,7 +43,7 @@ consumers:
   - name: media-server
     repo: repbyrepdev/plex_arr_media_stack
     local_path: ~/media-server
-    pinned_version: "0.8.5"
+    pinned_version: "0.34.29"
     overrides_file: .claude/local-overrides.yml
     bootstrap_date: 2026-04-21
     contact: "@damien"
@@ -56,7 +56,7 @@ consumers:
   - name: pricing-team-toolkit
     repo: FCP-Euro-Pricing-Team/pricing-team-toolkit
     local_path: ~/pricing-team-toolkit
-    pinned_version: "0.6.4"
+    pinned_version: "0.34.29"
     overrides_file: .claude/local-overrides.yml
     bootstrap_date: 2026-05-15
     contact: "@damien"

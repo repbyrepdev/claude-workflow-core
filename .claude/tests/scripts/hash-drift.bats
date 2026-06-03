@@ -105,11 +105,19 @@ _make_consumer() {
 	_make_producer "$PRODUCER"
 	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
 	_make_consumer "$CONSUMER" "$PRODUCER"
-	# Consumer modifies + adds to override list.
+	# Consumer modifies + adds to override list. #2224: use the STRUCTURED
+	# `overrides:` schema (the canonical shape the template + schema-check gate +
+	# refresh-from-source all use). hash-drift.sh now parses it via yq, matching
+	# those readers — the prior flat `path: reason` form is no longer the schema.
 	printf 'echo LOCAL OVERRIDE\n' >"$CONSUMER/.claude/hooks/foo.sh"
 	cat >"$CONSUMER/.claude/local-overrides.yml" <<'EOF'
 # Local overrides — files we intentionally diverge from plugin source.
-.claude/hooks/foo.sh: project-specific tweak
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    reason: project-specific tweak
+    added: "2026-06-01"
 EOF
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
