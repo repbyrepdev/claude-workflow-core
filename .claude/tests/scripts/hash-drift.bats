@@ -490,11 +490,15 @@ EOF
 	[[ $output == *"yq failed parsing"* ]]
 }
 
-@test "--verify path-less override entry → literal null NOT treated as path; sibling override still honored (#2224)" {
-	# pr-test-analyzer: a structured entry MISSING its `path:` field makes
-	# `.overrides[].path` emit the literal "null". The `[ \"\$ov\" != \"null\" ]`
-	# guard must drop it (never treat a file literally named "null" as
-	# overridden), while a VALID sibling override (foo.sh) is still honored.
+@test "--verify path-less override entry parses cleanly + doesn't suppress real drift; sibling honored (#2224)" {
+	# pr-test-analyzer + CR phase2 r1: a structured entry MISSING its `path:`
+	# field makes `.overrides[].path` emit the literal "null", which the
+	# `!= "null"` guard drops. The guard is DEFENSIVE DEPTH and its drop is not
+	# separately observable here (a tracked file cannot have the literal path
+	# "null", so the count is `overridden: 1` with or without the guard). This
+	# test therefore asserts the OBSERVABLE behavior: the path-less entry parses
+	# without error, does NOT suppress a genuine drift (bar.sh still reported),
+	# and the VALID sibling override (foo.sh) is still honored.
 	PRODUCER="$TEST_TMP/producer"
 	CONSUMER="$TEST_TMP/consumer"
 	mkdir -p "$PRODUCER" "$CONSUMER"
