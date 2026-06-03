@@ -101,10 +101,51 @@ teardown() {
 	# (<repo>/_lib/.. = repo, was overshooting to the parent) could regress
 	# unnoticed. Source with REPO_ROOT unset and assert it resolves to the repo.
 	local expected
-	expected=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	# pwd -P (physical): git rev-parse --show-toplevel resolves symlinks, so a
+	# symlinked checkout would false-fail a logical-pwd assertion (CR #2226;
+	# mirrors the consumer-layout test below).
+	expected=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd -P)
 	run bash -c "unset REPO_ROOT; . '$LIB' && printf '%s' \"\$REPO_ROOT\""
 	[ "$status" -eq 0 ]
 	[ "$output" = "$expected" ]
+}
+
+@test "consumer layout: REPO_ROOT unset → git rev-parse root, CACHE_DIR not doubled .claude (#2224)" {
+	# CR #2224 (critical): the dirname-relative fallback is LAYOUT-DEPENDENT. In
+	# the PLUGIN this lib lives at <repo>/_lib/ (dirname/.. = repo, correct); in
+	# CONSUMERS it lives at <repo>/.claude/_lib/ (dirname/.. = <repo>/.claude, one
+	# level too shallow → CACHE_DIR became <repo>/.claude/.claude/.review-cache).
+	# The fix prefers `git rev-parse --show-toplevel`, which is correct in BOTH
+	# layouts. Reproduce the CONSUMER layout: copy the lib to <repo>/.claude/_lib/,
+	# source with REPO_ROOT unset, assert REPO_ROOT = the true repo root and
+	# CACHE_DIR = <repo>/.claude/.review-cache (NOT the doubled-.claude path). A
+	# revert to dirname-relative-only FAILS here (resolves to <repo>/.claude).
+	local crepo
+	crepo=$(mktemp -d -t chcons.XXXXXX) || return 1
+	# NB: cleanup is the final `rm -rf "$crepo"` below. A bats `RETURN` trap here
+	# (CR #2226 suggestion) BREAKS bats — bats uses RETURN traps for its own
+	# per-test teardown, so overriding it fails the test (`not ok ... rm failed`).
+	# A leaked temp dir on a rare mid-test failure is trivial (OS cleans TMPDIR).
+	(
+		cd "$crepo"
+		git init -q
+		mkdir -p .claude/_lib
+		cp "$LIB" .claude/_lib/content-hash-cache.sh
+	)
+	# True repo root (resolve symlinks: macOS /tmp → /private/tmp, matching what
+	# `git rev-parse --show-toplevel` returns).
+	local expected
+	expected=$(cd "$crepo" && pwd -P)
+	run bash -c "unset REPO_ROOT; . '$crepo/.claude/_lib/content-hash-cache.sh' && printf '%s\n%s' \"\$REPO_ROOT\" \"\$CACHE_DIR\""
+	[ "$status" -eq 0 ]
+	local got_root got_cache
+	got_root=$(printf '%s' "$output" | sed -n '1p')
+	got_cache=$(printf '%s' "$output" | sed -n '2p')
+	[ "$got_root" = "$expected" ]
+	[ "$got_cache" = "$expected/.claude/.review-cache" ]
+	# Explicit anti-regression: the doubled-.claude path must NOT appear.
+	[[ $got_cache != *"/.claude/.claude/"* ]]
+	rm -rf "$crepo"
 }
 
 @test "cache_prune prunes PHASE2_RESULT_LEDGER (old dropped, recent kept)" {

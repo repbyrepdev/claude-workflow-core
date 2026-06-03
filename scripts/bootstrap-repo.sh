@@ -431,15 +431,30 @@ PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-c
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
-RESOLVE_LIB="${_resolve_candidates[0]:-}"
+# Pick the NEWEST cached version (version-sorted), not the lexicographically
+# first — a bare ${arr[0]} sorts strings, so 0.34.x lands AFTER 0.6.x/0.8.x and
+# the OLDEST cache wins. resolve-plugin-pin.sh is byte-identical across cached
+# versions today, but pinning to an arbitrary stale version is fragile; sort -V
+# picks the highest semver dir. sort -V is unsupported on older BSD/macOS sort,
+# so fall back to the first candidate — the resolve-pin lib is byte-identical
+# across cached versions, so any copy parses the pin identically (the version
+# sort is a nicety, not a correctness requirement).
+RESOLVE_LIB=""
+if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
+fi
 
 if [ -z "$RESOLVE_LIB" ] || [ ! -f "$RESOLVE_LIB" ]; then
 	echo "ship-pr-cycle consumer: ERROR: plugin cache empty at $PLUGIN_CACHE" >&2
 	echo "  run scripts/bootstrap-machine.sh from the plugin repo first" >&2
 	exit 2
 fi
-# shellcheck source=/dev/null
 _src_err=$(mktemp 2>/dev/null) || _src_err=""
+# shellcheck source=/dev/null
 if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
 	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
 	[ -n "$_src_err" ] && rm -f "$_src_err"
@@ -497,13 +512,25 @@ PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-c
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
-RESOLVE_LIB="${_resolve_candidates[0]:-}"
+# Pick the NEWEST cached version (version-sorted), not lexicographically-first.
+# sort -V is unsupported on older BSD/macOS sort, so fall back to the first
+# candidate — the resolve-pin lib is byte-identical across cached versions, so
+# any copy parses the pin identically (the version sort is a nicety, not a
+# correctness requirement).
+RESOLVE_LIB=""
+if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
+fi
 if [ -z "$RESOLVE_LIB" ]; then
 	echo "review-log.sh shim: plugin cache empty" >&2
 	exit 2
 fi
-# shellcheck source=/dev/null
 _src_err=$(mktemp 2>/dev/null) || _src_err=""
+# shellcheck source=/dev/null
 if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
 	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
 	[ -n "$_src_err" ] && rm -f "$_src_err"
@@ -547,13 +574,25 @@ PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-c
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
-RESOLVE_LIB="${_resolve_candidates[0]:-}"
+# Pick the NEWEST cached version (version-sorted), not lexicographically-first.
+# sort -V is unsupported on older BSD/macOS sort, so fall back to the first
+# candidate — the resolve-pin lib is byte-identical across cached versions, so
+# any copy parses the pin identically (the version sort is a nicety, not a
+# correctness requirement).
+RESOLVE_LIB=""
+if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
+fi
 if [ -z "$RESOLVE_LIB" ]; then
 	echo "$HOOK_NAME shim: plugin cache empty" >&2
 	exit 2
 fi
-# shellcheck source=/dev/null
 _src_err=$(mktemp 2>/dev/null) || _src_err=""
+# shellcheck source=/dev/null
 if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
 	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
 	[ -n "$_src_err" ] && rm -f "$_src_err"
@@ -589,13 +628,25 @@ PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-c
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
-RESOLVE_LIB="${_resolve_candidates[0]:-}"
+# Pick the NEWEST cached version (version-sorted), not lexicographically-first.
+# sort -V is unsupported on older BSD/macOS sort, so fall back to the first
+# candidate — the resolve-pin lib is byte-identical across cached versions, so
+# any copy parses the pin identically (the version sort is a nicety, not a
+# correctness requirement).
+RESOLVE_LIB=""
+if [ "${#_resolve_candidates[@]}" -gt 0 ]; then
+	if command sort -V </dev/null >/dev/null 2>&1; then
+		RESOLVE_LIB=$(printf '%s\n' "${_resolve_candidates[@]}" | sort -V | tail -1)
+	else
+		RESOLVE_LIB="${_resolve_candidates[0]}"
+	fi
+fi
 if [ -z "$RESOLVE_LIB" ]; then
 	echo "$HOOK_NAME shim: plugin cache empty" >&2
 	exit 2
 fi
-# shellcheck source=/dev/null
 _src_err=$(mktemp 2>/dev/null) || _src_err=""
+# shellcheck source=/dev/null
 if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
 	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
 	[ -n "$_src_err" ] && rm -f "$_src_err"
@@ -1188,7 +1239,7 @@ _write .gemini/settings.json 644 <<'EOF'
       "run_shell_command(chmod)"
     ]
   },
-  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true blocks --approval-mode=yolo / --yolo override (per docs/cli/enterprise.md) so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude parameterized patterns block specific command prefixes (verified against docs/tools/shell.md). For belt-and-suspenders deny rules with priority + glob support, the Gemini policy engine accepts a separate policy.toml with [[rule]] deny blocks — see .gemini/policy.toml (#643).",
+  "_tools_note": "approvalMode='plan' (general.defaultApprovalMode) requires human approval before any tool runs. security.disableYoloMode=true forces every tool execution to require explicit confirmation, blocking the --approval-mode=yolo / --yolo override so plan-mode protections cannot be bypassed via the CLI flag. tools.exclude is a blocklist that uses simple PREFIX matching on the command; run_shell_command(rm) blocks any command whose run_shell_command argument starts with rm. NOTE: tools.exclude is DEPRECATED in favor of the Policy Engine (the 'deny' decision supersedes it) and string-based blocks are weaker than allowlisting — so the AUTHORITATIVE deny rules with priority + glob support live in .gemini/policy.toml [[rule]] deny blocks (#643); these exclude entries are a secondary, defense-in-depth layer.",
   "ui": {
     "hideTips": true,
     "showLineNumbers": true

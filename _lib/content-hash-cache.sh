@@ -45,13 +45,16 @@ set -euo pipefail
 # r1 code-reviewer #1: only set REPO_ROOT if caller hasn't (composes
 # cleanly with consumers that compute their own repo root, e.g.
 # local-review.sh + prove-yourself-audit do `git rev-parse` first).
-# v0.32.11 (#249-grp): the standalone fallback was `/../..` which OVERSHOOTS —
-# this lib lives at <repo>/_lib/, so dirname/.. IS the repo; dirname/../.. was
-# the parent OF the repo. Latent (every production caller pre-sets REPO_ROOT,
-# so the `:-` default never ran) but it mis-resolved under any standalone
-# sourcing that leaves REPO_ROOT unset. (The bundled bats pre-set REPO_ROOT, so
-# they pin behavior rather than exercise this fallback.) One level up = repo.
-REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# v0.34.29 (#2224, CR critical): the dirname-relative fallback is
+# LAYOUT-DEPENDENT and mis-resolved in consumers. This lib lives at
+# <repo>/_lib/ in the PLUGIN (so dirname/.. = repo) but at
+# <repo>/.claude/_lib/ in CONSUMERS (so dirname/.. = <repo>/.claude, one
+# level too shallow). Prefer `git rev-parse --show-toplevel`, which returns
+# the true repo root in BOTH layouts; fall back to dirname-relative only when
+# not in a git work tree (e.g. a standalone tarball sourcing). Every
+# production caller still pre-sets REPO_ROOT, so the `:-` default is the
+# defensive path; making it layout-agnostic removes a latent consumer bug.
+REPO_ROOT="${REPO_ROOT:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd))}"
 CACHE_DIR="$REPO_ROOT/.claude/.review-cache"
 CACHE_LEDGER="$CACHE_DIR/ledger.jsonl"
 
@@ -238,11 +241,45 @@ PHASE2_RESULT_LEDGER="$CACHE_DIR/phase2-results.jsonl"
 # engine/ruleset change, change the diff or clear PHASE2_RESULT_LEDGER.
 phase2_review_cache_key() {
 	local base=${1:-main}
-	local diff
+	local diff d_err d_rc=0
 	# 3-dot: changes on this branch since it diverged from base — mirrors CR's
 	# committed-review surface. hash-object gives a stable content digest.
-	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>/dev/null) || return 0
-	printf '%s' "$diff" | git -C "$REPO_ROOT" hash-object --stdin 2>/dev/null || true
+	# v0.34.29 (CR-in-CI #2226): mirror the hash-object hardening below — a git
+	# diff failure (bad base ref / degraded object DB) was a silent fail-open
+	# (the exact pattern this PR kills); capture stderr + emit a breadcrumb on
+	# non-zero rc, still returning empty (fail-safe: caller does a fresh review,
+	# never a false cache hit).
+	d_err=$(mktemp 2>/dev/null) || d_err=""
+	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>"${d_err:-/dev/null}") || d_rc=$?
+	if [ "$d_rc" -ne 0 ]; then
+		if [ -n "$d_err" ] && [ -s "$d_err" ]; then
+			echo "phase2_review_cache_key: git diff failed — no cache key (forces a fresh review): $(head -c 160 "$d_err")" >&2
+		else
+			echo "phase2_review_cache_key: git diff failed — no cache key (forces a fresh review)" >&2
+		fi
+		[ -n "$d_err" ] && rm -f "$d_err"
+		return 0
+	fi
+	[ -n "$d_err" ] && rm -f "$d_err"
+	# v0.34.29 (#2224, ptt #102): a bare `|| true` swallowed hash-object
+	# failure silently — an empty key → caller always reviews (fail-safe) but
+	# with ZERO operator signal that key computation is broken (e.g. a degraded
+	# object DB). Mirror phase2_review_cache_get's hardening: capture stderr +
+	# emit a breadcrumb on non-zero rc, still returning empty (no false hit).
+	local key h_err h_rc=0
+	h_err=$(mktemp 2>/dev/null) || h_err=""
+	key=$(printf '%s' "$diff" | git -C "$REPO_ROOT" hash-object --stdin 2>"${h_err:-/dev/null}") || h_rc=$?
+	if [ "$h_rc" -ne 0 ]; then
+		if [ -n "$h_err" ] && [ -s "$h_err" ]; then
+			echo "phase2_review_cache_key: git hash-object failed — no cache key (forces a fresh review): $(head -c 160 "$h_err")" >&2
+		else
+			echo "phase2_review_cache_key: git hash-object failed — no cache key (forces a fresh review)" >&2
+		fi
+		[ -n "$h_err" ] && rm -f "$h_err"
+		return 0
+	fi
+	[ -n "$h_err" ] && rm -f "$h_err"
+	printf '%s' "$key"
 }
 
 # Emit the cached findings count for a content-hash key (latest entry wins);

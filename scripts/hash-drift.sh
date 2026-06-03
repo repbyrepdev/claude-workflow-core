@@ -33,9 +33,20 @@ set -euo pipefail
 #       consumer-path hash (hooks/_lib → .claude/<path>; .github/* → <path>
 #       verbatim) and warn on drift.
 #
-# Override list: .claude/local-overrides.yml at consumer repo root
-# (YAML list of `<path>: <reason>` entries). Files in the override
-# list are skipped from drift checks.
+# Override list: .claude/local-overrides.yml at consumer repo root.
+# STRUCTURED schema (v0.34.29 #2224) — canonical shape in
+# templates/local-overrides.yml.tpl, schema-gated by
+# pre-commit-hooks/local-overrides-schema-check.sh:
+#   overrides:
+#     - path: <consumer-relpath>
+#       category: <domain-extension|superset|temp-divergence|legacy>
+#       reason: <text>
+#       added: <YYYY-MM-DD>
+# Parsed via `yq '.overrides[].path'` (see consumer-verify block below) — only
+# the `path` of each entry is treated as an override; the sibling metadata keys
+# (schema_version/category/reason/added) are NOT mistaken for override paths.
+# Files whose consumer path matches an `overrides[].path` are skipped from
+# drift checks.
 #
 # Usage:
 #   scripts/hash-drift.sh --generate         # producer mode
@@ -356,16 +367,37 @@ else
 	HASHES_SIZE_QUERY='keys | length'
 fi
 
-# Load override list (optional). CR PR #90 r1 fixes:
-# - POSIX character class [[:space:]] for BSD grep compat (was \s).
-# - [^#[:space:]] guard against indented `# comment: x` lines that
-#   would otherwise capture phantom paths.
+# Load override list (optional). v0.34.29 (#2224, ptt-prep): read the STRUCTURED
+# `overrides:` schema with yq — the SAME parse (`.overrides[].path`) used by the
+# canonical template (templates/local-overrides.yml.tpl), the schema-check gate
+# (pre-commit-hooks/local-overrides-schema-check.sh), and refresh-from-source.sh.
+# The prior flat `grep|sed` extracted text-before-the-first-colon, which on the
+# structured schema yields garbage keys (schema_version, overrides, category,
+# reason, added, diff_allowed) and NEVER the override paths — so a legitimately-
+# declared override was reported as drift. yq is required for --generate already;
+# require it here too, but ONLY when the override file is present (a consumer
+# with no overrides file still verifies with jq alone). The override file is
+# itself schema-gated, so by the time one exists yq is in the toolchain.
 OVERRIDE_PATHS=()
 if [ -f .claude/local-overrides.yml ]; then
+	command -v yq >/dev/null 2>&1 || {
+		echo "hash-drift: yq required to read structured .claude/local-overrides.yml overrides" >&2
+		exit 2
+	}
+	ov_err=$(mktemp) || {
+		echo "hash-drift: mktemp failed for override parse" >&2
+		exit 2
+	}
+	if ! _ov_paths=$(yq -r '.overrides // [] | .[].path' .claude/local-overrides.yml 2>"$ov_err"); then
+		echo "hash-drift: yq failed parsing .claude/local-overrides.yml:" >&2
+		cat "$ov_err" >&2
+		rm -f "$ov_err"
+		exit 2
+	fi
+	rm -f "$ov_err"
 	while IFS= read -r ov; do
-		[ -n "$ov" ] && OVERRIDE_PATHS+=("$ov")
-	done < <(grep -E '^[[:space:]]*[^#[:space:]].*:' .claude/local-overrides.yml |
-		sed -E 's/^[[:space:]]*"?([^:"]+)"?[[:space:]]*:.*/\1/')
+		[ -n "$ov" ] && [ "$ov" != "null" ] && OVERRIDE_PATHS+=("$ov")
+	done <<<"$_ov_paths"
 fi
 
 _is_overridden() {

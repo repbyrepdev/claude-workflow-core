@@ -105,11 +105,19 @@ _make_consumer() {
 	_make_producer "$PRODUCER"
 	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
 	_make_consumer "$CONSUMER" "$PRODUCER"
-	# Consumer modifies + adds to override list.
+	# Consumer modifies + adds to override list. #2224: use the STRUCTURED
+	# `overrides:` schema (the canonical shape the template + schema-check gate +
+	# refresh-from-source all use). hash-drift.sh now parses it via yq, matching
+	# those readers — the prior flat `path: reason` form is no longer the schema.
 	printf 'echo LOCAL OVERRIDE\n' >"$CONSUMER/.claude/hooks/foo.sh"
 	cat >"$CONSUMER/.claude/local-overrides.yml" <<'EOF'
 # Local overrides — files we intentionally diverge from plugin source.
-.claude/hooks/foo.sh: project-specific tweak
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    reason: project-specific tweak
+    added: "2026-06-01"
 EOF
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
@@ -374,4 +382,151 @@ _make_consumer_gh() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"non-boolean hashed"* ]]
 	[[ $output == *".github/commit-template.yml"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# v0.34.29 (#2224) — STRUCTURED `overrides:` parser (yq '.overrides[].path').
+# The prior flat `grep|sed` parser extracted text-before-the-first-colon, which
+# on the structured schema yields the metadata KEYS (schema_version, overrides,
+# category, reason, added) as garbage "paths" instead of the real override
+# paths. These tests regression-lock the new parser: a non-path key must NOT
+# suppress a genuinely-drifted file, yq-absence must fail closed, and malformed
+# or path-less entries must be handled safely.
+# ---------------------------------------------------------------------------
+
+@test "--verify NEGATIVE-LOCK: structured override suppresses foo, but drifted bar.sh (not overridden) IS reported (#2224)" {
+	# The #2224 fix: `yq '.overrides[].path'` extracts ONLY the path values, not
+	# the sibling metadata keys. The OLD grep|sed parser extracted
+	# schema_version/category/reason/added as phantom override paths — none of
+	# which match a real consumer path, so they were harmless noise — BUT the OLD
+	# parser ALSO never extracted the real `path:` value (it sat after `- path:`,
+	# not at line-start), so the legitimate override was NOT honored and the file
+	# was reported as drift. Conversely a genuinely-drifted, NON-overridden file
+	# (bar.sh) must STILL be reported. This test pins BOTH halves: foo.sh
+	# overridden+suppressed, bar.sh drifted+reported. A revert to grep|sed FAILS
+	# here (foo.sh would NOT be suppressed → drift_count=2, message lists foo.sh).
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	# Drift BOTH foo.sh (overridden) AND bar.sh (NOT overridden).
+	printf 'echo FOO LOCAL OVERRIDE\n' >"$CONSUMER/.claude/hooks/foo.sh"
+	printf 'echo BAR GENUINE DRIFT\n' >"$CONSUMER/.claude/hooks/bar.sh"
+	# Override declares ONLY foo.sh — bar.sh is genuine, un-declared drift.
+	cat >"$CONSUMER/.claude/local-overrides.yml" <<'EOF'
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    reason: project-specific tweak
+    added: "2026-06-01"
+EOF
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	# bar.sh drift → exit 1.
+	[ "$status" -eq 1 ]
+	# bar.sh IS reported as drift (the un-overridden, genuinely-drifted file).
+	[[ $output == *".claude/hooks/bar.sh"* ]]
+	# Exactly ONE file drifted — foo.sh is suppressed by the override, so a
+	# phantom-key extraction (grep|sed) that failed to honor foo.sh would make
+	# this "2 file(s) drifted" + list foo.sh → revert tripwire.
+	[[ $output == *"1 file(s) drifted"* ]]
+	# Drift-branch summary phrasing is `overridden: N` (clean-branch is `N overridden`).
+	[[ $output == *"overridden: 1"* ]]
+	# foo.sh must NOT appear in the drift report (it is overridden).
+	[[ $output != *".claude/hooks/foo.sh"* ]]
+}
+
+@test "--verify FAILS CLOSED when overrides file present but yq missing (#2224)" {
+	# pr-test-analyzer: the consumer-side `command -v yq || exit 2` branch — an
+	# overrides file present with yq unavailable must fail closed (never fall
+	# back to a parser that silently mishandles the structured schema). PATH-shim
+	# pattern mirroring the producer-side yq-missing test above.
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	# An overrides file must be PRESENT for the yq guard to fire.
+	cat >"$CONSUMER/.claude/local-overrides.yml" <<'EOF'
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    reason: x
+    added: "2026-06-01"
+EOF
+	SHIM="$TEST_TMP/shim"
+	mkdir -p "$SHIM"
+	# Every tool consumer-verify needs EXCEPT yq (jq IS present; mktemp/cat for
+	# the override-parse error path).
+	for t in bash git jq find sort shasum sha256sum awk mktemp rm mkdir sed grep cat dirname env; do
+		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$SHIM/$t"
+	done
+	# Sanity: yq must NOT resolve under the shim PATH (else the test is moot).
+	run env PATH="$SHIM" bash -c 'command -v yq'
+	[ "$status" -ne 0 ]
+	run env PATH="$SHIM" bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache'"
+	[ "$status" -eq 2 ]
+	[[ $output == *"yq required"* ]]
+}
+
+@test "--verify FAILS CLOSED on malformed overrides YAML (yq parse failure → exit 2 + stderr) (#2224)" {
+	# pr-test-analyzer: syntactically-broken overrides YAML must surface yq's
+	# parse failure (exit 2 + stderr passthrough), not silently treat the file as
+	# having no overrides (which would mis-report a legit override as drift).
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	# Broken YAML: unbalanced flow-mapping bracket → yq parse error.
+	printf 'overrides: [ { path: .claude/hooks/foo.sh, \n' >"$CONSUMER/.claude/local-overrides.yml"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 2 ]
+	[[ $output == *"yq failed parsing"* ]]
+}
+
+@test "--verify path-less override entry parses cleanly + doesn't suppress real drift; sibling honored (#2224)" {
+	# pr-test-analyzer + CR phase2 r1: a structured entry MISSING its `path:`
+	# field makes `.overrides[].path` emit the literal "null", which the
+	# `!= "null"` guard drops. The guard is DEFENSIVE DEPTH and its drop is not
+	# separately observable here (a tracked file cannot have the literal path
+	# "null", so the count is `overridden: 1` with or without the guard). This
+	# test therefore asserts the OBSERVABLE behavior: the path-less entry parses
+	# without error, does NOT suppress a genuine drift (bar.sh still reported),
+	# and the VALID sibling override (foo.sh) is still honored.
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	# Drift foo.sh (declared via a valid entry) AND bar.sh (NOT overridden — the
+	# path-less entry must NOT accidentally cover it).
+	printf 'echo FOO OVERRIDE\n' >"$CONSUMER/.claude/hooks/foo.sh"
+	printf 'echo BAR DRIFT\n' >"$CONSUMER/.claude/hooks/bar.sh"
+	cat >"$CONSUMER/.claude/local-overrides.yml" <<'EOF'
+schema_version: 1
+overrides:
+  - path: .claude/hooks/foo.sh
+    category: domain-extension
+    reason: valid sibling override
+    added: "2026-06-01"
+  - category: legacy
+    reason: this entry has NO path field — yields literal "null"
+    added: "2026-06-01"
+EOF
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	# bar.sh still drifts (path-less entry did NOT suppress it) → exit 1.
+	[ "$status" -eq 1 ]
+	[[ $output == *".claude/hooks/bar.sh"* ]]
+	# foo.sh honored by the valid sibling → not in the drift report, counted overridden.
+	[[ $output != *".claude/hooks/foo.sh"* ]]
+	[[ $output == *"1 file(s) drifted"* ]]
+	# Drift-branch summary phrasing is `overridden: N`.
+	[[ $output == *"overridden: 1"* ]]
 }
