@@ -34,9 +34,13 @@ set -u
 #     Echoes the detected current-repo slug (lowercased) for <dir> (default the
 #     caller's $PWD). Useful for logging / multi-branch hooks. Never fails.
 #
-# This is a SOURCED library — uses `set -u` only (NOT -e / -o pipefail, which
-# would propagate to the sourcing hook's flow control and turn a benign
-# non-match into a hard abort). Every internal command is failure-tolerant.
+# This is a SOURCED library — it sets `set -u` ONLY (variable-initialization
+# enforcement), and deliberately NOT `-e` / `-o pipefail`: those would propagate
+# into the sourcing hook and hard-abort on the FIRST failing subcommand, breaking
+# the conditional-SSOT self-skip pattern (`repo_guard_require <slug> || exit 0`,
+# where a benign no-match MUST be a clean no-op, not an abort). The lib assumes
+# callers are already `-u`-safe, and every internal command here is failure-
+# tolerant (explicit `|| ...` / rc capture).
 #
 # Usage (in any plugin hook, near the top, AFTER the shebang + set line):
 #

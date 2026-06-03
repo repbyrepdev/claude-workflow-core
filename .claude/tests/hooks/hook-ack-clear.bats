@@ -11,9 +11,18 @@
 
 setup() {
 	HOOK="$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)/hooks/hook-ack-clear.sh"
-	[ -x "$HOOK" ]
-	command -v jq >/dev/null
-	command -v git >/dev/null
+	[ -x "$HOOK" ] || {
+		echo "FATAL: hook not executable: $HOOK" >&2
+		return 1
+	}
+	command -v jq >/dev/null || {
+		echo "FATAL: jq not found" >&2
+		return 1
+	}
+	command -v git >/dev/null || {
+		echo "FATAL: git not found" >&2
+		return 1
+	}
 	TEST_TMP=$(mktemp -d -t hookack.XXXXXX) || {
 		echo "FATAL: mktemp failed" >&2
 		return 1
