@@ -2,7 +2,7 @@
 # auto-register: false
 # shellcheck disable=SC2119,SC2120  # repo_guard_current_repo's optional $1 (dir) is intentional public/test API; callers/tests pass it, internal calls omit it
 set -u
-# v0.33 (#223) — conditional-SSOT-hook guard.
+# (#223) — conditional-SSOT-hook guard.
 #
 # WHY: Repo-specific hooks (homelab Fusion-e2e / Docker-deploy gates that only
 # make sense in media-server; the coalesce-gracie-only-gate that only makes

@@ -163,6 +163,12 @@ teardown() {
 	chmod +x "$TEST_TMP/.claude/skills/cr-plan/run.sh"
 	# Reuse the shared stub with a fail-glob so ONLY the --add-label plan-parsed
 	# edit returns non-zero (after logging); every other gh call behaves normally.
+	# NOTE: the inner double-quotes are REQUIRED. The helper interpolates this glob
+	# UNQUOTED into a `case "$*" in <glob>)` pattern; the embedded space in
+	# `--add-label plan-parsed` is a case-SYNTAX-ERROR without them (they are
+	# shell-quoting in the pattern, NOT literal chars to match). Verified: `bash -n`
+	# errors on the unquoted form (stub crashes rc=2, logs nothing) while the quoted
+	# form matches + exits 1 correctly. (CR-CLI #223 flagged these as vacuous — wrong.)
 	_write_gh_stub edit-log '*"--add-label plan-parsed"*'
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_EDIT_LOG="$TEST_TMP/gh-edit.log" "$AP" --issue 777
 	# Non-fatal: the script still exits 0 even though the marker-add failed.
