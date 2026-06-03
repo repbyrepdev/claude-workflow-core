@@ -121,14 +121,17 @@ while IFS= read -r -d '' shadow; do
 	# CR #478 p2: compare against what's BEING COMMITTED as the canonical — the
 	# STAGED canonical blob (`git show :canonical`, == HEAD's when the canonical
 	# isn't itself staged) — NOT the worktree, which may carry unstaged edits the
-	# staged shadow legitimately matches (a false positive). The cat-file check
-	# above already proved an index entry exists, so this git show succeeds.
-	if git show ":${canonical}" >"$CANON_TMP" 2>/dev/null; then
-		_canon_cmp="$CANON_TMP"
-	else
-		_canon_cmp="$canonical"
+	# staged shadow legitimately matches (a false positive).
+	# CR-CLI r5: cat-file -e above already proved an index entry exists, so this
+	# git show should always succeed; if it somehow fails (index corruption), fail
+	# CLOSED (exit 2, mirroring the shadow-blob read) rather than fall back to the
+	# worktree — a worktree copy with unstaged edits could spuriously differ and
+	# report a FALSE drift.
+	if ! git show ":${canonical}" >"$CANON_TMP" 2>/dev/null; then
+		echo "stale-shadow-guard: could not read staged canonical blob for $canonical (unexpected — cat-file said it exists)" >&2
+		exit 2
 	fi
-	if ! cmp -s "$STAGED_TMP" "$_canon_cmp"; then
+	if ! cmp -s "$STAGED_TMP" "$CANON_TMP"; then
 		drifts+=("$shadow  (canonical: $canonical)")
 	fi
 done <"$NAMES_TMP"

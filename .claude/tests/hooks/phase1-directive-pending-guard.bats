@@ -118,8 +118,13 @@ teardown() {
 	[[ $output != *.phase1-directive.txt* ]]
 }
 
-@test "Layer 0: a fresh (<2 days) marker is NOT age-removed and still DENIES" {
+@test "Layer 0: a fresh marker (sha == HEAD) is NOT age-removed and still DENIES" {
 	_setup_pending_repo
+	# CR-CLI r5: _setup_pending_repo seeds the marker at SHA == HEAD with a fresh
+	# mtime (~now), so the retention asserted here is the COMBINED fresh + HEAD-
+	# guard path (the AGED-but-HEAD case is the separate live-round test below). A
+	# non-HEAD marker can't isolate "pure age": Layer 1 #174 reachability also
+	# keeps a real ancestor, and a fake sha hits Layer 1's error path.
 	# CR #223: assert the real hook contract — exit 0 (deny is JSON+exit0, NOT a
 	# non-zero rc) AND the raw stdout carries the deny payload.
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'

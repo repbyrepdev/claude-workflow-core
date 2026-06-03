@@ -66,9 +66,8 @@ teardown() {
 	echo "local-content" >"$LOCAL_COPY"
 	echo "canonical-content" >"$CANONICAL"
 	export REPO_ROOT="$REPO"
-	# shellcheck source=../../../_lib/resolve-plugin-helper.sh
-	. "$LIB"
 	# Redirect stderr to /dev/null INSIDE the run so only stdout is captured.
+	# (No top-level `. "$LIB"` — the run below sources it fresh in its own shell.)
 	run bash -c '. "$1"; resolve_plugin_helper "$2" 2>/dev/null' _ "$LIB" "$REL"
 	[ "$status" -eq 0 ]
 	[ "$output" = "$LOCAL_COPY" ] # clean single-line path, no warning text
