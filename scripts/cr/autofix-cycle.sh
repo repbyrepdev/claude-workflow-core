@@ -128,7 +128,10 @@ _exec_bit_restore_local() {
 	for f in "${restored_files[@]}"; do
 		rel="${f#"$REPO_ROOT/"}"
 		if git -C "$REPO_ROOT" ls-files -s "$rel" 2>/dev/null | awk '{print $1}' | grep -qx 100644; then
-			if git -C "$REPO_ROOT" update-index --chmod=+x "$rel" 2>/dev/null; then index_dirty=1; fi
+			# stderr NOT suppressed (CR-CLI): a failing update-index (e.g. path not
+			# in index) should be visible, not swallowed. index_dirty stays unset on
+			# failure via the if-guard.
+			if git -C "$REPO_ROOT" update-index --chmod=+x "$rel"; then index_dirty=1; fi
 		fi
 	done
 	[ "$index_dirty" = "1" ] || return 0

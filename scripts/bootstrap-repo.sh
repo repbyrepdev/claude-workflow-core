@@ -439,10 +439,13 @@ if [ -z "$RESOLVE_LIB" ] || [ ! -f "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB" || {
-	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
 	exit 2
-}
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "error: could not resolve plugin pin from $CONFIG (key claude-workflow-core missing or malformed)" >&2
 	exit 2
@@ -500,10 +503,13 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB" || {
-	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
 	exit 2
-}
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "error: could not resolve plugin pin from $CONFIG (key claude-workflow-core missing or malformed)" >&2
 	exit 2
@@ -547,10 +553,13 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB" || {
-	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
 	exit 2
-}
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
 	exit 2
@@ -586,10 +595,13 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB" || {
-	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)" >&2
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
 	exit 2
-}
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
 	exit 2
