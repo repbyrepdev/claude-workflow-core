@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: .github/labels.yml .github/labels-spec.md
+# covers: .github/labels.yml .github/labels-spec.md scripts/cr/auto-parse-plans.sh
 
 setup() {
 	# r2 silent-failure-hunter: capture cd-stderr so a cd failure (perm
@@ -117,7 +117,7 @@ setup() {
 		# Renovate semver
 		patch minor major
 		# CR Issue Planner
-		plan-me no-plan
+		plan-me no-plan plan-parsed
 	)
 	# r2 silent-failure-hunter: hoist yq outside the loop. Prior code
 	# called yq 25 times AND silently swallowed yq failures as "every
@@ -146,7 +146,7 @@ setup() {
 # Adjust EXPECTED_COUNT when intentionally promoting/dropping labels +
 # update spec table in the same commit.
 @test "labels.yml total count matches spec" {
-	EXPECTED_COUNT=26
+	EXPECTED_COUNT=27
 	actual=$(yq -r '. | length' "$LABELS")
 	[ "$actual" -eq "$EXPECTED_COUNT" ] || {
 		echo "FAIL: labels.yml has $actual labels, expected $EXPECTED_COUNT" >&2
@@ -157,7 +157,7 @@ setup() {
 
 # Phase 1 r1 code-reviewer + comment-analyzer: cross-check palette
 # comment block against the data. Every color used in labels.yml must
-# appear in the 8-color palette comment near the top of the file.
+# appear in the palette comment near the top of the file (8-color Primer palette).
 @test "every label color is in the 8-color Primer palette comment" {
 	palette_colors=$(grep -oE '^#[[:space:]]*[A-Za-z]+[[:space:]]+[0-9a-fA-F]{6}' "$LABELS" |
 		grep -oE '[0-9a-fA-F]{6}$' |
@@ -195,4 +195,44 @@ setup() {
 			return 1
 		}
 	done
+}
+
+# CR-CLI (#223): mechanical parity gate. scripts/cr/auto-parse-plans.sh hardcodes
+# fallback literals (pp_color/pp_desc) for the plan-parsed label, used to seed the
+# label when yq/labels.yml is unavailable at create time. Those literals MUST match
+# this labels.yml SSOT entry or the defensive create seeds metadata that drifts from
+# canonical. Enforce it here so a one-sided edit fails the suite — the mechanical
+# replacement for the "keep in sync" source comment in auto-parse-plans.sh.
+@test "auto-parse-plans.sh plan-parsed fallbacks match labels.yml SSOT" {
+	script="${REPO_ROOT}/scripts/cr/auto-parse-plans.sh"
+	[ -f "$script" ] || {
+		echo "FAIL: auto-parse-plans.sh not at $script" >&2
+		return 1
+	}
+	# Extract each fallback literal INDEPENDENTLY (CR-CLI #223: robust to
+	# reformatting/reordering — don't require both on a single line). The script
+	# uses double-quoted literals: pp_color="..." and pp_desc="...".
+	fb_color=$(grep -oE 'pp_color="[^"]+"' "$script" | head -1 | sed -E 's/pp_color="([^"]+)"/\1/')
+	fb_desc=$(grep -oE 'pp_desc="[^"]+"' "$script" | head -1 | sed -E 's/pp_desc="([^"]+)"/\1/')
+	[ -n "$fb_color" ] && [ -n "$fb_desc" ] || {
+		echo "FAIL: could not extract pp_color/pp_desc literals from $script" >&2
+		return 1
+	}
+	# Read the SSOT values with the SAME yq query the script uses.
+	yml_color=$(yq -r '.[] | select(.name == "plan-parsed") | .color' "$LABELS") || {
+		echo "FAIL: yq failed reading plan-parsed color from $LABELS" >&2
+		return 1
+	}
+	yml_desc=$(yq -r '.[] | select(.name == "plan-parsed") | .description' "$LABELS") || {
+		echo "FAIL: yq failed reading plan-parsed description from $LABELS" >&2
+		return 1
+	}
+	[ "$fb_color" = "$yml_color" ] || {
+		echo "FAIL: pp_color fallback '$fb_color' != labels.yml plan-parsed color '$yml_color'" >&2
+		return 1
+	}
+	[ "$fb_desc" = "$yml_desc" ] || {
+		echo "FAIL: pp_desc fallback '$fb_desc' != labels.yml plan-parsed desc '$yml_desc'" >&2
+		return 1
+	}
 }

@@ -11,7 +11,7 @@ set -euo pipefail
 #     .github/required-checks-list.yml)
 #   - Install pre-commit hooks: `pre-commit install`
 #
-# Files written:
+# Files written (SEED set — the full generic runtime is then synced, see below):
 #   .pre-commit-config.yaml          — pinned plugin + minimal upstream hooks
 #   .claude/skills/ship-pr-cycle/    — consumer wrapper for plugin orchestrator
 #   .claude/hooks/review-log.sh      — shim that delegates to plugin
@@ -20,15 +20,23 @@ set -euo pipefail
 #   .github/labels.yml               — label catalog stub
 #   .github/required-checks-list.yml — required-checks SSOT
 #   .github/ISSUE_TEMPLATE/{bug,feature,task,epic,brainstorm}.yml
+# The above are the per-repo-flavored + bootstrap-critical SEEDS only. The LARGE
+# generic surface (~100 .claude/hooks/* runtime hooks, _lib/* helpers, and the
+# hashed .gemini/.codex/.coderabbit/.github byte-SSOTs) is laid down right after
+# by _sync_full_ssot() → refresh-from-source.sh; the authoritative file list is
+# .claude/.source-hashes.json (NOT this comment — kept short to avoid drift).
 #
 # Idempotent: every file write checks for existing first; --force flag
 # overrides. --dry-run shows what would be created without mutating.
 #
 # Usage:
 #   scripts/bootstrap-repo.sh <target-dir>
-#   scripts/bootstrap-repo.sh <target-dir> --tag v0.8.5  # pin to specific
-#   scripts/bootstrap-repo.sh <target-dir> --dry-run     # preview
-#   scripts/bootstrap-repo.sh <target-dir> --force       # overwrite existing
+#   scripts/bootstrap-repo.sh <target-dir> --tag v0.8.5    # pin to specific
+#   scripts/bootstrap-repo.sh <target-dir> --dry-run       # preview
+#   scripts/bootstrap-repo.sh <target-dir> --force         # overwrite existing
+#   scripts/bootstrap-repo.sh <target-dir> --apply-labels  # OPT-IN: sync labels
+#                                                          # to GitHub (remote
+#                                                          # mutation; default OFF)
 #
 # Platform: macOS + Linux (no platform-specific calls).
 
@@ -45,9 +53,9 @@ PLUGIN_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 COMPOSE_CR_FAILED=0
 
 TARGET=""
-# v0.32.12 (#283/Wave J), shipped in the v0.32.13 PR: default PIN_TAG to the
-# plugin's CURRENT version (SSOT = .claude-plugin/plugin.json) so a fresh
-# bootstrap pins to the current release instead of a hardcoded stale tag.
+# #283 (Wave J): default PIN_TAG to the plugin's CURRENT version (SSOT =
+# .claude-plugin/plugin.json) so a fresh bootstrap pins to the current release
+# instead of a hardcoded stale tag (the pin is version-agnostic — derived, not literal).
 # --tag still overrides (parsed below). FAIL-CLOSED (CR #283): if plugin.json is
 # missing/unparseable, PIN_TAG stays EMPTY here and a real bootstrap aborts after
 # arg-parsing (guard below) — never a silent stale fallback.
@@ -58,6 +66,11 @@ DRY_RUN=0
 FORCE=0
 VERIFY=0
 VERIFY_SCOPE="both"
+# --apply-labels is OPT-IN (default OFF). The repo contract requires every
+# `gh label` REMOTE mutation to sit behind this explicit flag so a plain
+# scaffold never silently writes to a GitHub repo's label set; sync is
+# otherwise deferred to .github/workflows/label-sync.yml on first push.
+APPLY_LABELS=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -75,6 +88,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--force)
 		FORCE=1
+		shift
+		;;
+	--apply-labels)
+		APPLY_LABELS=1
 		shift
 		;;
 	--verify)
@@ -126,7 +143,7 @@ fi
 
 if [ -z "$TARGET" ]; then
 	echo "error: missing target directory" >&2
-	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--verify] [--scope plugin|consumer|both]" >&2
+	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--apply-labels] [--verify] [--scope plugin|consumer|both]" >&2
 	exit 2
 fi
 
@@ -422,7 +439,13 @@ if [ -z "$RESOLVE_LIB" ] || [ ! -f "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB"
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
+	exit 2
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "error: could not resolve plugin pin from $CONFIG (key claude-workflow-core missing or malformed)" >&2
 	exit 2
@@ -480,7 +503,13 @@ if [ -z "$RESOLVE_LIB" ]; then
 	exit 2
 fi
 # shellcheck source=/dev/null
-source "$RESOLVE_LIB"
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
+	exit 2
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
 if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
 	echo "error: could not resolve plugin pin from $CONFIG (key claude-workflow-core missing or malformed)" >&2
 	exit 2
@@ -490,6 +519,96 @@ TARGET_HOOK="$PLUGIN_CACHE/$PIN/hooks/review-log.sh"
 if [ ! -x "$TARGET_HOOK" ]; then
 	echo "review-log.sh shim: target hook missing or non-executable at $TARGET_HOOK" >&2
 	echo "  ensure plugin cache for $PIN is installed (scripts/bootstrap-machine.sh)" >&2
+	exit 2
+fi
+exec "$TARGET_HOOK" "$@"
+EOF
+
+# --- .claude/hooks/ ship-pr-cycle runtime shims (#223) ---------------
+# ship-pr-cycle's phase0.5 + post-commit stages invoke these stable
+# .claude/hooks/ paths. Same self-resolving shim pattern as review-log.sh
+# above — each forwards to the plugin cache's same-named hook (+ its _lib
+# deps) so a consumer's cycle works WITHOUT copying the full hook tree. ptt
+# was bootstrapped before these existed, so its cycle broke at phase0.5.
+_write .claude/hooks/phase0.5-copilot-prefilter.sh 755 <<'EOF'
+#!/bin/bash
+set -euo pipefail
+# auto-register: false
+# bats-required: 0
+# (Thin self-resolving shim: the real hook + its bats live in the plugin cache
+#  and are upstream-tested; this file only forwards. Not event-registered.)
+# Self-naming shim → forwards to the plugin cache's hooks/<this-name> at the
+# pinned version. The real hook + its _lib deps live in the plugin cache.
+HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
+PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+shopt -s nullglob
+_resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
+shopt -u nullglob
+RESOLVE_LIB="${_resolve_candidates[0]:-}"
+if [ -z "$RESOLVE_LIB" ]; then
+	echo "$HOOK_NAME shim: plugin cache empty" >&2
+	exit 2
+fi
+# shellcheck source=/dev/null
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
+	exit 2
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
+if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
+	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
+	exit 2
+fi
+TARGET_HOOK="$PLUGIN_CACHE/$PIN/hooks/$HOOK_NAME"
+if [ ! -x "$TARGET_HOOK" ]; then
+	echo "$HOOK_NAME shim: target hook missing at $TARGET_HOOK (run scripts/bootstrap-machine.sh)" >&2
+	exit 2
+fi
+exec "$TARGET_HOOK" "$@"
+EOF
+
+_write .claude/hooks/post-commit-ship-cycle.sh 755 <<'EOF'
+#!/bin/bash
+set -euo pipefail
+# auto-register: false
+# bats-required: 0
+# (Thin self-resolving shim: the real hook + its bats live in the plugin cache
+#  and are upstream-tested; this file only forwards. Not event-registered.)
+# Self-naming shim → forwards to the plugin cache's hooks/<this-name> at the
+# pinned version. The real hook + its _lib deps live in the plugin cache.
+HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
+PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+shopt -s nullglob
+_resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
+shopt -u nullglob
+RESOLVE_LIB="${_resolve_candidates[0]:-}"
+if [ -z "$RESOLVE_LIB" ]; then
+	echo "$HOOK_NAME shim: plugin cache empty" >&2
+	exit 2
+fi
+# shellcheck source=/dev/null
+_src_err=$(mktemp 2>/dev/null) || _src_err=""
+if ! source "$RESOLVE_LIB" 2>"${_src_err:-/dev/stderr}"; then
+	echo "shim: cannot source plugin resolve-pin lib ($RESOLVE_LIB)${_src_err:+: $(cat "$_src_err" 2>/dev/null)}" >&2
+	[ -n "$_src_err" ] && rm -f "$_src_err"
+	exit 2
+fi
+[ -n "$_src_err" ] && rm -f "$_src_err"
+if ! PIN=$(resolve_plugin_pin "$CONFIG"); then
+	echo "$HOOK_NAME shim: could not resolve plugin pin from $CONFIG" >&2
+	exit 2
+fi
+TARGET_HOOK="$PLUGIN_CACHE/$PIN/hooks/$HOOK_NAME"
+if [ ! -x "$TARGET_HOOK" ]; then
+	echo "$HOOK_NAME shim: target hook missing at $TARGET_HOOK (run scripts/bootstrap-machine.sh)" >&2
 	exit 2
 fi
 exec "$TARGET_HOOK" "$@"
@@ -557,6 +676,20 @@ types:
 require_body_for: [feat, fix, refactor, perf]
 require_footer: "Co-Authored-By:"
 max_subject_length: 70
+EOF
+
+# --- .github/copilot-instructions.md ---------------------------------
+# Byte-SSOT (manifest hashed: true; bootstrap-heredoc-parity gated). Repo-
+# AGNOSTIC pointer that redirects GitHub Copilot to the repo-root AGENTS.md
+# (the unified non-Claude-CLI reviewer contract). Identical in every repo.
+_write .github/copilot-instructions.md 644 <<'EOF'
+# GitHub Copilot Instructions
+
+This repo uses a unified `AGENTS.md` at the repo root as the single source of truth for all non-Claude CLI agents (Copilot, Gemini, Codex).
+
+**See: [`AGENTS.md`](../AGENTS.md)** — repo purpose, reviewer contract, conventions, per-CLI invocation context.
+
+The "When invoked as Copilot (Phase 0.5)" section is specifically for you.
 EOF
 
 # --- .github/labels.yml ----------------------------------------------
@@ -1364,10 +1497,15 @@ issue_enrichment:
 EOF
 
 # --- Apply labels via gh label create --------------------------------
-# Writing .github/labels.yml does not create labels on GitHub — that's
-# what label-sync.yml does, OR a manual `gh label create` per entry.
-# Run the create here so a freshly-bootstrapped repo doesn't ship with
-# area:* label gates failing on the first PR. Idempotent: `gh label
+# Writing .github/labels.yml does not create labels on GitHub — applying
+# them is what THIS step does (gh label create per entry), OR a label-sync
+# workflow you add to the target yourself. Bootstrap does NOT seed such a
+# workflow, so there is no auto-sync-on-first-push.
+# OPT-IN only (`--apply-labels`): the create is a REMOTE mutation, so the
+# repo contract gates it behind an explicit flag — a plain scaffold never
+# silently writes to a GitHub repo's label set. When the flag is given,
+# running the create here means a freshly-bootstrapped repo doesn't ship
+# with area:* label gates failing on the first PR. Idempotent: `gh label
 # create --force` upserts.
 #
 # Skip-with-NOTE when: dry-run, gh missing, yq missing, no GitHub
@@ -1380,11 +1518,11 @@ _apply_labels() {
 		return 0
 	fi
 	if ! command -v gh >/dev/null 2>&1; then
-		_log "NOTE: gh CLI not on PATH — skipping label apply (run label-sync workflow after first push)"
+		_log "NOTE: gh CLI not on PATH — skipping label apply (install gh, then re-run with --apply-labels, or add/run a label-sync workflow in the target)"
 		return 0
 	fi
 	if ! command -v yq >/dev/null 2>&1; then
-		_log "NOTE: yq not on PATH — skipping label apply (run label-sync workflow after first push)"
+		_log "NOTE: yq not on PATH — skipping label apply (install yq, then re-run with --apply-labels, or add/run a label-sync workflow in the target)"
 		return 0
 	fi
 	if [ ! -f "$TARGET/.github/labels.yml" ]; then
@@ -1393,14 +1531,14 @@ _apply_labels() {
 	fi
 	if ! git -C "$TARGET" remote get-url origin 2>/dev/null | grep -q github.com; then
 		_log "NOTE: target has no GitHub remote yet — skipping label apply"
-		_log "      labels will sync on first push via .github/workflows/label-sync.yml"
+		_log "      add a GitHub remote, then re-run with --apply-labels (bootstrap seeds no label-sync workflow), or add/run a label-sync workflow in the target"
 		return 0
 	fi
 	_log "applying labels from .github/labels.yml via gh label create --force..."
 	# Materialize names outside process subst so yq rc is checkable.
 	if ! names=$(yq -r '.[].name' "$TARGET/.github/labels.yml" 2>&1); then
-		_log "WARN: yq failed to parse .github/labels.yml: $(head -1 <<<"$names")"
-		return 0
+		_log "ERROR: yq failed to parse .github/labels.yml: $(head -1 <<<"$names")"
+		return 2
 	fi
 	while IFS= read -r name; do
 		[ -z "$name" ] && continue
@@ -1418,13 +1556,32 @@ _apply_labels() {
 		failed=$((failed + 1))
 	done <<<"$names"
 	if [ "$failed" -gt 0 ]; then
-		_log "  ✓ applied $count label(s), $failed failed"
-	else
-		_log "  ✓ applied $count label(s)"
+		_log "  ✗ applied $count label(s), $failed FAILED — failing closed (a broken/mismatched labels.yml must not report success, #223)"
+		return 2
 	fi
+	_log "  ✓ applied $count label(s)"
 }
 
-_apply_labels
+# OPT-IN gate (default OFF): only mutate the remote label set when the operator
+# explicitly passed --apply-labels. Otherwise NOTE that label sync is SKIPPED, so
+# a plain scaffold performs NO gh label remote write. Bootstrap does NOT seed a
+# label-sync workflow, so there is no auto-sync-on-first-push — the NOTE gives
+# accurate manual recovery instead. --dry-run still previews inside _apply_labels
+# (its own guard).
+# CR-CLI #1607: _apply_labels can `return 2` on a label-apply failure. A BARE
+# call here under `set -euo pipefail` would ABORT the script BEFORE _sync_full_ssot
+# + .coderabbit.yaml compose run → a partial bootstrap. Capture the rc instead
+# (the only set-e-safe idiom) and DEFER the fail-closed `exit 2` until AFTER the
+# end-of-run summary (mirrors the REFRESH_FAILED deferred-exit below), so the
+# scaffold + summary still complete and the operator sees the full picture.
+LABEL_RC=0
+if [ "$APPLY_LABELS" = "1" ] || [ "$DRY_RUN" = "1" ]; then
+	_apply_labels || LABEL_RC=$?
+else
+	_log "NOTE: label sync SKIPPED — no remote label mutation performed."
+	_log "      To sync .github/labels.yml to GitHub: re-run scripts/bootstrap-repo.sh <target> --apply-labels,"
+	_log "      or add/run a label-sync workflow in the target repo."
+fi
 
 # --- Compose .coderabbit.yaml from base [+ overlay] (#234) ------------
 # CodeRabbit reads .coderabbit.yaml. We ship the byte-SSOT .coderabbit.base.yaml
@@ -1432,9 +1589,11 @@ _apply_labels
 # .coderabbit.overlay.yaml. A fresh repo (no overlay) gets the base verbatim;
 # the base stays the single update point.
 #
-# Order matters (#234 r1): the DRY_RUN preview comes FIRST — a real run writes
-# the base heredoc THEN composes, so on a fresh dir the preview must report
-# "would compose" rather than tripping the (not-yet-written) base-absent NOTE.
+# Order matters (#234 r1): the DRY_RUN preview guard comes FIRST inside this
+# function — a real run writes the base heredoc, then _sync_full_ssot refreshes
+# it, THEN composes (the CALL is deferred to after _sync_full_ssot, see #223
+# CR-CLI below), so on a fresh dir the dry-run must report "would compose"
+# rather than tripping the (not-yet-written) base-absent NOTE.
 # .coderabbit.yaml is a derived artifact but honors the same
 # skip-pre-existing-unless-force contract as _write, so a re-run never clobbers
 # a consumer's live config (edit the overlay + --force to regenerate). A true
@@ -1477,7 +1636,95 @@ _compose_coderabbit() {
 		COMPOSE_CR_FAILED=1
 	fi
 }
-_compose_coderabbit
+# NB (#223 CR-CLI): _compose_coderabbit is DEFINED here but INVOKED AFTER
+# _sync_full_ssot below. _sync_full_ssot (refresh-from-source) can REPLACE
+# .coderabbit.base.yaml with the canonical SSOT bytes; composing before the
+# sync would derive .coderabbit.yaml from a stale (pre-sync) base. Deferring
+# the call until the base is refreshed keeps the composed config in lockstep
+# with the synced base. (DRY_RUN preview is handled inside the function.)
+
+# --- Full SSOT sync: copy the byte-identical generic runtime ----------
+# The heredocs above seed only the per-repo-flavored + bootstrap-critical
+# files. The LARGE generic surface — every .claude/hooks/* runtime hook, the
+# _lib/* helpers they source, and the hashed .github/.coderabbit/.gemini/.codex
+# byte-SSOTs — lives in .claude/.source-hashes.json and is propagated by
+# refresh-from-source.sh (the same primitive that keeps existing consumers in
+# sync). Inlining ~100 hooks as heredocs would fork them from their SSOT, so we
+# CALL the propagator here instead: one `bootstrap-repo.sh <dir>` now lays the
+# repo down with the IDENTICAL hook/skill/gate runtime every other repo has —
+# no separate "now remember to run refresh-from-source" step. It also self-heals
+# any seed heredoc that has drifted from its hashed live source (the heredoc
+# writes first, then refresh overwrites with canonical bytes).
+#
+# Honors --dry-run (forwarded). NOT --force-gated: refresh is hash-diff driven
+# (copies only changed/missing files) and honors the consumer's
+# local-overrides.yml skip-list, so re-runs are safe + idempotent. FAIL-CLOSED on
+# a REAL install: a refresh failure (or a missing refresher) leaves an INCOMPLETE
+# repo, so it WARNs in the summary AND exits 2 (#223 CR-CLI r1) rather than
+# reporting success on a partial hook/_lib runtime. --dry-run writes nothing
+# (preview), so a hiccup there stays non-fatal (warn + continue).
+REFRESH_FAILED=0
+_sync_full_ssot() {
+	local refresher="$PLUGIN_SCRIPT_DIR/refresh-from-source.sh"
+	if [ ! -x "$refresher" ]; then
+		# Dry-run is a preview that writes nothing, so it cannot produce an
+		# incomplete repo — NOTE and continue. A REAL install with no refresher
+		# IS a broken plugin → fail-closed (exit 2) rather than silently lay down
+		# an INCOMPLETE repo (#223 CR-CLI r1).
+		if [ "${DRY_RUN:-0}" = "1" ]; then
+			_log "NOTE: refresh-from-source.sh not found at $refresher — dry-run previews seed files only (full SSOT sync not shown)"
+			return 0
+		fi
+		# #223 CR-CLI: a REAL install with no refresher IS a broken plugin →
+		# fail-closed. DEFER the exit (set the flag + return) so the end-of-run
+		# summary's REFRESH_FAILED block still runs for real installs; the
+		# deferred `exit 2` fires AFTER the summary (see _sync_full_ssot caller).
+		_log "ERROR: refresh-from-source.sh missing/non-executable at $refresher — plugin install is broken; refusing to report success on an INCOMPLETE repo (#223)"
+		REFRESH_FAILED=1
+		return 0
+	fi
+	local args=(--consumer-path "$TARGET")
+	[ "${DRY_RUN:-0}" = "1" ] && args+=(--dry-run)
+	_log "syncing full generic SSOT (hooks/_lib + hashed configs) via refresh-from-source.sh..."
+	local rerr
+	if rerr=$("$refresher" "${args[@]}" 2>&1); then
+		# Echo the propagator's per-file lines through our logger so dry-run
+		# shows EVERY artifact it would lay down (completeness proof).
+		while IFS= read -r line; do [ -n "$line" ] && _log "  $line"; done <<<"$rerr"
+		_log "  ✓ full SSOT sync complete"
+	else
+		_log "WARN: refresh-from-source.sh exited non-zero — generic hook/_lib runtime may be incomplete:"
+		while IFS= read -r line; do [ -n "$line" ] && _log "    $line"; done <<<"$rerr"
+		REFRESH_FAILED=1
+		# #223 r1 (silent-failure-hunter): a FAILED refresh on a REAL install
+		# leaves the SAME incomplete-repo end-state as a MISSING refresher (which
+		# also sets REFRESH_FAILED above) — so fail-closed here too, rather than
+		# reporting exit 0 "success" on a partial hook/_lib runtime that exit-code-
+		# driven automation would treat as a clean bootstrap. Dry-run writes
+		# nothing (preview), so it stays non-fatal (warn + continue).
+		# #223 CR-CLI: the actual `exit 2` is DEFERRED to AFTER the end-of-run
+		# summary (see the _sync_full_ssot caller below) so the REFRESH_FAILED
+		# summary block runs for REAL installs too, not just dry-runs — otherwise
+		# an immediate exit here skipped the operator-facing remediation summary.
+		if [ "${DRY_RUN:-0}" != "1" ]; then
+			_log "ERROR: refusing to report success on an INCOMPLETE repo (#223). Fix the cause + re-run: scripts/refresh-from-source.sh --consumer-path $TARGET"
+		fi
+	fi
+}
+_sync_full_ssot
+
+# --- Compose .coderabbit.yaml AFTER the SSOT sync (#223 CR-CLI) -------
+# Now that _sync_full_ssot has refreshed .coderabbit.base.yaml to canonical
+# SSOT bytes, derive .coderabbit.yaml from the FRESH base. _compose_coderabbit
+# self-skips when DRY_RUN=1 (preview only). Gated on REFRESH_FAILED != 1: when
+# the refresh failed we're about to `exit 2` on a REAL install (deferred
+# fail-closed below), and the base may be partial/stale — composing then would
+# bake a possibly-wrong config, so we skip and let the operator re-run after
+# fixing the refresh. (COMPOSE_CR_FAILED set inside is still surfaced by the
+# summary block below.)
+if [ "$REFRESH_FAILED" != "1" ]; then
+	_compose_coderabbit
+fi
 
 # --- Summary ---------------------------------------------------------
 _log ""
@@ -1493,6 +1740,40 @@ if [ "$COMPOSE_CR_FAILED" = "1" ]; then
 	_log "    --base .coderabbit.base.yaml [--overlay .coderabbit.overlay.yaml]"
 	_log "    --out .coderabbit.yaml). See the WARN above for the cause."
 	_log ""
+fi
+if [ "$REFRESH_FAILED" = "1" ]; then
+	_log "⚠ Full SSOT sync did NOT complete — the generic .claude/hooks/* +"
+	_log "    _lib/* runtime may be partial. Re-run after fixing the cause:"
+	_log "    scripts/refresh-from-source.sh --consumer-path $TARGET"
+	_log "    See the WARN above for the underlying error."
+	_log ""
+	# #223 CR-CLI: DEFERRED fail-closed. A REAL install with a failed/missing
+	# refresh is an INCOMPLETE repo — exit 2 so exit-code-driven automation never
+	# treats it as a clean bootstrap. Deferred to HERE (after the summary above)
+	# so the operator-facing remediation summary always prints first; previously
+	# the in-function `exit 2` skipped this summary for real installs. Dry-runs
+	# never set REFRESH_FAILED for a real failure (they only preview), so this
+	# fires only on a genuine real-install failure — but guard on DRY_RUN anyway
+	# so the dry-run "complete" path below is never pre-empted.
+	if [ "$DRY_RUN" != "1" ]; then
+		exit 2
+	fi
+fi
+# CR-CLI #1607: DEFERRED fail-closed for a label-apply failure (LABEL_RC from the
+# _apply_labels call site above). A failed `gh label` apply must not report a
+# clean bootstrap, but it must ALSO not abort before _sync_full_ssot + the
+# .coderabbit.yaml compose + this summary — so the exit is deferred to here, after
+# the scaffold is otherwise complete. Ordered AFTER the REFRESH_FAILED block
+# (refresh failure is the more fundamental incompleteness) and BEFORE the
+# success message so "complete" never prints on a label failure. _apply_labels
+# returns 0 in --dry-run, so this only fires on a real apply; guard DRY_RUN anyway.
+if [ "$LABEL_RC" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then
+	_log "⚠ Label sync FAILED (rc=$LABEL_RC) — the scaffold completed but"
+	_log "    .github/labels.yml was NOT fully applied to the remote. Re-run after"
+	_log "    fixing the cause: scripts/bootstrap-repo.sh $TARGET --apply-labels"
+	_log "    See the label-apply error above."
+	_log ""
+	exit 2
 fi
 if [ "$DRY_RUN" = "1" ]; then
 	_log "bootstrap-repo dry-run complete. Re-run without --dry-run to apply."

@@ -43,6 +43,12 @@ teardown() {
 	[ -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/run.sh" ]
 	[ -f "$TEST_TMP/target/.claude/skills/ship-pr-cycle/SKILL.md" ]
 	[ -f "$TEST_TMP/target/.claude/hooks/review-log.sh" ]
+	# #223: the ship-pr-cycle runtime shims land too (phase0.5 + post-commit).
+	# Assert -x (not just -f): the manifest declares both mode 755, so bootstrap
+	# must materialize them executable (#223 phase2 — a -f-only check passed even
+	# if the exec bit was dropped).
+	[ -x "$TEST_TMP/target/.claude/hooks/phase0.5-copilot-prefilter.sh" ]
+	[ -x "$TEST_TMP/target/.claude/hooks/post-commit-ship-cycle.sh" ]
 	# #234: the byte-SSOT CodeRabbit base is written, AND the live
 	# .coderabbit.yaml is composed from it. With no per-repo overlay, the
 	# composed config must equal the base verbatim (compose-coderabbit.sh).

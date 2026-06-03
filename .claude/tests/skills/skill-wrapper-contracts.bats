@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh
+# covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh skills/bootstrap-repo/run.sh
 #
-# v0.30.H (#196 slice 2): bats coverage for the 5 highest-risk untested skill
+# v0.30.H (#196 slice 2): bats coverage for the 6 highest-risk untested skill
 # wrappers (they invoke gh/git and write to disk). Two contracts are locked:
 #   1. Each wrapper `export SKILL_WRAPPER=1` — the whole reason these run.sh
 #      files exist (so their nested gh/git calls pass skill-bypass-guard). A
@@ -21,9 +21,9 @@ setup() {
 
 _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 
-@test "all 5 high-risk skill wrappers export SKILL_WRAPPER=1 (bypass-guard contract)" {
+@test "all 6 high-risk skill wrappers export SKILL_WRAPPER=1 (bypass-guard contract)" {
 	local s r
-	for s in cr-plan cr-resolve-conflict github-epic-creation github-pr-creation prove-yourself-audit; do
+	for s in cr-plan cr-resolve-conflict github-epic-creation github-pr-creation prove-yourself-audit bootstrap-repo; do
 		r=$(_wrapper "$s")
 		[ -f "$r" ] || {
 			echo "missing wrapper: $r" >&2
@@ -34,6 +34,23 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 			return 1
 		}
 	done
+}
+
+@test "bootstrap-repo: missing target dir exits 2 with usage (behavior, not grep)" {
+	# CR #223: the SKILL_WRAPPER grep above is a source-presence check; pair it
+	# with an EXECUTED behavior assertion for the new bootstrap-repo wrapper.
+	# Run from a throwaway cwd (the wrapper execs scripts/bootstrap-repo.sh,
+	# which exits 2 BEFORE any gh/network call when no <target-dir> is given).
+	local tmp
+	tmp=$(mktemp -d -t bsr-wrap.XXXXXX) || return 1
+	run bash -c "cd '$tmp' && bash '$(_wrapper bootstrap-repo)'"
+	# Assert FIRST, clean up AFTER — and make cleanup non-fatal so a failed rm
+	# (or an already-removed dir) can't mask the assertions below (CR-CLI r6).
+	[ "$status" -eq 2 ]
+	# Pin the missing-target arg-guard specifically (the usage line + the error).
+	[[ $output == *"missing target directory"* ]]
+	[[ $output == *"usage"* ]]
+	if [ -d "$tmp" ] && [[ $tmp == */bsr-wrap.* ]]; then rm -rf "$tmp"; fi
 }
 
 @test "cr-plan: --help exits 0 with usage" {

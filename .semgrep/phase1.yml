@@ -1,0 +1,77 @@
+# Phase-1 LOCAL semgrep ruleset (#478). Registry-independent: the public
+# semgrep.dev registry (--config auto / p/bash) is unreachable in some
+# environments (10s HTTP timeout), which silently failed every phase1 round.
+# These rules are bundled + run fully offline:
+#   semgrep scan --config .semgrep/phase1.yml --metrics off --disable-version-check <files>
+# Rules use `generic` + `pattern-regex` (semgrep's pattern-regex is PCRE/PCRE2,
+# NOT re2) so they need no language parser and catch real shell footguns this
+# bash/workflow repo
+# cares about. shellcheck (pre-commit) + the phase1 review agents are the
+# primary review; this is the supplementary structural pass that used to need
+# the network. Add rules conservatively — keep false positives near zero.
+rules:
+  - id: phase1-network-pipe-to-shell
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Piping a network fetch directly into a shell executes unverified remote
+      code. Download to a file, verify it, then run it.
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+    # (?:\\\n|[^\n|;&])* spans `\`-continuation lines (matching the curl-insecure
+    # rule below) so `curl ... \<NL> | sh` is caught, while stopping at a bare
+    # newline OR a `|` so the pipe-to-shell alternation anchors correctly. The
+    # `;` exclusion (mirroring the curl-insecure rule's `[^\n;]`) stops the span
+    # at a command separator so `curl http://x; echo y | sh` does NOT FP — the
+    # pipe-to-shell must be on the SAME command as the fetch. The `&` exclusion
+    # (CR #1607) stops the span at shell-chaining operators `&&`/`||`/`&` too, so
+    # `curl http://x && echo y | sh` does NOT FP — the `| sh` there is piped from
+    # `echo`, not from the fetch. (Tradeoff: a URL with a literal `&` in its query
+    # string also ends the span, but such a `curl 'http://x?a=1&b=2' | sh` is rare
+    # vs the chained-command FP, and the near-zero-FP goal favors the exclusion.)
+    pattern-regex: '(?:curl|wget)(?:\\\n|[^\n|;&])*\|[ \t]*(?:sudo[ \t]+)?(?:sh|bash|dash|zsh|dsh)\b'
+
+  # NOTE: an `eval $var` rule was tried + dropped — it false-positived on safe
+  # shell-option save/restore (`eval "$_prev_globstar"`), and a regex can't tell
+  # trusted from untrusted eval. shellcheck (SC2086/SC2294) + the review agents
+  # cover eval risk with context the regex lacks. Keep this ruleset near-zero-FP.
+  - id: phase1-curl-insecure-tls
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      curl -k / --insecure disables TLS certificate verification (MITM risk).
+      Fix the trust store instead of skipping verification.
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+    # (?:\\\n|[^\n|;])* spans `\`-continuation lines (CR #478 r1) so `curl ... \<NL>
+    # -k` is caught, while stopping at a bare newline OR `|` OR `;` OR `&` so a
+    # `curl x; other -k` second command can't be matched as curl's flag. The `|`
+    # exclusion (CR-CLI) keeps the span from crossing a pipe so a PIPED command's
+    # flag (e.g. `curl https://x | grep -k`) isn't misattributed to curl. The
+    # short-flag branch matches `k` bundled with other flags (e.g. `curl -ksS`)
+    # which a bare `-k` alternation missed (CR-CLI r1). The [^oO \t\n] right before
+    # `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — a char-class
+    # exclusion deliberately kept simpler than a PCRE lookbehind (CR-CLI r4).
+    # `&` in the span class (CR-CLI #223) stops at `&&`/`&` so `curl x && y -k`
+    # can't match `-k` as curl's flag (mirrors the wget + network-pipe rules).
+    pattern-regex: '\bcurl\b(?:\\\n|[^\n|;&])*[ \t](?:--insecure|-(?:[A-Za-z]*[^oO \t\n])?k[A-Za-z]*)\b'
+
+  - id: phase1-wget-insecure-tls
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      wget --no-check-certificate disables TLS certificate verification (MITM
+      risk). Fix the trust store instead of skipping verification.
+    paths:
+      include:
+        - "*.sh"
+        - "*.bash"
+    # Mirror the curl-insecure rule: span `\`-continuation lines, stop at a bare
+    # newline OR `|` OR `;` OR `&` so a second command after `wget x;` / `wget x &&`
+    # is not matched (CR-CLI r2/#223) and the span can't cross a pipe into a PIPED
+    # command's flag (e.g. `wget https://x | grep --no-check-certificate`) (CR-CLI).
+    pattern-regex: '\bwget\b(?:\\\n|[^\n|;&])*[ \t]--no-check-certificate\b'

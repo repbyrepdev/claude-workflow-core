@@ -20,7 +20,8 @@
 #                   · epic · brainstorm
 #   Pink    bf3989  question
 #   Gray    6e7681  priority:needs-triage · status:blocked · enhancement
-#                   · no-plan
+#                   · no-plan · plan-parsed (the neutral Primer grey also
+#                   serves as the automation idempotency marker)
 # -----------------------------------------------------------------------------
 
 # ---- Type ----
@@ -120,3 +121,6 @@
 - name: no-plan
   color: "6e7681"
   description: "Operator opt-out: do not run cr-plan trigger on this issue"
+- name: plan-parsed
+  color: "6e7681"
+  description: cr-plan parsed this into an epic+subs

@@ -57,9 +57,43 @@ _extract_heredoc() {
 	[[ $output == *"would apply labels"* ]]
 }
 
-@test "_apply_labels NOTE on no-remote target (gh present)" {
+# CR #1607: label sync is OPT-IN via --apply-labels. WITH the flag on a
+# no-remote target, _apply_labels runs and hits its no-remote skip-NOTE.
+# Hermetic: _apply_labels only reaches the no-remote branch AFTER both
+# `command -v gh` and `command -v yq` succeed, so shim both on PATH (no-op
+# stubs) — otherwise the result depends on the runner image's gh/yq presence.
+@test "_apply_labels NOTE on no-remote target (gh present, --apply-labels)" {
 	mkdir -p "$TEST_TMP/target-no-remote"
-	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" 2>&1"
+	mkdir -p "$TEST_TMP/bin"
+	cat >"$TEST_TMP/bin/gh" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	cat >"$TEST_TMP/bin/yq" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	chmod +x "$TEST_TMP/bin/gh" "$TEST_TMP/bin/yq"
+	run env PATH="$TEST_TMP/bin:$PATH" bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" --apply-labels 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output == *"no GitHub remote yet"* ]]
+}
+
+# CR #1607: WITHOUT --apply-labels (the default), a non-dry-run real install
+# must NOT touch the remote label set — it NOTEs the skip and never reaches
+# _apply_labels' no-remote message.
+@test "label sync skipped by default (no --apply-labels) → opt-in NOTE, no remote write" {
+	mkdir -p "$TEST_TMP/target-default"
+	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-default\" 2>&1"
+	[ "$status" -eq 0 ]
+	# CR-CLI #1607: bootstrap-repo.sh logs "label sync SKIPPED" (uppercase);
+	# the old lowercase glob never matched. AND: bats 1.13.0 only fails a test
+	# on the LAST command's rc (no set -e in test bodies), so a bare mid-body
+	# `[[ ]]` is silently ignored — every assertion below MUST be `|| return 1`
+	# (verified: a false mid-body `[[ ]]` reports `ok`, a `|| return 1` reports
+	# `not ok`). Without this the test was green even with an impossible glob.
+	[[ $output == *"label sync SKIPPED"* ]] || return 1
+	[[ $output == *"--apply-labels"* ]] || return 1
+	[[ $output != *"no GitHub remote yet"* ]] || return 1
+	[[ $output != *"applying labels from"* ]] || return 1
 }

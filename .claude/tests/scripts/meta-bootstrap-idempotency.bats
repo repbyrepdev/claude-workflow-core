@@ -47,10 +47,10 @@ teardown() {
 	mkdir -p "$TEST_TMP/target"
 	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
 	[ "$status" -eq 0 ]
-	first_snapshot=$(cd "$TEST_TMP/target" && find . -type f \! -path './.git/*' -exec shasum {} \; | sort)
+	first_snapshot=$(cd "$TEST_TMP/target" && find . -type f \! -path './.git/*' \! -path './.claude/logs/*' -exec shasum {} \; | sort)
 	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
 	[ "$status" -eq 0 ]
-	second_snapshot=$(cd "$TEST_TMP/target" && find . -type f \! -path './.git/*' -exec shasum {} \; | sort)
+	second_snapshot=$(cd "$TEST_TMP/target" && find . -type f \! -path './.git/*' \! -path './.claude/logs/*' -exec shasum {} \; | sort)
 	[ "$first_snapshot" = "$second_snapshot" ]
 }
 

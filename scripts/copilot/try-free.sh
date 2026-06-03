@@ -1,11 +1,16 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
+# bats-required: 0
+# (Thin wrapper over the GitHub Copilot CLI — exercising it needs the CLI +
+#  network, so it carries no standalone bats; the ship-pr-cycle dogfoods it
+#  live. #223.)
 # v4.24 (#597): Copilot free-tier fallback chain helper.
 #
-# Invokes `copilot -p --model=$M` against stdin+prompt across the free-tier
-# model preference order until one succeeds, else falls back to no-output.
-# 0 premium requests consumed on Enterprise seats (gpt-4.1/gpt-5-mini/gpt-4o
-# all have 0x multiplier per 2026 Copilot billing table).
+# Invokes `copilot -p [--model=$M]` against a prompt, trying any configured
+# free-tier models then ALWAYS the CLI's configured DEFAULT model (#223) until
+# one succeeds. The old gpt-4.1/gpt-5-mini/gpt-4o "0x" IDs were RETIRED from
+# Copilot CLI 1.0.57 (its default is now claude-sonnet-4.6) — pinning them
+# silently disabled phase0.5; the default-model fallback is drift-proof.
 #
 # Usage:
 #   echo "$CONTEXT" | .claude/scripts/copilot/try-free.sh "prompt text"
@@ -16,8 +21,16 @@ set -uo pipefail
 #
 # Env overrides:
 #   COPILOT_FREE_MODELS   comma-separated preference order
-#                         (default: gpt-4.1,gpt-5-mini,gpt-4o)
-#   COPILOT_MODEL         pin to a single model (skips the chain)
+#                         (default: empty — appends the CLI default model as a
+#                         drift-proof fallback; the old gpt-* free IDs were
+#                         retired from Copilot CLI 1.0.57, #223)
+#   COPILOT_MODEL         pin to a single model (tried FIRST, but the chain still
+#                         appends the CLI default as a final fallback — it does
+#                         NOT skip the chain; see #223)
+#   COPILOT_TIMEOUT_SEC   per-model timeout in seconds (default 150). The old
+#                         hard-coded 60s timed out the agentic CLI default model
+#                         (claude-sonnet-4.6) on a real diff — #223 phase0.5
+#                         dogfood logged rc=124 (timeout) for all 5 agents.
 #
 # Graceful behavior:
 #   - `copilot` binary missing → exit 1 silently, no error
@@ -41,8 +54,16 @@ command -v copilot >/dev/null 2>&1 || {
 	exit 1
 }
 
-# Read stdin context (diff, commit log, etc.) if present. Non-blocking: if
-# caller didn't pipe anything, CONTEXT stays empty and the prompt is all.
+# Read stdin context (diff, commit log, etc.) if present. The `cat` is correct
+# when a caller PIPES real context. But it is NOT truly non-blocking: when stdin
+# is a non-tty pipe that is OPEN but carries NO data (e.g. a detached/background
+# launch that inherited the parent's stdin), `cat` blocks until EOF — which never
+# arrives — hanging until any outer timeout fires (rc=124). CALLERS THAT PIPE NO
+# CONTEXT MUST CLOSE STDIN with `</dev/null` (the prefilter detached launches +
+# autofix-cycle fallback do this — #223 CR-CLI). Detecting "data available"
+# portably is unreliable, so the contract lives on the caller side; do NOT add a
+# blanket `exec </dev/null` here — that would break the legitimate piped-context
+# path (github-pr-creation / git-commit / epic-creation all pipe a diff/log in).
 CONTEXT=""
 if [ ! -t 0 ]; then
 	CONTEXT=$(cat)
@@ -57,11 +78,17 @@ Context:
 $CONTEXT"
 fi
 
-# Determine model preference chain.
+# Determine model preference chain. The old gpt-4.1/gpt-5-mini/gpt-4o "free"
+# IDs were RETIRED from the GitHub Copilot CLI (1.0.57's default is
+# claude-sonnet-4.6) — passing them yields `Model "X" from --model flag is not
+# available` and silently disabled phase0.5 (#223). So: honor an explicit
+# COPILOT_MODEL / COPILOT_FREE_MODELS override, then ALWAYS fall back to the
+# CLI's CONFIGURED DEFAULT model (an appended empty entry => no --model flag) so
+# a stale pinned ID can never again take the prefilter offline.
 if [ -n "${COPILOT_MODEL:-}" ]; then
 	MODELS="$COPILOT_MODEL"
 else
-	MODELS="${COPILOT_FREE_MODELS:-gpt-4.1,gpt-5-mini,gpt-4o}"
+	MODELS="${COPILOT_FREE_MODELS:-}"
 fi
 
 # Safety-default flags. Caller can extend via COPILOT_EXTRA_ARGS.
@@ -77,34 +104,60 @@ TIMEOUT_CMD="timeout"
 if ! command -v timeout >/dev/null 2>&1 && command -v gtimeout >/dev/null 2>&1; then
 	TIMEOUT_CMD="gtimeout"
 fi
+# Fail fast if NEITHER timeout nor gtimeout exists: otherwise TIMEOUT_CMD stays
+# "timeout", every model invocation fails on the missing binary, and the loop
+# falls through to the misleading "auth/outage?" message below (#223). A clear
+# dependency error is far easier to triage. exit 1 = caller falls back.
+command -v "$TIMEOUT_CMD" >/dev/null 2>&1 || {
+	echo "copilot prefilter: requires a timeout wrapper (GNU 'timeout' or 'gtimeout') — install coreutils" >&2
+	exit 1
+}
+# Validate COPILOT_TIMEOUT_SEC up front (only defaulted before, never checked):
+# a malformed value makes `timeout <bad> copilot` fail for EVERY model → the same
+# misleading auth/outage fallback. Must be a positive integer.
+TIMEOUT_SEC="${COPILOT_TIMEOUT_SEC:-150}"
+[[ $TIMEOUT_SEC =~ ^[1-9][0-9]*$ ]] || {
+	echo "copilot prefilter: COPILOT_TIMEOUT_SEC must be a positive integer (got: '$TIMEOUT_SEC')" >&2
+	exit 2
+}
 
-# Try each free model in order. First to succeed wins.
-IFS=',' read -ra MODEL_ARR <<<"$MODELS"
+# Try each model in order; first to succeed wins. A trailing EMPTY entry is
+# appended unconditionally = "use the CLI's default model" (no --model flag) —
+# the drift-proof fallback so phase0.5 keeps working through Copilot lineup
+# changes (#223).
+# `read` returns 1 at EOF (here-string has no trailing delimiter) but still
+# populates the array — `|| true` keeps it -e-safe (CR #478 r3 added set -e).
+IFS=',' read -ra MODEL_ARR <<<"$MODELS" || true
+MODEL_ARR+=("")
 for model in "${MODEL_ARR[@]}"; do
-	# Trim whitespace
-	model=$(printf '%s' "$model" | tr -d ' ')
-	[ -z "$model" ] && continue
+	# Strip ALL whitespace (model IDs contain none, so this also drops any stray
+	# internal spaces from a sloppy comma list). An EMPTY model => omit --model =>
+	# CLI default model.
+	model=$(printf '%s' "$model" | tr -d '[:space:]')
+	MODEL_ARG=()
+	[ -n "$model" ] && MODEL_ARG=(--model="$model")
 
-	# Run copilot with this model. Timeout kept loose (60s) since free
-	# models are usually fast but GPT-4o occasionally spikes.
-	# Under set -u, `${ARR[@]}` on an empty array expands to unbound-var.
-	# Use the `+"${ARR[@]}"` conditional expansion so empty arrays are safe.
-	# Copilot CLI's `-p` uses its arg directly and ignores stdin, so we
-	# DON'T pipe FULL_PROMPT into stdin — it would be a silent duplicate.
-	if OUTPUT=$("$TIMEOUT_CMD" 60 copilot \
+	# Timeout configurable via COPILOT_TIMEOUT_SEC (default 150s). The old
+	# hard-coded 60s timed out the agentic default model (claude-sonnet-4.6) on a
+	# real diff (#223 phase0.5 dogfood: rc=124 for all 5 agents). Under set -u,
+	# expand possibly-empty arrays with the `+"${ARR[@]}"` guard. Copilot CLI's
+	# `-p` uses its arg directly and ignores stdin, so we DON'T pipe FULL_PROMPT
+	# into stdin (silent duplicate).
+	# stderr is NOT redirected (CR-CLI r8): copilot's auth / rate-limit / network /
+	# timeout errors must reach the caller (the prefilter logs them) — a prior
+	# 2>/dev/null hid WHY every model "failed". stdout is still captured to OUTPUT.
+	if OUTPUT=$("$TIMEOUT_CMD" "$TIMEOUT_SEC" copilot \
 		-p "$FULL_PROMPT" \
-		--model="$model" \
+		${MODEL_ARG[@]+"${MODEL_ARG[@]}"} \
 		"${SAFE_ARGS[@]}" \
-		${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-		2>/dev/null); then
+		${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}); then
 		# Got a response — emit and exit 0.
 		printf '%s' "$OUTPUT"
 		exit 0
 	fi
-	# This model failed (not available, auth issue, timeout, paid tier,
-	# etc.) — continue to next.
+	# This model failed (retired ID, auth, timeout, paid tier) — try next.
 done
 
-# All models failed.
-echo "all copilot free models failed or unavailable" >&2
+# Even the CLI default model failed — a genuine outage or auth problem.
+echo "copilot prefilter: all candidate models AND the CLI default failed (auth/outage?)" >&2
 exit 1

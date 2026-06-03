@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+# bats-required: 0
+# (Orchestration wrapper over gh + CodeRabbit + git — fires @coderabbitai
+#  autofix, polls the gh API, pulls autofix commits, restores exec bits, waits
+#  for CR re-review. Exercised LIVE in the ship-pr-cycle cr-autofix stage; not
+#  unit-testable without full gh/CR/network mocking. #223 CR-CLI r7.)
 # v4.24-R (#605) — automated CR autofix cycle.
 # v4.27 (#632) — extended:
 #   - wait-for-CR-rereview on autofix HEAD (item #8)
@@ -29,6 +34,7 @@ CYCLE_TIMEOUT=600
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--pr)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --pr requires a value" >&2
 			exit 2
@@ -37,6 +43,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--max-cycles)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --max-cycles requires a value" >&2
 			exit 2
@@ -45,6 +52,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--poll)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --poll requires a value" >&2
 			exit 2
@@ -53,6 +61,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	--timeout)
+		# shellcheck disable=SC2015 # A&&B||{exit} is an intentional arg-guard (C runs whenever the require fails)
 		[ "$#" -ge 2 ] && [ "${2#-}" = "$2" ] || {
 			echo "autofix-cycle: --timeout requires a value" >&2
 			exit 2
@@ -61,7 +70,11 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,16p' "$0"
+		# Print the user-facing description + Usage block (lines 14-27);
+		# skip the internal orchestration note + bats-required + changelog
+		# at lines 3-13 (#223 phase2 — the prior 4,16p truncated mid-sentence
+		# and showed internal notes instead of Usage).
+		sed -n '14,27p' "$0"
 		exit 0
 		;;
 	[0-9]*)
@@ -82,6 +95,21 @@ done
 
 REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd; })
+
+# CR-CLI #1607: load the plugin-cache helper resolver so _phase05_fallback can
+# resolve review-config.yml the SAME way hooks/phase0.5-copilot-prefilter.sh
+# does (consumer .claude/ copy → plugin cache), instead of only checking
+# $REPO_ROOT/.claude/. This script lives at scripts/cr/ (plugin) or
+# .claude/scripts/cr/ (consumer), so the plugin _lib sibling is ../../_lib.
+# Guarded + best-effort (mirrors scripts/ship-pr-cycle.sh): if the lib is
+# absent (older consumer cache), _phase05_fallback falls back to the direct
+# $REPO_ROOT/.claude path.
+_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN_LIB="$(cd "$_SCRIPT_DIR/../../_lib" 2>/dev/null && pwd || echo "")"
+if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
+	# shellcheck source=../../_lib/resolve-plugin-helper.sh
+	. "$PLUGIN_LIB/resolve-plugin-helper.sh"
+fi
 
 _exec_bit_restore_local() {
 	# v4.28-W3-C (#672): restore exec bits + commit LOCALLY ONLY. Push
@@ -115,13 +143,24 @@ _exec_bit_restore_local() {
 		return 0 # nothing to restore
 	fi
 
-	local rel index_dirty=0
+	local rel index_dirty=0 update_failed=0
 	for f in "${restored_files[@]}"; do
 		rel="${f#"$REPO_ROOT/"}"
 		if git -C "$REPO_ROOT" ls-files -s "$rel" 2>/dev/null | awk '{print $1}' | grep -qx 100644; then
-			git -C "$REPO_ROOT" update-index --chmod=+x "$rel" 2>/dev/null && index_dirty=1 || true
+			# stderr NOT suppressed (CR-CLI): a failing update-index (e.g. path not
+			# in index) must be visible, not swallowed. CR #1607: fail-closed — a
+			# stripped exec bit that can't be re-staged is the exact breakage this
+			# helper exists to prevent, so record the failure and abort the cycle
+			# (return 1) rather than silently pushing a partial exec-bit restore.
+			if git -C "$REPO_ROOT" update-index --chmod=+x "$rel"; then
+				index_dirty=1
+			else
+				echo "autofix-cycle: 'git update-index --chmod=+x $rel' failed — cannot re-stage exec bit" >&2
+				update_failed=1
+			fi
 		fi
 	done
+	[ "$update_failed" = "0" ] || return 1
 	[ "$index_dirty" = "1" ] || return 0
 
 	echo "autofix-cycle: committing exec-bit restorations (LOCAL ONLY — push deferred until after re-review)" >&2
@@ -266,7 +305,47 @@ _phase05_fallback() {
 	fi
 	echo "autofix-cycle: running Phase 0.5 fallback (free-tier Copilot, 0 CR slots)" >&2
 	local exit_code=0
-	"$prefilter" --base main 2>&1 | tail -5 >&2 || exit_code=$?
+	# #223 CR-CLI: derive the prefilter base ref from review-config.yml's
+	# base_ref SSOT (matching phase0.5-post-commit-rerun.sh) instead of
+	# hardcoding `main`, so a repo whose mainline isn't `main` prefilters
+	# against the right base.
+	#
+	# CR #1607 fail-closed: distinguish ABSENT config from PARSE ERROR. When
+	# review-config.yml is genuinely absent we default to "main" (prior
+	# behavior, a sane convention). But when the file EXISTS yet can't be read
+	# (yq missing, malformed YAML, unreadable) we must NOT silently prefilter
+	# against the wrong base — error to stderr + skip the prefilter (return
+	# non-zero) so a misconfigured SSOT can't quietly diff against main.
+	# CR-CLI #1607: resolve review-config.yml through resolve_plugin_helper (the
+	# SAME resolver phase0.5-copilot-prefilter.sh uses) so a consumer that pulls
+	# review-config.yml from the plugin cache (no local .claude/ copy) reads its
+	# base_ref instead of being treated as "absent" → wrong "main" default. Falls
+	# back to the direct $REPO_ROOT/.claude path when the resolver isn't loaded.
+	local review_config=""
+	if command -v resolve_plugin_helper >/dev/null 2>&1; then
+		review_config="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
+	fi
+	[ -n "$review_config" ] || review_config="$REPO_ROOT/.claude/review-config.yml"
+	local base_ref="main"
+	if [ -f "$review_config" ]; then
+		if ! command -v yq >/dev/null 2>&1; then
+			echo "autofix-cycle: yq required to read $review_config — skipping Phase 0.5 prefilter (fail-closed)" >&2
+			return 2
+		fi
+		local cfg_base
+		if ! cfg_base=$(yq -r '.base_ref // empty' "$review_config"); then
+			echo "autofix-cycle: failed parsing base_ref from $review_config — skipping Phase 0.5 prefilter (fail-closed)" >&2
+			return 2
+		fi
+		# An explicit empty/absent base_ref key in a parseable file keeps the
+		# "main" default (the file is readable, the key is just unset).
+		[ -n "$cfg_base" ] && [ "$cfg_base" != "null" ] && base_ref="$cfg_base"
+	fi
+	# stdin </dev/null: the prefilter calls try-free.sh, whose `[ ! -t 0 ] && cat`
+	# blocks on an unbounded read when stdin is a non-tty pipe with no data (here
+	# stdin would be inherited from autofix-cycle's caller). The prefilter pipes no
+	# context, so closing stdin avoids the COPILOT_TIMEOUT_SEC hang (#223 CR-CLI).
+	"$prefilter" --base "$base_ref" </dev/null 2>&1 | tail -5 >&2 || exit_code=$?
 	return $exit_code
 }
 
@@ -281,7 +360,7 @@ while [ "$cycle" -le "$MAX_CYCLES" ]; do
 	# Each autofix cycle consumes ~2 CR slots (1 to fire autofix, 1 for
 	# the re-review). Check budget before committing to a cycle.
 	remaining=$(_budget_remaining)
-	if [ -n "$remaining" ] && [[ "$remaining" =~ ^[0-9]+$ ]]; then
+	if [ -n "$remaining" ] && [[ $remaining =~ ^[0-9]+$ ]]; then
 		case "$remaining" in
 		0)
 			# Out of budget: fall back to Phase 0.5 free-tier and wait.

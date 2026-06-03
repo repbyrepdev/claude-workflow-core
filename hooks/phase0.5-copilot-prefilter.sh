@@ -56,7 +56,7 @@ while [ "$#" -gt 0 ]; do
 			echo "phase0.5: --sha requires value" >&2
 			exit 2
 		}
-		[[ "$2" =~ ^[0-9a-fA-F]{7,40}$ ]] || {
+		[[ $2 =~ ^[0-9a-fA-F]{7,40}$ ]] || {
 			echo "phase0.5: --sha must be a hex SHA (7-40 chars); got '$2'" >&2
 			exit 2
 		}
@@ -87,14 +87,14 @@ DEDUP_HOOK="$(dirname "$0")/phase1-dedup.sh"
 LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 
-[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
-	echo "phase0.5: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
+if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
+	echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
-}
-[ -n "$COPILOT_HELPER" ] && [ -x "$COPILOT_HELPER" ] || {
-	echo "phase0.5: try-free.sh helper missing (checked \$REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — install Copilot CLI first" >&2
+fi
+if [ -z "$COPILOT_HELPER" ] || [ ! -x "$COPILOT_HELPER" ]; then
+	echo "phase0.5: try-free.sh helper missing (checked $REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — install Copilot CLI first" >&2
 	exit 1
-}
+fi
 [ -x "$DEDUP_HOOK" ] || {
 	echo "phase0.5: phase1-dedup.sh missing at $DEDUP_HOOK" >&2
 	exit 1
@@ -311,13 +311,17 @@ OUTPUT: Return ONLY a JSON array of findings (or []). Shape:
 [{\"agent\": \"$agent\", \"file\": \"path\", \"line\": <int>, \"category\": \"<str>\", \"severity\": \"high|medium|low\", \"description\": \"<1 sentence>\", \"confidence\": <1-10>}]
 No prose. No markdown fence. Just the array."
 
-	# v4.28-W3 r2 SFH F3+F5: Invoke Copilot free chain with the documented
-	# 60s timeout (was missing — comment claimed timeout but no wrapper) AND
-	# capture helper stderr so failures surface (auth, rate-limit, network).
-	# Prior `2>/dev/null` masked all helper diagnostics behind status=errored.
+	# v4.28-W3 r2 SFH F3+F5: capture helper stderr so failures surface (auth,
+	# rate-limit, network). Prior `2>/dev/null` masked all helper diagnostics
+	# behind status=errored.
+	# #223 r1: try-free.sh owns the per-model timeout (COPILOT_TIMEOUT_SEC,
+	# default 150s). The prefilter no longer double-wraps in `timeout 60` — that
+	# outer cap pre-empted try-free's own timeout AND capped the entire multi-
+	# model fallback chain at 60s, timing out the agentic default model
+	# (claude-sonnet-4.6) on real diffs (dogfood logged rc=124 for all 5 agents).
 	_helper_err=$(mktemp)
 	_helper_rc=0
-	raw=$(timeout 60 "$COPILOT_HELPER" "$full_prompt" 2>"$_helper_err") || _helper_rc=$?
+	raw=$("$COPILOT_HELPER" "$full_prompt" </dev/null 2>"$_helper_err") || _helper_rc=$?
 	if [ "$_helper_rc" -ne 0 ]; then
 		_err_excerpt=$(head -c 500 "$_helper_err" | tr '\n' ' ' | tr -d '"')
 		# v4.28-W3 r3 SFH: distinguish failure modes in audit log + always

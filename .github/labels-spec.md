@@ -65,7 +65,7 @@ A label is generic (plugin tier) if:
 
 | Repo | labels.yml count | local-overrides | Notes |
 |---|---|---|---|
-| `claude-workflow-core` (plugin) | 25 (this file) | n/a — plugin IS the SSOT | `area:plugin-manifest` is plugin-domain; once consumer overrides land (Sub 9), plugin may grow its own overrides file |
+| `claude-workflow-core` (plugin) | 27 (this file) | n/a — plugin IS the SSOT | `area:plugin-manifest` is plugin-domain; once consumer overrides land (Sub 9), plugin may grow its own overrides file. `plan-parsed` (#223) is the cr-plan idempotency marker — generic-tier because the auto-parse poller references it by name |
 | `media-server` | 32 (pre-Sub-6) | 0 — to be created in Sub 9 #147 | Will reduce to `plugin's set + ~12 domain labels` once Sub 9 ships |
 | `pricing-team-toolkit` | 30 (pre-Sub-6) | 0 — to be created in Sub 9 #147 | Will reduce to `plugin's set + ~10 domain labels` once Sub 9 ships |
 

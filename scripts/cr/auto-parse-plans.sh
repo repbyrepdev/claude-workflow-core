@@ -122,6 +122,16 @@ _check_and_parse_issue() {
 		return 0
 	fi
 
+	# Skip if this issue is ITSELF an epic. Epics are cr-plan OUTPUTS, never
+	# parse INPUTS — parsing an epic re-decomposes it into a NESTED epic
+	# ("EPIC: EPIC: ..."), the runaway that created 800+ duplicate epics on
+	# 2026-06-02. An epic must never re-enter the parse pipeline, even if it
+	# re-acquired plan-me (e.g. via auto-triage of the just-created issue).
+	if printf '%s' "$data" | jq -e '.labels[] | select(.name == "epic")' >/dev/null 2>&1; then
+		_log "skip-epic" "$issue" "skip" "epic label present — epics are parse outputs, not inputs"
+		return 0
+	fi
+
 	# Require plan-me label (otherwise no plan to parse).
 	if ! printf '%s' "$data" | jq -e '.labels[] | select(.name == "plan-me")' >/dev/null 2>&1; then
 		_log "skip-no-plan-me" "$issue" "skip" "plan-me label absent"
@@ -195,11 +205,74 @@ _check_and_parse_issue() {
 	_log "parsed" "$issue" "ok" "epic+subs created"
 	echo "auto-parse-plans: ✓ parsed issue #$issue" >&2
 
-	# Apply plan-parsed label so we don't re-parse.
-	gh issue edit "$issue" --add-label plan-parsed 2>&1 | tail -1 >&2 || {
-		_log "label-failed" "$issue" "warn" "plan-parsed label add failed (parse succeeded)"
-		echo "auto-parse-plans: WARN: plan-parsed label add failed — parse already succeeded; manual label needed to prevent re-parse" >&2
-	}
+	# Mark plan-parsed AND drop plan-me so the source issue leaves the poll set.
+	# CR #478 r4 (REVERSAL of an earlier wrong rejection): a single combined
+	# `--add-label plan-parsed --remove-label plan-me` fails WHOLESALE when the
+	# plan-parsed label is undefined (gh: "'plan-parsed' not found") -> plan-me is
+	# NOT removed -> the source re-enters the poll every cycle = runaway (observed
+	# 205 issues, #223). Fix: ensure the label exists, then remove plan-me as its
+	# OWN op so the poll-bounding can't be blocked by the marker-add failing.
+	# plan-parsed's metadata SSOT is .github/labels.yml; read color/description
+	# FROM it (CR-CLI follow-on) so this create doesn't hardcode a second copy.
+	# Fall back to the known values if yq or labels.yml is unavailable — the
+	# create is still just a DEFENSIVE existence-ensure (the relabel below fails
+	# wholesale if the label is undefined); label-sync reconciles metadata from
+	# the SSOT regardless. Keep the two literal fallbacks below in sync with
+	# the .github/labels.yml plan-parsed entry (color + description).
+	local _labels_yml="$REPO_ROOT/.github/labels.yml"
+	local pp_color="6e7681" pp_desc="cr-plan parsed this into an epic+subs"
+	if command -v yq >/dev/null 2>&1 && [ -f "$_labels_yml" ]; then
+		pp_color=$(yq -r '(.[] | select(.name == "plan-parsed") | .color) // "6e7681"' "$_labels_yml" 2>/dev/null) || pp_color="6e7681"
+		pp_desc=$(yq -r '(.[] | select(.name == "plan-parsed") | .description) // "cr-plan parsed this into an epic+subs"' "$_labels_yml" 2>/dev/null) || pp_desc="cr-plan parsed this into an epic+subs"
+		[ -n "$pp_color" ] || pp_color="6e7681"
+		[ -n "$pp_desc" ] || pp_desc="cr-plan parsed this into an epic+subs"
+	fi
+	#
+	# Capture create output+rc (CR-CLI) instead of swallowing ALL failures via
+	# `2>/dev/null || true`. BUT do NOT fail-closed on non-zero: `gh label create`
+	# exits non-zero on the BENIGN "already exists" case — the COMMON path, since
+	# the label usually already exists — so aborting there would break the poller
+	# every run. Treat already-exists as a no-op (the label is present, which is
+	# all this ensure needs); for any OTHER create failure, WARN + log but still
+	# continue (the downstream --add-label plan-parsed capture warns if the marker
+	# truly can't be set; aborting the whole batch poll for one issue's transient
+	# label-create blip is worse than proceeding). The `if !` form captures rc
+	# under `set -e` (a bare `lc_out=$(...)` would abort the script on non-zero).
+	local lc_out=""
+	if ! lc_out=$(gh label create plan-parsed --color "$pp_color" --description "$pp_desc" 2>&1); then
+		if printf '%s' "$lc_out" | grep -qi 'already exists'; then
+			: # benign — label already present; nothing to do
+		else
+			_log "label-create-failed" "$issue" "warn" "plan-parsed create failed (non-benign): $(printf '%s' "$lc_out" | tail -c 200)"
+			echo "auto-parse-plans: WARN: plan-parsed label create failed for #$issue (continuing): $(printf '%s' "$lc_out" | tail -1)" >&2
+		fi
+	fi
+	# Add the plan-parsed idempotency marker FIRST (CR-CLI r8): the skip-guard
+	# above ("skip if plan-parsed present") gates re-parse on ANY issue carrying
+	# plan-parsed, so setting it BEFORE removing plan-me means a FAILED remove
+	# can't cause a runaway — a lingering plan-me is harmless once plan-parsed is
+	# present. Its OWN op (not combined) so the marker-add can't be blocked.
+	#
+	# Capture gh's combined output+rc DIRECTLY (CR-CLI #223 follow-on): the
+	# previous `gh ... 2>&1 | tail -1 >&2` form put gh in a pipeline, so failure
+	# detection relied on `set -o pipefail` to surface gh's non-zero rc (without
+	# it the `if` only sees tail's rc, which is ~always 0 → a failed relabel
+	# would be silently swallowed). Capturing into $out and testing gh's own rc
+	# makes the WARN/log fire regardless of the pipefail option's state.
+	local add_out remove_out
+	if ! add_out=$(gh issue edit "$issue" --add-label plan-parsed 2>&1); then
+		printf '%s\n' "$add_out" | tail -1 >&2
+		_log "label-add-failed" "$issue" "warn" "plan-parsed add failed (parse succeeded) — idempotency marker missing"
+		echo "auto-parse-plans: WARN: plan-parsed add failed for #$issue — add manually to prevent re-parse" >&2
+	fi
+	# THEN drop plan-me so the source leaves the poll set. If THIS fails, the
+	# plan-parsed marker added above still prevents re-parse (skip-guard) — so no
+	# runaway, just a harmless lingering plan-me.
+	if ! remove_out=$(gh issue edit "$issue" --remove-label plan-me 2>&1); then
+		printf '%s\n' "$remove_out" | tail -1 >&2
+		_log "label-remove-failed" "$issue" "warn" "plan-me removal failed (parse succeeded) — harmless, plan-parsed already gates re-parse"
+		echo "auto-parse-plans: WARN: plan-me removal failed for #$issue — remove manually (harmless; plan-parsed gates re-parse)" >&2
+	fi
 }
 
 if [ -n "$TARGET_ISSUE" ]; then

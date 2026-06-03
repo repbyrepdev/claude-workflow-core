@@ -10,10 +10,17 @@ set -euo pipefail
 #     template.yml, ISSUE_TEMPLATE/*) — byte-SSOT; these map VERBATIM to the
 #     consumer repo root, NOT under .claude/. (labels/required-checks/labeler/
 #     workflows are template-with-overrides and are NOT hashed here.)
-#   - scripts/*.sh are NOT hashed (#247): consumers do NOT mirror them — the
-#     bootstrap consumer wrapper `exec`s the orchestrator from the plugin cache
-#     by PIN ($PLUGIN_CACHE/$PIN/scripts/...), so there is no consumer-side copy
-#     that could drift. Only mirrored files (hooks/_lib/.github-hashed) are tracked.
+#   - .semgrep/*.yml + *.yaml (#478) — the offline Phase-1 ruleset is plugin-SSOT config
+#     a consumer copies VERBATIM to its repo-root .semgrep/ (NOT under .claude/),
+#     so it CAN drift and is tracked. Maps to the consumer root like .github/*.
+#   - scripts/*.sh + pre-commit-hooks/*.sh are NOT hashed (#247): consumers do
+#     NOT byte-mirror them — the bootstrap consumer wrapper `exec`s the
+#     orchestrator from the plugin cache by PIN ($PLUGIN_CACHE/$PIN/scripts/...)
+#     and pre-commit-hooks run via the pinned `rev:` in .pre-commit-config.yaml,
+#     so there is no consumer-side copy that could drift. (A stale .claude/
+#     shadow of a helper is caught separately by pre-commit-hooks/
+#     stale-shadow-guard.sh, not here.) Only mirrored files (hooks/_lib/
+#     .semgrep/.github-hashed) are tracked.
 #
 # Two modes:
 #   --generate (producer-side): compute SHA256 of each plugin source file
@@ -220,6 +227,19 @@ if [ "$MODE" = "generate" ]; then
 				_emit_hashed_entry "$f"
 			done < <(find "$dir" -name '*.sh' -type f | sort)
 		done
+		# .semgrep/*.yml byte-SSOT (#478): the offline Phase-1 ruleset is a
+		# plugin-SSOT config a consumer copies VERBATIM to its repo-root
+		# .semgrep/ (NOT under .claude/), so the default verify path-mapping
+		# (anything not hooks/_lib → verbatim) resolves it correctly. Unlike
+		# scripts/*.sh (#247, NOT hashed — consumers exec the orchestrator from
+		# the plugin cache by PIN, so no consumer copy can drift), the ruleset
+		# IS a mirrored file that can drift, so it belongs in the covered set.
+		if [ -d .semgrep ]; then
+			while IFS= read -r f; do
+				[ -f "$f" ] || continue
+				_emit_hashed_entry "$f"
+			done < <(find .semgrep \( -name '*.yml' -o -name '*.yaml' \) -type f | sort)
+		fi
 		# .github byte-SSOT files (manifest `hashed: true`), validated above.
 		# Iterate the materialized list; emit alongside hooks/_lib so the
 		# producer-relative path (e.g. .github/commit-template.yml) lands in

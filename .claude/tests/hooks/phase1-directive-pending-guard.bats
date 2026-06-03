@@ -63,6 +63,28 @@ _run_guard() {
 	fi
 }
 
+# CR #223: assert the hook contract DIRECTLY (real exit status + raw stdout
+# payload), not just the allow/deny reduction above. Modern PreToolUse hooks
+# signal DENY via a JSON `permissionDecision:deny` on stdout AND exit 0 (the
+# documented reliable blocking path — they do NOT exit non-zero), and signal
+# ALLOW by exiting 0 with NO JSON. So the contract under test is: status is
+# ALWAYS 0, and the stdout payload is what distinguishes deny from allow. This
+# helper runs the REAL hook under bats' `run` so $status / $output bind to the
+# hook process itself (a crash / malformed response would surface here, where
+# the reduced _run_guard string could mask it).
+_run_guard_raw() {
+	run bash -c 'cd "$1" && printf "%s" "$2" | "$3" 2>/dev/null' _ "$TDIR" "$1" "$HOOK"
+}
+
+# Seed a phase1-directive marker for an ABANDONED (non-HEAD) but syntactically
+# valid hex sha — genuine Layer 0 cruft (a squash-merge orphan / deleted topic
+# branch), distinct from a live round on the current HEAD.
+_seed_abandoned_marker() {
+	ABANDONED_SHA="0123456789abcdef0123456789abcdef01234567"
+	printf 'directive text\n' \
+		>"$TDIR/.claude/.session-state/ship-cycle/${ABANDONED_SHA}.phase1-directive.txt"
+}
+
 teardown() {
 	if [ -n "${TDIR:-}" ] && [ -d "$TDIR" ]; then
 		rm -rf "$TDIR"
@@ -74,6 +96,66 @@ teardown() {
 	_setup_pending_repo
 	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')
 	[ "$rc" = deny ]
+}
+
+# --- v0.33.0 (#223) Layer 0 age-based self-heal -----------------------------
+@test "Layer 0: ABANDONED (non-HEAD) marker older than 2 days is auto-removed and the call ALLOWED" {
+	_setup_pending_repo
+	# Replace the HEAD marker with an ABANDONED non-HEAD sha (genuine cruft) and
+	# age it past the 2-day threshold (portable -t CCYYMMDDhhmm).
+	rm -f "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	_seed_abandoned_marker
+	find "$TDIR/.claude/.session-state/ship-cycle" -name '*.phase1-directive.txt' \
+		-exec touch -t 202001010000 {} +
+	# CR #223: assert the hook contract DIRECTLY — status is 0 (allow path) AND
+	# the stdout payload carries NO deny decision (not just the reduced string).
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+	# Self-healed: the aged abandoned marker is gone (Layer 0 rm'd it).
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/
+	[ "$status" -eq 0 ]
+	[[ $output != *.phase1-directive.txt* ]]
+}
+
+@test "Layer 0: a fresh marker (sha == HEAD) is NOT age-removed and still DENIES" {
+	_setup_pending_repo
+	# CR-CLI r5: _setup_pending_repo seeds the marker at SHA == HEAD with a fresh
+	# mtime (~now), so the retention asserted here is the COMBINED fresh + HEAD-
+	# guard path (the AGED-but-HEAD case is the separate live-round test below). A
+	# non-HEAD marker can't isolate "pure age": Layer 1 #174 reachability also
+	# keeps a real ancestor, and a fake sha hits Layer 1's error path.
+	# CR #223: assert the real hook contract — exit 0 (deny is JSON+exit0, NOT a
+	# non-zero rc) AND the raw stdout carries the deny payload.
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	# Boundary: Layer 0 must NOT nuke a fresh marker (mtime ~now).
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
+}
+
+@test "Layer 0: an AGED marker whose sha == current HEAD is NOT age-pruned (live-round protection, #223)" {
+	# CR #223 (major): age-ALONE would self-heal away a LIVE round paused over a
+	# long weekend (>48h) whose marker sha IS the current HEAD, silently un-gating
+	# Edit/Write/commit. The HEAD-guard must KEEP such a marker (Layers 1/2 then
+	# correctly retain it — no origin/main ancestry, reachable from HEAD) so the
+	# call still DENIES even though the marker is >2 days old.
+	_setup_pending_repo # marker sha == HEAD
+	find "$TDIR/.claude/.session-state/ship-cycle" -name '*.phase1-directive.txt' \
+		-exec touch -t 202001010000 {} +
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	# The HEAD marker must still be present — NOT age-pruned.
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
+	# And the KEPT marker is specifically the HEAD one (_setup_pending_repo
+	# seeds sha == HEAD), proving the HEAD-guard — not some unrelated retention.
+	head_sha=$(git -C "$TDIR" rev-parse HEAD)
+	[[ $output == *"${head_sha}.phase1-directive.txt"* ]]
 }
 
 @test "behavioral: read-only git diff is ALLOWED while pending (#191)" {

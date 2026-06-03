@@ -80,8 +80,56 @@ rm -f "$find_err"
 
 pending_count=0
 pending_list=""
+# HEAD is invariant across markers — resolve ONCE here rather than per-iteration
+# (CR-CLI). The age-prune predicate inside the loop reads $_head_sha.
+_head_sha=$(git rev-parse HEAD 2>/dev/null) || _head_sha=""
 while IFS= read -r -d '' f; do
 	sha=$(basename "$f" .phase1-directive.txt)
+	# (#223) Layer 0: age-based stale cleanup. A phase1-directive
+	# marker is acted on within a session (agents fire within minutes); one
+	# still "pending" after 2 days is stale cruft (an abandoned round, or a
+	# squash-merge that left a local topic branch) that the two in-guard
+	# self-heals BELOW miss — the #173 ancestor-of-origin/main check skips
+	# squash-merges (the SHA is not an ancestor) and the #174 reachable-from-
+	# any-ref check keeps the marker while a stale LOCAL branch still contains
+	# the SHA. (NB: the project's "Layer 2"/"Layer 3" are the github-pr-merge
+	# skill-side rm + the post-merge hook — NOT these in-guard checks; referenced
+	# by #issue here to avoid that naming collision.) This is what let 9 markers
+	# pile up over a multi-day session — the SessionStart sweep cannot fire mid-
+	# session, but this guard runs on every Bash/Edit so it self-heals
+	# continuously. The age test runs in the elif condition (set -e suppressed
+	# there) so a find error short-circuits to "keep the marker" rather than
+	# aborting; log the deletion so a mistaken cleanup is observable. Portable
+	# mtime via find -mmin (macOS+Linux).
+	#
+	# CR #223 (major): age-ALONE could nuke a LIVE round paused over a long
+	# weekend (>48h) — its marker SHA is the CURRENT HEAD, agents not yet fired —
+	# silently un-gating Edit/Write/commit. So gate the age-prune behind a
+	# stale-state predicate: NEVER age-prune a marker whose SHA == current HEAD
+	# (that is an active, possibly-paused round, not cruft). Non-HEAD aged markers
+	# (abandoned branches, squash-merge orphans the reachability layers below
+	# miss) remain Layer-0 eligible — that is the cruft Layer 0 exists to sweep.
+	# ($_head_sha is hoisted above the loop — HEAD is invariant across markers.)
+	if [ -z "$_head_sha" ]; then
+		: # git HEAD unverifiable — fail-CLOSED: do NOT age-prune (the marker may be
+		# a live round; mirrors the rc-capture bail at the top of this hook). CR-CLI
+		# r1 (major): the prior `|| echo ""` was fail-OPEN — an empty _head_sha fell
+		# through to age-prune, which could nuke a live round when git was unreadable.
+	elif [ "$sha" = "$_head_sha" ]; then
+		: # active round on the current HEAD — skip age-prune; let Layers 1/2 decide
+	elif _age_out=$(find "$f" -mmin +2880 -print 2>/dev/null) && [ -n "$_age_out" ]; then
+		# CR #478 p2 (major): best-effort rm — under `set -euo pipefail` a failing
+		# rm (readonly fs / perms) would ABORT the guard mid-sweep, leaving later
+		# markers unprocessed AND the current Bash/Edit un-gated. Warn + keep
+		# scanning the remaining markers instead of dying. Log the removal AFTER a
+		# successful rm so the "auto-removed" line never claims a deletion that the
+		# rm below actually failed to perform.
+		if _rm_err=$(rm -f "$f" 2>&1); then
+			echo "phase1-directive-pending-guard: Layer 0 auto-removed stale (>2d) marker $sha" >&2
+			continue
+		fi
+		echo "phase1-directive-pending-guard: WARN: Layer 0 rm failed for $sha (continuing): $_rm_err" >&2
+	fi
 	# v0.27.0 #173 Layer 1: self-heal stale markers whose SHA is now
 	# reachable from origin/main. Catches merge-commit / fast-forward /
 	# rebase-and-push-retaining-SHA flows. Squash-merge writes a NEW
