@@ -96,6 +96,52 @@ teardown() {
 	[ "$output" != "$K1" ] # content changed → key changed
 }
 
+@test "audit-ledger + session-state commits do NOT change the key (#2230 no treadmill)" {
+	# v0.34.30 (#2230): the prove-yourself audit ledger lives IN CR's committed
+	# review surface; before the pathspec exclude, committing audit records busted
+	# this content-hash key + needlessly re-triggered the CR-CLI (the audit-commit
+	# treadmill). Assert the key is INVARIANT to a commit that touches ONLY
+	# .claude/audit/prove-yourself.jsonl (and .claude/.session-state/) while the
+	# real code under review is unchanged.
+	(
+		cd "$TEST_TMP"
+		git init -q
+		git config user.email t@t.t
+		git config user.name t
+		printf 'one\n' >f.txt
+		git add f.txt
+		git commit -qm base
+		git branch -M main
+		git checkout -q -b feat
+		printf 'two\n' >>f.txt
+		git add f.txt
+		git commit -qm change
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	local K1="$output"
+	[ -n "$K1" ]
+	# Commit ONLY audit/session-state bookkeeping — no change to f.txt.
+	(
+		cd "$TEST_TMP"
+		mkdir -p .claude/audit .claude/.session-state/prove-yourself
+		printf '{"finding":"x","status":"covered"}\n' >.claude/audit/prove-yourself.jsonl
+		printf '{"id":"y"}\n' >.claude/.session-state/prove-yourself/y.json
+		git add -f .claude/audit/prove-yourself.jsonl .claude/.session-state/prove-yourself/y.json
+		git commit -qm "audit: record finding"
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	# Key UNCHANGED: the excluded paths never enter the review-surface hash, so an
+	# audit-only commit is a cache HIT (no needless re-review).
+	[ "$output" = "$K1" ]
+	# Sanity: a real code change still busts the key (exclude isn't over-broad).
+	(cd "$TEST_TMP" && printf 'three\n' >>f.txt && git add f.txt && git commit -qm real)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	[ "$output" != "$K1" ]
+}
+
 @test "standalone fallback: REPO_ROOT unset resolves to repo root, not parent" {
 	# CR #284: the suite always pre-sets REPO_ROOT, so the fixed `:-` fallback
 	# (<repo>/_lib/.. = repo, was overshooting to the parent) could regress

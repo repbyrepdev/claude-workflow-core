@@ -14,7 +14,7 @@
 schema:
   subject:
     max_length: 70
-    format: "<type>(<scope>): <summary>"
+    format: "<type>(<optional_scope>): <summary>"
     types:
       - feat      # new capability (user-visible or infra)
       - fix       # bug fix
@@ -97,7 +97,7 @@ examples:
       - .github/commit-template.yml (full schema)
       - .yamllint.yaml (relaxed + line-length disable)
 
-      Advances #<issue-number>
+      Advances #54
 
       Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 

@@ -249,8 +249,18 @@ phase2_review_cache_key() {
 	# (the exact pattern this PR kills); capture stderr + emit a breadcrumb on
 	# non-zero rc, still returning empty (fail-safe: caller does a fresh review,
 	# never a false cache hit).
+	# v0.34.30 (#2230): EXCLUDE the prove-yourself audit ledger + session-state
+	# from the review-surface diff. The tracked .claude/audit/prove-yourself.jsonl
+	# (and .claude/.session-state/ audit records) live IN CR's committed-review
+	# surface, so committing audit records busts this content-hash key + needlessly
+	# re-triggers the CR-CLI — an "audit-commit treadmill". These paths are
+	# bookkeeping, never part of the code under review, so excluding them keeps the
+	# key stable across pure audit-record commits. Pathspec excludes append after a
+	# `--` and compose with the 3-dot range (verified under the real git engine).
 	d_err=$(mktemp 2>/dev/null) || d_err=""
-	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>"${d_err:-/dev/null}") || d_rc=$?
+	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" -- \
+		':(exclude).claude/audit/prove-yourself.jsonl' \
+		':(exclude).claude/.session-state/' 2>"${d_err:-/dev/null}") || d_rc=$?
 	if [ "$d_rc" -ne 0 ]; then
 		if [ -n "$d_err" ] && [ -s "$d_err" ]; then
 			echo "phase2_review_cache_key: git diff failed — no cache key (forces a fresh review): $(head -c 160 "$d_err")" >&2
@@ -319,6 +329,24 @@ phase2_review_cache_put() {
 	_cache_init || return 0
 	local ts
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts=""
+	# v0.34.30 (#2230): mirror the _get/cache-key stderr hardening — a silent
+	# `2>/dev/null || return 0` swallowed jq-append failures (e.g. a read-only
+	# CACHE_DIR or a degraded jq), leaving the result cache silently never-written
+	# with ZERO operator signal. Capture stderr + emit a concise breadcrumb on
+	# failure, then still return 0 (best-effort: a write miss costs one extra
+	# review, never a failed cycle).
+	local jq_err jq_rc=0
+	jq_err=$(mktemp 2>/dev/null) || jq_err=""
 	jq -nc --arg k "$key" --argjson f "$findings" --arg s "$sha" --arg ts "$ts" \
-		'{ts:$ts, content_hash:$k, sha:$s, findings:$f}' >>"$PHASE2_RESULT_LEDGER" 2>/dev/null || return 0
+		'{ts:$ts, content_hash:$k, sha:$s, findings:$f}' >>"$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}" || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		if [ -n "$jq_err" ] && [ -s "$jq_err" ]; then
+			echo "phase2 cache write failed: $(head -c 160 "$jq_err")" >&2
+		else
+			echo "phase2 cache write failed" >&2
+		fi
+		[ -n "$jq_err" ] && rm -f "$jq_err"
+		return 0
+	fi
+	[ -n "$jq_err" ] && rm -f "$jq_err"
 }

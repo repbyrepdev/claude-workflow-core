@@ -427,7 +427,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
 CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
 
 # Resolve plugin pin via plugin's own resolve-plugin-pin.sh (SSOT)
-PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+PLUGIN_CACHE="${CLAUDE_PLUGIN_CACHE:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
@@ -508,7 +508,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
 
-PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+PLUGIN_CACHE="${CLAUDE_PLUGIN_CACHE:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
@@ -570,7 +570,7 @@ HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
-PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+PLUGIN_CACHE="${CLAUDE_PLUGIN_CACHE:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
@@ -624,7 +624,7 @@ HOOK_NAME=$(basename "${BASH_SOURCE[0]}")
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
-PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core"
+PLUGIN_CACHE="${CLAUDE_PLUGIN_CACHE:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 shopt -s nullglob
 _resolve_candidates=("$PLUGIN_CACHE"/*/_lib/resolve-plugin-pin.sh)
 shopt -u nullglob
@@ -907,6 +907,8 @@ body:
     attributes:
       label: Acceptance criteria
       placeholder: Testable statements that mark this feature as done.
+    validations:
+      required: true
 EOF
 
 _write .github/ISSUE_TEMPLATE/task.yml 644 <<'EOF'
@@ -954,6 +956,8 @@ body:
     attributes:
       label: Acceptance criteria
       placeholder: Testable statements that mark this task as done.
+    validations:
+      required: true
 EOF
 
 _write .github/ISSUE_TEMPLATE/epic.yml 644 <<'EOF'
