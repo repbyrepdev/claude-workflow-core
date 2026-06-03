@@ -278,11 +278,25 @@ _phase05_fallback() {
 	fi
 	echo "autofix-cycle: running Phase 0.5 fallback (free-tier Copilot, 0 CR slots)" >&2
 	local exit_code=0
+	# #223 CR-CLI: derive the prefilter base ref from review-config.yml's
+	# base_ref SSOT (matching phase0.5-post-commit-rerun.sh) instead of
+	# hardcoding `main`, so a repo whose mainline isn't `main` prefilters
+	# against the right base. Falls back to "main" when review-config is
+	# absent / yq is unavailable / base_ref is unset, preserving prior behavior.
+	local review_config="$REPO_ROOT/.claude/review-config.yml"
+	local base_ref="main"
+	if [ -f "$review_config" ] && command -v yq >/dev/null 2>&1; then
+		local cfg_base
+		cfg_base=$(yq -r '.base_ref // "main"' "$review_config" 2>/dev/null || echo "main")
+		[ -n "$cfg_base" ] && [ "$cfg_base" != "null" ] && base_ref="$cfg_base"
+	fi
+	# Guard against an empty base ref (e.g. a malformed override) — default to main.
+	[ -n "$base_ref" ] || base_ref="main"
 	# stdin </dev/null: the prefilter calls try-free.sh, whose `[ ! -t 0 ] && cat`
 	# blocks on an unbounded read when stdin is a non-tty pipe with no data (here
 	# stdin would be inherited from autofix-cycle's caller). The prefilter pipes no
 	# context, so closing stdin avoids the COPILOT_TIMEOUT_SEC hang (#223 CR-CLI).
-	"$prefilter" --base main </dev/null 2>&1 | tail -5 >&2 || exit_code=$?
+	"$prefilter" --base "$base_ref" </dev/null 2>&1 | tail -5 >&2 || exit_code=$?
 	return $exit_code
 }
 

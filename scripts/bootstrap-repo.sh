@@ -1497,8 +1497,10 @@ issue_enrichment:
 EOF
 
 # --- Apply labels via gh label create --------------------------------
-# Writing .github/labels.yml does not create labels on GitHub — that's
-# what label-sync.yml does, OR a manual `gh label create` per entry.
+# Writing .github/labels.yml does not create labels on GitHub — applying
+# them is what THIS step does (gh label create per entry), OR a label-sync
+# workflow you add to the target yourself. Bootstrap does NOT seed such a
+# workflow, so there is no auto-sync-on-first-push.
 # OPT-IN only (`--apply-labels`): the create is a REMOTE mutation, so the
 # repo contract gates it behind an explicit flag — a plain scaffold never
 # silently writes to a GitHub repo's label set. When the flag is given,
@@ -1516,11 +1518,11 @@ _apply_labels() {
 		return 0
 	fi
 	if ! command -v gh >/dev/null 2>&1; then
-		_log "NOTE: gh CLI not on PATH — skipping label apply (run label-sync workflow after first push)"
+		_log "NOTE: gh CLI not on PATH — skipping label apply (install gh, then re-run with --apply-labels, or add/run a label-sync workflow in the target)"
 		return 0
 	fi
 	if ! command -v yq >/dev/null 2>&1; then
-		_log "NOTE: yq not on PATH — skipping label apply (run label-sync workflow after first push)"
+		_log "NOTE: yq not on PATH — skipping label apply (install yq, then re-run with --apply-labels, or add/run a label-sync workflow in the target)"
 		return 0
 	fi
 	if [ ! -f "$TARGET/.github/labels.yml" ]; then
@@ -1529,7 +1531,7 @@ _apply_labels() {
 	fi
 	if ! git -C "$TARGET" remote get-url origin 2>/dev/null | grep -q github.com; then
 		_log "NOTE: target has no GitHub remote yet — skipping label apply"
-		_log "      labels will sync on first push via .github/workflows/label-sync.yml"
+		_log "      add a GitHub remote, then re-run with --apply-labels (bootstrap seeds no label-sync workflow), or add/run a label-sync workflow in the target"
 		return 0
 	fi
 	_log "applying labels from .github/labels.yml via gh label create --force..."
@@ -1580,9 +1582,11 @@ fi
 # .coderabbit.overlay.yaml. A fresh repo (no overlay) gets the base verbatim;
 # the base stays the single update point.
 #
-# Order matters (#234 r1): the DRY_RUN preview comes FIRST — a real run writes
-# the base heredoc THEN composes, so on a fresh dir the preview must report
-# "would compose" rather than tripping the (not-yet-written) base-absent NOTE.
+# Order matters (#234 r1): the DRY_RUN preview guard comes FIRST inside this
+# function — a real run writes the base heredoc, then _sync_full_ssot refreshes
+# it, THEN composes (the CALL is deferred to after _sync_full_ssot, see #223
+# CR-CLI below), so on a fresh dir the dry-run must report "would compose"
+# rather than tripping the (not-yet-written) base-absent NOTE.
 # .coderabbit.yaml is a derived artifact but honors the same
 # skip-pre-existing-unless-force contract as _write, so a re-run never clobbers
 # a consumer's live config (edit the overlay + --force to regenerate). A true
@@ -1625,7 +1629,12 @@ _compose_coderabbit() {
 		COMPOSE_CR_FAILED=1
 	fi
 }
-_compose_coderabbit
+# NB (#223 CR-CLI): _compose_coderabbit is DEFINED here but INVOKED AFTER
+# _sync_full_ssot below. _sync_full_ssot (refresh-from-source) can REPLACE
+# .coderabbit.base.yaml with the canonical SSOT bytes; composing before the
+# sync would derive .coderabbit.yaml from a stale (pre-sync) base. Deferring
+# the call until the base is refreshed keeps the composed config in lockstep
+# with the synced base. (DRY_RUN preview is handled inside the function.)
 
 # --- Full SSOT sync: copy the byte-identical generic runtime ----------
 # The heredocs above seed only the per-repo-flavored + bootstrap-critical
@@ -1696,6 +1705,19 @@ _sync_full_ssot() {
 	fi
 }
 _sync_full_ssot
+
+# --- Compose .coderabbit.yaml AFTER the SSOT sync (#223 CR-CLI) -------
+# Now that _sync_full_ssot has refreshed .coderabbit.base.yaml to canonical
+# SSOT bytes, derive .coderabbit.yaml from the FRESH base. _compose_coderabbit
+# self-skips when DRY_RUN=1 (preview only). Gated on REFRESH_FAILED != 1: when
+# the refresh failed we're about to `exit 2` on a REAL install (deferred
+# fail-closed below), and the base may be partial/stale — composing then would
+# bake a possibly-wrong config, so we skip and let the operator re-run after
+# fixing the refresh. (COMPOSE_CR_FAILED set inside is still surfaced by the
+# summary block below.)
+if [ "$REFRESH_FAILED" != "1" ]; then
+	_compose_coderabbit
+fi
 
 # --- Summary ---------------------------------------------------------
 _log ""

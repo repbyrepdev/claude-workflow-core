@@ -26,7 +26,7 @@ rules:
     # `;` exclusion (mirroring the curl-insecure rule's `[^\n;]`) stops the span
     # at a command separator so `curl http://x; echo y | sh` does NOT FP — the
     # pipe-to-shell must be on the SAME command as the fetch.
-    pattern-regex: '(?:curl|wget)(?:\\\n|[^\n|;])*\|[ \t]*(?:sudo[ \t]+)?(?:ba|z|d)?sh\b'
+    pattern-regex: '(?:curl|wget)(?:\\\n|[^\n|;])*\|[ \t]*(?:sudo[ \t]+)?(?:sh|bash|dash|zsh|dsh)\b'
 
   # NOTE: an `eval $var` rule was tried + dropped — it false-positived on safe
   # shell-option save/restore (`eval "$_prev_globstar"`), and a regex can't tell

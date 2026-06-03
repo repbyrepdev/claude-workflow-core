@@ -131,7 +131,9 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 	# Boundary: Layer 0 must NOT nuke a fresh marker (mtime ~now).
-	ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
 }
 
 @test "Layer 0: an AGED marker whose sha == current HEAD is NOT age-pruned (live-round protection, #223)" {
@@ -147,7 +149,13 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 	# The HEAD marker must still be present — NOT age-pruned.
-	ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
+	# And the KEPT marker is specifically the HEAD one (_setup_pending_repo
+	# seeds sha == HEAD), proving the HEAD-guard — not some unrelated retention.
+	head_sha=$(git -C "$TDIR" rev-parse HEAD)
+	[[ $output == *"${head_sha}.phase1-directive.txt"* ]]
 }
 
 @test "behavioral: read-only git diff is ALLOWED while pending (#191)" {
