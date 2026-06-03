@@ -66,7 +66,14 @@ NAMES_TMP=$(mktemp -t stale-shadow-names.XXXXXX) || {
 # leaks if a later mktemp fails (CR #478 r5).
 # shellcheck disable=SC2329,SC2317  # invoked via trap registered below
 _cleanup() { rm -f "${NAMES_TMP:-}" "${STAGED_TMP:-}" "${CANON_TMP:-}"; }
-trap _cleanup EXIT INT TERM HUP
+# CR #478: split the signal traps so an abort (Ctrl-C / SIGTERM / SIGHUP) runs
+# cleanup AND THEN exits non-zero — a single `trap _cleanup EXIT INT TERM HUP`
+# would clean up but let the gate CONTINUE after the handler returns, turning an
+# abort into "cleanup and pass" instead of fail-closed for this pre-commit gate.
+trap _cleanup EXIT
+trap '_cleanup; exit 130' INT
+trap '_cleanup; exit 143' TERM
+trap '_cleanup; exit 129' HUP
 git diff --cached --name-only -z --diff-filter=ACMR >"$NAMES_TMP" 2>/dev/null || {
 	echo "stale-shadow-guard: git diff --cached failed — refusing (fail-closed)" >&2
 	exit 2

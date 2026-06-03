@@ -21,6 +21,8 @@
 #   Pink    bf3989  question
 #   Gray    6e7681  priority:needs-triage · status:blocked · enhancement
 #                   · no-plan
+#   Marker  ededed  plan-parsed (GitHub's neutral default-grey, reserved for
+#                   automation idempotency markers the operator never picks)
 # -----------------------------------------------------------------------------
 
 # ---- Type ----
@@ -120,3 +122,6 @@
 - name: no-plan
   color: "6e7681"
   description: "Operator opt-out: do not run cr-plan trigger on this issue"
+- name: plan-parsed
+  color: "ededed"
+  description: cr-plan parsed this into an epic+subs

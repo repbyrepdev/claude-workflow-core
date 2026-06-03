@@ -58,7 +58,9 @@ _read_file() {
 	printf 'h\tr\tt\t%s\n' "settings.json" >"$SENTINEL"
 	run _read_file "$TEST_TMP/some/other.json"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	run grep -c 'settings.json' "$SENTINEL"
+	[ "$status" -eq 0 ]
 	[ "$output" = "1" ] # the bug cleared it on ANY Read; the fix keeps it
 }
 
@@ -66,7 +68,9 @@ _read_file() {
 	printf 'h\tr\tt\t%s\n' "settings.json" >"$SENTINEL"
 	run _read_file "$TEST_TMP/deep/dir/settings.json"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	run grep -c 'settings.json' "$SENTINEL"
+	[ "$status" -eq 1 ] # grep -c exits 1 on zero matches (the entry was cleared)
 	[ "$output" = "0" ]
 }
 
@@ -74,7 +78,9 @@ _read_file() {
 	printf 'h\tr\tt\t%s\n' "skills/ship-pr-cycle/SKILL.md" >"$SENTINEL"
 	run _read_file "$TEST_TMP/.claude/skills/ship-pr-cycle/SKILL.md"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	run grep -c 'ship-pr-cycle' "$SENTINEL"
+	[ "$status" -eq 1 ] # grep -c exits 1 on zero matches (the entry was cleared)
 	[ "$output" = "0" ] # consumer path suffix-matches the plugin-relative fp
 }
 
@@ -82,6 +88,8 @@ _read_file() {
 	printf 'h\tr\tt\t%s\n' "skills/ship-pr-cycle/SKILL.md" >"$SENTINEL"
 	run _read_file "$TEST_TMP/skills/other-skill/SKILL.md"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	run grep -c 'ship-pr-cycle' "$SENTINEL"
+	[ "$status" -eq 0 ]
 	[ "$output" = "1" ] # basename collision must NOT clear the gate
 }

@@ -57,9 +57,24 @@ _extract_heredoc() {
 	[[ $output == *"would apply labels"* ]]
 }
 
-@test "_apply_labels NOTE on no-remote target (gh present)" {
+# CR #1607: label sync is OPT-IN via --apply-labels. WITH the flag on a
+# no-remote target, _apply_labels runs and hits its no-remote skip-NOTE.
+@test "_apply_labels NOTE on no-remote target (gh present, --apply-labels)" {
 	mkdir -p "$TEST_TMP/target-no-remote"
-	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" 2>&1"
+	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-no-remote\" --apply-labels 2>&1"
 	[ "$status" -eq 0 ]
 	[[ $output == *"no GitHub remote yet"* ]]
+}
+
+# CR #1607: WITHOUT --apply-labels (the default), a non-dry-run real install
+# must NOT touch the remote label set — it NOTEs the skip and never reaches
+# _apply_labels' no-remote message.
+@test "label sync skipped by default (no --apply-labels) → opt-in NOTE, no remote write" {
+	mkdir -p "$TEST_TMP/target-default"
+	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-default\" 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"label sync skipped"* ]]
+	[[ $output == *"--apply-labels"* ]]
+	[[ $output != *"no GitHub remote yet"* ]]
+	[[ $output != *"applying labels from"* ]]
 }

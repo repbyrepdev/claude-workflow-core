@@ -12,9 +12,10 @@ and pricing-team-toolkit, pinned to the plugin's CURRENT version (SSOT =
 ## Invoke
 
 ```bash
-.claude/skills/bootstrap-repo/run.sh <target-dir>              # scaffold
-.claude/skills/bootstrap-repo/run.sh <target-dir> --dry-run    # preview, no writes
-.claude/skills/bootstrap-repo/run.sh <target-dir> --tag vX.Y.Z # pin a specific version
+.claude/skills/bootstrap-repo/run.sh <target-dir>                 # scaffold (NO remote label mutation)
+.claude/skills/bootstrap-repo/run.sh <target-dir> --dry-run       # preview, no writes
+.claude/skills/bootstrap-repo/run.sh <target-dir> --tag vX.Y.Z    # pin a specific version
+.claude/skills/bootstrap-repo/run.sh <target-dir> --apply-labels  # OPT-IN: also sync labels to GitHub
 .claude/skills/bootstrap-repo/run.sh <target-dir> --verify [--scope plugin|consumer|both]  # read-only drift check of an existing repo
 ```
 
@@ -27,7 +28,7 @@ The wrapper sets `SKILL_WRAPPER=1` and execs `scripts/bootstrap-repo.sh`.
 - `.claude/local-overrides.yml`
 - `.github/` — PR template, commit-template, labels, required-checks, `ISSUE_TEMPLATE/*`, labeler, gitleaks/pr-lint/pr-labeler workflows
 - `.gemini/`, `.codex/config.toml`, `.coderabbit.base.yaml` (+ composes `.coderabbit.yaml`)
-- syncs labels via idempotent `gh label create --force` **only when the target already has a GitHub `origin` remote** — a fresh scaffold (no remote yet) defers this, NOTEs it, and lets `.github/workflows/label-sync.yml` apply them on first push (no remote mutation happens at scaffold time)
+- does **NOT** mutate the target's GitHub label set by default. Label sync is an explicit **opt-in** via `--apply-labels` (a remote write, so it sits behind a flag). Without the flag the scaffold NOTEs that sync is skipped and lets `.github/workflows/label-sync.yml` apply labels on first push. Even WITH `--apply-labels`, the sync is still skipped-with-NOTE unless the target already has a GitHub `origin` remote (plus gh + yq present + `labels.yml` exists); when it runs it is idempotent (`gh label create --force` upserts)
 
 ## After scaffolding (the script prints these)
 

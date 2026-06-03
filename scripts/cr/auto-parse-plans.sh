@@ -212,7 +212,13 @@ _check_and_parse_issue() {
 	# NOT removed -> the source re-enters the poll every cycle = runaway (observed
 	# 205 issues, #223). Fix: ensure the label exists, then remove plan-me as its
 	# OWN op so the poll-bounding can't be blocked by the marker-add failing.
-	gh label create plan-parsed --color ededed --description "cr-plan parsed this into an epic+subs" 2>/dev/null || true
+	# SSOT for plan-parsed's metadata (name/color/description) is
+	# .github/labels.yml; label-sync reconciles it. This is a DEFENSIVE
+	# existence-ensure only (the relabel below fails wholesale if the label is
+	# undefined) — it asserts NO canonical color/description here. The minimal
+	# --color is kept solely because `gh label create` requires one; ededed
+	# mirrors the SSOT entry but is not the source of truth for it.
+	gh label create plan-parsed --color ededed 2>/dev/null || true
 	# Add the plan-parsed idempotency marker FIRST (CR-CLI r8): the skip-guard
 	# above ("skip if plan-parsed present") gates re-parse on ANY issue carrying
 	# plan-parsed, so setting it BEFORE removing plan-me means a FAILED remove

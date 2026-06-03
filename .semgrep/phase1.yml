@@ -3,8 +3,9 @@
 # environments (10s HTTP timeout), which silently failed every phase1 round.
 # These rules are bundled + run fully offline:
 #   semgrep scan --config .semgrep/phase1.yml --metrics off --disable-version-check <files>
-# Rules use `generic` + `pattern-regex` (re2 — NO lookaround/backrefs) so they
-# need no language parser and catch real shell footguns this bash/workflow repo
+# Rules use `generic` + `pattern-regex` (semgrep's pattern-regex is PCRE/PCRE2,
+# NOT re2) so they need no language parser and catch real shell footguns this
+# bash/workflow repo
 # cares about. shellcheck (pre-commit) + the phase1 review agents are the
 # primary review; this is the supplementary structural pass that used to need
 # the network. Add rules conservatively — keep false positives near zero.
@@ -46,8 +47,8 @@ rules:
     # `curl x; other -k` second command can't be matched as curl's flag. The
     # short-flag branch matches `k` bundled with other flags (e.g. `curl -ksS`)
     # which a bare `-k` alternation missed (CR-CLI r1). The [^oO \t\n] right before
-    # `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — avoiding that
-    # FP without lookbehind, which re2 lacks (CR-CLI r4).
+    # `k` excludes `-ok`/`-Ok` (k as -o/-O's attached filename arg) — a char-class
+    # exclusion deliberately kept simpler than a PCRE lookbehind (CR-CLI r4).
     pattern-regex: '\bcurl\b(?:\\\n|[^\n;])*[ \t](?:--insecure|-(?:[A-Za-z]*[^oO \t\n])?k[A-Za-z]*)\b'
 
   - id: phase1-wget-insecure-tls

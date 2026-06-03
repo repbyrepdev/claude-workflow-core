@@ -31,9 +31,12 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/bootstrap-repo.sh <target-dir>
-#   scripts/bootstrap-repo.sh <target-dir> --tag v0.8.5  # pin to specific
-#   scripts/bootstrap-repo.sh <target-dir> --dry-run     # preview
-#   scripts/bootstrap-repo.sh <target-dir> --force       # overwrite existing
+#   scripts/bootstrap-repo.sh <target-dir> --tag v0.8.5    # pin to specific
+#   scripts/bootstrap-repo.sh <target-dir> --dry-run       # preview
+#   scripts/bootstrap-repo.sh <target-dir> --force         # overwrite existing
+#   scripts/bootstrap-repo.sh <target-dir> --apply-labels  # OPT-IN: sync labels
+#                                                          # to GitHub (remote
+#                                                          # mutation; default OFF)
 #
 # Platform: macOS + Linux (no platform-specific calls).
 
@@ -63,6 +66,11 @@ DRY_RUN=0
 FORCE=0
 VERIFY=0
 VERIFY_SCOPE="both"
+# --apply-labels is OPT-IN (default OFF). The repo contract requires every
+# `gh label` REMOTE mutation to sit behind this explicit flag so a plain
+# scaffold never silently writes to a GitHub repo's label set; sync is
+# otherwise deferred to .github/workflows/label-sync.yml on first push.
+APPLY_LABELS=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -80,6 +88,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--force)
 		FORCE=1
+		shift
+		;;
+	--apply-labels)
+		APPLY_LABELS=1
 		shift
 		;;
 	--verify)
@@ -131,7 +143,7 @@ fi
 
 if [ -z "$TARGET" ]; then
 	echo "error: missing target directory" >&2
-	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--verify] [--scope plugin|consumer|both]" >&2
+	echo "usage: scripts/bootstrap-repo.sh <target-dir> [--tag vX.Y.Z] [--dry-run] [--force] [--apply-labels] [--verify] [--scope plugin|consumer|both]" >&2
 	exit 2
 fi
 
@@ -1475,8 +1487,11 @@ EOF
 # --- Apply labels via gh label create --------------------------------
 # Writing .github/labels.yml does not create labels on GitHub — that's
 # what label-sync.yml does, OR a manual `gh label create` per entry.
-# Run the create here so a freshly-bootstrapped repo doesn't ship with
-# area:* label gates failing on the first PR. Idempotent: `gh label
+# OPT-IN only (`--apply-labels`): the create is a REMOTE mutation, so the
+# repo contract gates it behind an explicit flag — a plain scaffold never
+# silently writes to a GitHub repo's label set. When the flag is given,
+# running the create here means a freshly-bootstrapped repo doesn't ship
+# with area:* label gates failing on the first PR. Idempotent: `gh label
 # create --force` upserts.
 #
 # Skip-with-NOTE when: dry-run, gh missing, yq missing, no GitHub
@@ -1533,7 +1548,16 @@ _apply_labels() {
 	fi
 }
 
-_apply_labels
+# OPT-IN gate (default OFF): only mutate the remote label set when the operator
+# explicitly passed --apply-labels. Otherwise NOTE that sync is deferred to the
+# label-sync workflow on first push, so a plain scaffold performs NO gh label
+# remote write. --dry-run still previews inside _apply_labels (its own guard).
+if [ "$APPLY_LABELS" = "1" ] || [ "$DRY_RUN" = "1" ]; then
+	_apply_labels
+else
+	_log "NOTE: label sync skipped (pass --apply-labels to sync .github/labels.yml to GitHub now;"
+	_log "      otherwise .github/workflows/label-sync.yml applies them on first push)"
+fi
 
 # --- Compose .coderabbit.yaml from base [+ overlay] (#234) ------------
 # CodeRabbit reads .coderabbit.yaml. We ship the byte-SSOT .coderabbit.base.yaml
