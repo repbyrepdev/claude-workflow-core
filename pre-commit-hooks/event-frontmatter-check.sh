@@ -45,6 +45,9 @@ fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../_lib/event-frontmatter.sh disable=SC1091
 . "$SCRIPT_DIR/../_lib/event-frontmatter.sh"
+# v0.34.31 (#2235): consumer-aware canonical-skip — no-op in the plugin itself.
+# shellcheck source=../_lib/canonical-consumer-skip.sh disable=SC1091
+[ -f "$SCRIPT_DIR/../_lib/canonical-consumer-skip.sh" ] && . "$SCRIPT_DIR/../_lib/canonical-consumer-skip.sh"
 
 # Manual-invocation advisory — pre-commit always supplies args, so empty `$@`
 # means a developer ran this directly. Make the no-op visible.
@@ -91,6 +94,11 @@ for f in "$@"; do
 	.claude/hooks/*.sh | hooks/*.sh) ;;
 	*) continue ;;
 	esac
+
+	# v0.34.31 (#2235): skip canonical hooks in a consumer (validated upstream).
+	if command -v canonical_consumer_skip >/dev/null 2>&1 && canonical_consumer_skip "$rel"; then
+		continue
+	fi
 
 	base=$(basename "$rel")
 	if event_frontmatter_skip_basename "$base"; then
