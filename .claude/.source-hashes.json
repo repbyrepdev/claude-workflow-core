@@ -34,7 +34,7 @@
     "_lib/phase-graduation.sh": "4fac4b2f11e18b44d0504c96eb54592072f897956472775a21b38154088449e0",
     "_lib/phase05-auth-summary.sh": "5807f547ca81ce1b2cce56a0ac36c4652a11af89d409e55411be21ae1027c97a",
     "_lib/phase05-dedupe.sh": "35546f3ca75f21cb21759d8271180b798b5c7de5226def791df107104d2fa46d",
-    "_lib/phase1-agent-prompt.sh": "26cf96189dcb0dd3687e0dd811fecf624ef1d3c8c715e7a6434500059f0d66a1",
+    "_lib/phase1-agent-prompt.sh": "5cfed92e1177ab77eb8489d72191d212e8faa5cc11e95621eac32518b245f84c",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",
     "_lib/resolve-plugin-helper.sh": "71cc5c26e63cb8868b3c00cb35a2bac9834f60651bae87adec40c4d7972a1a65",
