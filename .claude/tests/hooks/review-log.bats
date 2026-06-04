@@ -263,6 +263,51 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[[ $output != *"GRADUATED"* ]]
 }
 
+@test "round IN PROGRESS (not all agents logged yet) leaves the directive marker INTACT (#473 guard window)" {
+	# #473 / #2230 Part B: the directive-clear (hook lines 242-253) must fire ONLY
+	# when the round COMPLETES (all expected agents logged) — NOT after a partial
+	# round. This pins the OTHER edge of the marker lifecycle that T12/T13 (which
+	# both log the FULL set) leave uncovered: while agents are still in-flight the
+	# marker MUST survive, so the phase1-directive-pending-guard keeps nudging the
+	# loop to finish firing the round (its intended [directive-emit → agents-logged]
+	# blocking window). A regression that cleared the marker on the FIRST agent
+	# would silently un-gate the loop mid-round; this assertion breaches first.
+	_init_repo
+	_enable_agents
+	_make_diff
+	local expected
+	expected=$(cd "$TEST_TMP" && "$HOOKS_DIR/list-phase1-agents.sh" main 2>/dev/null | sort -u)
+	[ -n "$expected" ] || skip "list-phase1-agents.sh returned no agents for the fixture diff"
+	local n_expected
+	n_expected=$(printf '%s\n' "$expected" | grep -c .)
+	# Need ≥2 agents to have a genuine "in progress" state (log some, omit ≥1).
+	[ "$n_expected" -ge 2 ] || skip "fixture filtered to <2 agents — no partial-round state to exercise"
+	# Seed the per-SHA directive marker (as ship-pr-cycle would on directive-emit).
+	local marker
+	marker=$(_marker_path)
+	mkdir -p "$(dirname "$marker")"
+	: >"$marker"
+	[ -f "$marker" ]
+	# Log all EXCEPT the last expected agent → round is incomplete (MISSING != "").
+	local last ag
+	last=$(printf '%s\n' "$expected" | tail -n1)
+	while IFS= read -r ag; do
+		[ -n "$ag" ] || continue
+		[ "$ag" = "$last" ] && continue # omit the last → round stays in progress
+		_log phase1 1 "$ag" 0 ok
+		[ "$status" -eq 0 ]
+	done <<<"$expected"
+	# The round-complete branch was NOT entered → marker MUST survive.
+	[ -f "$marker" ]
+	# Sanity: no round-complete directive was emitted (the round isn't done).
+	[[ $output != *"COMPLETE — all expected agents logged"* ]]
+	# Now log the final agent → round completes → marker IS cleared (the positive
+	# edge, mirroring T12 but proving the transition happens on the LAST agent).
+	_log phase1 1 "$last" 0 ok
+	[ "$status" -eq 0 ]
+	[ ! -f "$marker" ]
+}
+
 @test "round-complete with an 'errored' agent blocks graduation even at 0 findings (ANY_ERR)" {
 	# hook lines 255/269: round-complete counts status=='errored' agents
 	# (ANY_ERR). A round where every agent reports 0 findings but one is
