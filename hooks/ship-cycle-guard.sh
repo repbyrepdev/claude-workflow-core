@@ -95,14 +95,16 @@ deny() {
 # below falls back to expecting protocol 1. Resolves ../_lib relative to THIS
 # hook so it works at the plugin hooks/ layout AND a consumer .claude/hooks/.
 _SCG_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd || echo "")"
-if [ -n "$_SCG_LIB_DIR" ] && [ -r "$_SCG_LIB_DIR/ship-cycle-protocol.sh" ]; then
+# v0.34.32 (#2238 CR; r2 #2238): the protocol lib is a SECURITY-GATE input. If it
+# is PRESENT it MUST load — a present-but-UNREADABLE lib OR a present-but-
+# UNSOURCEABLE lib (syntax error) fails CLOSED on the Agent path (flag →
+# Agent-path deny below), never a silent downgrade to the protocol-1 fallback.
+# An ABSENT lib is the only graceful case (older consumers): the block is skipped
+# and the protocol-1 fallback applies. Use -e (present) then a readability/source
+# check so an unreadable file is treated as broken, not as absent.
+if [ -n "$_SCG_LIB_DIR" ] && [ -e "$_SCG_LIB_DIR/ship-cycle-protocol.sh" ]; then
 	# shellcheck source=../_lib/ship-cycle-protocol.sh
-	# v0.34.32 (#2238 CR): do NOT mask a load failure of a PRESENT lib — this is
-	# a security gate. A readable-but-unsourceable lib (syntax error) must fail
-	# CLOSED, not silently downgrade to the protocol-1 fallback. Flag it; the
-	# Agent path denies. (Absent lib → the [ -r ] guard skips this block, and the
-	# graceful protocol-1 fallback still applies for older consumers.)
-	if ! . "$_SCG_LIB_DIR/ship-cycle-protocol.sh"; then
+	if [ ! -r "$_SCG_LIB_DIR/ship-cycle-protocol.sh" ] || ! . "$_SCG_LIB_DIR/ship-cycle-protocol.sh"; then
 		_SCG_PROTOCOL_LIB_BROKEN=1
 	fi
 fi

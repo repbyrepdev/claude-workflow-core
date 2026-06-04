@@ -438,12 +438,12 @@ overridden_count=0
 processed_count=0
 DRIFT_REPORT=""
 while IFS=$'\t' read -r src_path src_hash; do
-	# Map producer-relative <path> → consumer location. hooks/ and _lib/
-	# mirror under the consumer's .claude/; .github/ files (and any other
-	# repo-root path) map VERBATIM to the consumer root. Before #232 this
-	# hardcoded `.claude/$src_path`, which mis-resolved .github/* entries to
-	# a nonexistent `.claude/.github/*` — a silent missing-file that was
-	# never gated.
+	# Map producer-relative <path> → consumer location. hooks/, _lib/, and
+	# skills/ (#2237 coupled wrapper) mirror under the consumer's .claude/;
+	# .github/ files (and any other repo-root path) map VERBATIM to the
+	# consumer root. Before #232 this hardcoded `.claude/$src_path`, which
+	# mis-resolved .github/* entries to a nonexistent `.claude/.github/*` —
+	# a silent missing-file that was never gated.
 	if [ -z "$src_path" ] || [ -z "$src_hash" ]; then
 		echo "hash-drift: malformed manifest row (empty path or hash)" >&2
 		exit 2
