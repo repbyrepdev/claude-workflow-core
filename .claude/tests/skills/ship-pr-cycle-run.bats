@@ -112,3 +112,18 @@ EOF
 	[ "$status" -eq 2 ]
 	[[ $output == *"must run inside a git repository"* ]]
 }
+
+@test "PLUGIN mode: driver present but NON-executable → exit 2 (#2237 r1)" {
+	# The final `[ ! -x "$ORCHESTRATOR" ]` guard was uncovered (every other
+	# test writes an executable stub or exits earlier). A plugin checkout
+	# whose scripts/ship-pr-cycle.sh lost its +x bit must fail loud.
+	repo="$TEST_TMP/plugin-nonexec"
+	mkdir -p "$repo/.claude-plugin" "$repo/scripts"
+	echo '{"name":"claude-workflow-core","version":"9.9.9"}' >"$repo/.claude-plugin/plugin.json"
+	printf '#!/bin/bash\necho should-not-run\n' >"$repo/scripts/ship-pr-cycle.sh"
+	# Deliberately NOT chmod +x.
+	_init_git "$repo"
+	run bash -c "cd '$repo' && bash '$WRAPPER' status"
+	[ "$status" -eq 2 ]
+	[[ $output == *"missing or not executable"* ]]
+}

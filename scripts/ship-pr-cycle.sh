@@ -1437,6 +1437,20 @@ cmd_next() {
        branch-ready → phase0.5 → phase1 in one call once the
        2-streak clean criterion is met)."
 			_write_phase1_directive_marker "$sha" "$directive_text"
+			# v0.34.32 (#2237): _write_phase1_directive_marker is best-effort
+			# (scm_warn + return 0 on every write failure, by design so it
+			# never aborts the orchestrator under set -e). Verify the sentinel
+			# + state nonce actually landed BEFORE telling the operator to fire
+			# agents — otherwise a failed write prints the directive while
+			# ship-cycle-guard.sh then denies every Agent call, a misleading
+			# success. Fail loud + actionable instead.
+			local _marker_file _state_nonce
+			_marker_file=$(_phase1_directive_marker_file "$sha")
+			_state_nonce=$(jq -r '.phase1_directive_nonce // ""' "$STATE_DIR/$sha.json" 2>/dev/null || echo "")
+			if [ ! -f "$_marker_file" ] || [ -z "$_state_nonce" ]; then
+				scm_warn "phase1 directive emit FAILED (no sentinel or no state nonce — see warnings above). NOT printing the fire-agents directive; fix the cause (state dir writable? jq/uuidgen present?) then re-run 'ship-pr-cycle.sh next'."
+				return 2
+			fi
 			printf '%s\n' "$directive_text"
 			return 0
 		fi

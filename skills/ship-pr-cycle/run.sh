@@ -20,11 +20,16 @@ set -euo pipefail
 # Wraps the orchestrator with SKILL_WRAPPER=1 so its gh / git push calls
 # aren't refused by skill-bypass-guard. Args forwarded verbatim.
 #
-# Usage:
-#   .claude/skills/ship-pr-cycle/run.sh {start|status|next|resume}
+# Usage (this same file lives at skills/ in the plugin and .claude/skills/
+# in a consumer — git rev-parse makes it layout-agnostic):
+#   <skills-dir>/ship-pr-cycle/run.sh {start|status|next|resume}
 #
-# Exit codes: forwarded from scripts/ship-pr-cycle.sh:
-#   0 — operation succeeded   1 — gate refused   2 — invocation error
+# Exit codes: 0 succeeded · 1 gate refused · 2 invocation error.
+#   On success the wrapper exec()s the orchestrator and forwards ITS exit
+#   code. Resolution failures in THIS wrapper (no git repo, missing pin
+#   lib, unresolvable pin, no cached driver, non-executable driver) also
+#   exit 2 BEFORE the orchestrator runs — those originate here, they are
+#   not forwarded.
 #
 # Env:
 #   SHIP_CYCLE_CACHE_ROOT — override the plugin cache root (default

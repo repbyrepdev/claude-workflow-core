@@ -127,7 +127,7 @@
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
     "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
-    "skills/ship-pr-cycle/run.sh": "203408b16533237163262c3800c5893ed39302b868555ddbdce00ed3aa6de405"
+    "skills/ship-pr-cycle/run.sh": "4013a38cd5d87a3430d9a944ece106701376803fd076c6aeca06c50233e120f1"
   },
   "producer_root": ".",
   "schema_version": 1
