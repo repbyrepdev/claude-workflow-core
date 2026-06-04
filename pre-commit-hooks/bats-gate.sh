@@ -42,6 +42,10 @@ fi
 LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 # shellcheck source=../_lib/hook-ack.sh
 [ -f "$LIB_HOOK_ACK" ] && source "$LIB_HOOK_ACK"
+# v0.34.31 (#2235): consumer-aware canonical-skip — no-op in the plugin itself.
+LIB_CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
+# shellcheck source=../_lib/canonical-consumer-skip.sh
+[ -f "$LIB_CCS" ] && source "$LIB_CCS"
 _bats_gate_ack() {
 	command -v hook_ack_append >/dev/null 2>&1 &&
 		hook_ack_append "bats-gate" "$1" "$2"
@@ -51,7 +55,7 @@ _bats_gate_ack() {
 if [ "${TEST_GATE_SKIP:-0}" = "1" ]; then
 	reason="${TEST_GATE_SKIP_REASON:-}"
 	if [ -z "$reason" ]; then
-		echo "bats-gate: TEST_GATE_SKIP=1 requires TEST_GATE_SKIP_REASON=\"<text>\"" >&2
+		echo 'bats-gate: TEST_GATE_SKIP=1 requires TEST_GATE_SKIP_REASON="<text>"' >&2
 		exit 2
 	fi
 	SKIP_LOG="$REPO_ROOT/.claude/logs/test-gate-skip.jsonl"
@@ -76,6 +80,12 @@ FAIL=0
 check_sh_gate() {
 	local sh=$1
 
+	# v0.34.31 (#2235): canonical .sh in a consumer is validated upstream +
+	# byte-identity-enforced by hash-drift — don't require a local bats pass.
+	if command -v canonical_consumer_skip >/dev/null 2>&1 && canonical_consumer_skip "$sh"; then
+		return 0
+	fi
+
 	# Opt-out: `# bats-required: 0` header. Scan the full file — a long
 	# shebang/license block before the directive would hide it from the
 	# prior `head -5` scan. grep -m1 short-circuits on the first match
@@ -86,8 +96,7 @@ check_sh_gate() {
 
 	# Only gate scripts in scope (same dirs as --coverage counts)
 	case "$sh" in
-	.claude/scripts/* | .claude/hooks/* | .claude/skills/* | .claude/local-backups/* | scripts/*)
-		;;
+	.claude/scripts/* | .claude/hooks/* | .claude/skills/* | .claude/local-backups/* | scripts/*) ;;
 	*)
 		return 0
 		;;
@@ -303,7 +312,7 @@ check_bats_gate() {
 	# Silent skips (no #NNN tracking)
 	if [ "$added_skips_no_ref" -gt 0 ]; then
 		echo "bats-gate: $b added $added_skips_no_ref skip(s) without a #NNN sub-issue reference" >&2
-		echo "  Tracked skips look like: skip \"pending #1234 — reason\"" >&2
+		echo '  Tracked skips look like: skip "pending #1234 — reason"' >&2
 		echo "  Silent skips are regression rot. If genuinely necessary, set TEST_GATE_WEAKEN_OK=1" >&2
 		_bats_gate_ack "untracked-skip" "$b"
 		FAIL=$((FAIL + 1))
@@ -327,7 +336,7 @@ done <<<"$STAGED"
 if [ "$FAIL" -gt 0 ]; then
 	echo "" >&2
 	echo "bats-gate: $FAIL gate violation(s). Emergency bypass:" >&2
-	echo "  TEST_GATE_SKIP=1 TEST_GATE_SKIP_REASON=\"<reason>\" git commit ..." >&2
+	echo '  TEST_GATE_SKIP=1 TEST_GATE_SKIP_REASON="<reason>" git commit ...' >&2
 	exit 1
 fi
 

@@ -21,6 +21,10 @@ set -u
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # shellcheck source=../_lib/bash-safety-check.sh
 . "$(dirname "$0")/../_lib/bash-safety-check.sh"
+# v0.34.31 (#2235): consumer-aware canonical-skip — no-op in the plugin itself.
+_CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
+# shellcheck source=../_lib/canonical-consumer-skip.sh
+[ -f "$_CCS" ] && . "$_CCS"
 
 # --diff-filter=A only — newly added files. Existing scripts are grandfathered
 # so modifying them doesn't retroactively require a behavioral change. New files
@@ -30,6 +34,8 @@ STAGED=$(git diff --cached --name-only --diff-filter=A | grep -E '\.sh$' || true
 
 errs=0
 for f in $STAGED; do
+	# v0.34.31 (#2235): skip canonical files in a consumer (validated upstream).
+	command -v canonical_consumer_skip >/dev/null 2>&1 && canonical_consumer_skip "$f" && continue
 	if ! bash_safety_check_file "$f"; then
 		errs=$((errs + 1))
 	fi

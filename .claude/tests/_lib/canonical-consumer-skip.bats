@@ -1,0 +1,85 @@
+#!/usr/bin/env bats
+# covers: _lib/canonical-consumer-skip.sh
+# shellcheck disable=SC2030,SC2031  # bats @test bodies run in subshells; per-test cd is intentional + isolated
+#
+# #2235 consumer-aware canonical-skip: plugin gates must skip files that are
+# byte-identical to the pinned canonical when running in a CONSUMER (validated
+# upstream), but NEVER skip in the plugin itself or for modified/non-canonical
+# files. The lib is copied into a synthetic <plugin>/_lib/ so its
+# BASH_SOURCE-relative plugin-root resolution points at the fixture, and a
+# separate synthetic <repo> (no plugin.json) plays the consumer.
+
+setup() {
+	LIB_SRC="${BATS_TEST_DIRNAME}/../../../_lib/canonical-consumer-skip.sh"
+	[ -f "$LIB_SRC" ]
+	TEST_TMP=$(mktemp -d -t ccs.XXXXXX) || return 1
+	PLUGIN="$TEST_TMP/plugin"
+	REPO="$TEST_TMP/repo"
+	mkdir -p "$PLUGIN/_lib" "$PLUGIN/hooks" "$PLUGIN/.claude-plugin" "$REPO/.claude/hooks"
+	cp "$LIB_SRC" "$PLUGIN/_lib/canonical-consumer-skip.sh"
+	LIB="$PLUGIN/_lib/canonical-consumer-skip.sh"
+	# Synthetic plugin must look like the plugin (has plugin.json) + be a git
+	# repo so the lib's `git rev-parse --show-toplevel` resolves to it.
+	printf '{"name":"x"}\n' >"$PLUGIN/.claude-plugin/plugin.json"
+	printf 'canonical body\n' >"$PLUGIN/hooks/foo.sh"
+	(cd "$PLUGIN" && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm x) || return 1
+	# Synthetic consumer: a git repo with NO plugin.json.
+	(cd "$REPO" && git init -q && git config user.email t@t && git config user.name t) || return 1
+}
+
+teardown() {
+	[ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */ccs.* ]] && rm -rf "$TEST_TMP"
+	return 0
+}
+
+@test "consumer + byte-identical canonical → SKIP (rc 0)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/hooks/foo.sh"
+	[ "$status" -eq 0 ]
+}
+
+@test "consumer + modified canonical → NO skip (rc 1)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	printf '# local drift\n' >>"$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/hooks/foo.sh"
+	[ "$status" -eq 1 ]
+}
+
+@test "consumer + non-canonical file (no plugin counterpart) → NO skip (rc 1)" {
+	printf 'domain-only\n' >"$REPO/.claude/hooks/domain.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/hooks/domain.sh"
+	[ "$status" -eq 1 ]
+}
+
+@test "plugin repo (has plugin.json) → NEVER skip even if identical (rc 1)" {
+	cd "$PLUGIN"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip "hooks/foo.sh"
+	[ "$status" -eq 1 ]
+}
+
+@test "empty arg → NO skip (rc 1)" {
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ""
+	[ "$status" -eq 1 ]
+}
+
+@test "consumer file absent on disk → NO skip (rc 1)" {
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/hooks/missing.sh"
+	[ "$status" -eq 1 ]
+}

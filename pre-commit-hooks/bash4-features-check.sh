@@ -18,6 +18,10 @@ LIB="$(dirname "$0")/../_lib/bash4-features-check.sh"
 [ -f "$LIB" ] || exit 0
 # shellcheck source=../_lib/bash4-features-check.sh
 . "$LIB"
+# v0.34.31 (#2235): consumer-aware canonical-skip — no-op in the plugin itself.
+_CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
+# shellcheck source=../_lib/canonical-consumer-skip.sh
+[ -f "$_CCS" ] && . "$_CCS"
 
 # Only newly-added .sh files — existing scripts are grandfathered (same
 # semantic as bash-safety.sh's --diff-filter=A). `-z` emits NUL-delimited
@@ -29,6 +33,8 @@ while IFS= read -r -d '' f; do
 	[ -n "$f" ] || continue
 	case "$f" in *.sh) ;; *) continue ;; esac
 	[ -f "$f" ] || continue
+	# v0.34.31 (#2235): skip canonical files in a consumer (validated upstream).
+	command -v canonical_consumer_skip >/dev/null 2>&1 && canonical_consumer_skip "$f" && continue
 	# Skip library files (sourced, not run). Both the `_*.sh` basename
 	# convention AND files under `.claude/_lib/` are exempt — the latter
 	# because the detector's own source contains the feature-regex
