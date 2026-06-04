@@ -258,6 +258,15 @@ if [ "$MODE" = "generate" ]; then
 		# skill wrappers are NOT hashed (no machine-reader coupling).
 		if [ -f skills/ship-pr-cycle/run.sh ]; then
 			_emit_hashed_entry skills/ship-pr-cycle/run.sh
+		elif [ -f .claude-plugin/plugin.json ]; then
+			# v0.34.32 (#2238 CR): in the real plugin this coupled wrapper MUST
+			# exist; silently skipping it would drop drift coverage for the
+			# cache-driver resolver. Refuse (mirrors the .github coverage-hole
+			# guard above). Minimal/test producers (no plugin.json) legitimately
+			# lack it → fall through + skip without aborting.
+			echo "hash-drift: skills/ship-pr-cycle/run.sh missing in plugin — refusing a coverage hole for the coupled wrapper (#2237)" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
 		fi
 		# .github byte-SSOT files (manifest `hashed: true`), validated above.
 		# Iterate the materialized list; emit alongside hooks/_lib so the

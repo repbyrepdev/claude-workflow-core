@@ -97,7 +97,14 @@ deny() {
 _SCG_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd || echo "")"
 if [ -n "$_SCG_LIB_DIR" ] && [ -r "$_SCG_LIB_DIR/ship-cycle-protocol.sh" ]; then
 	# shellcheck source=../_lib/ship-cycle-protocol.sh
-	. "$_SCG_LIB_DIR/ship-cycle-protocol.sh" || true
+	# v0.34.32 (#2238 CR): do NOT mask a load failure of a PRESENT lib — this is
+	# a security gate. A readable-but-unsourceable lib (syntax error) must fail
+	# CLOSED, not silently downgrade to the protocol-1 fallback. Flag it; the
+	# Agent path denies. (Absent lib → the [ -r ] guard skips this block, and the
+	# graceful protocol-1 fallback still applies for older consumers.)
+	if ! . "$_SCG_LIB_DIR/ship-cycle-protocol.sh"; then
+		_SCG_PROTOCOL_LIB_BROKEN=1
+	fi
 fi
 
 # Fail-closed on stdin / jq parse
@@ -278,6 +285,9 @@ Agent)
 		# that (and any writer/reader version skew) and fail LOUD with a
 		# remediation message instead of the historical silent "no nonce"
 		# deadlock. Runs BEFORE the nonce checks so the actionable message wins.
+		if [ "${_SCG_PROTOCOL_LIB_BROKEN:-0}" = "1" ]; then
+			deny "ship-cycle-protocol.sh is present but failed to load — failing closed (cannot validate the phase1 protocol). Fix the lib (syntax error?) or re-pin + run scripts/refresh-from-source.sh. Bypass: SHIP_PR_CYCLE_BYPASS=1 env."
+		fi
 		expected_protocol="${SHIP_CYCLE_PHASE1_PROTOCOL:-1}"
 		if ! state_protocol=$(jq -r '.phase1_directive_protocol // "absent"' "$state_file" 2>/dev/null); then
 			deny "could not read .phase1_directive_protocol from $state_file — failing closed"

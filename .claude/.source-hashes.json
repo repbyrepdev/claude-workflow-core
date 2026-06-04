@@ -120,7 +120,7 @@
     "hooks/session-start-stale-marker-sweep.sh": "3af1d756a5209b237a9eb4c97068aad24000cbc7687666af207b8fcaff54a220",
     "hooks/session-start-stale-pin.sh": "d0d36698d4d8576af32371edd55e4703bb9fe6d458f98268a586c61c874b3c22",
     "hooks/ship-cycle-director-gate.sh": "93c1fe6ec042ebdb67b9ce890deeb75978141cc0f5245d3b39e4a7f8b7da4411",
-    "hooks/ship-cycle-guard.sh": "62278788b002cbe411c50770e46210147a343b94155a4e58ba103b1b3750c90f",
+    "hooks/ship-cycle-guard.sh": "256669ed150b03c668b2cd2d061ee2ebe260bc7a8fc52257cb7cccc85f496d10",
     "hooks/skill-bypass-guard.sh": "d3a655b7f45bc21fa8e96e995eb92148c2f585c881665efd2bb83a4ed2a18319",
     "hooks/skip-env-approval-gate.sh": "00603f0ba1cda5f0e78e151a0c7f78eb87a8ad56dcec09622de611d15afd9e46",
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",

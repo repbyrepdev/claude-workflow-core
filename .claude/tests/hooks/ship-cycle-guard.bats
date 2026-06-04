@@ -491,3 +491,22 @@ _set_state_protocol() {
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
 }
+
+@test "Agent: protocol lib present but unsourceable → fail closed (#2238 CR)" {
+	# A readable-but-broken ship-cycle-protocol.sh must fail CLOSED (deny), not
+	# silently downgrade to the protocol-1 fallback. Run a COPY of the guard with
+	# a sibling _lib whose protocol lib returns non-zero at source-time.
+	mkdir -p "$TEST_TMP/hooks" "$TEST_TMP/_lib"
+	cp "$SCRIPT" "$TEST_TMP/hooks/ship-cycle-guard.sh"
+	printf 'SHIP_CYCLE_PHASE1_PROTOCOL=1\nreturn 17\n' >"$TEST_TMP/_lib/ship-cycle-protocol.sh"
+	nonce="22223333-4444-5555-6666-777788889999"
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: 1}' \
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
+	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
+	run bash -c "cd '$TEST_TMP' && printf '%s' '$payload' | bash '$TEST_TMP/hooks/ship-cycle-guard.sh' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"failed to load"* ]]
+}
