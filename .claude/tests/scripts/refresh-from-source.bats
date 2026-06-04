@@ -157,6 +157,36 @@ YAML
 	[[ $output == *"replaced=2"* ]]
 }
 
+@test "maps skills/ship-pr-cycle/run.sh under consumer .claude/skills, not repo-root (#2237)" {
+	# #2237: the skills/* path-map arm must place the wrapper under the
+	# consumer's .claude/skills/ (mirroring hooks/_lib), NOT verbatim at
+	# repo-root skills/ where the consumer never loads it. A revert dropping
+	# `skills/*` from the case would copy it to the wrong place + re-introduce
+	# the phase1 deadlock with the suite still green.
+	PLUGIN="$TEST_TMP/plugin"
+	mkdir -p "$PLUGIN/skills/ship-pr-cycle"
+	echo "echo wrapper" >"$PLUGIN/skills/ship-pr-cycle/run.sh"
+	hash_a=$(shasum -a 256 "$PLUGIN/_lib/file-a.sh" | awk '{print $1}')
+	hash_b=$(shasum -a 256 "$PLUGIN/_lib/file-b.sh" | awk '{print $1}')
+	hash_w=$(shasum -a 256 "$PLUGIN/skills/ship-pr-cycle/run.sh" | awk '{print $1}')
+	cat >"$PLUGIN/.claude/.source-hashes.json" <<JSON
+{
+  "algorithm": "sha256",
+  "files": {
+    "_lib/file-a.sh": "$hash_a",
+    "_lib/file-b.sh": "$hash_b",
+    "skills/ship-pr-cycle/run.sh": "$hash_w"
+  }
+}
+JSON
+	cd "$PLUGIN" || return 1
+	run scripts/refresh-from-source.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	[ -f "$TEST_TMP/consumer/.claude/skills/ship-pr-cycle/run.sh" ]
+	[ ! -f "$TEST_TMP/consumer/skills/ship-pr-cycle/run.sh" ]
+	[ "$(cat "$TEST_TMP/consumer/.claude/skills/ship-pr-cycle/run.sh")" = "echo wrapper" ]
+}
+
 @test "--files filters to subset" {
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/refresh-from-source.sh --consumer alpha --files _lib/file-a.sh --dry-run

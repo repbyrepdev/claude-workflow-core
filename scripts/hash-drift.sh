@@ -251,6 +251,23 @@ if [ "$MODE" = "generate" ]; then
 				_emit_hashed_entry "$f"
 			done < <(find .semgrep \( -name '*.yml' -o -name '*.yaml' \) -type f | sort)
 		fi
+		# skills/ship-pr-cycle/run.sh byte-SSOT (#2237): the consumer wrapper is
+		# the ONE skill file that must stay in lockstep with the reader — it
+		# resolves the pinned-cache driver, so a stale wrapper would reintroduce
+		# the desync. Hashed so refresh + the drift gate keep it current; other
+		# skill wrappers are NOT hashed (no machine-reader coupling).
+		if [ -f skills/ship-pr-cycle/run.sh ]; then
+			_emit_hashed_entry skills/ship-pr-cycle/run.sh
+		elif [ -f .claude-plugin/plugin.json ]; then
+			# v0.34.32 (#2238 CR): in the real plugin this coupled wrapper MUST
+			# exist; silently skipping it would drop drift coverage for the
+			# cache-driver resolver. Refuse (mirrors the .github coverage-hole
+			# guard above). Minimal/test producers (no plugin.json) legitimately
+			# lack it → fall through + skip without aborting.
+			echo "hash-drift: skills/ship-pr-cycle/run.sh missing in plugin — refusing a coverage hole for the coupled wrapper (#2237)" >&2
+			rm -f "$tmp" "$entries_tmp"
+			exit 2
+		fi
 		# .github byte-SSOT files (manifest `hashed: true`), validated above.
 		# Iterate the materialized list; emit alongside hooks/_lib so the
 		# producer-relative path (e.g. .github/commit-template.yml) lands in
@@ -421,19 +438,19 @@ overridden_count=0
 processed_count=0
 DRIFT_REPORT=""
 while IFS=$'\t' read -r src_path src_hash; do
-	# Map producer-relative <path> → consumer location. hooks/ and _lib/
-	# mirror under the consumer's .claude/; .github/ files (and any other
-	# repo-root path) map VERBATIM to the consumer root. Before #232 this
-	# hardcoded `.claude/$src_path`, which mis-resolved .github/* entries to
-	# a nonexistent `.claude/.github/*` — a silent missing-file that was
-	# never gated.
+	# Map producer-relative <path> → consumer location. hooks/, _lib/, and
+	# skills/ (#2237 coupled wrapper) mirror under the consumer's .claude/;
+	# .github/ files (and any other repo-root path) map VERBATIM to the
+	# consumer root. Before #232 this hardcoded `.claude/$src_path`, which
+	# mis-resolved .github/* entries to a nonexistent `.claude/.github/*` —
+	# a silent missing-file that was never gated.
 	if [ -z "$src_path" ] || [ -z "$src_hash" ]; then
 		echo "hash-drift: malformed manifest row (empty path or hash)" >&2
 		exit 2
 	fi
 	processed_count=$((processed_count + 1))
 	case "$src_path" in
-	hooks/* | _lib/*) consumer_path=".claude/$src_path" ;;
+	hooks/* | _lib/* | skills/*) consumer_path=".claude/$src_path" ;;
 	*) consumer_path="$src_path" ;;
 	esac
 	if _is_overridden "$consumer_path"; then

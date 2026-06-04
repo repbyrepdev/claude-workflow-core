@@ -314,7 +314,7 @@ _refresh_one_consumer() {
 		# local-overrides.yml.
 		local consumer_rel
 		case "$relpath" in
-		hooks/* | _lib/*) consumer_rel=".claude/${relpath}" ;;
+		hooks/* | _lib/* | skills/*) consumer_rel=".claude/${relpath}" ;;
 		*) consumer_rel="$relpath" ;;
 		esac
 		if echo "$overrides" | grep -Fxq "$consumer_rel" || echo "$overrides" | grep -Fxq "$relpath"; then

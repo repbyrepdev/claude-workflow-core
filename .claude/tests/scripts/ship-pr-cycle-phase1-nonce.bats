@@ -76,3 +76,36 @@ _source_orchestrator() {
 	state_nonce=$(jq -r '.phase1_directive_nonce' "$STATE_DIR/$SHA.json")
 	[ "$state_nonce" = "$nonce_r2" ]
 }
+
+@test "_write_phase1_directive_marker stamps phase1_directive_protocol in state JSON (#2237)" {
+	# The reader (ship-cycle-guard.sh) requires a protocol stamp; the writer
+	# must emit it alongside the nonce. Lib not sourced here → inline default 1.
+	_source_orchestrator
+	_write_phase1_directive_marker "$SHA" "directive"
+	proto=$(jq -r '.phase1_directive_protocol // "absent"' "$STATE_DIR/$SHA.json")
+	[ "$proto" = "1" ]
+}
+
+@test "_set_stage strips BOTH phase1_directive_nonce AND phase1_directive_protocol (#2237)" {
+	# The del() in _set_stage must clear BOTH ephemeral phase1 keys on a stage
+	# transition. A revert dropping .phase1_directive_protocol would re-leak it
+	# past phase1 (ship-cycle-guard could then mask a genuinely-stale driver or
+	# keep authorizing Agent calls). Extract _set_stage + stub its deps.
+	scm_fail() {
+		echo "FAIL: $*" >&2
+		return 1
+	}
+	_state_file() { printf '%s/%s.json\n' "$STATE_DIR" "$SHA"; }
+	_init_state() { :; }
+	_current_sha() { printf '%s\n' "$SHA"; }
+	_clear_phase1_directive_marker() { :; }
+	sed -n '/^_set_stage()/,/^}$/p' "$SCRIPT" >"$TEST_TMP/setstage.sh"
+	# shellcheck disable=SC1091
+	. "$TEST_TMP/setstage.sh"
+	printf '{"stage":"phase1","phase1_directive_nonce":"n-123","phase1_directive_protocol":1,"history":[]}\n' \
+		>"$STATE_DIR/$SHA.json"
+	_set_stage phase2
+	[ "$(jq -r '.stage' "$STATE_DIR/$SHA.json")" = "phase2" ]
+	[ "$(jq -r 'has("phase1_directive_nonce")' "$STATE_DIR/$SHA.json")" = "false" ]
+	[ "$(jq -r 'has("phase1_directive_protocol")' "$STATE_DIR/$SHA.json")" = "false" ]
+}

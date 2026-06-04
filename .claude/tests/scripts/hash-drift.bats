@@ -82,6 +82,69 @@ _make_consumer() {
 	[[ $output == *"3 files match"* ]]
 }
 
+@test "--generate emits skills/ship-pr-cycle/run.sh + --verify maps it under .claude/skills (#2237)" {
+	# #2237: the wrapper is the ONE skills/ file that is hashed (it resolves
+	# the pinned-cache driver). --generate must emit it and --verify must map
+	# skills/* under the consumer's .claude/skills/ (mirroring hooks/_lib).
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	mkdir -p "$PRODUCER/skills/ship-pr-cycle"
+	printf 'echo wrapper\n' >"$PRODUCER/skills/ship-pr-cycle/run.sh"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	# --generate emitted the wrapper key (the #2237 generate block).
+	[ "$(jq -r '.files | has("skills/ship-pr-cycle/run.sh")' "$PRODUCER/.claude/.source-hashes.json")" = "true" ]
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	mkdir -p "$CONSUMER/.claude/skills/ship-pr-cycle"
+	cp "$PRODUCER/skills/ship-pr-cycle/run.sh" "$CONSUMER/.claude/skills/ship-pr-cycle/run.sh"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean"* ]]
+	[[ $output == *"4 files match"* ]]
+}
+
+@test "--verify reports skills wrapper drift at .claude/skills path, NOT repo-root (#2237)" {
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	mkdir -p "$PRODUCER/skills/ship-pr-cycle"
+	printf 'echo wrapper\n' >"$PRODUCER/skills/ship-pr-cycle/run.sh"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	mkdir -p "$CONSUMER/.claude/skills/ship-pr-cycle"
+	printf 'echo DRIFTED\n' >"$CONSUMER/.claude/skills/ship-pr-cycle/run.sh"
+	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
+	[ "$status" -eq 1 ]
+	[[ $output == *".claude/skills/ship-pr-cycle/run.sh"* ]]
+}
+
+@test "--generate ABORTS when a plugin (plugin.json) is missing the coupled wrapper (#2238 CR)" {
+	# In the real plugin the wrapper MUST exist; silently skipping it would drop
+	# drift coverage. Refuse loud.
+	PRODUCER="$TEST_TMP/producer-plugin"
+	mkdir -p "$PRODUCER/.claude-plugin"
+	_make_producer "$PRODUCER"
+	echo '{"name":"x","version":"9.9.9"}' >"$PRODUCER/.claude-plugin/plugin.json"
+	# Deliberately NO skills/ship-pr-cycle/run.sh.
+	run bash -c "cd '$PRODUCER' && bash '$SCRIPT' --generate"
+	[ "$status" -eq 2 ]
+	[[ $output == *"refusing a coverage hole"* ]]
+}
+
+@test "--generate SKIPS the wrapper for a minimal producer (no plugin.json), no abort (#2238 CR)" {
+	# Minimal/test producers legitimately lack the wrapper — must still generate
+	# hooks/_lib without aborting (regression lock for the plugin-aware guard).
+	PRODUCER="$TEST_TMP/producer-min"
+	mkdir -p "$PRODUCER"
+	_make_producer "$PRODUCER"
+	run bash -c "cd '$PRODUCER' && bash '$SCRIPT' --generate"
+	[ "$status" -eq 0 ]
+	[ -f "$PRODUCER/.claude/.source-hashes.json" ]
+	[ "$(jq -r '.files | has("skills/ship-pr-cycle/run.sh")' "$PRODUCER/.claude/.source-hashes.json")" = "false" ]
+}
+
 @test "--verify drift: consumer-edited file → exit 1 with drift report" {
 	PRODUCER="$TEST_TMP/producer"
 	CONSUMER="$TEST_TMP/consumer"

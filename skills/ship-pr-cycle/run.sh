@@ -2,46 +2,80 @@
 set -euo pipefail
 # ship-pr-cycle skill wrapper.
 #
-# Wraps `scripts/ship-pr-cycle.sh` with SKILL_WRAPPER=1 exported so the
-# underlying `gh` / `git push` calls don't get refused by skill-bypass-
-# guard. Also normalizes the invocation surface so a Claude session
-# triggering "ship-pr-cycle" via NL gets the same entry point regardless
-# of how the call shape varies.
+# v0.34.32 (#2237): LAYOUT-AGNOSTIC + pinned-cache driver resolution.
+#   - Resolves the repo root via `git rev-parse` (works whether this file
+#     sits at skills/... in the plugin OR .claude/skills/... in a consumer —
+#     no `../..` level-counting, which previously made the plugin + consumer
+#     copies non-identical and therefore un-propagatable).
+#   - In the PLUGIN repo (a .claude-plugin/plugin.json at the repo root):
+#     exec the local scripts/ship-pr-cycle.sh — the dev-checkout IS the SSOT.
+#   - In a CONSUMER (no plugin.json): resolve the pinned plugin version from
+#     .pre-commit-config.yaml and exec the PINNED-CACHE driver. This realizes
+#     the #247 design intent ("consumers exec the orchestrator from the plugin
+#     cache by PIN, so no consumer copy can drift") that the OLD wrapper never
+#     implemented — it execd $REPO_ROOT/scripts/ship-pr-cycle.sh, a frozen
+#     local copy that rotted out of protocol with the SSOT-tracked reader
+#     (hooks/ship-cycle-guard.sh) and deadlocked Phase 1 (#2237 root cause).
 #
-# Usage:
-#   .claude/skills/ship-pr-cycle/run.sh start
-#   .claude/skills/ship-pr-cycle/run.sh status
-#   .claude/skills/ship-pr-cycle/run.sh next
-#   .claude/skills/ship-pr-cycle/run.sh resume
+# Wraps the orchestrator with SKILL_WRAPPER=1 so its gh / git push calls
+# aren't refused by skill-bypass-guard. Args forwarded verbatim.
 #
-# Args are passed verbatim to `scripts/ship-pr-cycle.sh`. Default = no-arg
-# (prints usage block from the underlying script).
+# Usage (this same file lives at skills/ in the plugin and .claude/skills/
+# in a consumer — git rev-parse makes it layout-agnostic):
+#   <skills-dir>/ship-pr-cycle/run.sh {start|status|next|resume}
 #
-# Env (inherited via exec; documented here for visibility):
-#   BASE_BRANCH                 — read by orchestrator (default 'main',
-#                                 consumed in branch-ready stage)
-#   SHIP_CYCLE_POST_COMMIT_SKIP — read by post-commit-ship-cycle.sh hook
-# Env consumed elsewhere during the orchestrator's flow:
-#   PIPELINE_GATE_SKIP          — read by .claude/hooks/pre-push-pipeline-gate.sh
-#                                 when the orchestrator invokes git push;
-#                                 NOT consumed by ship-pr-cycle.sh itself
+# Exit codes: 0 succeeded · 1 gate refused · 2 invocation error.
+#   On success the wrapper exec()s the orchestrator and forwards ITS exit
+#   code. Resolution failures in THIS wrapper (no git repo, missing pin
+#   lib, unresolvable pin, no cached driver, non-executable driver) also
+#   exit 2 BEFORE the orchestrator runs — those originate here, they are
+#   not forwarded.
 #
-# Exit codes: forwarded from `scripts/ship-pr-cycle.sh`:
-#   0 — operation succeeded (state advanced or printed status)
-#   1 — gate refused (e.g. phase0.5 not yet logged, no commits vs base)
-#   2 — invocation error (missing tool, bad arg, real failure)
+# Env:
+#   SHIP_CYCLE_CACHE_ROOT — override the plugin cache root (default
+#                           $HOME/.claude/plugins/cache); used by tests.
 
-# Use ${BASH_SOURCE[0]} instead of $0 so resolution works whether the
-# script is exec'd directly, sourced, or invoked via symlink.
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || {
-	echo "ship-pr-cycle skill: ERROR: cannot resolve skill dir from \${BASH_SOURCE[0]}=${BASH_SOURCE[0]:-<unset>}" >&2
+if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
+	echo "ship-pr-cycle skill: ERROR: must run inside a git repository (cwd=$PWD)" >&2
 	exit 2
-}
-REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd) || {
-	echo "ship-pr-cycle skill: ERROR: cannot resolve repo root from $SCRIPT_DIR" >&2
-	exit 2
-}
-ORCHESTRATOR="$REPO_ROOT/scripts/ship-pr-cycle.sh"
+fi
+
+if [ -f "$REPO_ROOT/.claude-plugin/plugin.json" ]; then
+	# PLUGIN repo: the local checkout is the source of truth.
+	ORCHESTRATOR="$REPO_ROOT/scripts/ship-pr-cycle.sh"
+else
+	# CONSUMER repo: resolve the pinned version → exec the cache driver so the
+	# orchestrator is ALWAYS the version matching the pinned (SSOT-tracked,
+	# refreshed) reader. No local driver copy is consulted (it can't drift).
+	pin_lib="$REPO_ROOT/.claude/_lib/resolve-plugin-pin.sh"
+	if [ ! -r "$pin_lib" ]; then
+		echo "ship-pr-cycle skill: ERROR: $pin_lib missing — run scripts/refresh-from-source.sh to install the plugin _lib helpers" >&2
+		exit 2
+	fi
+	# shellcheck source=/dev/null
+	. "$pin_lib"
+	if ! pin=$(resolve_plugin_pin "$REPO_ROOT/.pre-commit-config.yaml"); then
+		echo "ship-pr-cycle skill: ERROR: could not resolve claude-workflow-core pin from $REPO_ROOT/.pre-commit-config.yaml" >&2
+		exit 2
+	fi
+	cache_root="${SHIP_CYCLE_CACHE_ROOT:-$HOME/.claude/plugins/cache}"
+	# Canonical cache layout:
+	#   <root>/<marketplace>/claude-workflow-core/<pin>/scripts/ship-pr-cycle.sh
+	# Glob the marketplace segment so a non-default marketplace dir name still
+	# resolves. No match → the glob stays literal, the -f test fails, and the
+	# loud error below fires (no silent fall-back to a stale local driver).
+	ORCHESTRATOR=""
+	for cand in "$cache_root"/*/claude-workflow-core/"$pin"/scripts/ship-pr-cycle.sh; do
+		if [ -f "$cand" ]; then
+			ORCHESTRATOR="$cand"
+			break
+		fi
+	done
+	if [ -z "$ORCHESTRATOR" ]; then
+		echo "ship-pr-cycle skill: ERROR: no cached claude-workflow-core driver for pin '$pin' under $cache_root — run scripts/bootstrap-machine.sh (or bump + refresh the pin)" >&2
+		exit 2
+	fi
+fi
 
 if [ ! -x "$ORCHESTRATOR" ]; then
 	echo "ship-pr-cycle skill: ERROR: $ORCHESTRATOR missing or not executable" >&2

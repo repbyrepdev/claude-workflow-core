@@ -108,6 +108,13 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 		. "$PLUGIN_LIB/ship-cycle-directives.sh" ||
 			echo "ship-pr-cycle: WARN: ship-cycle-directives.sh source returned non-zero — #283 directives stdout-only" >&2
 	fi
+	# v0.34.32 (#2237): phase1 directive PROTOCOL SSOT (shared with the reader
+	# hooks/ship-cycle-guard.sh). Best-effort: if absent, the marker writer
+	# falls back to protocol 1 inline so emit never aborts under set -e.
+	if [ -r "$PLUGIN_LIB/ship-cycle-protocol.sh" ]; then
+		# shellcheck source=../_lib/ship-cycle-protocol.sh
+		. "$PLUGIN_LIB/ship-cycle-protocol.sh" || true
+	fi
 	_shipcycle_resolve() {
 		# $1: rel path under .claude/ (e.g. "scripts/_common.sh"). Echoes
 		# absolute path; falls back to REPO_ROOT/.claude/$1 when resolver
@@ -232,7 +239,13 @@ _write_phase1_directive_marker() {
 		scm_warn "phase1-directive: state-nonce mktemp failed (state dir not writable?) — emit aborted"
 		return 0
 	fi
-	if ! jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' "$state_file" >"$tmp_state" 2>/dev/null; then
+	# v0.34.32 (#2237): stamp the directive PROTOCOL version alongside the
+	# nonce so ship-cycle-guard.sh can detect a stale-driver / version skew and
+	# fail LOUD instead of the silent "no nonce" deadlock. Default to 1 if the
+	# SSOT lib didn't load; sanitize to a bare integer so --argjson can't fail.
+	local protocol="${SHIP_CYCLE_PHASE1_PROTOCOL:-1}"
+	case "$protocol" in '' | *[!0-9]*) protocol=1 ;; esac
+	if ! jq --arg n "$nonce" --argjson p "$protocol" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: $p}' "$state_file" >"$tmp_state" 2>/dev/null; then
 		scm_warn "phase1-directive state-nonce jq merge failed for $state_file"
 		rm -f "$tmp_state" 2>/dev/null || true
 		return 0
@@ -563,7 +576,7 @@ _set_stage() {
 	# ship-cycle-guard.sh continue to authorize pr-review-toolkit
 	# Agent calls AFTER Phase 1 ended.
 	jq_err=$(jq --arg new "$new_stage" --arg ts "$ts" \
-		'.history += [{from: .stage, to: $new, ts: $ts}] | .stage = $new | del(.phase1_directive_nonce)' \
+		'.history += [{from: .stage, to: $new, ts: $ts}] | .stage = $new | del(.phase1_directive_nonce, .phase1_directive_protocol)' \
 		"$sf" 2>&1 >"$tmp") || jq_rc=$?
 	if [ "$jq_rc" -ne 0 ]; then
 		rm -f "$tmp"
@@ -1424,6 +1437,20 @@ cmd_next() {
        branch-ready → phase0.5 → phase1 in one call once the
        2-streak clean criterion is met)."
 			_write_phase1_directive_marker "$sha" "$directive_text"
+			# v0.34.32 (#2237): _write_phase1_directive_marker is best-effort
+			# (scm_warn + return 0 on every write failure, by design so it
+			# never aborts the orchestrator under set -e). Verify the sentinel
+			# + state nonce actually landed BEFORE telling the operator to fire
+			# agents — otherwise a failed write prints the directive while
+			# ship-cycle-guard.sh then denies every Agent call, a misleading
+			# success. Fail loud + actionable instead.
+			local _marker_file _state_nonce
+			_marker_file=$(_phase1_directive_marker_file "$sha")
+			_state_nonce=$(jq -r '.phase1_directive_nonce // ""' "$STATE_DIR/$sha.json" 2>/dev/null || echo "")
+			if [ ! -f "$_marker_file" ] || [ -z "$_state_nonce" ]; then
+				scm_warn "phase1 directive emit FAILED (no sentinel or no state nonce — see warnings above). NOT printing the fire-agents directive; fix the cause (state dir writable? jq/uuidgen present?) then re-run 'ship-pr-cycle.sh next'."
+				return 2
+			fi
 			printf '%s\n' "$directive_text"
 			return 0
 		fi

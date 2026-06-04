@@ -60,6 +60,15 @@ _run_guard() {
 	(cd "$TEST_TMP" && printf '%s' "$payload" | bash "$SCRIPT" 2>&1)
 }
 
+# v0.34.32 (#2237): stamp a valid phase1_directive_protocol into state so a
+# test targeting the nonce/sentinel checks passes the protocol gate first
+# (which now runs BEFORE the nonce checks). Value matches _lib/
+# ship-cycle-protocol.sh SHIP_CYCLE_PHASE1_PROTOCOL.
+_set_state_protocol() {
+	local sf="$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	jq '. + {phase1_directive_protocol: 1}' "$sf" >"$sf.tmp" && mv "$sf.tmp" "$sf"
+}
+
 @test "script exists and is executable" {
 	[ -x "$SCRIPT" ]
 }
@@ -163,7 +172,7 @@ _run_guard() {
 	# v0.10.0 (#92): nonce-validated sentinel. Sentinel content line 1
 	# must match state JSON's phase1_directive_nonce.
 	nonce="11111111-2222-3333-4444-555555555555"
-	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: 1}' \
 		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
 	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	printf '%s\ndirective text\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
@@ -351,6 +360,7 @@ _run_guard() {
 	# Pre-#92: touch sentinel → unblocks Agent.
 	# Post-#92: empty sentinel has no nonce on line 1 → denied.
 	touch "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
+	_set_state_protocol # #2237: pass the protocol gate so the empty-sentinel check is what fires
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
@@ -362,7 +372,7 @@ _run_guard() {
 	# Orchestrator-emitted nonce path: state JSON has nonce + sentinel
 	# line 1 matches.
 	nonce="00000000-1111-2222-3333-444444444444"
-	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: 1}' \
 		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
 	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	printf '%s\nfire phase 1 directive\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
@@ -376,7 +386,7 @@ _run_guard() {
 	# Sentinel has a nonce but state JSON has a different one — likely
 	# stale sentinel from a prior round or touch-bypass with guessed
 	# nonce. Deny.
-	jq '. + {phase1_directive_nonce: "real-nonce-aaaa"}' \
+	jq '. + {phase1_directive_nonce: "real-nonce-aaaa", phase1_directive_protocol: 1}' \
 		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
 	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	printf 'fake-nonce-bbbb\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
@@ -392,6 +402,7 @@ _run_guard() {
 	# emit path didn't run (or write failed). Deny.
 	printf 'some-nonce\ndirective\n' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	# state JSON still has the default {"stage":"phase1",...} — no nonce field.
+	_set_state_protocol # #2237: protocol present so the missing-NONCE check is what fires
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
@@ -437,4 +448,65 @@ _run_guard() {
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
 	[[ $output != *"permissionDecision\":\"deny"* ]]
+}
+
+# --- v0.34.32 (#2237) protocol handshake -------------------------
+
+@test "Agent: stale driver (no protocol stamp) denied with re-pin guidance (#2237)" {
+	# Real-world #2237: a stale consumer driver wrote a pre-protocol directive.
+	# Even with a valid sentinel+nonce, a MISSING protocol stamp means the
+	# writer is older than this reader → fail LOUD with re-pin guidance
+	# instead of the generic "no nonce" deadlock that a re-emit can't fix.
+	nonce="abababab-cdcd-efef-0101-202020202020"
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n}' \
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
+	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"STALE"* ]]
+	[[ $output == *"refresh-from-source"* ]]
+}
+
+@test "Agent: protocol skew (wrong version) denied (#2237)" {
+	nonce="cdcdcdcd-efef-0101-2323-454545454545"
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: 999}' \
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
+	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"PROTOCOL SKEW"* ]]
+}
+
+@test "Agent: matching protocol + valid nonce passes (#2237)" {
+	nonce="01010101-2323-4545-6767-898989898989"
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: 1}' \
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
+	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
+	[ "$status" -eq 0 ]
+	[[ $output != *"permissionDecision\":\"deny"* ]]
+}
+
+@test "Agent: protocol lib present but unsourceable → fail closed (#2238 CR)" {
+	# A readable-but-broken ship-cycle-protocol.sh must fail CLOSED (deny), not
+	# silently downgrade to the protocol-1 fallback. Run a COPY of the guard with
+	# a sibling _lib whose protocol lib returns non-zero at source-time.
+	mkdir -p "$TEST_TMP/hooks" "$TEST_TMP/_lib"
+	cp "$SCRIPT" "$TEST_TMP/hooks/ship-cycle-guard.sh"
+	printf 'SHIP_CYCLE_PHASE1_PROTOCOL=1\nreturn 17\n' >"$TEST_TMP/_lib/ship-cycle-protocol.sh"
+	nonce="22223333-4444-5555-6666-777788889999"
+	jq --arg n "$nonce" '. + {phase1_directive_nonce: $n, phase1_directive_protocol: 1}' \
+		"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json" >"$TEST_TMP/state.json.tmp"
+	mv "$TEST_TMP/state.json.tmp" "$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
+	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
+	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
+	run bash -c "cd '$TEST_TMP' && printf '%s' '$payload' | bash '$TEST_TMP/hooks/ship-cycle-guard.sh' 2>&1"
+	[ "$status" -eq 0 ]
+	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"failed to load"* ]]
 }
