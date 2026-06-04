@@ -83,3 +83,44 @@ teardown() {
 	run canonical_consumer_skip ".claude/hooks/missing.sh"
 	[ "$status" -eq 1 ]
 }
+
+@test "as-is path mapping: shared-path file (.claude/tests/) identical → SKIP (rc 0)" {
+	# .claude/tests/ lives at the SAME path in plugin + consumer, so the
+	# stripped candidate (tests/foo.bats) misses and the as-is candidate
+	# (.claude/tests/foo.bats) must fire. Locks the 2nd loop candidate.
+	mkdir -p "$PLUGIN/.claude/tests" "$REPO/.claude/tests"
+	printf 'shared-path canonical\n' >"$PLUGIN/.claude/tests/foo.bats"
+	cp "$PLUGIN/.claude/tests/foo.bats" "$REPO/.claude/tests/foo.bats"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/tests/foo.bats"
+	[ "$status" -eq 0 ]
+}
+
+@test "as-is path mapping: shared-path file modified → NO skip (rc 1)" {
+	mkdir -p "$PLUGIN/.claude/tests" "$REPO/.claude/tests"
+	printf 'shared-path canonical\n' >"$PLUGIN/.claude/tests/foo.bats"
+	cp "$PLUGIN/.claude/tests/foo.bats" "$REPO/.claude/tests/foo.bats"
+	printf '# drift\n' >>"$REPO/.claude/tests/foo.bats"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/tests/foo.bats"
+	[ "$status" -eq 1 ]
+}
+
+@test "fail-safe: lib resolved from consumer tree (plugin_root lacks plugin.json) → NO skip even if identical (rc 1)" {
+	# The security-critical guard: if the lib is resolved from the consumer's
+	# OWN tree (not the pinned cache), plugin_root has no plugin.json → the
+	# byte-identical file must NOT be skipped (a consumer can't self-authorize
+	# skipping enforcement on its own files).
+	mkdir -p "$REPO/.claude/_lib"
+	cp "$LIB" "$REPO/.claude/_lib/canonical-consumer-skip.sh"
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$REPO/.claude/_lib/canonical-consumer-skip.sh"
+	run canonical_consumer_skip ".claude/hooks/foo.sh"
+	[ "$status" -eq 1 ]
+}

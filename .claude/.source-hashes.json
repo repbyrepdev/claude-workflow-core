@@ -17,7 +17,7 @@
     "_lib/bash-safety-check.sh": "8b02ff4595ef404ea2f33fa9f09ce5439cfb6e59e2df2e51a67334578327ed4a",
     "_lib/bash4-features-check.sh": "3d0a27aa98d369e7fa482472eba8192128f4e4db42d275b1b7096d9610a18dbc",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",
-    "_lib/canonical-consumer-skip.sh": "b66eb7f9b1a8a13e14fdaf034df3d52b406787c82bf4d5403e3715120a08f31d",
+    "_lib/canonical-consumer-skip.sh": "1fd1570a227f1f34fc3e34354b54d69c57a104cda625a318d724e1219e5e0840",
     "_lib/cmd-anchor.sh": "54ad7902014df8cd66bd0c1142bfdfe8f583227875a519d0aa04f98abf1e2806",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
     "_lib/content-hash-cache.sh": "58370546a2e3be3ec0629d7b89796b1b7976a3f9d96022496bf7b28d9ba96e6e",
