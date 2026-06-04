@@ -41,4 +41,8 @@ for f in $STAGED; do
 	fi
 done
 
-exit "$errs"
+# Fail-closed (#2235 CR): exit 1 on ANY failure (not the raw count — a count
+# >255 would wrap to 0 = silent pass; codes 2+ also collide with usage-error
+# conventions). Pre-commit treats any non-zero as failure.
+[ "$errs" -eq 0 ] || exit 1
+exit 0

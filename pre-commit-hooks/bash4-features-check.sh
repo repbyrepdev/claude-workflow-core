@@ -48,4 +48,8 @@ while IFS= read -r -d '' f; do
 	bash4_features_check_file "$f" || errs=$((errs + 1))
 done < <(git diff --cached --name-only --diff-filter=A -z 2>/dev/null)
 
-exit "$errs"
+# Fail-closed (#2235 CR): exit 1 on ANY failure (not the raw count — a count
+# >255 would wrap to 0 = silent pass; codes 2+ also collide with usage-error
+# conventions). Pre-commit treats any non-zero as failure.
+[ "$errs" -eq 0 ] || exit 1
+exit 0
