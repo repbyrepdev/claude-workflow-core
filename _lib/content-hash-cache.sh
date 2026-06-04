@@ -222,17 +222,21 @@ cache_prune() {
 # The per-file ledger above answers "is THIS file clean?". This separate,
 # coarser cache answers "what did the CR-CLI find for the WHOLE review
 # surface?" — the committed diff CR reviews under `-t committed --base <base>`
-# (= <base>...HEAD). ship-pr-cycle's phase2 consults it BEFORE invoking the
-# CR-CLI: an unchanged review surface reuses the prior findings count instead
-# of re-running CR's non-deterministic engine, which on identical content
-# oscillates false-positives + burns the 10/hr Pro Plus budget (the treadmill
-# that hit PR #254 across 3 re-reviews of one unchanged SHA). A new commit or
-# main advancing changes the hash → miss → fresh review (correct). Keyed on the
-# diff CONTENT, not the commit SHA, so a no-op amend/rebase that preserves
-# content still hits.
+# (= <base>...HEAD), MINUS the bookkeeping paths excluded in
+# phase2_review_cache_key (.claude/audit/prove-yourself.jsonl +
+# .claude/.session-state/ — see #2230 below). ship-pr-cycle's phase2 consults it
+# BEFORE invoking the CR-CLI: an unchanged review surface reuses the prior
+# findings count instead of re-running CR's non-deterministic engine, which on
+# identical content oscillates false-positives + burns the 10/hr Pro Plus budget
+# (the treadmill that hit PR #254 across 3 re-reviews of one unchanged SHA). A
+# new commit or main advancing changes the hash → miss → fresh review (correct).
+# Keyed on the diff CONTENT, not the commit SHA, so a no-op amend/rebase that
+# preserves content still hits.
 PHASE2_RESULT_LEDGER="$CACHE_DIR/phase2-results.jsonl"
 
-# Emit the content hash of the phase2 review surface (committed diff vs base).
+# Emit the content hash of the phase2 review surface (committed diff vs base,
+# EXCLUDING the bookkeeping pathspecs .claude/audit/prove-yourself.jsonl +
+# .claude/.session-state/ — see the #2230 exclude pathspecs in the diff below).
 # Empty output on ANY git failure → caller treats it as "no key" and always
 # reviews (fail-safe: a key we cannot compute is never a false hit).
 # The key is the diff CONTENT only — deliberately NOT salted with the CR engine
@@ -249,8 +253,18 @@ phase2_review_cache_key() {
 	# (the exact pattern this PR kills); capture stderr + emit a breadcrumb on
 	# non-zero rc, still returning empty (fail-safe: caller does a fresh review,
 	# never a false cache hit).
+	# v0.34.30 (#2230): EXCLUDE the prove-yourself audit ledger + session-state
+	# from the review-surface diff. The tracked .claude/audit/prove-yourself.jsonl
+	# (and .claude/.session-state/ audit records) live IN CR's committed-review
+	# surface, so committing audit records busts this content-hash key + needlessly
+	# re-triggers the CR-CLI — an "audit-commit treadmill". These paths are
+	# bookkeeping, never part of the code under review, so excluding them keeps the
+	# key stable across pure audit-record commits. Pathspec excludes append after a
+	# `--` and compose with the 3-dot range (verified under the real git engine).
 	d_err=$(mktemp 2>/dev/null) || d_err=""
-	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" 2>"${d_err:-/dev/null}") || d_rc=$?
+	diff=$(git -C "$REPO_ROOT" diff "${base}...HEAD" -- \
+		':(exclude).claude/audit/prove-yourself.jsonl' \
+		':(exclude).claude/.session-state/' 2>"${d_err:-/dev/null}") || d_rc=$?
 	if [ "$d_rc" -ne 0 ]; then
 		if [ -n "$d_err" ] && [ -s "$d_err" ]; then
 			echo "phase2_review_cache_key: git diff failed — no cache key (forces a fresh review): $(head -c 160 "$d_err")" >&2
@@ -319,6 +333,30 @@ phase2_review_cache_put() {
 	_cache_init || return 0
 	local ts
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts=""
+	# v0.34.30 (#2230): mirror the _get/cache-key stderr hardening — a silent
+	# `2>/dev/null || return 0` swallowed jq-append failures (e.g. a read-only
+	# CACHE_DIR or a degraded jq), leaving the result cache silently never-written
+	# with ZERO operator signal. Capture stderr + emit a concise breadcrumb on
+	# failure, then still return 0 (best-effort: a write miss costs one extra
+	# review, never a failed cycle).
+	local jq_err jq_rc=0
+	jq_err=$(mktemp 2>/dev/null) || jq_err=""
 	jq -nc --arg k "$key" --argjson f "$findings" --arg s "$sha" --arg ts "$ts" \
-		'{ts:$ts, content_hash:$k, sha:$s, findings:$f}' >>"$PHASE2_RESULT_LEDGER" 2>/dev/null || return 0
+		'{ts:$ts, content_hash:$k, sha:$s, findings:$f}' >>"$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}" || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		if [ -n "$jq_err" ] && [ -s "$jq_err" ]; then
+			echo "phase2 cache write failed: $(head -c 160 "$jq_err")" >&2
+		else
+			echo "phase2 cache write failed" >&2
+		fi
+		[ -n "$jq_err" ] && rm -f "$jq_err"
+		return 0
+	fi
+	[ -n "$jq_err" ] && rm -f "$jq_err"
+	# r1 code-reviewer (#2230): explicit success return. The terminal
+	# `[ -n "$jq_err" ] && rm -f` is a CONDITIONAL whose exit status leaks as
+	# the function's status — when mktemp failed (jq_err="") but the jq append
+	# SUCCEEDED, `[ -n "" ]` is false → the function would return 1, violating
+	# the documented best-effort "still return 0" contract. Pin it to 0.
+	return 0
 }

@@ -44,3 +44,5 @@ body:
     attributes:
       label: Acceptance criteria
       placeholder: Testable statements that mark this feature as done.
+    validations:
+      required: true

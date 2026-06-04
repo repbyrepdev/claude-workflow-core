@@ -96,6 +96,107 @@ teardown() {
 	[ "$output" != "$K1" ] # content changed → key changed
 }
 
+@test "audit-ledger + session-state commits do NOT change the key (#2230 no treadmill)" {
+	# v0.34.30 (#2230): the prove-yourself audit ledger lives IN CR's committed
+	# review surface; before the pathspec exclude, committing audit records busted
+	# this content-hash key + needlessly re-triggered the CR-CLI (the audit-commit
+	# treadmill). Assert the key is INVARIANT to a commit that touches ONLY
+	# .claude/audit/prove-yourself.jsonl (and .claude/.session-state/) while the
+	# real code under review is unchanged.
+	(
+		cd "$TEST_TMP"
+		git init -q
+		git config user.email t@t.t
+		git config user.name t
+		printf 'one\n' >f.txt
+		git add f.txt
+		git commit -qm base
+		git branch -M main
+		git checkout -q -b feat
+		printf 'two\n' >>f.txt
+		git add f.txt
+		git commit -qm change
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	local K1="$output"
+	[ -n "$K1" ]
+	# Commit ONLY audit/session-state bookkeeping — no change to f.txt.
+	(
+		cd "$TEST_TMP"
+		mkdir -p .claude/audit .claude/.session-state/prove-yourself
+		printf '{"finding":"x","status":"covered"}\n' >.claude/audit/prove-yourself.jsonl
+		printf '{"id":"y"}\n' >.claude/.session-state/prove-yourself/y.json
+		git add -f .claude/audit/prove-yourself.jsonl .claude/.session-state/prove-yourself/y.json
+		git commit -qm "audit: record finding"
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	# Key UNCHANGED: the excluded paths never enter the review-surface hash, so an
+	# audit-only commit is a cache HIT (no needless re-review).
+	[ "$output" = "$K1" ]
+	# Sanity: a real code change still busts the key (exclude isn't over-broad).
+	(cd "$TEST_TMP" && printf 'three\n' >>f.txt && git add f.txt && git commit -qm real)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	[ "$output" != "$K1" ]
+}
+
+@test "exclude is file/dir-PRECISE: sibling paths inside the namespaces still bust the key (#2230 not over-broad)" {
+	# r1 pr-test-analyzer (#2230): the #2230-treadmill test above proves the
+	# excludes HIT the two bookkeeping paths; this test pins the OTHER boundary —
+	# the excludes are file/dir-precise, NOT a broad `.claude/**` or
+	# `.claude/audit/**` glob. A future glob-broadening (e.g. excluding all of
+	# .claude/audit/ or all of .claude/) would silently stop reviewing real code
+	# living beside the bookkeeping paths; this assertion breaches first.
+	#   - `:(exclude).claude/audit/prove-yourself.jsonl` is a SINGLE FILE — a
+	#     sibling .claude/audit/other.jsonl must NOT be excluded.
+	#   - `:(exclude).claude/.session-state/` is ONE DIR — a non-session-state
+	#     file directly under .claude/ must NOT be excluded.
+	(
+		cd "$TEST_TMP"
+		git init -q
+		git config user.email t@t.t
+		git config user.name t
+		printf 'one\n' >f.txt
+		git add f.txt
+		git commit -qm base
+		git branch -M main
+		git checkout -q -b feat
+		printf 'two\n' >>f.txt
+		git add f.txt
+		git commit -qm change
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	local K1="$output"
+	[ -n "$K1" ]
+	# A SIBLING file under .claude/audit/ (NOT prove-yourself.jsonl) must change
+	# the key — only the named file is excluded, not the whole dir.
+	(
+		cd "$TEST_TMP"
+		mkdir -p .claude/audit
+		printf '{"other":"record"}\n' >.claude/audit/other.jsonl
+		git add -f .claude/audit/other.jsonl
+		git commit -qm "audit: sibling file (not excluded)"
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	local K2="$output"
+	[ "$K2" != "$K1" ] # sibling under .claude/audit/ is reviewed → key changed
+	# A non-session-state file directly under .claude/ must ALSO change the key —
+	# only .claude/.session-state/ is excluded, not all of .claude/.
+	(
+		cd "$TEST_TMP"
+		printf 'config\n' >.claude/other-config.txt
+		git add -f .claude/other-config.txt
+		git commit -qm "claude: non-session-state file (not excluded)"
+	)
+	run phase2_review_cache_key main
+	[ "$status" -eq 0 ]
+	[ "$output" != "$K2" ] # file directly under .claude/ is reviewed → key changed
+}
+
 @test "standalone fallback: REPO_ROOT unset resolves to repo root, not parent" {
 	# CR #284: the suite always pre-sets REPO_ROOT, so the fixed `:-` fallback
 	# (<repo>/_lib/.. = repo, was overshooting to the parent) could regress
@@ -188,4 +289,25 @@ teardown() {
 	run phase2_review_cache_get somekey
 	[ "$status" -eq 0 ]                 # best-effort: never fails caller
 	[[ $output == *"jq read failed"* ]] # surfaces a breadcrumb (fail-safe → fresh review)
+}
+
+@test "put with an unwritable ledger → best-effort rc 0 + 'phase2 cache write failed' breadcrumb (#2230)" {
+	# r1 pr-test-analyzer (#2230): the v0.34.30 phase2_review_cache_put breadcrumb
+	# (a write to a read-only CACHE_DIR / degraded jq) had no coverage. Mirror the
+	# GET-path "jq read failed" test above: point PHASE2_RESULT_LEDGER at a file
+	# under a chmod-555 dir so the `>>` append fails with EACCES, then assert the
+	# function is still best-effort (rc 0) AND surfaces the breadcrumb.
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "non-root only — write-failure relies on DAC perms root bypasses (#2230)"
+	fi
+	local rodir="$TEST_TMP/readonly"
+	mkdir -p "$rodir"
+	chmod 555 "$rodir"
+	# Restore +w in teardown's reach: TEST_TMP rm -rf needs to recurse in.
+	export PHASE2_RESULT_LEDGER="$rodir/phase2-results.jsonl"
+	run phase2_review_cache_put goodkey 3 abc1234
+	chmod u+w "$rodir"                             # so teardown's rm -rf can recurse
+	[ "$status" -eq 0 ]                            # best-effort: a write miss never fails the cycle
+	[[ $output == *"phase2 cache write failed"* ]] # surfaces a breadcrumb
+	[ ! -s "$PHASE2_RESULT_LEDGER" ]               # nothing landed (write was denied)
 }

@@ -207,7 +207,34 @@ _minimal_repo() {
 @test "--target machine --verify-only is now implemented (covered by meta-bootstrap-machine.bats)" {
 	# As of #110 machine --verify-only is wired against the manifest.
 	# Detailed coverage lives in the per-flow bats file.
-	run "$SCRIPT" --target machine --verify-only
+	#
+	# v0.34.30 (#2230): self-contained. Previously this ran the REAL tracked
+	# scripts/meta-bootstrap-manifest.yml, which couples the test to host state
+	# (brew packages / Keychain) AND fails in consumers that lack the manifest.
+	# Mirror meta-bootstrap-machine.bats: point at a host-independent stub
+	# manifest via the META_BOOTSTRAP_MANIFEST env override (kept subshell-local
+	# through `run env` per SC2030/SC2031) so the tracked manifest is never
+	# touched. `commands: [sh, ls]` is satisfied on every POSIX host.
+	# r1 pr-test-analyzer (#2230): guard the stub-manifest write (mirrors setup()'s
+	# mktemp guard) — an unwritable TEST_TMP would otherwise let the test run
+	# against a missing/empty manifest and assert on misleading output. A post-write
+	# `[ -s ]` guard (rather than an inline `cat ... || {}`, which a heredoc redirect
+	# makes unparseable to shellcheck/shfmt) catches both a failed write and an empty
+	# file in one check.
+	cat >"$TEST_TMP/manifest.yml" <<'YAML'
+schema_version: 1
+targets:
+  machine:
+    commands: [sh, ls]
+YAML
+	[ -s "$TEST_TMP/manifest.yml" ] || {
+		echo "FATAL: cannot write stub manifest (or it is empty)" >&2
+		return 1
+	}
+	run env META_BOOTSTRAP_MANIFEST="$TEST_TMP/manifest.yml" "$SCRIPT" --target machine --verify-only
 	[ "$status" -eq 0 ]
-	[[ $output != *"not yet wired"* ]]
+	# r1 code-reviewer (#2230): removed the dead `[[ $output != *"not yet wired"* ]]`
+	# assertion — meta-bootstrap.sh never emits "not yet wired", so it could never
+	# fail. The success-path assertion below is the meaningful check.
+	[[ $output == *"all manifest rules pass"* ]]
 }
