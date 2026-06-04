@@ -76,3 +76,12 @@ _source_orchestrator() {
 	state_nonce=$(jq -r '.phase1_directive_nonce' "$STATE_DIR/$SHA.json")
 	[ "$state_nonce" = "$nonce_r2" ]
 }
+
+@test "_write_phase1_directive_marker stamps phase1_directive_protocol in state JSON (#2237)" {
+	# The reader (ship-cycle-guard.sh) requires a protocol stamp; the writer
+	# must emit it alongside the nonce. Lib not sourced here → inline default 1.
+	_source_orchestrator
+	_write_phase1_directive_marker "$SHA" "directive"
+	proto=$(jq -r '.phase1_directive_protocol // "absent"' "$STATE_DIR/$SHA.json")
+	[ "$proto" = "1" ]
+}

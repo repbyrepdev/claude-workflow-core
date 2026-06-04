@@ -90,6 +90,16 @@ deny() {
 	exit 0
 }
 
+# v0.34.32 (#2237): phase1 directive PROTOCOL SSOT — shared with the writer
+# (scripts/ship-pr-cycle.sh). Best-effort: if absent, the Agent-path handshake
+# below falls back to expecting protocol 1. Resolves ../_lib relative to THIS
+# hook so it works at the plugin hooks/ layout AND a consumer .claude/hooks/.
+_SCG_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd || echo "")"
+if [ -n "$_SCG_LIB_DIR" ] && [ -r "$_SCG_LIB_DIR/ship-cycle-protocol.sh" ]; then
+	# shellcheck source=../_lib/ship-cycle-protocol.sh
+	. "$_SCG_LIB_DIR/ship-cycle-protocol.sh" || true
+fi
+
 # Fail-closed on stdin / jq parse
 if ! PAYLOAD=$(cat); then
 	deny "stdin read failed — failing closed"
@@ -261,6 +271,23 @@ Agent)
 		sentinel="$repo_root/.claude/.session-state/ship-cycle/$sha.phase1-directive.txt"
 		if [ ! -f "$sentinel" ]; then
 			deny "raw $SUBAGENT Agent call detected outside an active Phase 1 directive — invoke 'ship-pr-cycle.sh next' first; the orchestrator emits a templated prompt + creates the directive-pending sentinel. Bypass: SHIP_PR_CYCLE_BYPASS=1 env."
+		fi
+		# v0.34.32 (#2237): PROTOCOL handshake. The sentinel exists → a
+		# directive WAS emitted; but a STALE consumer driver (the #2237 root
+		# cause) emits the old marker format with no protocol stamp. Detect
+		# that (and any writer/reader version skew) and fail LOUD with a
+		# remediation message instead of the historical silent "no nonce"
+		# deadlock. Runs BEFORE the nonce checks so the actionable message wins.
+		expected_protocol="${SHIP_CYCLE_PHASE1_PROTOCOL:-1}"
+		if ! state_protocol=$(jq -r '.phase1_directive_protocol // "absent"' "$state_file" 2>/dev/null); then
+			deny "could not read .phase1_directive_protocol from $state_file — failing closed"
+		fi
+		if [ "$state_protocol" != "$expected_protocol" ]; then
+			if [ "$state_protocol" = "absent" ]; then
+				deny "ship-pr-cycle driver is STALE — the emitted directive in $state_file carries no phase1_directive_protocol (this guard expects v$expected_protocol). Your consumer is running a frozen scripts/ship-pr-cycle.sh instead of the pinned-cache driver. Fix: bump the claude-workflow-core pin in .pre-commit-config.yaml + run scripts/refresh-from-source.sh (the v0.34.32+ wrapper resolves the pinned-cache driver automatically). Bypass: SHIP_PR_CYCLE_BYPASS=1 env."
+			else
+				deny "ship-pr-cycle PROTOCOL SKEW — driver wrote phase1_directive_protocol v$state_protocol but this guard expects v$expected_protocol (driver and guard are different plugin versions). Re-pin + refresh, or sync the dev-checkout. Bypass: SHIP_PR_CYCLE_BYPASS=1 env."
+			fi
 		fi
 		# Read sentinel content (first non-empty line is the nonce).
 		# Per-directive sentinel formats:

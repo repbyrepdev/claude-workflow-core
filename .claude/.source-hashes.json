@@ -40,6 +40,7 @@
     "_lib/resolve-plugin-pin.sh": "e69d69552d12d9bbf4891b594e3cb3f5e882f8c59d23acae480effb9fd5ca82a",
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
     "_lib/ship-cycle-directives.sh": "3c8327d3cf5778956e87bf8dde3dcdb49959dce072704ef0ba931dd9c7fae4b7",
+    "_lib/ship-cycle-protocol.sh": "dd166d5322ef4cbfb3a8d9088ce783ebdad3cd2051c241dfd234a1f1ac0c7c27",
     "hooks/_lib.sh": "57ff0032f45b672fc9a501086bb6190ac5a8de99897a10175862a6401fddde44",
     "hooks/_otel-silence.sh": "606246aa6856494e99b2858fc07a230132a51aab2f3e624e52a67427b1d73e2b",
     "hooks/_phase1-collect-logs.sh": "488f2dac255ee29cb946df3e2411855b7d6c7de232318b8a91e3bf1937ca3b1b",
@@ -119,13 +120,14 @@
     "hooks/session-start-stale-marker-sweep.sh": "3af1d756a5209b237a9eb4c97068aad24000cbc7687666af207b8fcaff54a220",
     "hooks/session-start-stale-pin.sh": "d0d36698d4d8576af32371edd55e4703bb9fe6d458f98268a586c61c874b3c22",
     "hooks/ship-cycle-director-gate.sh": "93c1fe6ec042ebdb67b9ce890deeb75978141cc0f5245d3b39e4a7f8b7da4411",
-    "hooks/ship-cycle-guard.sh": "fcaa6382b89225fb79ac771154da35db1f6063c4f78903d79b662e07d2d2183a",
+    "hooks/ship-cycle-guard.sh": "62278788b002cbe411c50770e46210147a343b94155a4e58ba103b1b3750c90f",
     "hooks/skill-bypass-guard.sh": "d3a655b7f45bc21fa8e96e995eb92148c2f585c881665efd2bb83a4ed2a18319",
     "hooks/skip-env-approval-gate.sh": "00603f0ba1cda5f0e78e151a0c7f78eb87a8ad56dcec09622de611d15afd9e46",
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
-    "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94"
+    "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
+    "skills/ship-pr-cycle/run.sh": "203408b16533237163262c3800c5893ed39302b868555ddbdce00ed3aa6de405"
   },
   "producer_root": ".",
   "schema_version": 1
