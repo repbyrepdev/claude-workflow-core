@@ -83,10 +83,41 @@ phase1_agent_prompt() {
 	local focus
 	focus=$(_phase1_agent_focus "$agent") || return $?
 
+	# v0.34.35 (#2240) canonical-review-exclusion: in a CONSUMER, narrow the
+	# review surface to consumer-authored (non-canonical) changed files. The
+	# canonical mirrors (.claude/hooks, _lib, skills/ship-pr-cycle, ...) are
+	# byte-identical to the pinned plugin cache (hash-drift --verify enforces it)
+	# and were already reviewed upstream — re-reviewing them is the verbatim
+	# treadmill. No-op for the PLUGIN itself (producer: nothing is canonical-
+	# excluded, so the helper returns the full diff and we do not narrow).
+	local scope_clause="" _cre_lib
+	_cre_lib="$(dirname "${BASH_SOURCE[0]}")/canonical-review-exclude.sh"
+	if [ -r "$_cre_lib" ]; then
+		# shellcheck source=./canonical-review-exclude.sh
+		. "$_cre_lib" 2>/dev/null || true
+		if command -v canonical_review_noncanonical_changed >/dev/null 2>&1; then
+			local _all_n _noncanon _noncanon_n
+			_all_n=$(git diff --name-only main..HEAD 2>/dev/null | grep -c . || true)
+			_noncanon=$(canonical_review_noncanonical_changed main)
+			_noncanon_n=$(printf '%s\n' "$_noncanon" | grep -c . || true)
+			# Only narrow when files were actually excluded (i.e. a consumer).
+			if [ "${_all_n:-0}" -gt "${_noncanon_n:-0}" ]; then
+				if [ "${_noncanon_n:-0}" -eq 0 ]; then
+					scope_clause='CANONICAL-EXCLUSION: every changed file is byte-identical to the pinned plugin canonical (upstream-reviewed + hash-drift-enforced). Nothing consumer-authored to review — return `[]`.'
+				else
+					scope_clause="CANONICAL-EXCLUSION: review ONLY these consumer-authored files (the rest of the diff is byte-identical pinned-canonical mirrors, upstream-reviewed + hash-drift-enforced — out of scope):
+$(printf '%s\n' "$_noncanon" | sed 's/^/  - /')"
+				fi
+			fi
+		fi
+	fi
+
 	cat <<EOF
 Review the diff \`git diff main..HEAD\` for the current branch (HEAD ${sha:-<resolve>}, round $round).
 
 $focus
+
+$scope_clause
 
 READ ONLY — do NOT modify, edit, or write to any files. Return findings as a
 JSON array of {severity: high|medium|low, file: path, line: number, category:
