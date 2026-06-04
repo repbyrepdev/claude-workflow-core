@@ -39,6 +39,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/hooks/foo.sh"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "consumer + modified canonical → NO skip (rc 1)" {
@@ -49,6 +50,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/hooks/foo.sh"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "consumer + non-canonical file (no plugin counterpart) → NO skip (rc 1)" {
@@ -58,6 +60,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/hooks/domain.sh"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "plugin repo (has plugin.json) → NEVER skip even if identical (rc 1)" {
@@ -66,6 +69,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip "hooks/foo.sh"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "empty arg → NO skip (rc 1)" {
@@ -74,6 +78,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ""
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "consumer file absent on disk → NO skip (rc 1)" {
@@ -82,6 +87,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/hooks/missing.sh"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "as-is path mapping: shared-path file (.claude/tests/) identical → SKIP (rc 0)" {
@@ -96,6 +102,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/tests/foo.bats"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "as-is path mapping: shared-path file modified → NO skip (rc 1)" {
@@ -108,6 +115,7 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/tests/foo.bats"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
 @test "fail-safe: lib resolved from consumer tree (plugin_root lacks plugin.json) → NO skip even if identical (rc 1)" {
@@ -123,4 +131,5 @@ teardown() {
 	. "$REPO/.claude/_lib/canonical-consumer-skip.sh"
 	run canonical_consumer_skip ".claude/hooks/foo.sh"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }

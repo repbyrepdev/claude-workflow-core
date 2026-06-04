@@ -1,5 +1,5 @@
 #!/bin/bash
-set -u
+set -euo pipefail
 # v4.24-P (#603) — commit-time gate: refuse staged .sh files that use
 # bash 4.0+ features with `#!/bin/bash` shebang. macOS bash 3.2 would
 # silently fail on those features at runtime.

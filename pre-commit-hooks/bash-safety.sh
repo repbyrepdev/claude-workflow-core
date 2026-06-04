@@ -1,5 +1,5 @@
 #!/bin/bash
-set -u
+set -euo pipefail
 # Pre-commit: enforce `set -u` in every staged shell script (typo-in-varname
 # silently expanding to empty = a known hazard we've been bitten by).
 #
