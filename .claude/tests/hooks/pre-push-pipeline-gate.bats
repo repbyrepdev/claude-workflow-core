@@ -124,10 +124,16 @@ STUB
 	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
 	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
 	SOURCED_FOR_TEST=1 source "$TMP/link/deeper/pre-push"
-	run command -v cr_phase2_clean_for_sha
-	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
-	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
-	[ "$PPG_DIR" -ef "$TMP/real/hooks" ]         # resolved to the REAL hook dir, not the symlink dir
+	[ "$PPG_DIR" -ef "$TMP/real/hooks" ] # PPG_DIR resolved to the REAL hook dir
+	# Exercise the resolved gate END-TO-END, not just symbol presence (CR #2253):
+	# a fixture review-log makes cr_phase2_clean_for_sha (sourced FROM the
+	# resolved _lib) return CLEAN, so _cr_cli_clean_for_sha actually EXECUTES and
+	# emits its accept verdict — proving the resolved _lib is functional.
+	mkdir -p "$TMP/repo/.claude/logs"
+	printf '{"sha":"abc1234","findings":0}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
+	REPO_ROOT="$TMP/repo" run _cr_cli_clean_for_sha abc1234def
+	[ "$status" -eq 0 ]            # the resolved lib's fn ran and returned clean
+	[[ $output == *"accepting"* ]] # ... emitting the gate's accept verdict
 }
 
 @test "gate resolves _lib through an ABSOLUTE-target .git/hooks symlink (#2252)" {
@@ -140,10 +146,16 @@ STUB
 	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
 	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
 	SOURCED_FOR_TEST=1 source "$TMP/link/deeper/pre-push"
-	run command -v cr_phase2_clean_for_sha
-	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
-	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
-	[ "$PPG_DIR" -ef "$TMP/real/hooks" ]         # resolved to the REAL hook dir, not the symlink dir
+	[ "$PPG_DIR" -ef "$TMP/real/hooks" ] # PPG_DIR resolved to the REAL hook dir
+	# Exercise the resolved gate END-TO-END, not just symbol presence (CR #2253):
+	# a fixture review-log makes cr_phase2_clean_for_sha (sourced FROM the
+	# resolved _lib) return CLEAN, so _cr_cli_clean_for_sha actually EXECUTES and
+	# emits its accept verdict — proving the resolved _lib is functional.
+	mkdir -p "$TMP/repo/.claude/logs"
+	printf '{"sha":"abc1234","findings":0}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
+	REPO_ROOT="$TMP/repo" run _cr_cli_clean_for_sha abc1234def
+	[ "$status" -eq 0 ]            # the resolved lib's fn ran and returned clean
+	[[ $output == *"accepting"* ]] # ... emitting the gate's accept verdict
 }
 
 @test "gate resolves _lib through a CHAINED multi-hop symlink (#2252)" {
@@ -159,10 +171,16 @@ STUB
 	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
 	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
 	SOURCED_FOR_TEST=1 source "$TMP/b/deeper/pre-push"
-	run command -v cr_phase2_clean_for_sha
-	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
-	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
-	[ "$PPG_DIR" -ef "$TMP/real/hooks" ]         # resolved to the REAL hook dir, not the symlink dir
+	[ "$PPG_DIR" -ef "$TMP/real/hooks" ] # PPG_DIR resolved to the REAL hook dir
+	# Exercise the resolved gate END-TO-END, not just symbol presence (CR #2253):
+	# a fixture review-log makes cr_phase2_clean_for_sha (sourced FROM the
+	# resolved _lib) return CLEAN, so _cr_cli_clean_for_sha actually EXECUTES and
+	# emits its accept verdict — proving the resolved _lib is functional.
+	mkdir -p "$TMP/repo/.claude/logs"
+	printf '{"sha":"abc1234","findings":0}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
+	REPO_ROOT="$TMP/repo" run _cr_cli_clean_for_sha abc1234def
+	[ "$status" -eq 0 ]            # the resolved lib's fn ran and returned clean
+	[[ $output == *"accepting"* ]] # ... emitting the gate's accept verdict
 }
 
 @test "gate fails CLOSED when PPG_DIR resolves but _lib is absent (#2252 fail-safe)" {
