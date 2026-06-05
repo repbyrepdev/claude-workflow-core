@@ -127,6 +127,7 @@ STUB
 	run command -v cr_phase2_clean_for_sha
 	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
 	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
+	[ "$PPG_DIR" -ef "$TMP/real/hooks" ]         # resolved to the REAL hook dir, not the symlink dir
 }
 
 @test "gate resolves _lib through an ABSOLUTE-target .git/hooks symlink (#2252)" {
@@ -142,6 +143,7 @@ STUB
 	run command -v cr_phase2_clean_for_sha
 	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
 	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
+	[ "$PPG_DIR" -ef "$TMP/real/hooks" ]         # resolved to the REAL hook dir, not the symlink dir
 }
 
 @test "gate resolves _lib through a CHAINED multi-hop symlink (#2252)" {
@@ -160,6 +162,7 @@ STUB
 	run command -v cr_phase2_clean_for_sha
 	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
 	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
+	[ "$PPG_DIR" -ef "$TMP/real/hooks" ]         # resolved to the REAL hook dir, not the symlink dir
 }
 
 @test "gate fails CLOSED when PPG_DIR resolves but _lib is absent (#2252 fail-safe)" {
@@ -187,5 +190,6 @@ STUB
 	mkdir -p "$TMP/cyc"
 	ln -s pre-push "$TMP/cyc/pre-push" # self-referential cycle (a -> a)
 	run bash -c "SOURCED_FOR_TEST=1 source '$TMP/cyc/pre-push' 2>/dev/null; echo REACHED"
-	[[ $output == *"REACHED"* ]] # process returned (did not spin)
+	[ "$status" -eq 0 ]          # bash -c returned (the cycle did NOT spin)
+	[[ $output == *"REACHED"* ]] # ... and reached the sentinel past the source
 }
