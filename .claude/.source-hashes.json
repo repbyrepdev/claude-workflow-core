@@ -82,7 +82,7 @@
     "hooks/phase0.5-before-cr.sh": "346c8ba146ca700976ece731c627fbffbd3560f59c522e1393dda06939641f55",
     "hooks/phase0.5-before-phase1.sh": "1353aa99c74dbe0621a5c8149e1f906fd25724876519c15917dec360a3511a7a",
     "hooks/phase0.5-codex-prefilter.sh": "f095a6817466f14c61c6437e593b26f8bca159d70817e2c75c8acb38d8fb468f",
-    "hooks/phase0.5-copilot-prefilter.sh": "d0f430120a0a7c7d4fd208bf1b473e0aeab51c67c2ceba68c8a36c55b17ec26b",
+    "hooks/phase0.5-copilot-prefilter.sh": "443840d36450e5a8cdd4d3e85b3688ad39213b644a632ff17fa2d86a45faca9b",
     "hooks/phase0.5-dedupe-against-audit.sh": "3dfb9cc4ed6627702506112fc1444b1df4dafb4b8d037ae6c2b06073f08a4ecd",
     "hooks/phase0.5-gemini-prefilter.sh": "c7dcc6e0587cd844f206e1976c100e1312258fab5d23100c660763fed465685a",
     "hooks/phase0.5-launchers-all.sh": "fedace0d5ce94106d55d5681fab1c53f26072a5f5303da5fac512baa50ee8a42",

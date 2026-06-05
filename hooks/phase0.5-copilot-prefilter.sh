@@ -171,37 +171,36 @@ DIFF_CONTENT=$(git diff "${BASE}..${DIFF_REF}" 2>"$_git_err")
 [ -s "$_git_err" ] && echo "phase0.5: warning — git diff stderr: $(cat "$_git_err")" >&2
 trap - EXIT
 rm -f "$_git_err"
-# (#2258): the Copilot pre-filter is OPTIONAL, but degrade SAFELY —
-# only a GENUINE absence skips; a broken plugin install must stay loud (a
-# blanket graceful-skip would silently swallow a broken install — silent-
-# failure-hunter HIGH). Four-way on $COPILOT_HELPER / $_copilot_rc:
+# (#2258): the Copilot pre-filter is OPTIONAL, but degrade SAFELY — only a
+# GENUINE absence (resolver rc=1) skips; every broken state stays loud (a
+# blanket graceful-skip would silently swallow a broken install OR a crashed
+# resolver — silent-failure-hunter HIGH + CR major). One if/elif chain on
+# $COPILOT_HELPER / $_copilot_rc:
 #   rc=2 (resolver hard-error, e.g. plugin root unresolvable) → hard-fail.
 #   helper present but not executable → hard-fail (broken install / bad perms).
-#   empty + rc=0 (resolver reported success but returned no path = resolver
-#     bug) → hard-fail (do NOT treat a resolver bug as a benign absence).
-#   helper absent from BOTH local .claude/scripts/copilot/ AND the plugin
-#     cache (empty, rc=1) → graceful-skip: log + emit [] + exit 0 so Phase 1
-#     still runs (the consumer-portability path that unparks no-Copilot repos).
+#   helper empty → rc=1 (absent from BOTH local .claude/scripts/copilot/ AND
+#     the plugin cache) is the ONLY graceful-skip (log + [] + exit 0 so Phase
+#     1 still runs — the consumer-portability path that unparks no-Copilot
+#     repos); ANY other rc (rc=0 success-but-empty bug, or a signal/crash
+#     like 137 SIGKILL / 139 segfault) → hard-fail, never a silent skip.
 # jq (checked above), LOG_DIR (writable-checked), SHA are all ready here.
 if [ "$_copilot_rc" -eq 2 ]; then
 	echo "phase0.5: plugin-helper resolver hard-error (rc=2) resolving scripts/copilot/try-free.sh — plugin install likely broken; refusing to skip silently" >&2
 	exit 1
-fi
-if [ -n "$COPILOT_HELPER" ] && [ ! -x "$COPILOT_HELPER" ]; then
+elif [ -n "$COPILOT_HELPER" ] && [ ! -x "$COPILOT_HELPER" ]; then
 	echo "phase0.5: Copilot helper $COPILOT_HELPER present but NOT executable — likely broken install (fix perms: chmod +x); refusing to skip silently" >&2
 	exit 1
-fi
-if [ -z "$COPILOT_HELPER" ] && [ "$_copilot_rc" -eq 0 ]; then
-	echo "phase0.5: resolver returned success (rc=0) but empty path for scripts/copilot/try-free.sh — resolver bug; plugin install likely broken; refusing to skip silently" >&2
+elif [ -z "$COPILOT_HELPER" ]; then
+	if [ "$_copilot_rc" -eq 1 ]; then
+		echo "phase0.5: Copilot helper absent from both $REPO_ROOT/.claude/scripts/copilot/ and the plugin cache (rc=1) — skipping optional pre-filter; Phase 1 Claude agents proceed" >&2
+		jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$SHA" \
+			'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-copilot-helper"}' \
+			>>"$LOG"
+		echo "[]"
+		exit 0
+	fi
+	echo "phase0.5: resolver returned empty path with unexpected rc=$_copilot_rc (rc=0 success-but-empty bug, or signal/crash e.g. 137/139) — plugin install likely broken; refusing to skip silently" >&2
 	exit 1
-fi
-if [ -z "$COPILOT_HELPER" ]; then
-	echo "phase0.5: Copilot helper absent from both $REPO_ROOT/.claude/scripts/copilot/ and the plugin cache — skipping optional pre-filter; Phase 1 Claude agents proceed" >&2
-	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$SHA" \
-		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-copilot-helper"}' \
-		>>"$LOG"
-	echo "[]"
-	exit 0
 fi
 if [ -z "$DIFF_CONTENT" ]; then
 	echo "phase0.5: empty ${BASE}..${DIFF_REF} diff — nothing to pre-filter" >&2
