@@ -97,7 +97,6 @@ reviews:
       - "!.claude/scripts/**"
       - "!.claude/agents/**"
       - "!.claude/skills/ship-pr-cycle/**"
-      - "!.semgrep/**"
   # PR labels — by which files changed. Universal area/type labels; repos
   # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.
   labeling_instructions:

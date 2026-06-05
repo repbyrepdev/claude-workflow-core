@@ -66,4 +66,51 @@ teardown() {
 	[[ $output == *"CANONICAL-EXCLUSION: review ONLY"* ]]
 	[[ $output == *"  - .pre-commit-config.yaml"* ]]
 	[[ $output != *".claude/hooks/foo.sh"* ]]
+	# #2240 r1 pr-test-analyzer: exactly ONE listed file (the consumer pin) —
+	# guards a filter regression that spills extra entries.
+	listed=$(printf '%s\n' "$output" | grep -c '^  - ')
+	[ "$listed" -eq 1 ]
+	# blank-line hygiene on the CONSUMER path too (scope_clause injects newlines).
+	consec=$(printf '%s\n' "$output" | awk 'prev==""&&$0==""{c++} {prev=$0} END{print c+0}')
+	[ "$consec" -eq 0 ]
+}
+
+@test "consumer all-canonical: emits 'return []' clause, not 'review ONLY'" {
+	# #2240 r1 pr-test-analyzer: the verbatim-treadmill terminator — a consumer
+	# whose whole diff is canonical mirrors must get the 'return []' message,
+	# NOT a 'review ONLY' header with an empty list.
+	cd "$REPO"
+	printf 'readme\n' >README.md
+	git add -A && git commit -qm base
+	git branch -M main
+	git checkout -q -b feat
+	mkdir -p ".claude/_lib"
+	cp "$PLUGIN/hooks/foo.sh" ".claude/hooks/foo.sh"
+	cp "$PLUGIN/_lib/canonical-consumer-skip.sh" ".claude/_lib/canonical-consumer-skip.sh"
+	git add -A && git commit -qm all-canonical
+	# shellcheck source=../../../_lib/phase1-agent-prompt.sh
+	. "$LIB"
+	run phase1_agent_prompt code-reviewer "$REPO" abc1234 1
+	[ "$status" -eq 0 ]
+	[[ $output == *"return \`[]\`"* ]]
+	[[ $output != *"review ONLY"* ]]
+	consec=$(printf '%s\n' "$output" | awk 'prev==""&&$0==""{c++} {prev=$0} END{print c+0}')
+	[ "$consec" -eq 0 ]
+}
+
+@test "consumer git-diff failure (no 'main' ref): no clause = full review (fail-safe)" {
+	# #2240 r1 silent-failure-hunter: when the helper's git diff fails (base
+	# 'main' absent), phase1 must fall through to NO exclusion clause = full
+	# review, NOT emit a 'return []' that would skip the entire PR.
+	cd "$REPO"
+	printf 'readme\n' >README.md
+	git add -A && git commit -qm base
+	git branch -M work # deliberately NOT 'main'
+	printf 'x\n' >consumer.txt
+	git add -A && git commit -qm change
+	# shellcheck source=../../../_lib/phase1-agent-prompt.sh
+	. "$LIB"
+	run phase1_agent_prompt code-reviewer "$REPO" abc1234 1
+	[ "$status" -eq 0 ]
+	[[ $output != *"CANONICAL-EXCLUSION"* ]]
 }

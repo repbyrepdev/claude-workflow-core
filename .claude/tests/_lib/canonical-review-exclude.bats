@@ -134,3 +134,60 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"hooks/bar.sh"* ]]
 }
+
+@test "noncanonical_changed (consumer): all-canonical diff → empty output, rc 0" {
+	# #2240 r1 pr-test-analyzer: the verbatim-treadmill terminator. A consumer
+	# whose ENTIRE diff is byte-identical canonical mirrors must echo NOTHING
+	# (rc 0) — the caller maps that to the 'return []' prompt.
+	cd "$REPO"
+	printf 'readme\n' >README.md
+	git add -A && git commit -qm base
+	git branch -M main
+	git checkout -q -b feat
+	mkdir -p ".claude/_lib"
+	cp "$PLUGIN/hooks/foo.sh" ".claude/hooks/foo.sh"
+	cp "$PLUGIN/_lib/canonical-consumer-skip.sh" ".claude/_lib/canonical-consumer-skip.sh"
+	git add -A && git commit -qm all-canonical
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	run canonical_review_noncanonical_changed main
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "noncanonical_changed: git diff failure (base ref absent) → rc 2 (fail-safe, not empty)" {
+	# #2240 r1 silent-failure-hunter: a FAILED git diff must propagate as rc 2,
+	# NOT a swallowed empty result that callers misread as 'nothing to review'.
+	cd "$REPO"
+	printf 'readme\n' >README.md
+	git add -A && git commit -qm base
+	git branch -M main
+	git checkout -q -b feat
+	printf 'x\n' >consumer.txt
+	git add -A && git commit -qm change
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	run canonical_review_noncanonical_changed nonexistent-base-ref
+	[ "$status" -eq 2 ]
+	[ -z "$output" ]
+}
+
+@test "noncanonical_changed (consumer): multiple consumer files all listed, mirror dropped" {
+	# #2240 r1 pr-test-analyzer: prove per-file selectivity with >1 consumer file.
+	cd "$REPO"
+	printf 'readme\n' >README.md
+	git add -A && git commit -qm base
+	git branch -M main
+	git checkout -q -b feat
+	cp "$PLUGIN/hooks/foo.sh" ".claude/hooks/foo.sh" # canonical mirror → dropped
+	printf 'a\n' >alpha.txt                          # consumer-authored → listed
+	printf 'b\n' >beta.txt                           # consumer-authored → listed
+	git add -A && git commit -qm changes
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	run canonical_review_noncanonical_changed main
+	[ "$status" -eq 0 ]
+	[[ $output == *"alpha.txt"* ]]
+	[[ $output == *"beta.txt"* ]]
+	[[ $output != *".claude/hooks/foo.sh"* ]]
+}

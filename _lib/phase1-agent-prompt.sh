@@ -104,17 +104,24 @@ phase1_agent_prompt() {
 		_cre_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 		if command -v canonical_review_noncanonical_changed >/dev/null 2>&1 &&
 			[ -n "$_cre_root" ] && [ ! -f "$_cre_root/.claude-plugin/plugin.json" ]; then
+			# A FAILED diff (helper rc != 0 — e.g. `main` does not resolve in this
+			# consumer / CI checkout) falls through to NO clause = full review
+			# (fail-safe). Only a SUCCESSFUL diff distinguishes all-canonical
+			# (empty) from partial (the consumer-authored file list). (#2240 r1
+			# silent-failure-hunter: empty-on-failure must NOT read as "review
+			# nothing".)
 			local _noncanon
-			_noncanon=$(canonical_review_noncanonical_changed main)
-			if [ -n "$_noncanon" ]; then
-				scope_clause="
+			if _noncanon=$(canonical_review_noncanonical_changed main); then
+				if [ -n "$_noncanon" ]; then
+					scope_clause="
 CANONICAL-EXCLUSION: review ONLY these consumer-authored files (any other changed files are byte-identical pinned-canonical mirrors, upstream-reviewed + hash-drift-enforced — out of scope):
 $(printf '%s\n' "$_noncanon" | sed 's/^/  - /')
 "
-			else
-				scope_clause='
+				else
+					scope_clause='
 CANONICAL-EXCLUSION: every changed file is byte-identical to the pinned plugin canonical (upstream-reviewed + hash-drift-enforced). Nothing consumer-authored to review — return `[]`.
 '
+				fi
 			fi
 		fi
 	fi

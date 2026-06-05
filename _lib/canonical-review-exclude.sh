@@ -41,11 +41,21 @@ canonical_review_excluded() {
 # canonical_review_noncanonical_changed <base>
 #   Echoes (one per line) the files changed in <base>..HEAD that are NOT
 #   canonical-excluded — i.e. the consumer-authored surface a reviewer should
-#   actually look at. Empty output = the whole diff is canonical (review nothing).
+#   actually look at.
+#   rc 0 + empty output = `git diff` SUCCEEDED and the whole diff is canonical
+#                         (or there are no changes) → review nothing.
+#   rc 2                = `git diff` FAILED (e.g. <base> does not resolve in this
+#                         consumer / CI checkout). Callers MUST treat this as
+#                         "could not scope" and fall back to reviewing EVERYTHING
+#                         — never as "nothing to review" (#2240 phase1 silent-
+#                         failure-hunter). The diff is captured + rc-checked (not
+#                         streamed via process substitution) precisely so the
+#                         git failure is NOT swallowed into an empty result.
 canonical_review_noncanonical_changed() {
-	local base="${1:-main}" f
+	local base="${1:-main}" f _diff
+	_diff=$(git diff --name-only "$base"..HEAD 2>/dev/null) || return 2
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
 		canonical_review_excluded "$f" || printf '%s\n' "$f"
-	done < <(git diff --name-only "$base"..HEAD 2>/dev/null)
+	done <<<"$_diff"
 }
