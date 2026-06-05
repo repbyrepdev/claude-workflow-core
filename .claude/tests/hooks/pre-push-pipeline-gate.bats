@@ -213,7 +213,7 @@ STUB
 }
 
 @test "gate fails CLOSED (exit 1) when REPO_ROOT is unresolvable — non-git work tree (#2263)" {
-	# v0.34.45 #2263: the empty-REPO_ROOT path changed from `exit 0` (fail-OPEN —
+	# #2263: the empty-REPO_ROOT path changed from `exit 0` (fail-OPEN —
 	# silently bypassing the WHOLE pipeline gate) to `exit 1` (fail-CLOSED). Run
 	# the hook NON-sourced (so it does NOT return at the SOURCED_FOR_TEST guard
 	# that precedes the check) with cwd in the non-git $TMP, so

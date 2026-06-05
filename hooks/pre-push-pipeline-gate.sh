@@ -392,7 +392,7 @@ MIN_CLEAN_STREAK="${PHASE1_MIN_CLEAN_STREAK:-1}"
 
 [ "${SOURCED_FOR_TEST:-0}" = "1" ] && return 0
 
-# v0.34.45 #2263: fail CLOSED when the repo root is unresolvable — whether git
+# #2263: fail CLOSED when the repo root is unresolvable — whether git
 # rev-parse FAILED (the `|| REPO_ROOT=""` keeps set -e from exiting with git's
 # opaque rc=128) or returned empty. A pre-push hook is always invoked inside a
 # work tree, so an unresolvable REPO_ROOT is pathological — refuse the push with
