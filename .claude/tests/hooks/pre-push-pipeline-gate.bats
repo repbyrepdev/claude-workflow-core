@@ -105,3 +105,69 @@ STUB
 	[ "$status" -ne 0 ]
 	[[ $output == *"not sourced"* ]]
 }
+
+@test "gate resolves _lib through a .git/hooks SYMLINK — consumer install (#2252)" {
+	# Regression: a consumer installs .git/hooks/pre-push as a SYMLINK to
+	# .claude/hooks/pre-push-pipeline-gate.sh — a DIFFERENT directory depth than
+	# the real hook. $0/BASH_SOURCE then point at the symlink, so the old
+	# dirname/../_lib resolution looked in the symlink dir's (nonexistent)
+	# ../_lib → cr-phase2-coverage.sh never sourced → fail-closed push. The
+	# PPG_DIR symlink-resolving preamble must follow the link so _lib resolves
+	# to the REAL hook's sibling. Source via the symlink + assert the coverage
+	# fn became available (undefined ⇒ the bug is back).
+	mkdir -p "$TMP/real/hooks" "$TMP/real/_lib" "$TMP/link/deeper"
+	cp "$HOOK" "$TMP/real/hooks/pre-push-pipeline-gate.sh"
+	cp "${BATS_TEST_DIRNAME}/../../../_lib/cr-phase2-coverage.sh" "$TMP/real/_lib/cr-phase2-coverage.sh"
+	# Symlink dir ($TMP/link/deeper) has NO ../_lib; real dir ($TMP/real/hooks)
+	# does — so success proves the link was resolved, not the symlink dir used.
+	ln -s ../../real/hooks/pre-push-pipeline-gate.sh "$TMP/link/deeper/pre-push"
+	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
+	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
+	SOURCED_FOR_TEST=1 source "$TMP/link/deeper/pre-push"
+	command -v cr_phase2_clean_for_sha
+}
+
+@test "gate resolves _lib through an ABSOLUTE-target .git/hooks symlink (#2252)" {
+	# Most hook installers write an ABSOLUTE symlink target — exercises the
+	# `case /*` branch (the test above covers the relative branch).
+	mkdir -p "$TMP/real/hooks" "$TMP/real/_lib" "$TMP/link/deeper"
+	cp "$HOOK" "$TMP/real/hooks/pre-push-pipeline-gate.sh"
+	cp "${BATS_TEST_DIRNAME}/../../../_lib/cr-phase2-coverage.sh" "$TMP/real/_lib/cr-phase2-coverage.sh"
+	ln -s "$TMP/real/hooks/pre-push-pipeline-gate.sh" "$TMP/link/deeper/pre-push"
+	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
+	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
+	SOURCED_FOR_TEST=1 source "$TMP/link/deeper/pre-push"
+	command -v cr_phase2_clean_for_sha
+}
+
+@test "gate resolves _lib through a CHAINED multi-hop symlink (#2252)" {
+	# Dotfile managers (stow/chezmoi/dotbot) install pre-push -> hop1 -> real
+	# hook. Exercises the `while [ -L ]` loop at depth >=2 (the tests above are
+	# single-hop); a loop that stops at hop 1 or mis-anchors the 2nd relative
+	# re-resolution would FAIL here while passing the single-hop tests.
+	mkdir -p "$TMP/real/hooks" "$TMP/real/_lib" "$TMP/a" "$TMP/b/deeper"
+	cp "$HOOK" "$TMP/real/hooks/pre-push-pipeline-gate.sh"
+	cp "${BATS_TEST_DIRNAME}/../../../_lib/cr-phase2-coverage.sh" "$TMP/real/_lib/cr-phase2-coverage.sh"
+	ln -s ../real/hooks/pre-push-pipeline-gate.sh "$TMP/a/hop1" # hop1 -> real
+	ln -s ../../a/hop1 "$TMP/b/deeper/pre-push"                 # pre-push -> hop1
+	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
+	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
+	SOURCED_FOR_TEST=1 source "$TMP/b/deeper/pre-push"
+	command -v cr_phase2_clean_for_sha
+}
+
+@test "gate fails CLOSED when PPG_DIR resolves but _lib is absent (#2252 fail-safe)" {
+	# Mirror-image negative of the success tests + the safety contract: resolve
+	# through a symlink whose target dir has NO sibling _lib → cr-phase2-
+	# coverage.sh silently not sourced → cr_phase2_clean_for_sha undefined →
+	# _cr_cli_clean_for_sha fails CLOSED (never a silent pass).
+	mkdir -p "$TMP/real/hooks" "$TMP/link" # NOTE: deliberately no $TMP/real/_lib
+	cp "$HOOK" "$TMP/real/hooks/pre-push-pipeline-gate.sh"
+	ln -s ../real/hooks/pre-push-pipeline-gate.sh "$TMP/link/pre-push"
+	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
+	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
+	SOURCED_FOR_TEST=1 source "$TMP/link/pre-push"
+	run _cr_cli_clean_for_sha 0123456789abcdef
+	[ "$status" -ne 0 ]
+	[[ $output == *"not sourced"* ]]
+}
