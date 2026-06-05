@@ -31,8 +31,11 @@ teardown() {
 	return 0
 }
 
-@test "no overlay → base emitted verbatim (comments preserved) (#234)" {
-	run "$SCRIPT" --base "$BASE"
+@test "no overlay (+ no hooks dir) → base emitted verbatim (comments preserved) (#234)" {
+	# #2254: point the hook-exclusion enumerator at a nonexistent dir so the
+	# CR-in-CI mirror-hook injection is skipped — isolating the base-verbatim
+	# merge behavior this test covers. (Injection is covered separately below.)
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/no-such-hooks" "$SCRIPT" --base "$BASE"
 	[ "$status" -eq 0 ]
 	[[ $output == *"# header comment"* ]]
 	# Byte-identical to base.
@@ -91,9 +94,10 @@ EOF
 	[ "$output" = "0" ]
 }
 
-@test "empty/comment-only overlay → base verbatim + NOTE (#234)" {
+@test "empty/comment-only overlay (+ no hooks dir) → base verbatim + NOTE (#234)" {
 	printf '# only a comment\n' >"$TMP/ovl.yaml"
-	run "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
+	# #2254: skip the hook-exclusion injection (see above) to isolate verbatim.
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/no-such-hooks" "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
 	[ "$status" -eq 0 ]
 	[[ $output == *"# header comment"* ]]   # base verbatim
 	[[ $output == *"no mapping content"* ]] # NOTE on stderr (captured by run)
@@ -170,4 +174,67 @@ EOF
 	run env PATH=/var/empty "$(command -v bash)" "$SCRIPT" --base "$BASE"
 	[ "$status" -eq 2 ]
 	[[ $output == *"yq required"* ]]
+}
+
+@test "#2254: canonical hooks → per-file !.claude/hooks exclusions appended" {
+	# Fake canonical hooks/ set: 2 plugin hooks. A consumer-authored hook is NOT
+	# in this set, so it must NOT be excluded (CR keeps reviewing it).
+	mkdir -p "$TMP/hooks"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	printf '#!/bin/bash\n' >"$TMP/hooks/beta.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/beta.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/beta.sh" ]
+	# Exactly the canonical set is excluded — $BASE had no path_filters, so a
+	# count of 2 proves no extra/leaked entries (a consumer-authored hook not in
+	# COMPOSE_CR_HOOKS_DIR is never enumerated, hence never excluded).
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 2 ]
+	# base content survives the injection.
+	[ "$(yq -r '.reviews.auto_review.base_branches[0]' "$TMP/.coderabbit.yaml")" = "main" ]
+}
+
+@test "#2254: hook-exclusion injection is idempotent (recomposed from base)" {
+	mkdir -p "$TMP/hooks"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	n1=$(yq -r '[.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")] | length' "$TMP/.coderabbit.yaml")
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	n2=$(yq -r '[.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")] | length' "$TMP/.coderabbit.yaml")
+	# Exactly one occurrence each run (not doubled) — result recomputed from base.
+	[ "$n1" -eq 1 ]
+	[ "$n2" -eq 1 ]
+}
+
+@test "#2254: hook exclusions APPEND to a base that already has path_filters" {
+	# Production shape: a base WITH a pre-existing path_filters array. Proves the
+	# `(existing // []) + new` merge preserves the base entries (a regression to
+	# `= new` would silently wipe them and pass the empty-base tests).
+	cat >"$TMP/pf-base.yaml" <<'EOF'
+reviews:
+  auto_review:
+    path_filters:
+      - "!**/*.md"
+      - "!LICENSE"
+EOF
+	mkdir -p "$TMP/hooks"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$TMP/pf-base.yaml" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	# Pre-existing filters SURVIVE (appended-to, not replaced).
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!**/*.md")' "$TMP/.coderabbit.yaml")" = "!**/*.md" ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!LICENSE")' "$TMP/.coderabbit.yaml")" = "!LICENSE" ]
+	# New hook exclusion appended after them; total = 2 existing + 1 hook.
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 3 ]
+}
+
+@test "#2254: existing-but-empty hooks dir → no exclusions appended" {
+	mkdir -p "$TMP/emptyhooks"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/emptyhooks" "$SCRIPT" --base "$BASE"
+	[ "$status" -eq 0 ]
+	# Dir exists but has no *.sh → injection is a no-op, no hook exclusions.
+	[[ $output != *"!.claude/hooks/"* ]]
 }
