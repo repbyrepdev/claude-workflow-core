@@ -66,3 +66,45 @@ canonical_review_noncanonical_changed() {
 		canonical_review_excluded "$f" || printf '%s\n' "$f"
 	done <<<"$_diff"
 }
+
+# canonical_review_phase2_filtered_count <cr-cli-output-file>
+#   The phase2 hash-filter (#2249): count CR-CLI findings EXCLUDING those on
+#   canonical-mirror files. Reads `{"type":"finding","fileName":...}` JSON lines
+#   from <file>, drops each whose path is canonical_review_excluded (byte-
+#   identical to the pinned canonical → already reviewed upstream + hash-drift-
+#   enforced → the verbatim treadmill), and prints the count of the remainder.
+#   This is the PRECISE local-layer exclusion the coarse .coderabbit globs can't
+#   express (a glob can't tell a mirror from a consumer-authored file in a mixed
+#   dir like .claude/hooks/). Fail-SAFE: if the hash predicate is unavailable,
+#   nothing is excluded → the full count (never a false-clean). With NO finding
+#   lines it falls back to the terminal `{"type":"complete",...,"findings":N}`
+#   count (no per-file paths to filter); counting finding LINES also avoids the
+#   CR-CLI complete-event over-count (#2240 saw findings:4 with 1 line emitted).
+canonical_review_phase2_filtered_count() {
+	local out="${1:-}" files f kept=0
+	{ [ -n "$out" ] && [ -r "$out" ]; } || {
+		printf '0'
+		return 0
+	}
+	if ! command -v jq >/dev/null 2>&1; then
+		grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$out" 2>/dev/null || printf '0'
+		return 0
+	fi
+	files=$(jq -rs 'map(select(.type=="finding") | (.fileName // .file // empty)) | .[]' "$out" 2>/dev/null || true)
+	if [ -z "$files" ]; then
+		# No finding lines → use the complete event verbatim (no paths to filter).
+		local c
+		c=$(jq -rs 'map(select(.type=="complete")) | if length>0 then (.[-1].findings // 0) else 0 end' "$out" 2>/dev/null || true)
+		case "${c:-}" in
+		'' | *[!0-9]*) printf '0' ;;
+		*) printf '%s' "$c" ;;
+		esac
+		return 0
+	fi
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		canonical_review_excluded "$f" && continue
+		kept=$((kept + 1))
+	done <<<"$files"
+	printf '%s' "$kept"
+}

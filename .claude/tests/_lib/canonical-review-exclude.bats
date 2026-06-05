@@ -193,3 +193,70 @@ teardown() {
 	[[ $output == *"beta.txt"* ]]
 	[[ $output != *".claude/hooks/foo.sh"* ]]
 }
+
+# --- canonical_review_phase2_filtered_count (#2249 phase2 hash-filter) ---
+
+@test "phase2_filtered_count (consumer): drops findings on canonical mirrors, keeps consumer-authored" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' \
+		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
+		'{"type":"finding","fileName":".pre-commit-config.yaml"}' \
+		'{"type":"complete","findings":2}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 1 ] # canonical mirror dropped, consumer-authored kept
+}
+
+@test "phase2_filtered_count (plugin): counts ALL findings (producer, no exclusion)" {
+	cd "$PLUGIN"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' \
+		'{"type":"finding","fileName":"hooks/foo.sh"}' \
+		'{"type":"finding","fileName":"hooks/bar.sh"}' \
+		'{"type":"complete","findings":2}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 2 ]
+}
+
+@test "phase2_filtered_count: no finding lines → falls back to complete count" {
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' '{"type":"complete","findings":4}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 4 ]
+}
+
+@test "phase2_filtered_count: missing/unreadable file → 0" {
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	run canonical_review_phase2_filtered_count "$TEST_TMP/nope.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 0 ]
+}
+
+@test "phase2_filtered_count: fail-safe — predicate unavailable → full count (no false-clean)" {
+	# Source the function's file WITHOUT its sibling predicate beside it:
+	# canonical_review_excluded falls safe (rc 1 = review) for every file, so
+	# NOTHING is dropped → full count. Guards against a broken setup masking
+	# real findings as clean.
+	mkdir -p "$TEST_TMP/lonely"
+	cp "$REVEX_SRC" "$TEST_TMP/lonely/canonical-review-exclude.sh"
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$TEST_TMP/lonely/canonical-review-exclude.sh"
+	printf '%s\n' \
+		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
+		'{"type":"finding","fileName":".pre-commit-config.yaml"}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 2 ]
+}

@@ -80,22 +80,29 @@ reviews:
       - "!.claude/audit/**"
       - "!**/*.svg"
       - "!**/*.png"
-      # v0.34.35 (#2240) canonical-review-exclusion: a consumer MIRRORS these
-      # canonical plugin dirs and `hash-drift --verify` (pre-commit + CI) enforces
-      # byte-identity to the pinned cache — so they were ALREADY reviewed+merged
-      # upstream. Re-reviewing them in a consumer is the "verbatim treadmill"
-      # (media-server v0.8.8->v0.34.34 #950: 24 CR findings, every one on these
-      # mirrors; the only consumer-authored change — the pin — was phase1-clean).
-      # Safe for the plugin too: its reviewed source lives at hooks/ _lib/ skills/
-      # scripts/ .semgrep/ (NOT under .claude/), and any .claude/ copies are
-      # self-dogfood byte-identical mirrors. CR-in-CI can't express hash-equality,
-      # so these globs are the CR-layer equivalent of the precise hash-based
-      # _lib/canonical-review-exclude.sh the LOCAL layers (phase1/phase2) consume.
-      - "!.claude/hooks/**"
+      # v0.34.36 (#2249) canonical-review-exclusion CR-layer globs — NARROWED.
+      # A consumer MIRRORS the plugin's _lib/ + the ship-pr-cycle skill into
+      # .claude/, and hash-drift --verify enforces byte-identity to the pinned
+      # cache, so those are already-reviewed-upstream mirrors; re-reviewing them
+      # is the "verbatim treadmill" (media-server #950). CR-in-CI can't express
+      # hash-equality, so we glob-exclude ONLY the dirs that are PURELY canonical
+      # mirrors in EVERY consumer:
+      #   _lib/                 — consumers never author _lib; all plugin mirror.
+      #   skills/ship-pr-cycle/ — the cache-driver wrapper; one canonical set.
+      # DELIBERATELY NOT excluded (v0.34.36 #2249 — the over-exclusion bug caught
+      # by dogfooding media-server #952):
+      #   pre-commit-hooks/ + scripts/ — consumers do NOT mirror these (#247: they
+      #     exec the plugin's from the pinned cache), so .claude/pre-commit-hooks/
+      #     + .claude/scripts/ are PURELY CONSUMER-AUTHORED (e.g. media-server's
+      #     encryption / secret-leak guards, deploy scripts). Glob-excluding them
+      #     blinds CR to consumer security/ops code for ZERO canonical benefit.
+      #   hooks/ + agents/ — MIXED (plugin mirrors + consumer-authored). A coarse
+      #     dir glob can't tell them apart. The hash-based LOCAL layers (phase1
+      #     prompt-scope + phase2 finding-filter via canonical-review-exclude.sh)
+      #     skip the byte-identical mirrors PRECISELY; CR-in-CI reviews those
+      #     mirrors but they're upstream-clean (→ ~0 findings) and, crucially,
+      #     consumer-authored files in those dirs stay reviewed.
       - "!.claude/_lib/**"
-      - "!.claude/pre-commit-hooks/**"
-      - "!.claude/scripts/**"
-      - "!.claude/agents/**"
       - "!.claude/skills/ship-pr-cycle/**"
   # PR labels — by which files changed. Universal area/type labels; repos
   # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.

@@ -282,14 +282,25 @@ if [ "$_timeout_detected" -eq 1 ]; then
 	exit 4
 fi
 
-# Extract findings count from the terminal `{"type":"complete",...}` event.
-# Fall back to counting inline `{"type":"finding"}` lines if the complete
-# event is missing (e.g. CR aborted mid-review). Defaults to 0 on parse failure.
-findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
-# Fallback grep: don't anchor to line-start or assume "type" is the first
-# JSON key — jq -nc doesn't guarantee key order. Match `"type":"finding"`
-# with optional whitespace anywhere on the line.
-[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+# v0.34.36 (#2249): phase2 hash-filter. Count CR-CLI findings EXCLUDING those on
+# canonical-mirror files (byte-identical to the pinned canonical → already
+# reviewed upstream + hash-drift-enforced → the verbatim treadmill). This is the
+# PRECISE local exclusion the coarse .coderabbit globs cannot express for MIXED
+# dirs like .claude/hooks/ (a glob can't tell a mirror from a consumer-authored
+# file). Fail-safe: predicate unavailable → nothing excluded → full count. Also
+# avoids the CR-CLI complete-event over-count by tallying finding LINES.
+_CRE_LIB="$(dirname "${BASH_SOURCE[0]}")/../../_lib/canonical-review-exclude.sh"
+if [ -r "$_CRE_LIB" ]; then
+	# shellcheck source=../../_lib/canonical-review-exclude.sh
+	. "$_CRE_LIB" || true
+fi
+if command -v canonical_review_phase2_filtered_count >/dev/null 2>&1; then
+	findings=$(canonical_review_phase2_filtered_count "$TEE_OUT")
+else
+	# Fallback (lib unavailable): prior behavior — complete event, then grep.
+	findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
+	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+fi
 [[ $findings =~ ^[0-9]+$ ]] || findings=0
 
 # scm_log injects `sha` (short 7-char HEAD) into the log line — that's the
