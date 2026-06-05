@@ -100,6 +100,7 @@ teardown() {
 	. "$TEST_TMP/lonely/canonical-review-exclude.sh"
 	run canonical_review_excluded ".claude/hooks/foo.sh"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # fail-safe is silent — no stdout/stderr leak (#2240 phase2 CR)
 }
 
 # --- canonical_review_noncanonical_changed (diff minus excluded) ---
@@ -169,7 +170,8 @@ teardown() {
 	. "$LIB"
 	run canonical_review_noncanonical_changed nonexistent-base-ref
 	[ "$status" -eq 2 ]
-	[ -z "$output" ]
+	# #2240 phase2 CR: the failure surfaces a diagnostic (not swallowed silently).
+	[[ $output == *"git diff against base"* ]]
 }
 
 @test "noncanonical_changed (consumer): multiple consumer files all listed, mirror dropped" {

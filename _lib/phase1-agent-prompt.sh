@@ -100,7 +100,12 @@ phase1_agent_prompt() {
 	_cre_lib="$(dirname "${BASH_SOURCE[0]}")/canonical-review-exclude.sh"
 	if [ -r "$_cre_lib" ]; then
 		# shellcheck source=./canonical-review-exclude.sh
-		. "$_cre_lib" 2>/dev/null || true
+		# No 2>/dev/null: this sources a pure function-def lib, so a genuine
+		# source error (corruption) must surface. `|| true` still keeps the
+		# fail-safe — the command -v guard below degrades to full review if the
+		# predicate ends up undefined — without aborting the caller under set -e.
+		# (#2240 phase2 CR: don't suppress source diagnostics.)
+		. "$_cre_lib" || true
 		_cre_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 		if command -v canonical_review_noncanonical_changed >/dev/null 2>&1 &&
 			[ -n "$_cre_root" ] && [ ! -f "$_cre_root/.claude-plugin/plugin.json" ]; then

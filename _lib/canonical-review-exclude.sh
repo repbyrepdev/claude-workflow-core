@@ -53,7 +53,14 @@ canonical_review_excluded() {
 #                         git failure is NOT swallowed into an empty result.
 canonical_review_noncanonical_changed() {
 	local base="${1:-main}" f _diff
-	_diff=$(git diff --name-only "$base"..HEAD 2>/dev/null) || return 2
+	if ! _diff=$(git diff --name-only "$base"..HEAD 2>/dev/null); then
+		# Surface WHY scoping failed (e.g. <base> unresolved) so a consumer that
+		# unexpectedly reviews its full diff is debuggable; still return the
+		# fail-safe rc 2 so the caller falls back to reviewing everything. (#2240
+		# phase2 CR: don't swallow the failure reason entirely.)
+		printf 'canonical_review_noncanonical_changed: git diff against base %q failed (ref unresolved?); caller falls back to full review\n' "$base" >&2
+		return 2
+	fi
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
 		canonical_review_excluded "$f" || printf '%s\n' "$f"
