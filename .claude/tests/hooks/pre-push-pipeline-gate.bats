@@ -124,7 +124,9 @@ STUB
 	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
 	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
 	SOURCED_FOR_TEST=1 source "$TMP/link/deeper/pre-push"
-	command -v cr_phase2_clean_for_sha
+	run command -v cr_phase2_clean_for_sha
+	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
+	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
 }
 
 @test "gate resolves _lib through an ABSOLUTE-target .git/hooks symlink (#2252)" {
@@ -137,7 +139,9 @@ STUB
 	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
 	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
 	SOURCED_FOR_TEST=1 source "$TMP/link/deeper/pre-push"
-	command -v cr_phase2_clean_for_sha
+	run command -v cr_phase2_clean_for_sha
+	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
+	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
 }
 
 @test "gate resolves _lib through a CHAINED multi-hop symlink (#2252)" {
@@ -153,7 +157,9 @@ STUB
 	unset -f cr_phase2_clean_for_sha 2>/dev/null || true
 	# shellcheck disable=SC1090  # dynamic source path (the symlinked hook)
 	SOURCED_FOR_TEST=1 source "$TMP/b/deeper/pre-push"
-	command -v cr_phase2_clean_for_sha
+	run command -v cr_phase2_clean_for_sha
+	[ "$status" -eq 0 ]                          # fn defined ⇒ lib sourced
+	[[ $output == *"cr_phase2_clean_for_sha"* ]] # and it's actually that fn
 }
 
 @test "gate fails CLOSED when PPG_DIR resolves but _lib is absent (#2252 fail-safe)" {
