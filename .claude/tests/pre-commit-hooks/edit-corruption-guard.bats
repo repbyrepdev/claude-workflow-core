@@ -37,6 +37,7 @@ teardown() {
 	git add .claude/hooks/edit-corruption-pretooluse-guard.sh
 	run bash "$GUARD"
 	[ "$status" -eq 0 ]
+	[[ -z $output ]]
 }
 
 @test "#2254: plugin pre-commit-hooks/edit-corruption-guard.sh source is EXEMPT" {
@@ -45,6 +46,7 @@ teardown() {
 	git add pre-commit-hooks/edit-corruption-guard.sh
 	run bash "$GUARD"
 	[ "$status" -eq 0 ]
+	[[ -z $output ]]
 }
 
 @test "#2254: plugin hooks/edit-corruption-pretooluse-guard.sh source is EXEMPT" {
@@ -53,6 +55,7 @@ teardown() {
 	git add hooks/edit-corruption-pretooluse-guard.sh
 	run bash "$GUARD"
 	[ "$status" -eq 0 ]
+	[[ -z $output ]]
 }
 
 @test "#2254: a NON-guard .sh containing the literal is STILL BLOCKED" {
@@ -68,6 +71,7 @@ teardown() {
 	git add clean.sh
 	run bash "$GUARD"
 	[ "$status" -eq 0 ]
+	[[ -z $output ]]
 }
 
 @test "#2254: exemption is by path suffix — a look-alike name is still scanned/blocked" {
@@ -76,4 +80,5 @@ teardown() {
 	git add edit-corruption-pretooluse-guard-helper.sh
 	run bash "$GUARD"
 	[ "$status" -eq 1 ]
+	[[ $output == *"corrupted"* ]]
 }
