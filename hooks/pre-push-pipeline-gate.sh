@@ -25,6 +25,48 @@
 # stderr for visibility.
 set -euo pipefail
 
+# Resolve THIS script's real directory even when git invokes us through a
+# `.git/hooks/pre-push` SYMLINK (one consumer install shape — install-hooks.sh
+# itself writes a wrapper, handled below). Under a symlink
+# `$0`/`${BASH_SOURCE[0]}` point at `.git/hooks/`, a DIFFERENT depth than the
+# real hook, so `dirname/../_lib` resolves to a nonexistent `.git/_lib` and the
+# _lib + sibling sourcing below silently no-ops → fail-closed push (#2252).
+# The loop below follows the symlink chain so the BARE-SYMLINK shape resolves to
+# the real hook's dir. The OTHER install shapes need no loop and fall straight
+# through it: the install-hooks.sh wrapper `exec`s the absolute real path, a
+# whole-tree copy keeps `_lib` as a sibling, and `bats` sources the real .sh —
+# in each `${BASH_SOURCE[0]}` is already the real file (not a symlink). Empty/
+# wrong PPG_DIR (unresolvable) falls through to the existing `[ -r ]` / `[ -x ]`
+# guards → fail-safe, never a silent pass. `readlink` (not `readlink -f`) keeps
+# this portable to stock macOS/BSD.
+_ppg_self="${BASH_SOURCE[0]:-$0}"
+# Bounded hop count terminates even on a pathological symlink CYCLE (`readlink`,
+# unlike `-f`, has no ELOOP detection). 40 ≫ any real install chain; on overrun
+# the loop exits with `_ppg_self` still a symlink, so PPG_DIR resolves to a
+# non-canonical dir whose `../_lib` won't exist → the guards fail-closed.
+_ppg_hops=0
+while [ -L "$_ppg_self" ] && [ "$_ppg_hops" -lt 40 ]; do
+	_ppg_hops=$((_ppg_hops + 1))
+	_ppg_link="$(readlink "$_ppg_self" 2>/dev/null)" || break
+	case "$_ppg_link" in
+	/*) _ppg_self="$_ppg_link" ;;
+	*)
+		# Relative link: resolve against the link's OWN directory (on a multi-
+		# hop chain that dir derives from the prior hop's target, re-canonicalized
+		# by the cd/pwd below). If it
+		# can't be resolved, STOP following rather than fabricate `/$_ppg_link`
+		# from a bare target (#2252 phase0.5 silent-failure-hunter). Final
+		# PPG_DIR stays fail-safe.
+		_ppg_parent="$(cd "$(dirname "$_ppg_self")" 2>/dev/null && pwd)" || _ppg_parent=""
+		[ -n "$_ppg_parent" ] || break
+		_ppg_self="$_ppg_parent/$_ppg_link"
+		;;
+	esac
+done
+if ! PPG_DIR="$(cd "$(dirname "$_ppg_self")" 2>/dev/null && pwd)"; then
+	PPG_DIR="" # unresolvable → existing [ -r ]/[ -x ] guards fail-safe
+fi
+
 # v4.23-A (#547): change-type-aware Phase 1 round floor. Prior fixed
 # MIN_ROUNDS=5 cost ~1.75M tokens per PR regardless of size or nature.
 # Decision tree (first match wins):
@@ -197,9 +239,10 @@ _is_comments_only() {
 # v0.32.7 (#238): the CR Phase 2 coverage check is now SSOT in
 # _lib/cr-phase2-coverage.sh, SHARED with ship-pr-cycle's Phase 2 round-cap so
 # the cap never advances to a push this gate would refuse (and the two can't
-# drift). Resolve + source via BASH_SOURCE so it works whether the gate is
-# executed (pre-push) or sourced-for-test (bats $0 = bats, not the gate).
-_ppg_cov_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd)/cr-phase2-coverage.sh"
+# drift). Resolved via the symlink-safe PPG_DIR preamble (top of file) so it
+# works whether the gate is executed (pre-push — including through a
+# `.git/hooks/pre-push` symlink) or sourced-for-test under bats.
+_ppg_cov_lib="$PPG_DIR/../_lib/cr-phase2-coverage.sh"
 if [ -r "$_ppg_cov_lib" ]; then
 	# shellcheck source=../_lib/cr-phase2-coverage.sh
 	. "$_ppg_cov_lib"
@@ -419,7 +462,7 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
 	# not workspace HEAD — multi-ref pushes must apply graduation per-ref.
 	_grad_branch="${local_ref#refs/heads/}"
 	[ "$_grad_branch" = "$local_ref" ] && _grad_branch=""
-	_grad_lib="$(dirname "$0")/../_lib/phase-graduation.sh"
+	_grad_lib="$PPG_DIR/../_lib/phase-graduation.sh"
 	if [ -z "${PHASE1_MIN_ROUNDS:-}" ] && [ -n "$_grad_branch" ] && [ -r "$_grad_lib" ]; then
 		# shellcheck source=/dev/null
 		. "$_grad_lib"
@@ -478,7 +521,7 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
 	fi
 
 	# v4.15.C hardened check: expected-vs-actual agents per round + rounds-count + clean-streak.
-	LIST_SCRIPT="$(dirname "$0")/list-phase1-agents.sh"
+	LIST_SCRIPT="$PPG_DIR/list-phase1-agents.sh"
 	if [ ! -x "$LIST_SCRIPT" ]; then
 		echo "pre-push-pipeline-gate: $LIST_SCRIPT missing — cannot determine expected agents" >&2
 		FAILED=1
@@ -497,7 +540,7 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
 
 	# v4.15.Y: aggregate across all commits on branch since main — not just
 	# local_sha's log. Rounds persist as (sha, round) tuples.
-	COLLECT="$(dirname "$0")/_phase1-collect-logs.sh"
+	COLLECT="$PPG_DIR/_phase1-collect-logs.sh"
 	if [ ! -x "$COLLECT" ]; then
 		echo "pre-push-pipeline-gate: $COLLECT missing" >&2
 		FAILED=1
@@ -660,8 +703,7 @@ if [ "$FAILED" -eq 1 ]; then
 	# clear). Prior version passed review-log/${HEAD_SHA}.jsonl which DID
 	# NOT exist when the failure mode was "log missing" → Read-to-clear
 	# deadlock. The diagnostic file replaces that paradox.
-	REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null)
-	LIB_HOOK_ACK="$REPO_TOP/.claude/_lib/hook-ack.sh"
+	LIB_HOOK_ACK="$PPG_DIR/../_lib/hook-ack.sh"
 	# shellcheck source=../_lib/hook-ack.sh
 	[ -f "$LIB_HOOK_ACK" ] && source "$LIB_HOOK_ACK"
 	if command -v hook_ack_append >/dev/null 2>&1 &&
