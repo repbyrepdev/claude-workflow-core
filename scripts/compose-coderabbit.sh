@@ -7,9 +7,12 @@ set -euo pipefail
 #
 # Merge semantics (yq `*+`): overlay SCALARS win; overlay ARRAYS append to the
 # base arrays (so a repo's domain area:* labels / path rules EXTEND the base,
-# never silently drop it); base-only keys are preserved. With NO overlay (a
-# fresh repo), the base is emitted verbatim (comments preserved) — that IS the
-# new-repo starter config.
+# never silently drop it); base-only keys are preserved. The composed config is
+# then post-processed (#2254): a per-file `!.claude/hooks/<name>` exclusion is
+# appended to reviews.auto_review.path_filters for every CANONICAL hook (the
+# sibling hooks/ set) so CR-in-CI skips the byte-identical mirror hooks a
+# consumer carries. With NO overlay AND no resolvable sibling hooks/ dir, the
+# base is emitted verbatim (comments preserved) — the new-repo starter case.
 #
 # The BASE is byte-SSOT (hashed: true in scripts/bootstrap-manifest.yml →
 # Wave G hash-drift gates + propagates it). The OVERLAY and the COMPOSED
@@ -29,6 +32,11 @@ set -euo pipefail
 #   2 — precondition error: yq missing, base missing / not-a-mapping, an
 #       overlay that would clobber a base mapping-key with a non-mapping
 #       (deep-merge would gut the subtree), or a write failure.
+
+# Resolve this script's own dir so we can enumerate the sibling canonical
+# hooks/ set for the CR-in-CI mirror-hook exclusion (#2254). Empty on failure
+# → the later `[ -d ]` guard skips injection (fail-safe: base verbatim).
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 
 BASE=""
 OVERLAY=""
@@ -146,6 +154,43 @@ elif [ -n "$OVERLAY" ] && [ -f "$OVERLAY" ]; then
 else
 	# No overlay → base verbatim (preserves header comments; byte-identical).
 	result=$(cat "$BASE")
+fi
+
+# #2254: CR-in-CI canonical-mirror-hook exclusion. The .claude/hooks/ dir is
+# MIXED (canonical plugin mirrors + consumer-authored hooks), so the base
+# can't coarsely glob-exclude it, and CR-in-CI (server-side, glob-only) can't
+# hash-exclude per file — it re-reviews the byte-identical canonical MIRROR
+# hooks and floods every consumer PR (the "verbatim treadmill" that blocks
+# merges). Emit a per-file `!.claude/hooks/<name>` path_filter for each
+# CANONICAL hook (enumerated from this script's sibling hooks/ dir — the
+# authoritative set, resolvable from a dev-checkout OR the pinned cache;
+# overridable via COMPOSE_CR_HOOKS_DIR for tests). Consumer-AUTHORED hooks
+# (not in the canonical set) are NOT excluded, so CR still reviews them. Safe:
+# hash-drift forbids modifying canonical mirrors, so excluding them from CR is
+# not a blind spot. Idempotent: result is recomputed from the base each run.
+_hooks_dir="${COMPOSE_CR_HOOKS_DIR:-$SCRIPT_DIR/../hooks}"
+if [ -n "$SCRIPT_DIR" ] && [ -d "$_hooks_dir" ]; then
+	_excl=$(cd "$_hooks_dir" && for _h in *.sh; do
+		[ -e "$_h" ] || continue
+		printf '!.claude/hooks/%s\n' "$_h"
+	done | LC_ALL=C sort)
+	if [ -n "$_excl" ]; then
+		_yqe=$(mktemp -t compose-cr-excl.XXXXXX) || {
+			echo "compose-coderabbit: mktemp failed for hook-exclusion pass" >&2
+			exit 2
+		}
+		if ! result=$(printf '%s\n' "$result" | EXCL="$_excl" yq '
+			.reviews.auto_review.path_filters =
+				((.reviews.auto_review.path_filters // []) +
+					(strenv(EXCL) | split("\n") | map(select(. != ""))))
+		' 2>"$_yqe"); then
+			echo "compose-coderabbit: failed appending canonical-hook exclusions:" >&2
+			cat "$_yqe" >&2
+			rm -f "$_yqe"
+			exit 2
+		fi
+		rm -f "$_yqe"
+	fi
 fi
 
 if [ -n "$OUT" ]; then
