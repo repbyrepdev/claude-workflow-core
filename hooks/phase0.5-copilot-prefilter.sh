@@ -19,8 +19,10 @@ set -euo pipefail
 #   stdout: JSON array of dedup'd findings (may be [])
 #   .claude/logs/phase0.5-run.jsonl: per-agent entry {ts, sha, agent, findings, status}
 # Exit:
-#   0 = ran successfully (findings may be present; caller decides)
-#   1 = tooling error (copilot missing / yq missing / config missing)
+#   0 = ran successfully (findings may be present; caller decides) OR the
+#       optional Copilot helper was absent → pre-filter skipped, emits []
+#       (#2258 — keeps the canonical hook portable to consumers w/o Copilot)
+#   1 = tooling error (review-config / dedup-hook / yq / jq missing)
 #   2 = arg error
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -91,10 +93,11 @@ if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
 	echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 fi
-if [ -z "$COPILOT_HELPER" ] || [ ! -x "$COPILOT_HELPER" ]; then
-	echo "phase0.5: try-free.sh helper missing (checked $REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — install Copilot CLI first" >&2
-	exit 1
-fi
+# v0.34.40 (#2258): the Copilot pre-filter is OPTIONAL ("if available").
+# Helper availability is checked AFTER the SHA/diff block (graceful-skip,
+# not the old hard-fail) so a consumer that does not mirror scripts/copilot/
+# logs a skip + advances to Phase 1 instead of blocking. $COPILOT_HELPER
+# stays resolved above for that deferred check.
 [ -x "$DEDUP_HOOK" ] || {
 	echo "phase0.5: phase1-dedup.sh missing at $DEDUP_HOOK" >&2
 	exit 1
@@ -160,6 +163,20 @@ DIFF_CONTENT=$(git diff "${BASE}..${DIFF_REF}" 2>"$_git_err")
 [ -s "$_git_err" ] && echo "phase0.5: warning — git diff stderr: $(cat "$_git_err")" >&2
 trap - EXIT
 rm -f "$_git_err"
+# v0.34.40 (#2258): graceful-degrade when the OPTIONAL Copilot pre-filter
+# helper is unavailable. Log a skip + exit 0 so ship-pr-cycle advances to
+# Phase 1 (Claude agents). The prior hard-fail (exit 1, near the helper
+# resolution above) blocked every consumer that does not mirror
+# scripts/copilot/, forcing load-bearing forward-to-cache shims. jq (checked
+# above), LOG_DIR (writable-checked), and SHA are all ready here.
+if [ -z "$COPILOT_HELPER" ] || [ ! -x "$COPILOT_HELPER" ]; then
+	echo "phase0.5: Copilot helper unavailable (checked $REPO_ROOT/.claude/scripts/copilot/ + plugin cache) — skipping optional pre-filter; Phase 1 Claude agents proceed" >&2
+	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$SHA" \
+		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-copilot-helper"}' \
+		>>"$LOG"
+	echo "[]"
+	exit 0
+fi
 if [ -z "$DIFF_CONTENT" ]; then
 	echo "phase0.5: empty ${BASE}..${DIFF_REF} diff — nothing to pre-filter" >&2
 	echo "[]"
