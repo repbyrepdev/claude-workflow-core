@@ -351,13 +351,23 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	[ "$status" -eq 0 ]
 }
 
-@test "phase2 with a non-numeric findings count fails loud (no silent skip)" {
-	# Unlike phase1, phase2 does NO numeric guard — $2 goes straight to jq
-	# --argjson. A non-numeric count makes jq abort under set -e, so the run
-	# fails non-zero rather than silently appending a malformed/absent line.
+@test "phase2 with a non-numeric findings count fails loud (exit 2 + clear message)" {
+	# #2263: phase2 now validates findings as a non-negative integer
+	# (mirroring the phase1 non-negative-integer guard) BEFORE jq --argjson, so a
+	# non-numeric count exits 2 with a clear message instead of a cryptic jq abort.
 	_init_repo
 	_log phase2 abc clean
-	[ "$status" -ne 0 ]
+	[ "$status" -eq 2 ]
+	[[ $output == *"must be a non-negative integer"* ]]
+}
+
+@test 'phase2 rejects a negative findings count (the ^[0-9]+$ guard, #2263)' {
+	# Mirrors the phase1 negative-count lock: a leading '-' is refused, not
+	# parsed as a count. Pins the 'non-negative' half the abc-case omits.
+	_init_repo
+	_log phase2 -1 clean
+	[ "$status" -eq 2 ]
+	[[ $output == *"must be a non-negative integer"* ]]
 }
 
 @test "accept-with-reason writes a kind=accept-with-reason record; empty reason → exit 2" {

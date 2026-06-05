@@ -211,3 +211,15 @@ STUB
 	[ "$status" -eq 0 ]          # bash -c returned (the cycle did NOT spin)
 	[[ $output == *"REACHED"* ]] # ... and reached the sentinel past the source
 }
+
+@test "gate fails CLOSED (exit 1) when REPO_ROOT is unresolvable — non-git work tree (#2263)" {
+	# #2263: the empty-REPO_ROOT path changed from `exit 0` (fail-OPEN —
+	# silently bypassing the WHOLE pipeline gate) to `exit 1` (fail-CLOSED). Run
+	# the hook NON-sourced (so it does NOT return at the SOURCED_FOR_TEST guard
+	# that precedes the check) with cwd in the non-git $TMP, so
+	# `git rev-parse --show-toplevel` yields an empty REPO_ROOT. Without this lock
+	# a refactor could silently revert the gate to fail-open and no test would see it.
+	run bash -c "cd '$TMP' && printf '' | bash '$HOOK'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"failing closed"* ]]
+}
