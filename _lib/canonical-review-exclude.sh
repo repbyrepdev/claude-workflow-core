@@ -67,44 +67,67 @@ canonical_review_noncanonical_changed() {
 	done <<<"$_diff"
 }
 
-# canonical_review_phase2_filtered_count <cr-cli-output-file>
-#   The phase2 hash-filter (#2249): count CR-CLI findings EXCLUDING those on
-#   canonical-mirror files. Reads `{"type":"finding","fileName":...}` JSON lines
-#   from <file>, drops each whose path is canonical_review_excluded (byte-
-#   identical to the pinned canonical → already reviewed upstream + hash-drift-
-#   enforced → the verbatim treadmill), and prints the count of the remainder.
-#   This is the PRECISE local-layer exclusion the coarse .coderabbit globs can't
-#   express (a glob can't tell a mirror from a consumer-authored file in a mixed
-#   dir like .claude/hooks/). Fail-SAFE: if the hash predicate is unavailable,
-#   nothing is excluded → the full count (never a false-clean). With NO finding
-#   lines it falls back to the terminal `{"type":"complete",...,"findings":N}`
-#   count (no per-file paths to filter); counting finding LINES also avoids the
-#   CR-CLI complete-event over-count (#2240 saw findings:4 with 1 line emitted).
-canonical_review_phase2_filtered_count() {
-	local out="${1:-}" files f kept=0
+# canonical_review_filtered_finding_count <cr-cli-output-file>
+#   Count CR-CLI findings EXCLUDING those on canonical-mirror files (the #2249
+#   review-exclusion at the phase2 layer). A finding on a file byte-identical to
+#   the pinned canonical (canonical_review_excluded) is already-reviewed-upstream
+#   + hash-drift-enforced — the "verbatim treadmill" — so it is dropped; every
+#   other finding is COUNTED. This is the PRECISE exclusion the coarse .coderabbit
+#   globs can't express for a MIXED dir (.claude/hooks/) where mirrors and
+#   consumer-authored files coexist.
+#
+#   Robustness contract (#2249 phase1 silent-failure-hunter — a review-suppression
+#   counter must NEVER under-report; a false-clean lets unreviewed consumer code
+#   reach push):
+#   - Finding lines are read TEXTUALLY (grep `"type":"finding"`), NOT via a whole-
+#     stream `jq -rs` slurp: the CR-CLI output file (TEE_OUT) is `2>&1`-merged and
+#     interleaves banner/progress/stderr noise, and one non-JSON line makes a bare
+#     `-rs` slurp fail → empty → a silent 0 (the sibling rate-limit detector pre-
+#     filters `^\{` for the same reason). Each finding line is itself one JSON
+#     object, parsed on its own.
+#   - A finding is KEPT unless it has a NON-EMPTY path AND that path is a proven
+#     canonical mirror. Empty/absent path, jq missing, OR predicate unavailable
+#     all fall through to KEEP — the fail-safe direction (count, never drop).
+#   - With finding lines present the kept count is authoritative (all-canonical →
+#     0). Counting finding LINES also avoids the CR-CLI complete-event over-count
+#     (#2240 saw findings:4 with 1 line emitted).
+#   - With NO finding lines, fall back to the terminal `{"type":"complete",...,
+#     "findings":N}` event, `^\{`-prefiltered so the slurp can't choke on noise.
+canonical_review_filtered_finding_count() {
+	local out="${1:-}" line file kept=0 saw=0 _have_jq=0
 	{ [ -n "$out" ] && [ -r "$out" ]; } || {
 		printf '0'
 		return 0
 	}
-	if ! command -v jq >/dev/null 2>&1; then
-		grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$out" 2>/dev/null || printf '0'
-		return 0
+	if command -v jq >/dev/null 2>&1; then
+		_have_jq=1
 	fi
-	files=$(jq -rs 'map(select(.type=="finding") | (.fileName // .file // empty)) | .[]' "$out" 2>/dev/null || true)
-	if [ -z "$files" ]; then
-		# No finding lines → use the complete event verbatim (no paths to filter).
-		local c
-		c=$(jq -rs 'map(select(.type=="complete")) | if length>0 then (.[-1].findings // 0) else 0 end' "$out" 2>/dev/null || true)
-		case "${c:-}" in
-		'' | *[!0-9]*) printf '0' ;;
-		*) printf '%s' "$c" ;;
-		esac
-		return 0
-	fi
-	while IFS= read -r f; do
-		[ -n "$f" ] || continue
-		canonical_review_excluded "$f" && continue
+	while IFS= read -r line; do
+		saw=1
+		file=""
+		# Each finding line is a single JSON object → parse it alone (no whole-
+		# stream slurp). jq missing / parse failure → file stays empty → KEEP.
+		if [ "$_have_jq" -eq 1 ]; then
+			file=$(printf '%s\n' "$line" | jq -r '(.fileName // .file // "")' 2>/dev/null || printf '')
+		fi
+		# Drop ONLY a proven canonical mirror; every other case is kept.
+		if [ -n "$file" ] && canonical_review_excluded "$file"; then
+			continue
+		fi
 		kept=$((kept + 1))
-	done <<<"$files"
-	printf '%s' "$kept"
+	done < <(grep -E '"type"[[:space:]]*:[[:space:]]*"finding"' "$out" 2>/dev/null)
+	if [ "$saw" -eq 1 ]; then
+		printf '%s' "$kept"
+		return 0
+	fi
+	# No finding lines → terminal complete event (no per-file paths to filter).
+	# Pre-filter to JSON-object lines so the slurp survives banner/stderr noise.
+	local c=""
+	if [ "$_have_jq" -eq 1 ]; then
+		c=$(grep -E '^[[:space:]]*\{' "$out" 2>/dev/null | jq -rs 'map(select(.type=="complete")) | if length>0 then (.[-1].findings // 0) else 0 end' 2>/dev/null || printf '')
+	fi
+	case "${c:-}" in
+	'' | *[!0-9]*) printf '0' ;;
+	*) printf '%s' "$c" ;;
+	esac
 }

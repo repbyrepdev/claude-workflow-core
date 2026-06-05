@@ -100,3 +100,29 @@ _stub_coderabbit() {
 	[ "$status" -eq 1 ]
 	[[ $output != *"timed out"* ]]
 }
+
+@test "local-review: findings count uses the textual hash-filter (survives noisy TEE_OUT) (#2249)" {
+	# Wiring + false-clean regression: local-review.sh must source canonical-
+	# review-exclude.sh and tally finding LINES via canonical_review_filtered_
+	# finding_count — NOT a whole-stream jq -rs slurp that a banner-interleaved
+	# TEE_OUT would fail on → silent 0. Stub coderabbit with realistic noise
+	# around the finding lines; the LOGGED count (what the pre-push gate reads)
+	# must be 2, not 0.
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'echo "=== Running coderabbit review --agent -t committed --base main ==="'
+		printf 'printf "%%s\\n" %q\n' '{"type":"finding","fileName":"README.md"}'
+		echo 'echo "CodeRabbit: heartbeat reviewing..."'
+		printf 'printf "%%s\\n" %q\n' '{"type":"finding","fileName":"src/x.sh"}'
+		printf 'printf "%%s\\n" %q\n' '{"type":"complete","findings":2}'
+		echo 'exit 1'
+	} >"$TEST_TMP/bin/coderabbit"
+	chmod +x "$TEST_TMP/bin/coderabbit"
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 1 ] # CR exits 1 on findings
+	# Neither file is a canonical mirror in this tmp repo → both kept → 2.
+	# The old jq -rs slurp would have failed on the banner lines → 0 (false-clean).
+	logged=$(jq -rs 'map(select(.findings != null)) | .[-1].findings' "$TEST_TMP/.claude/logs/cr-local-review.jsonl" 2>/dev/null || echo "")
+	[ "$logged" = "2" ]
+}

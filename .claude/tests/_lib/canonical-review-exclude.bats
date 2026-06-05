@@ -194,7 +194,7 @@ teardown() {
 	[[ $output != *".claude/hooks/foo.sh"* ]]
 }
 
-# --- canonical_review_phase2_filtered_count (#2249 phase2 hash-filter) ---
+# --- canonical_review_filtered_finding_count (#2249 phase2 hash-filter) ---
 
 @test "phase2_filtered_count (consumer): drops findings on canonical mirrors, keeps consumer-authored" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
@@ -205,7 +205,7 @@ teardown() {
 		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
 		'{"type":"finding","fileName":".pre-commit-config.yaml"}' \
 		'{"type":"complete","findings":2}' >"$TEST_TMP/cr.jsonl"
-	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
 	[ "$status" -eq 0 ]
 	[ "$output" -eq 1 ] # canonical mirror dropped, consumer-authored kept
 }
@@ -218,7 +218,7 @@ teardown() {
 		'{"type":"finding","fileName":"hooks/foo.sh"}' \
 		'{"type":"finding","fileName":"hooks/bar.sh"}' \
 		'{"type":"complete","findings":2}' >"$TEST_TMP/cr.jsonl"
-	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
 	[ "$status" -eq 0 ]
 	[ "$output" -eq 2 ]
 }
@@ -228,7 +228,7 @@ teardown() {
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' '{"type":"complete","findings":4}' >"$TEST_TMP/cr.jsonl"
-	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
 	[ "$status" -eq 0 ]
 	[ "$output" -eq 4 ]
 }
@@ -237,7 +237,7 @@ teardown() {
 	cd "$REPO"
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
-	run canonical_review_phase2_filtered_count "$TEST_TMP/nope.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/nope.jsonl"
 	[ "$status" -eq 0 ]
 	[ "$output" -eq 0 ]
 }
@@ -256,7 +256,96 @@ teardown() {
 	printf '%s\n' \
 		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
 		'{"type":"finding","fileName":".pre-commit-config.yaml"}' >"$TEST_TMP/cr.jsonl"
-	run canonical_review_phase2_filtered_count "$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
 	[ "$status" -eq 0 ]
 	[ "$output" -eq 2 ]
+}
+
+@test "filtered_finding_count (consumer): all findings on canonical mirrors → 0" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	mkdir -p "$REPO/.claude/_lib"
+	cp "$PLUGIN/_lib/canonical-consumer-skip.sh" "$REPO/.claude/_lib/canonical-consumer-skip.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' \
+		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
+		'{"type":"finding","fileName":".claude/_lib/canonical-consumer-skip.sh"}' \
+		'{"type":"complete","findings":2}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 0 ] # all mirrors dropped; saw=1 so NOT the complete fallback
+}
+
+@test "filtered_finding_count: noisy TEE_OUT (banner lines interleaved) → counts findings, not 0" {
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	# Realistic CR-CLI TEE_OUT: status/banner/heartbeat noise around finding lines.
+	# A whole-stream `jq -rs` slurp would FAIL on the non-JSON lines → silent 0.
+	{
+		echo '=== Running coderabbit review --agent -t committed --base main ==='
+		echo '{"type":"status","phase":"analyzing"}'
+		echo '{"type":"finding","fileName":".pre-commit-config.yaml"}'
+		echo 'CodeRabbit: heartbeat reviewing...'
+		echo '{"type":"finding","fileName":"README.md"}'
+		echo '{"type":"complete","findings":2}'
+	} >"$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 2 ] # both consumer findings counted despite the noise
+}
+
+@test "filtered_finding_count: finding keyed by .file (not .fileName) is handled" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' \
+		'{"type":"finding","file":".claude/hooks/foo.sh"}' \
+		'{"type":"finding","file":".pre-commit-config.yaml"}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 1 ] # .file mirror dropped, .file consumer kept
+}
+
+@test "filtered_finding_count: path-less finding is KEPT (never under-counted)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' \
+		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
+		'{"type":"finding","message":"no path on this finding"}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 1 ] # mirror dropped; the path-less finding KEPT (fail-safe)
+}
+
+@test "filtered_finding_count: complete event with null findings → 0" {
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' '{"type":"complete","findings":null}' >"$TEST_TMP/cr.jsonl"
+	run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 0 ]
+}
+
+@test "filtered_finding_count: jq absent → full textual count (no filtering, fail-safe)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	printf '%s\n' \
+		'{"type":"finding","fileName":".claude/hooks/foo.sh"}' \
+		'{"type":"finding","fileName":".pre-commit-config.yaml"}' >"$TEST_TMP/cr.jsonl"
+	# A PATH with no jq → the function can't parse paths → keeps ALL finding
+	# lines (fail-safe toward counting, NEVER a false-clean). grep is the only
+	# external the jq-less path needs; symlink it into the restricted PATH.
+	mkdir -p "$TEST_TMP/nojq"
+	ln -s "$(command -v grep)" "$TEST_TMP/nojq/grep"
+	PATH="$TEST_TMP/nojq" run canonical_review_filtered_finding_count "$TEST_TMP/cr.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" -eq 2 ] # no jq → no exclusion → both kept (incl the mirror)
 }

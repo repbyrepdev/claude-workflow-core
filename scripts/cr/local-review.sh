@@ -294,8 +294,8 @@ if [ -r "$_CRE_LIB" ]; then
 	# shellcheck source=../../_lib/canonical-review-exclude.sh
 	. "$_CRE_LIB" || true
 fi
-if command -v canonical_review_phase2_filtered_count >/dev/null 2>&1; then
-	findings=$(canonical_review_phase2_filtered_count "$TEE_OUT")
+if command -v canonical_review_filtered_finding_count >/dev/null 2>&1; then
+	findings=$(canonical_review_filtered_finding_count "$TEE_OUT")
 else
 	# Fallback (lib unavailable): prior behavior — complete event, then grep.
 	findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
