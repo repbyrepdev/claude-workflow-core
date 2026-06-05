@@ -26,7 +26,8 @@
 set -euo pipefail
 
 # Resolve THIS script's real directory even when git invokes us through a
-# `.git/hooks/pre-push` SYMLINK (the consumer install shape). Under a symlink
+# `.git/hooks/pre-push` SYMLINK (one consumer install shape — install-hooks.sh
+# itself writes a wrapper, handled below). Under a symlink
 # `$0`/`${BASH_SOURCE[0]}` point at `.git/hooks/`, a DIFFERENT depth than the
 # real hook, so `dirname/../_lib` resolves to a nonexistent `.git/_lib` and the
 # _lib + sibling sourcing below silently no-ops → fail-closed push (#2252).
@@ -51,7 +52,8 @@ while [ -L "$_ppg_self" ] && [ "$_ppg_hops" -lt 40 ]; do
 	/*) _ppg_self="$_ppg_link" ;;
 	*)
 		# Relative link: resolve against the link's OWN directory (on a multi-
-		# hop chain that dir is the prior hop's already-canonical target). If it
+		# hop chain that dir derives from the prior hop's target, re-canonicalized
+		# by the cd/pwd below). If it
 		# can't be resolved, STOP following rather than fabricate `/$_ppg_link`
 		# from a bare target (#2252 phase0.5 silent-failure-hunter). Final
 		# PPG_DIR stays fail-safe.

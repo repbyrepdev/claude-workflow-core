@@ -171,3 +171,15 @@ STUB
 	[ "$status" -ne 0 ]
 	[[ $output == *"not sourced"* ]]
 }
+
+@test "gate does not HANG on a cyclic symlink install (#2252 termination)" {
+	# Defense-in-depth: a misconfigured/cyclic .git/hooks/pre-push must fail-fast,
+	# never hang the push. The OS's ELOOP (open of a self-referential link) and
+	# the bounded-hop guard both guarantee termination. Sourcing through the
+	# cycle must RETURN (so the test reaches its assertion); a spin would hang
+	# the bats run → regression caught. No timeout(1) dep (absent on stock macOS).
+	mkdir -p "$TMP/cyc"
+	ln -s pre-push "$TMP/cyc/pre-push" # self-referential cycle (a -> a)
+	run bash -c "SOURCED_FOR_TEST=1 source '$TMP/cyc/pre-push' 2>/dev/null; echo REACHED"
+	[[ $output == *"REACHED"* ]] # process returned (did not spin)
+}
