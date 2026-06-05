@@ -91,7 +91,7 @@ PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
 . "$PLUGIN_LIB/resolve-plugin-helper.sh"
 
 CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
-# v0.34.40 (#2258): capture the resolver rc so the deferred availability
+# (#2258): capture the resolver rc so the deferred availability
 # check (after the SHA/diff block) distinguishes a GENUINE absence (rc=1 →
 # graceful-skip) from a resolver HARD-ERROR (rc=2 → plugin broken, hard-fail).
 _copilot_rc=0
@@ -104,7 +104,7 @@ if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
 	echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 fi
-# v0.34.40 (#2258): $COPILOT_HELPER + $_copilot_rc resolved above; the
+# (#2258): $COPILOT_HELPER + $_copilot_rc resolved above; the
 # availability check is deferred to after the SHA/diff block (see below).
 [ -x "$DEDUP_HOOK" ] || {
 	echo "phase0.5: phase1-dedup.sh missing at $DEDUP_HOOK" >&2
@@ -171,14 +171,16 @@ DIFF_CONTENT=$(git diff "${BASE}..${DIFF_REF}" 2>"$_git_err")
 [ -s "$_git_err" ] && echo "phase0.5: warning — git diff stderr: $(cat "$_git_err")" >&2
 trap - EXIT
 rm -f "$_git_err"
-# v0.34.40 (#2258): the Copilot pre-filter is OPTIONAL, but degrade SAFELY —
+# (#2258): the Copilot pre-filter is OPTIONAL, but degrade SAFELY —
 # only a GENUINE absence skips; a broken plugin install must stay loud (a
 # blanket graceful-skip would silently swallow a broken install — silent-
-# failure-hunter HIGH). Three-way:
+# failure-hunter HIGH). Four-way on $COPILOT_HELPER / $_copilot_rc:
 #   rc=2 (resolver hard-error, e.g. plugin root unresolvable) → hard-fail.
 #   helper present but not executable → hard-fail (broken install / bad perms).
+#   empty + rc=0 (resolver reported success but returned no path = resolver
+#     bug) → hard-fail (do NOT treat a resolver bug as a benign absence).
 #   helper absent from BOTH local .claude/scripts/copilot/ AND the plugin
-#     cache (empty, rc!=2) → graceful-skip: log + emit [] + exit 0 so Phase 1
+#     cache (empty, rc=1) → graceful-skip: log + emit [] + exit 0 so Phase 1
 #     still runs (the consumer-portability path that unparks no-Copilot repos).
 # jq (checked above), LOG_DIR (writable-checked), SHA are all ready here.
 if [ "$_copilot_rc" -eq 2 ]; then
@@ -187,6 +189,10 @@ if [ "$_copilot_rc" -eq 2 ]; then
 fi
 if [ -n "$COPILOT_HELPER" ] && [ ! -x "$COPILOT_HELPER" ]; then
 	echo "phase0.5: Copilot helper $COPILOT_HELPER present but NOT executable — likely broken install (fix perms: chmod +x); refusing to skip silently" >&2
+	exit 1
+fi
+if [ -z "$COPILOT_HELPER" ] && [ "$_copilot_rc" -eq 0 ]; then
+	echo "phase0.5: resolver returned success (rc=0) but empty path for scripts/copilot/try-free.sh — resolver bug; plugin install likely broken; refusing to skip silently" >&2
 	exit 1
 fi
 if [ -z "$COPILOT_HELPER" ]; then
