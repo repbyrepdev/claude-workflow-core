@@ -1,7 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
-    ".coderabbit.base.yaml": "5f7428606b647da08eaf18ee723dec83177e9675f242b180fb0fe9165b8abfe3",
+    ".coderabbit.base.yaml": "201b2d06b79f1eb25929399426d33939c67b4b3f8a7924ce9a8a37c914b37c78",
     ".codex/config.toml": "dc2544585ac5b695db435ec6d814005d311326d9814b82901c7bf46d9bdd9af3",
     ".gemini/policy.toml": "c9f74f98b608c1bd188d6c2bda7910bc405a23148a06bbe3339488f57c31729a",
     ".gemini/settings.json": "70d6b428283918e0fbc517798d815aac925fffcbba03c733f5182ba5e5727621",
@@ -18,6 +18,7 @@
     "_lib/bash4-features-check.sh": "3d0a27aa98d369e7fa482472eba8192128f4e4db42d275b1b7096d9610a18dbc",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",
     "_lib/canonical-consumer-skip.sh": "1fd1570a227f1f34fc3e34354b54d69c57a104cda625a318d724e1219e5e0840",
+    "_lib/canonical-review-exclude.sh": "405c8b018aaf5142e032550b36a75a0c2a42cbd96ed1593e5d1bfe715bec949f",
     "_lib/cmd-anchor.sh": "54ad7902014df8cd66bd0c1142bfdfe8f583227875a519d0aa04f98abf1e2806",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
     "_lib/content-hash-cache.sh": "58370546a2e3be3ec0629d7b89796b1b7976a3f9d96022496bf7b28d9ba96e6e",
@@ -33,7 +34,7 @@
     "_lib/phase-graduation.sh": "4fac4b2f11e18b44d0504c96eb54592072f897956472775a21b38154088449e0",
     "_lib/phase05-auth-summary.sh": "5807f547ca81ce1b2cce56a0ac36c4652a11af89d409e55411be21ae1027c97a",
     "_lib/phase05-dedupe.sh": "35546f3ca75f21cb21759d8271180b798b5c7de5226def791df107104d2fa46d",
-    "_lib/phase1-agent-prompt.sh": "db7da5ae704e66e507540bb557bc79aaf7bf88aeb3df3e051022f85bf144a198",
+    "_lib/phase1-agent-prompt.sh": "13408a8e02a048f4d8ab9de45f8ef41efa81105db8a4bf8031c1852db1f86aad",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",
     "_lib/resolve-plugin-helper.sh": "71cc5c26e63cb8868b3c00cb35a2bac9834f60651bae87adec40c4d7972a1a65",

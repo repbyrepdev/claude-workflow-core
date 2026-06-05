@@ -80,6 +80,23 @@ reviews:
       - "!.claude/audit/**"
       - "!**/*.svg"
       - "!**/*.png"
+      # v0.34.35 (#2240) canonical-review-exclusion: a consumer MIRRORS these
+      # canonical plugin dirs and `hash-drift --verify` (pre-commit + CI) enforces
+      # byte-identity to the pinned cache — so they were ALREADY reviewed+merged
+      # upstream. Re-reviewing them in a consumer is the "verbatim treadmill"
+      # (media-server v0.8.8->v0.34.34 #950: 24 CR findings, every one on these
+      # mirrors; the only consumer-authored change — the pin — was phase1-clean).
+      # Safe for the plugin too: its reviewed source lives at hooks/ _lib/ skills/
+      # scripts/ .semgrep/ (NOT under .claude/), and any .claude/ copies are
+      # self-dogfood byte-identical mirrors. CR-in-CI can't express hash-equality,
+      # so these globs are the CR-layer equivalent of the precise hash-based
+      # _lib/canonical-review-exclude.sh the LOCAL layers (phase1/phase2) consume.
+      - "!.claude/hooks/**"
+      - "!.claude/_lib/**"
+      - "!.claude/pre-commit-hooks/**"
+      - "!.claude/scripts/**"
+      - "!.claude/agents/**"
+      - "!.claude/skills/ship-pr-cycle/**"
   # PR labels — by which files changed. Universal area/type labels; repos
   # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.
   labeling_instructions:

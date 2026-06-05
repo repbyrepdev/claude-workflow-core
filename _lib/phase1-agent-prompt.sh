@@ -83,11 +83,59 @@ phase1_agent_prompt() {
 	local focus
 	focus=$(_phase1_agent_focus "$agent") || return $?
 
+	# v0.34.35 (#2240) canonical-review-exclusion: in a CONSUMER, narrow the
+	# review surface to its consumer-authored (non-canonical) changed files. The
+	# canonical mirrors (.claude/hooks, _lib, skills/ship-pr-cycle, ...) are
+	# byte-identical to the pinned plugin cache (hash-drift --verify enforces it)
+	# and were already reviewed upstream — re-reviewing them is the verbatim
+	# treadmill. No-op for the PLUGIN itself (producer): it has plugin.json, so
+	# the consumer guard below is false and it reviews its full diff.
+	#
+	# Consumer-vs-plugin is the plugin.json marker (one cheap rev-parse), and the
+	# file list comes from the TESTED canonical_review_noncanonical_changed
+	# helper — so this never shells out to `git diff` twice (#2240 phase0.5) and
+	# never re-implements the filter. scope_clause carries its own surrounding
+	# blank lines, so the empty (plugin) case leaves NO stray blank line.
+	local scope_clause="" _cre_lib _cre_root
+	_cre_lib="$(dirname "${BASH_SOURCE[0]}")/canonical-review-exclude.sh"
+	if [ -r "$_cre_lib" ]; then
+		# shellcheck source=./canonical-review-exclude.sh
+		# No 2>/dev/null: this sources a pure function-def lib, so a genuine
+		# source error (corruption) must surface. `|| true` still keeps the
+		# fail-safe — the command -v guard below degrades to full review if the
+		# predicate ends up undefined — without aborting the caller under set -e.
+		# (#2240 phase2 CR: don't suppress source diagnostics.)
+		. "$_cre_lib" || true
+		_cre_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+		if command -v canonical_review_noncanonical_changed >/dev/null 2>&1 &&
+			[ -n "$_cre_root" ] && [ ! -f "$_cre_root/.claude-plugin/plugin.json" ]; then
+			# A FAILED diff (helper rc != 0 — e.g. `main` does not resolve in this
+			# consumer / CI checkout) falls through to NO clause = full review
+			# (fail-safe). Only a SUCCESSFUL diff distinguishes all-canonical
+			# (empty) from partial (the consumer-authored file list). (#2240 r1
+			# silent-failure-hunter: empty-on-failure must NOT read as "review
+			# nothing".)
+			local _noncanon
+			if _noncanon=$(canonical_review_noncanonical_changed main); then
+				if [ -n "$_noncanon" ]; then
+					scope_clause="
+CANONICAL-EXCLUSION: review ONLY these consumer-authored files (any other changed files are byte-identical pinned-canonical mirrors, upstream-reviewed + hash-drift-enforced — out of scope):
+$(printf '%s\n' "$_noncanon" | sed 's/^/  - /')
+"
+				else
+					scope_clause='
+CANONICAL-EXCLUSION: every changed file is byte-identical to the pinned plugin canonical (upstream-reviewed + hash-drift-enforced). Nothing consumer-authored to review — return `[]`.
+'
+				fi
+			fi
+		fi
+	fi
+
 	cat <<EOF
 Review the diff \`git diff main..HEAD\` for the current branch (HEAD ${sha:-<resolve>}, round $round).
 
 $focus
-
+${scope_clause}
 READ ONLY — do NOT modify, edit, or write to any files. Return findings as a
 JSON array of {severity: high|medium|low, file: path, line: number, category:
 string, description: 1-2 sentences (include suggestion text here if any),
