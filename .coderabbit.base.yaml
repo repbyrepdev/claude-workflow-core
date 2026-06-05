@@ -36,6 +36,12 @@ inheritance: false
 
 reviews:
   profile: assertive
+  # CR acts as an APPROVING reviewer: posts "Request changes" on findings,
+  # auto-switches to "Approve" once all its comments are resolved + pre-merge
+  # checks pass. Satisfies branch-protection "require N approving reviews" on
+  # consumer repos (e.g. pricing-team-toolkit) so clean PRs merge via CR's
+  # approval — no admin override. (#2261)
+  request_changes_workflow: true
   high_level_summary: true
   high_level_summary_placeholder: "<!-- coderabbit:summary -->"
   review_status: true
