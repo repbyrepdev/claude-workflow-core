@@ -393,7 +393,15 @@ MIN_CLEAN_STREAK="${PHASE1_MIN_CLEAN_STREAK:-1}"
 [ "${SOURCED_FOR_TEST:-0}" = "1" ] && return 0
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-[ -z "$REPO_ROOT" ] && exit 0
+# v0.34.45 #2263: fail CLOSED (not open) when the repo root is unresolvable. A
+# pre-push hook is always invoked inside a work tree, so an empty REPO_ROOT is
+# pathological — refuse the push rather than silently BYPASS the entire pipeline
+# gate (mirrors lint-gate-bash's HEAD-unresolvable fail-closed). The
+# SOURCED_FOR_TEST guard above returns before this, so tests are unaffected.
+if [ -z "$REPO_ROOT" ]; then
+	echo "pre-push-pipeline-gate: cannot resolve repo root (git rev-parse --show-toplevel failed) — refusing to bypass the pipeline gate; failing closed" >&2
+	exit 1
+fi
 
 # v0.31 #228: surface hook-wiring drift at the push checkpoint (fail-soft).
 _orphan_hook_advisory "$REPO_ROOT"

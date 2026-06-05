@@ -73,7 +73,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,25p' "$0"
+		sed -n '4,25p' "${BASH_SOURCE[0]}"
 		exit 0
 		;;
 	*)
@@ -90,18 +90,26 @@ PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
 # shellcheck source=../_lib/resolve-plugin-helper.sh
 . "$PLUGIN_LIB/resolve-plugin-helper.sh"
 
-CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
+# v0.34.45 #2263: capture the review-config resolver rc too (mirrors the
+# COPILOT_HELPER pattern below) so a resolver HARD-ERROR (rc=2 → plugin broken)
+# is reported as such instead of the misleading "review-config.yml missing".
+_config_rc=0
+CONFIG=$(resolve_plugin_helper "review-config.yml" 2>/dev/null) || _config_rc=$?
 # (#2258): capture the resolver rc so the deferred availability
 # check (after the SHA/diff block) distinguishes a GENUINE absence (rc=1 →
 # graceful-skip) from a resolver HARD-ERROR (rc=2 → plugin broken, hard-fail).
 _copilot_rc=0
 COPILOT_HELPER=$(resolve_plugin_helper "scripts/copilot/try-free.sh" 2>/dev/null) || _copilot_rc=$?
-DEDUP_HOOK="$(dirname "$0")/phase1-dedup.sh"
+DEDUP_HOOK="$(dirname "${BASH_SOURCE[0]}")/phase1-dedup.sh"
 LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 
 if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
-	echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
+	if [ "$_config_rc" -eq 2 ]; then
+		echo "phase0.5: plugin-helper resolver hard-error (rc=2) resolving review-config.yml — plugin install likely broken" >&2
+	else
+		echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
+	fi
 	exit 1
 fi
 # (#2258): $COPILOT_HELPER + $_copilot_rc resolved above; the
@@ -241,7 +249,7 @@ fi
 # as defense-in-depth — no guarantee the schema check ran in arbitrary
 # execution contexts (cherry-pick, manual override, broken pre-commit).
 # See r3 SFH F6 fix below.
-LIST_HOOK="$(dirname "$0")/list-phase1-agents.sh"
+LIST_HOOK="$(dirname "${BASH_SOURCE[0]}")/list-phase1-agents.sh"
 LIST_ERR=$(mktemp)
 LIST_RC=0
 PHASE1_AGENTS=$("$LIST_HOOK" "$BASE" 2>"$LIST_ERR") || LIST_RC=$?
@@ -413,7 +421,7 @@ done
 
 # v4.28-W5 #759: aggregated end-of-run summary via shared helper.
 # shellcheck source=../_lib/phase05-auth-summary.sh
-. "$(dirname "$0")/../_lib/phase05-auth-summary.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../_lib/phase05-auth-summary.sh"
 phase05_emit_auth_summary "copilot" "copilot login" "$ERRORED" "$ATTEMPTED" "$ERR_EXCERPTS"
 
 # Two-stage dedup (#817 + #823 + #827): phase1-dedup → audit-dedup.
