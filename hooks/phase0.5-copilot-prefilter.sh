@@ -73,6 +73,8 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
+		# ${BASH_SOURCE[0]} (not $0): resolves this script's own path even when
+		# sourced or invoked via a .git/hooks symlink (used for all self-refs below).
 		sed -n '4,25p' "${BASH_SOURCE[0]}"
 		exit 0
 		;;
@@ -90,11 +92,7 @@ PLUGIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" && pwd)"
 # shellcheck source=../_lib/resolve-plugin-helper.sh
 . "$PLUGIN_LIB/resolve-plugin-helper.sh"
 
-# v0.34.45 #2263: capture the review-config resolver rc too (mirrors the
-# COPILOT_HELPER pattern below) so a resolver HARD-ERROR (rc=2 → plugin broken)
-# is reported as such instead of the misleading "review-config.yml missing".
-_config_rc=0
-CONFIG=$(resolve_plugin_helper "review-config.yml" 2>/dev/null) || _config_rc=$?
+CONFIG="$(resolve_plugin_helper "review-config.yml" 2>/dev/null || echo "")"
 # (#2258): capture the resolver rc so the deferred availability
 # check (after the SHA/diff block) distinguishes a GENUINE absence (rc=1 →
 # graceful-skip) from a resolver HARD-ERROR (rc=2 → plugin broken, hard-fail).
@@ -105,11 +103,7 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 
 if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
-	if [ "$_config_rc" -eq 2 ]; then
-		echo "phase0.5: plugin-helper resolver hard-error (rc=2) resolving review-config.yml — plugin install likely broken" >&2
-	else
-		echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
-	fi
+	echo "phase0.5: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 fi
 # (#2258): $COPILOT_HELPER + $_copilot_rc resolved above; the

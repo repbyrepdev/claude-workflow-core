@@ -361,7 +361,7 @@ phase2)
 	STATUS="${3:-clean}"
 	# v0.34.45 #2263: validate findings is a non-negative integer BEFORE the jq
 	# --argjson below (which otherwise aborts with a cryptic jq parse error).
-	# Mirrors the phase1 5-arg guard so both phases reject a non-numeric count
+	# Mirrors the phase1 non-negative-integer guard so both phases reject a non-numeric count
 	# uniformly — clear message + exit 2, not an opaque jq failure.
 	if ! [[ $FINDINGS =~ ^[0-9]+$ ]]; then
 		echo "ERROR: phase2 findings_count must be a non-negative integer (got: $FINDINGS)" >&2

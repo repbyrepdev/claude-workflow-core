@@ -353,8 +353,8 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 
 @test "phase2 with a non-numeric findings count fails loud (exit 2 + clear message)" {
 	# v0.34.45 #2263: phase2 now validates findings as a non-negative integer
-	# (mirroring the phase1 5-arg guard) BEFORE jq --argjson, so a non-numeric
-	# count exits 2 with a clear message instead of a cryptic jq abort.
+	# (mirroring the phase1 non-negative-integer guard) BEFORE jq --argjson, so a
+	# non-numeric count exits 2 with a clear message instead of a cryptic jq abort.
 	_init_repo
 	_log phase2 abc clean
 	[ "$status" -eq 2 ]
@@ -363,7 +363,7 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 
 @test 'phase2 rejects a negative findings count (the ^[0-9]+$ guard, #2263)' {
 	# Mirrors the phase1 negative-count lock: a leading '-' is refused, not
-	# parsed as a count/flag. Pins the 'non-negative' half the abc-case omits.
+	# parsed as a count. Pins the 'non-negative' half the abc-case omits.
 	_init_repo
 	_log phase2 -1 clean
 	[ "$status" -eq 2 ]
