@@ -59,11 +59,12 @@ while IFS= read -r f; do
 	# Scope: only files where this corruption pattern is plausible.
 	case "$f" in
 	# The two guard SOURCES legitimately contain the corruption-signature
-	# literal as their own detection pattern. Exempt them by basename so a
-	# consumer staging the canonical .claude/hooks/ mirror — or the plugin
-	# re-committing either guard — is not false-positive-blocked (#2254).
-	# Targeted to exactly these two filenames; every other file is still
-	# scanned (a real corruption in some other hook still blocks).
+	# literal as their own detection pattern. Exempt them by PATH SUFFIX
+	# (`*/<name>`) so a consumer staging the canonical .claude/hooks/ mirror —
+	# or the plugin re-committing either guard under pre-commit-hooks/ or hooks/
+	# — is not false-positive-blocked (#2254). The `*/` matches these two
+	# filenames in ANY directory (the real guards always live in a subdir);
+	# every other file is still scanned (a real corruption elsewhere blocks).
 	*/edit-corruption-pretooluse-guard.sh | */edit-corruption-guard.sh) continue ;;
 	*.sh | *.bats | *.yml | *.yaml | *.json | *.md) ;;
 	*) continue ;;

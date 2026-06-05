@@ -22,7 +22,8 @@ set -euo pipefail
 #   scripts/compose-coderabbit.sh --base <path> [--overlay <path>] [--out <path>]
 #     --base     required; the canonical .coderabbit.base.yaml
 #     --overlay  optional; per-repo .coderabbit.overlay.yaml (absent/empty ⇒
-#                base verbatim)
+#                base + the #2254 canonical-hook exclusions; byte-verbatim only
+#                when ALSO no sibling hooks/ dir is resolvable)
 #     --out      optional; write here atomically (.new + mv). Default: stdout.
 #
 # Exit codes:
@@ -34,9 +35,11 @@ set -euo pipefail
 #       (deep-merge would gut the subtree), or a write failure.
 
 # Resolve this script's own dir so we can enumerate the sibling canonical
-# hooks/ set for the CR-in-CI mirror-hook exclusion (#2254). Empty on failure
-# → the later `[ -d ]` guard skips injection (fail-safe: base verbatim).
-SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+# hooks/ set for the CR-in-CI mirror-hook exclusion (#2254). The `|| SCRIPT_DIR=""`
+# keeps a resolution failure NON-FATAL under `set -e`: a bare `SCRIPT_DIR=$(cd …)`
+# whose subshell fails would abort the whole compose, so this falls back to an
+# empty value and the injection guard below skips cleanly (base verbatim).
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || SCRIPT_DIR=""
 
 BASE=""
 OVERLAY=""
@@ -168,12 +171,22 @@ fi
 # (not in the canonical set) are NOT excluded, so CR still reviews them. Safe:
 # hash-drift forbids modifying canonical mirrors, so excluding them from CR is
 # not a blind spot. Idempotent: result is recomputed from the base each run.
-_hooks_dir="${COMPOSE_CR_HOOKS_DIR:-$SCRIPT_DIR/../hooks}"
-if [ -n "$SCRIPT_DIR" ] && [ -d "$_hooks_dir" ]; then
-	_excl=$(cd "$_hooks_dir" && for _h in *.sh; do
+#
+# COMPOSE_CR_HOOKS_DIR (when set) wins regardless of SCRIPT_DIR, so an explicit
+# override still injects even if SCRIPT_DIR was unresolvable; with no override
+# and an empty SCRIPT_DIR, _hooks_dir is empty and the guard skips cleanly.
+_hooks_dir="${COMPOSE_CR_HOOKS_DIR:-${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}}"
+if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
+	# Capture enumeration failure (dir exists but unsearchable, or a TOCTOU race)
+	# and fail CLOSED — a silently-empty _excl would drop every exclusion and
+	# re-enable the verbatim treadmill with no signal.
+	if ! _excl=$(cd "$_hooks_dir" && for _h in *.sh; do
 		[ -e "$_h" ] || continue
 		printf '!.claude/hooks/%s\n' "$_h"
-	done | LC_ALL=C sort)
+	done | LC_ALL=C sort); then
+		echo "compose-coderabbit: failed enumerating canonical hooks in $_hooks_dir" >&2
+		exit 2
+	fi
 	if [ -n "$_excl" ]; then
 		_yqe=$(mktemp -t compose-cr-excl.XXXXXX) || {
 			echo "compose-coderabbit: mktemp failed for hook-exclusion pass" >&2

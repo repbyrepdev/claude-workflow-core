@@ -3,10 +3,10 @@
 #
 # #2254: the two guard SOURCES (this scanner + hooks/edit-corruption-pretooluse-
 # guard.sh) legitimately contain the corruption-signature literal as their own
-# detection pattern. They must be EXEMPT by basename so a consumer staging the
-# canonical .claude/hooks/ mirror — or the plugin re-committing either guard —
-# is not false-positive-blocked, while EVERY other file containing the literal
-# is still blocked.
+# detection pattern. They must be EXEMPT by path suffix (`*/<name>`) so a
+# consumer staging the canonical .claude/hooks/ mirror — or the plugin re-
+# committing either guard — is not false-positive-blocked, while EVERY other
+# file containing the literal is still blocked.
 #
 # NB: the fixtures construct the literal at RUNTIME via printf hex (\x22 = ")
 # so this .bats source never contains the raw 4-char sequence — which the
@@ -70,7 +70,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 }
 
-@test "#2254: exemption is by basename — a look-alike name is still scanned/blocked" {
+@test "#2254: exemption is by path suffix — a look-alike name is still scanned/blocked" {
 	# Not one of the two exempt basenames → must still be scanned + blocked.
 	printf 'echo %s\n' "$LIT" >edit-corruption-pretooluse-guard-helper.sh
 	git add edit-corruption-pretooluse-guard-helper.sh
