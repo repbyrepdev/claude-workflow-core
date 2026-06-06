@@ -126,3 +126,21 @@ _make_cache() {
 	[ "$status" -eq 0 ]
 	[ -z "$output" ]
 }
+
+@test "fork repo (...claude-workflow-core-fork) → NOT matched, silent (#2280)" {
+	# Regression for the substring false-match: a different repo whose path
+	# merely CONTAINS claude-workflow-core must not be treated as the plugin.
+	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core-fork\n    rev: v0.34.40\n' >"$CONFIG"
+	_make_cache 0.34.49
+	run bash "$SCRIPT"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "repo URL with .git suffix → matched + warns when stale (#2280)" {
+	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core.git\n    rev: v0.34.40\n' >"$CONFIG"
+	_make_cache 0.34.49
+	run bash "$SCRIPT"
+	[ "$status" -eq 0 ]
+	[[ $output == *"but v0.34.49 is installed"* ]]
+}

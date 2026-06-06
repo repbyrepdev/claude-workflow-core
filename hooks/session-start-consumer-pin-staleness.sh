@@ -47,9 +47,11 @@ CACHE_DIR="${SESSION_START_CONSUMER_PIN_CACHE_DIR:-$HOME/.claude/plugins/cache/c
 # Extract the rev pinned for the claude-workflow-core repo block: find its
 # repo: line, then print the rev: line WITHIN that block. A non-matching
 # repo: line resets the search (found=0) so an UNPINNED claude-workflow-core
-# block cannot leak a later block's rev. Tolerates http/https + .git.
+# block cannot leak a later block's rev. The repo regex anchors the END of
+# the value (optional .git + trailing space) so a substring like
+# `repbyrepdev/claude-workflow-core-fork` does NOT false-match. Any host.
 PIN=$(awk '
-	/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*.*repbyrepdev\/claude-workflow-core/ { found = 1; next }
+	/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*.*repbyrepdev\/claude-workflow-core(\.git)?[[:space:]]*$/ { found = 1; next }
 	/^[[:space:]]*-?[[:space:]]*repo:/ { found = 0 }
 	found && /^[[:space:]]*rev:/ { print; exit }
 ' "$CONFIG" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || printf '')
