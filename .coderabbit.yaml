@@ -196,24 +196,19 @@ reviews:
       - '!.claude/hooks/stop-uncommitted-changes.sh'
       - '!.claude/hooks/teleport-stop-advisory.sh'
       - '!.claude/hooks/test-sh-scope-nudge.sh'
-  # #2256: plugin-domain PR labels moved out of .coderabbit.base.yaml (which now
-  # ships only the universal area:infrastructure). These append to the base's
-  # labeling_instructions for THIS repo only; each consumer supplies its own
-  # domain labels via its own overlay (or none — media-server/ptt have none).
+  # PR labels — by which files changed. Base ships ONLY the universal
+  # area:infrastructure catch-all (present in every consumer's labels.yml).
+  # Domain labels — area:hooks/skills/workflows, type:test/secrets, plus a
+  # consumer's own area:streaming/area:coalesce/... — are repo-specific and
+  # come via each repo's .coderabbit.overlay.yaml. A consumer whose
+  # .github/labels.yml lacks a label must NOT be told to apply it (#2256:
+  # media-server #956 flagged the 5 plugin labels as drift — absent in its
+  # taxonomy). labels.yml is template-with-overrides, NOT byte-SSOT, so this
+  # base must stay repo-agnostic.
   labeling_instructions:
     - label: "area:infrastructure"
       instructions: >-
         Apply when PR touches scripts/, config/gates, _lib, .github SSOT configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*, .gitleaks.toml). Catch-all when no more-specific area matches.
-    - label: "area:hooks"
-      instructions: "Apply when PR touches hooks/, .claude/hooks/, or pre-commit-hooks/."
-    - label: "area:skills"
-      instructions: "Apply when PR touches skills/."
-    - label: "area:workflows"
-      instructions: "Apply when PR touches .github/workflows/."
-    - label: "type:test"
-      instructions: "Apply when PR is dominantly .claude/tests/ .bats test files."
-    - label: "type:secrets"
-      instructions: "Apply when PR touches .gitleaks.toml or *.enc files."
   # Universal path review rules. Repos append file-path rules for their own
   # source trees (stacks/, coalesce/, *.sql, ...) via overlay.
   path_instructions:
@@ -244,6 +239,17 @@ reviews:
     - path: ".claude/audit/prove-yourself.jsonl"
       instructions: >-
         APPEND-ONLY audit log. Each record's finding_text quotes the ORIGINAL finding verbatim — its action verb is a historical artifact, NOT a pending instruction. DO NOT suggest mutating prior records or rewriting entries. FLAG ONLY malformed JSON, missing required fields, or duplicate finding_id+ts pairs.
+  # No reviews.labeling_instructions in this overlay (deliberate — #2256).
+  # The base ships the single universal area:infrastructure PR label, whose
+  # .github/labels.yml definition already covers "Skills, hooks, scripts,
+  # workflows, repo infrastructure". The plugin uses that ONE broad area
+  # label, NOT granular area:hooks/skills/workflows or type:test/type:secrets
+  # — those were never defined in any repo's labels.yml (labels-spec.md
+  # two-tier rule: labels.yml is generic-only; domain labels live in a
+  # consumer overlay AND must be defined in that repo's labels.yml). Re-adding
+  # domain labeling here would tell CR to apply labels no repo defines — the
+  # exact media-server #956 drift this change removes at root.
+
   tools:
     shellcheck:
       enabled: true
