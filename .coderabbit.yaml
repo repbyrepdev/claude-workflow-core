@@ -205,15 +205,15 @@ reviews:
       instructions: >-
         Apply when PR touches scripts/, config/gates, _lib, .github SSOT configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*, .gitleaks.toml). Catch-all when no more-specific area matches.
     - label: "area:hooks"
-      instructions: "Apply when PR touches .claude/hooks/ or pre-commit-hooks/."
+      instructions: "Apply when PR touches hooks/, .claude/hooks/, or pre-commit-hooks/."
     - label: "area:skills"
-      instructions: "Apply when PR touches .claude/skills/ (or skills/)."
+      instructions: "Apply when PR touches skills/."
     - label: "area:workflows"
       instructions: "Apply when PR touches .github/workflows/."
     - label: "type:test"
-      instructions: "Apply when PR is dominantly .bats / test files."
+      instructions: "Apply when PR is dominantly .claude/tests/ .bats test files."
     - label: "type:secrets"
-      instructions: "Apply when PR touches .gitleaks.toml, *.enc, or anything that could leak tokens."
+      instructions: "Apply when PR touches .gitleaks.toml or *.enc files."
   # Universal path review rules. Repos append file-path rules for their own
   # source trees (stacks/, coalesce/, *.sql, ...) via overlay.
   path_instructions:
