@@ -143,9 +143,14 @@ reviews:
         REQUIRE fail-closed on `git rev-parse` and auxiliary commands — `|| true`
         / `2>/dev/null` silently swallow errors. FLAG hardcoded user paths,
         `*"FOO=1"*` globs that fire on arbitrary argv, and `$VAR` interpolated
-        inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: when a
-        hook's event/matcher/exit-code contract changes, also inspect the
-        matching .claude/tests/hooks/<name>.bats for stale assertions.
+        inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: IF a
+        matching .claude/tests/hooks/<name>.bats EXISTS in this repo, inspect it
+        for STALE assertions when the hook's event/matcher/exit-code contract
+        changes. Do NOT request or flag a MISSING paired test — most
+        .claude/hooks/*.sh are vendored byte-identical mirrors of an upstream
+        plugin (claude-workflow-core) whose canonical tests live upstream and are
+        drift-gate-enforced; a consumer having no local .bats is expected and
+        correct, not a coverage gap.
     - path: ".claude/skills/*/run.sh"
       instructions: >-
         Skill wrapper. REQUIRE `set -euo pipefail`. REQUIRE `SKILL_WRAPPER=1`
@@ -165,6 +170,14 @@ reviews:
         Action. Allowlist must be CONSERVATIVE — question any new broad `paths`
         entry, any `commits` entry, and any `stopwords` (stopwords risk false
         negatives; prefer path allowlists). Must cover *.enc files.
+    - path: ".pre-commit-config.yaml"
+      instructions: >-
+        The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a
+        `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do
+        NOT flag that `rev:` as a non-existent or unverifiable tag — its
+        existence is verified by `pre-commit` install and CI (CR-in-CI does not
+        flag it; only the offline CLI sandbox does). Only flag a `rev:` that is
+        obviously malformed (not `v\d+\.\d+\.\d+` and not a 40-char commit SHA).
 
   tools:
     shellcheck:

@@ -1,7 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
-    ".coderabbit.base.yaml": "782d6cc5eefa40eecaac497ee98b1d55a76bc269b24cb738a08a12e6548698d7",
+    ".coderabbit.base.yaml": "be737bfba61811d2bb978331d182c2d1753609e79c467743b981d92e48e17e27",
     ".codex/config.toml": "dc2544585ac5b695db435ec6d814005d311326d9814b82901c7bf46d9bdd9af3",
     ".gemini/policy.toml": "c9f74f98b608c1bd188d6c2bda7910bc405a23148a06bbe3339488f57c31729a",
     ".gemini/settings.json": "70d6b428283918e0fbc517798d815aac925fffcbba03c733f5182ba5e5727621",
