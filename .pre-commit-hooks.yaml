@@ -51,7 +51,7 @@
   stages: [commit-msg]
 
 - id: bootstrap-heredoc-parity
-  name: bootstrap-repo.sh heredoc matches live .github/ISSUE_TEMPLATE/*
+  name: bootstrap-heredoc-parity — bootstrap-repo.sh heredocs ↔ live PARITY_PATHS byte-identical (#2277)
   entry: pre-commit-hooks/bootstrap-heredoc-parity.sh
   language: script
   pass_filenames: false

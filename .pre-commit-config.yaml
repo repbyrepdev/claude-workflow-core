@@ -117,6 +117,12 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: bootstrap-heredoc-parity
+        name: bootstrap-heredoc-parity — bootstrap-repo.sh heredocs ↔ live PARITY_PATHS byte-identical (#2277)
+        entry: pre-commit-hooks/bootstrap-heredoc-parity.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: local-overrides-schema-check
         name: local-overrides-schema — .claude/local-overrides.yml schema (#147)
         entry: pre-commit-hooks/local-overrides-schema-check.sh
