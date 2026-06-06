@@ -1327,6 +1327,12 @@ inheritance: false
 
 reviews:
   profile: assertive
+  # CR acts as an APPROVING reviewer: posts "Request changes" on findings,
+  # auto-switches to "Approve" once all its comments are resolved + pre-merge
+  # checks pass. Satisfies branch-protection "require N approving reviews" on
+  # consumer repos (e.g. pricing-team-toolkit) so clean PRs merge via CR's
+  # approval — no admin override. (#2261)
+  request_changes_workflow: true
   high_level_summary: true
   high_level_summary_placeholder: "<!-- coderabbit:summary -->"
   review_status: true
@@ -1371,25 +1377,46 @@ reviews:
       - "!.claude/audit/**"
       - "!**/*.svg"
       - "!**/*.png"
+      # v0.34.36 (#2249) canonical-review-exclusion CR-layer globs — NARROWED.
+      # A consumer MIRRORS the plugin's _lib/ + the ship-pr-cycle skill into
+      # .claude/, and hash-drift --verify enforces byte-identity to the pinned
+      # cache, so those are already-reviewed-upstream mirrors; re-reviewing them
+      # is the "verbatim treadmill" (media-server #950). CR-in-CI can't express
+      # hash-equality, so we glob-exclude ONLY the dirs that are PURELY canonical
+      # mirrors in EVERY consumer:
+      #   _lib/                 — consumers never author _lib; all plugin mirror.
+      #   skills/ship-pr-cycle/ — the cache-driver wrapper; one canonical set.
+      # DELIBERATELY NOT excluded (v0.34.36 #2249 — the over-exclusion bug caught
+      # by dogfooding media-server #952):
+      #   pre-commit-hooks/ + scripts/ — consumers do NOT mirror these (#247: they
+      #     exec the plugin's from the pinned cache), so .claude/pre-commit-hooks/
+      #     + .claude/scripts/ are PURELY CONSUMER-AUTHORED (e.g. media-server's
+      #     encryption / secret-leak guards, deploy scripts). Glob-excluding them
+      #     blinds CR to consumer security/ops code for ZERO canonical benefit.
+      #   hooks/ + agents/ — MIXED (plugin mirrors + consumer-authored). A coarse
+      #     dir glob can't tell them apart. The hash-based LOCAL layers (phase1
+      #     prompt-scope + phase2 finding-filter via canonical-review-exclude.sh)
+      #     skip the byte-identical mirrors PRECISELY; CR-in-CI reviews those
+      #     mirrors but they're upstream-clean (→ ~0 findings) and, crucially,
+      #     consumer-authored files in those dirs stay reviewed.
+      - "!.claude/_lib/**"
+      - "!.claude/skills/ship-pr-cycle/**"
 
-  # PR labels — by which files changed. Universal area/type labels; repos
-  # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.
+  # PR labels — by which files changed. Base ships ONLY the universal
+  # area:infrastructure catch-all (present in every consumer's labels.yml).
+  # Domain labels — area:hooks/skills/workflows, type:test/secrets, plus a
+  # consumer's own area:streaming/area:coalesce/... — are repo-specific and
+  # come via each repo's .coderabbit.overlay.yaml. A consumer whose
+  # .github/labels.yml lacks a label must NOT be told to apply it (#2256:
+  # media-server #956 flagged the 5 plugin labels as drift — absent in its
+  # taxonomy). labels.yml is template-with-overrides, NOT byte-SSOT, so this
+  # base must stay repo-agnostic.
   labeling_instructions:
-    - label: "area:hooks"
-      instructions: "Apply when PR touches .claude/hooks/ or pre-commit-hooks/."
-    - label: "area:skills"
-      instructions: "Apply when PR touches .claude/skills/ (or skills/)."
-    - label: "area:workflows"
-      instructions: "Apply when PR touches .github/workflows/."
     - label: "area:infrastructure"
       instructions: >-
         Apply when PR touches scripts/, config/gates, _lib, .github SSOT
         configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*,
         .gitleaks.toml). Catch-all when no more-specific area matches.
-    - label: "type:test"
-      instructions: "Apply when PR is dominantly .bats / test files."
-    - label: "type:secrets"
-      instructions: "Apply when PR touches .gitleaks.toml, *.enc, or anything that could leak tokens."
 
   # Universal path review rules. Repos append file-path rules for their own
   # source trees (stacks/, coalesce/, *.sql, ...) via overlay.
@@ -1404,9 +1431,14 @@ reviews:
         REQUIRE fail-closed on `git rev-parse` and auxiliary commands — `|| true`
         / `2>/dev/null` silently swallow errors. FLAG hardcoded user paths,
         `*"FOO=1"*` globs that fire on arbitrary argv, and `$VAR` interpolated
-        inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: when a
-        hook's event/matcher/exit-code contract changes, also inspect the
-        matching .claude/tests/hooks/<name>.bats for stale assertions.
+        inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: IF a
+        matching .claude/tests/hooks/<name>.bats EXISTS in this repo, inspect it
+        for STALE assertions when the hook's event/matcher/exit-code contract
+        changes. Do NOT request or flag a MISSING paired test — most
+        .claude/hooks/*.sh are vendored byte-identical mirrors of an upstream
+        plugin (claude-workflow-core) whose canonical tests live upstream and are
+        drift-gate-enforced; a consumer having no local .bats is expected and
+        correct, not a coverage gap.
     - path: ".claude/skills/*/run.sh"
       instructions: >-
         Skill wrapper. REQUIRE `set -euo pipefail`. REQUIRE `SKILL_WRAPPER=1`
@@ -1426,6 +1458,16 @@ reviews:
         Action. Allowlist must be CONSERVATIVE — question any new broad `paths`
         entry, any `commits` entry, and any `stopwords` (stopwords risk false
         negatives; prefer path allowlists). Must cover *.enc files.
+    - path: ".pre-commit-config.yaml"
+      instructions: >-
+        The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a
+        `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do
+        NOT flag that `rev:` as a non-existent or unverifiable tag — its
+        existence is verified by `pre-commit` install and CI (CR-in-CI does not
+        flag it; only the offline CLI sandbox does). Only flag a `rev:` that is
+        obviously malformed — i.e. not a semver-style `vMAJOR.MINOR.PATCH` tag
+        (optionally with a `-prerelease` and/or `+build` suffix) and not a
+        40-char commit SHA.
 
   tools:
     shellcheck:
