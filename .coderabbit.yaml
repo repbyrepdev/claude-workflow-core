@@ -196,18 +196,20 @@ reviews:
       - '!.claude/hooks/stop-uncommitted-changes.sh'
       - '!.claude/hooks/teleport-stop-advisory.sh'
       - '!.claude/hooks/test-sh-scope-nudge.sh'
-  # PR labels — by which files changed. Universal area/type labels; repos
-  # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.
+  # #2256: plugin-domain PR labels moved out of .coderabbit.base.yaml (which now
+  # ships only the universal area:infrastructure). These append to the base's
+  # labeling_instructions for THIS repo only; each consumer supplies its own
+  # domain labels via its own overlay (or none — media-server/ptt have none).
   labeling_instructions:
+    - label: "area:infrastructure"
+      instructions: >-
+        Apply when PR touches scripts/, config/gates, _lib, .github SSOT configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*, .gitleaks.toml). Catch-all when no more-specific area matches.
     - label: "area:hooks"
       instructions: "Apply when PR touches .claude/hooks/ or pre-commit-hooks/."
     - label: "area:skills"
       instructions: "Apply when PR touches .claude/skills/ (or skills/)."
     - label: "area:workflows"
       instructions: "Apply when PR touches .github/workflows/."
-    - label: "area:infrastructure"
-      instructions: >-
-        Apply when PR touches scripts/, config/gates, _lib, .github SSOT configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*, .gitleaks.toml). Catch-all when no more-specific area matches.
     - label: "type:test"
       instructions: "Apply when PR is dominantly .bats / test files."
     - label: "type:secrets"

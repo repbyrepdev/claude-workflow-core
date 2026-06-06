@@ -111,24 +111,21 @@ reviews:
       - "!.claude/_lib/**"
       - "!.claude/skills/ship-pr-cycle/**"
 
-  # PR labels — by which files changed. Universal area/type labels; repos
-  # append domain area:* labels (area:streaming, area:coalesce, ...) via overlay.
+  # PR labels — by which files changed. Base ships ONLY the universal
+  # area:infrastructure catch-all (present in every consumer's labels.yml).
+  # Domain labels — area:hooks/skills/workflows, type:test/secrets, plus a
+  # consumer's own area:streaming/area:coalesce/... — are repo-specific and
+  # come via each repo's .coderabbit.overlay.yaml. A consumer whose
+  # .github/labels.yml lacks a label must NOT be told to apply it (#2256:
+  # media-server #956 flagged the 5 plugin labels as drift — absent in its
+  # taxonomy). labels.yml is template-with-overrides, NOT byte-SSOT, so this
+  # base must stay repo-agnostic.
   labeling_instructions:
-    - label: "area:hooks"
-      instructions: "Apply when PR touches .claude/hooks/ or pre-commit-hooks/."
-    - label: "area:skills"
-      instructions: "Apply when PR touches .claude/skills/ (or skills/)."
-    - label: "area:workflows"
-      instructions: "Apply when PR touches .github/workflows/."
     - label: "area:infrastructure"
       instructions: >-
         Apply when PR touches scripts/, config/gates, _lib, .github SSOT
         configs, or repo-bootstrap files (.pre-commit-config.yaml, .coderabbit*,
         .gitleaks.toml). Catch-all when no more-specific area matches.
-    - label: "type:test"
-      instructions: "Apply when PR is dominantly .bats / test files."
-    - label: "type:secrets"
-      instructions: "Apply when PR touches .gitleaks.toml, *.enc, or anything that could leak tokens."
 
   # Universal path review rules. Repos append file-path rules for their own
   # source trees (stacks/, coalesce/, *.sql, ...) via overlay.

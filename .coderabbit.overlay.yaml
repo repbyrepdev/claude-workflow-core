@@ -39,3 +39,18 @@ reviews:
         pending instruction. DO NOT suggest mutating prior records or rewriting
         entries. FLAG ONLY malformed JSON, missing required fields, or duplicate
         finding_id+ts pairs.
+  # #2256: plugin-domain PR labels moved out of .coderabbit.base.yaml (which now
+  # ships only the universal area:infrastructure). These append to the base's
+  # labeling_instructions for THIS repo only; each consumer supplies its own
+  # domain labels via its own overlay (or none — media-server/ptt have none).
+  labeling_instructions:
+    - label: "area:hooks"
+      instructions: "Apply when PR touches .claude/hooks/ or pre-commit-hooks/."
+    - label: "area:skills"
+      instructions: "Apply when PR touches .claude/skills/ (or skills/)."
+    - label: "area:workflows"
+      instructions: "Apply when PR touches .github/workflows/."
+    - label: "type:test"
+      instructions: "Apply when PR is dominantly .bats / test files."
+    - label: "type:secrets"
+      instructions: "Apply when PR touches .gitleaks.toml, *.enc, or anything that could leak tokens."
