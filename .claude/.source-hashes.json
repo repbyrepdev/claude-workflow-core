@@ -117,7 +117,7 @@
     "hooks/review-log.sh": "d5a95e275373ef0bd78c506a433c1e3d9bf31d636ceecbe5a684d83a486990bf",
     "hooks/security-reminder.sh": "600177ab885313a35737291bf527823441cb897af48b670b47d7448ecdefea4d",
     "hooks/session-start-chmod-self-heal.sh": "7f7af91747ac4a1160ce471478045ca3b5ec34928f457393c8e7887e1825b260",
-    "hooks/session-start-consumer-pin-staleness.sh": "d68ebbb49f49cf804a585b92124956e5306b71b221812f96463b9fcdcba224c5",
+    "hooks/session-start-consumer-pin-staleness.sh": "8292498662ca98d8c4fcc1e50438ba0b121ec6f132071e0ba163d14afe5c6349",
     "hooks/session-start-report.sh": "94ba7c9aafc906fb91f70c0b55df3fd0f8cc4f2730ad830d30927c16b1005f7d",
     "hooks/session-start-stale-marker-sweep.sh": "3af1d756a5209b237a9eb4c97068aad24000cbc7687666af207b8fcaff54a220",
     "hooks/session-start-stale-pin.sh": "d0d36698d4d8576af32371edd55e4703bb9fe6d458f98268a586c61c874b3c22",

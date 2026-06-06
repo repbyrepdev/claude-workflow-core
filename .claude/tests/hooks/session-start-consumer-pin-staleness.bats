@@ -107,3 +107,22 @@ _make_cache() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"but v0.34.49 is installed"* ]]
 }
+
+@test "cache present but ONLY non-semver subdirs → silent (#2280)" {
+	_write_config_pinning "v0.34.40"
+	_make_cache latest main
+	run bash "$SCRIPT"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "unpinned claude-workflow-core block + later pinned repo → silent (#2280)" {
+	# Regression for the awk cross-block rev leak: the claude-workflow-core
+	# block has no rev:; the following pre-commit-hooks block does. The hook
+	# must NOT grab v4.0.0 for claude-workflow-core.
+	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core\n    hooks:\n      - id: bash-safety\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v4.0.0\n' >"$CONFIG"
+	_make_cache 0.34.49
+	run bash "$SCRIPT"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
