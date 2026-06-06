@@ -229,7 +229,7 @@ reviews:
         Secret-scan config shared by the local pre-commit hook and the gitleaks Action. Allowlist must be CONSERVATIVE — question any new broad `paths` entry, any `commits` entry, and any `stopwords` (stopwords risk false negatives; prefer path allowlists). Must cover *.enc files.
     - path: ".pre-commit-config.yaml"
       instructions: >-
-        The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do NOT flag that `rev:` as a non-existent or unverifiable tag — its existence is verified by `pre-commit` install and CI (CR-in-CI does not flag it; only the offline CLI sandbox does). Only flag a `rev:` that is obviously malformed (not `v\d+\.\d+\.\d+` and not a 40-char commit SHA).
+        The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do NOT flag that `rev:` as a non-existent or unverifiable tag — its existence is verified by `pre-commit` install and CI (CR-in-CI does not flag it; only the offline CLI sandbox does). Only flag a `rev:` that is obviously malformed — i.e. not a semver-style `vMAJOR.MINOR.PATCH` tag (optionally with a `-prerelease` and/or `+build` suffix) and not a 40-char commit SHA.
     - path: "pre-commit-hooks/*.sh"
       instructions: >-
         Pre-commit gate. REQUIRE `set -euo pipefail` on line 2. REQUIRE any bypass env var is documented in the header. REQUIRE it matches only staged files (git diff --cached). Exit 0 pass / 1 fail / 2 usage. FLAG hardcoded agent / anti-pattern lists that duplicate .github/commit-template.yml or .github/labels.yml SSOT (read via yq).
