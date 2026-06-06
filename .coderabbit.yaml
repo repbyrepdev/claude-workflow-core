@@ -217,7 +217,7 @@ reviews:
   path_instructions:
     - path: ".claude/hooks/*.sh"
       instructions: >-
-        Bash strict-mode hook. REQUIRE `set -euo pipefail` (or at minimum `set -u`) within the first 20 lines after the shebang — `# event:` / `# matcher:` frontmatter may sit between shebang and the strict-mode line. REQUIRE paths resolved via `dirname "${BASH_SOURCE[0]}"`, not caller CWD. REQUIRE JSON stdin parsed with `jq`, never grep/sed. REQUIRE fail-closed on `git rev-parse` and auxiliary commands — `|| true` / `2>/dev/null` silently swallow errors. FLAG hardcoded user paths, `*"FOO=1"*` globs that fire on arbitrary argv, and `$VAR` interpolated inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: when a hook's event/matcher/exit-code contract changes, also inspect the matching .claude/tests/hooks/<name>.bats for stale assertions.
+        Bash strict-mode hook. REQUIRE `set -euo pipefail` (or at minimum `set -u`) within the first 20 lines after the shebang — `# event:` / `# matcher:` frontmatter may sit between shebang and the strict-mode line. REQUIRE paths resolved via `dirname "${BASH_SOURCE[0]}"`, not caller CWD. REQUIRE JSON stdin parsed with `jq`, never grep/sed. REQUIRE fail-closed on `git rev-parse` and auxiliary commands — `|| true` / `2>/dev/null` silently swallow errors. FLAG hardcoded user paths, `*"FOO=1"*` globs that fire on arbitrary argv, and `$VAR` interpolated inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: IF a matching .claude/tests/hooks/<name>.bats EXISTS in this repo, inspect it for STALE assertions when the hook's event/matcher/exit-code contract changes. Do NOT request or flag a MISSING paired test — most .claude/hooks/*.sh are vendored byte-identical mirrors of an upstream plugin (claude-workflow-core) whose canonical tests live upstream and are drift-gate-enforced; a consumer having no local .bats is expected and correct, not a coverage gap.
     - path: ".claude/skills/*/run.sh"
       instructions: >-
         Skill wrapper. REQUIRE `set -euo pipefail`. REQUIRE `SKILL_WRAPPER=1` exported when invoking gh/git the skill-bypass-guard would otherwise refuse. REQUIRE `--help` prints usage + exits 0. REQUIRE idempotent on retry. FLAG missing argument bounds checks (`$2` under `set -u` with no `[[ $# -lt 2 ]]` guard).
@@ -227,6 +227,9 @@ reviews:
     - path: ".gitleaks.toml"
       instructions: >-
         Secret-scan config shared by the local pre-commit hook and the gitleaks Action. Allowlist must be CONSERVATIVE — question any new broad `paths` entry, any `commits` entry, and any `stopwords` (stopwords risk false negatives; prefer path allowlists). Must cover *.enc files.
+    - path: ".pre-commit-config.yaml"
+      instructions: >-
+        The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do NOT flag that `rev:` as a non-existent or unverifiable tag — its existence is verified by `pre-commit` install and CI (CR-in-CI does not flag it; only the offline CLI sandbox does). Only flag a `rev:` that is obviously malformed — i.e. not a semver-style `vMAJOR.MINOR.PATCH` tag (optionally with a `-prerelease` and/or `+build` suffix) and not a 40-char commit SHA.
     - path: "pre-commit-hooks/*.sh"
       instructions: >-
         Pre-commit gate. REQUIRE `set -euo pipefail` on line 2. REQUIRE any bypass env var is documented in the header. REQUIRE it matches only staged files (git diff --cached). Exit 0 pass / 1 fail / 2 usage. FLAG hardcoded agent / anti-pattern lists that duplicate .github/commit-template.yml or .github/labels.yml SSOT (read via yq).
