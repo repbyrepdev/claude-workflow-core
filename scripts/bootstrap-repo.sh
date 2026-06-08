@@ -408,6 +408,7 @@ repos:
       - id: bash-safety
       - id: bash4-features-check
       - id: commit-template-check
+      - id: hash-drift-verify
       - id: lint-gate
       - id: memory-drift-check
       - id: memory-index-valid
