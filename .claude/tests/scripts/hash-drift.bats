@@ -593,3 +593,70 @@ EOF
 	# Drift-branch summary phrasing is `overridden: N`.
 	[[ $output == *"overridden: 1"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# #2331 — pin-aware cache resolution. When --plugin-cache is NOT supplied,
+# --verify resolves the cache from the version the consumer PINS
+# (.pre-commit-config.yaml `rev:` for the claude-workflow-core repo), NOT the
+# highest-semver cache. Comparing mirrors against a different version than the
+# one pinned reports false "drift" (version skew). Falls back to highest-semver
+# (with a NOTE) only when the pinned version is not installed. These exercise
+# the auto-discovery branch (no --plugin-cache), unlike the tests above.
+# ---------------------------------------------------------------------------
+
+@test "--verify pin-aware: picks the PINNED cache version, not the highest (#2331)" {
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	# Consumer mirrors == this (the PINNED 0.34.50) version.
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	BASE="$TEST_TMP/cachebase"
+	mkdir -p "$BASE/0.34.50/.claude" "$BASE/0.34.52/.claude"
+	cp "$PRODUCER/.claude/.source-hashes.json" "$BASE/0.34.50/.claude/.source-hashes.json"
+	# Build a HIGHER 0.34.52 cache with DIFFERENT hashes (edit a producer file +
+	# regen) — the consumer would falsely "drift" against it if it were picked.
+	printf 'echo HIGHER-VERSION\n' >"$PRODUCER/hooks/foo.sh"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	cp "$PRODUCER/.claude/.source-hashes.json" "$BASE/0.34.52/.claude/.source-hashes.json"
+	# Consumer pins v0.34.50 (NOT the highest installed, 0.34.52).
+	cat >"$CONSUMER/.pre-commit-config.yaml" <<'EOF'
+repos:
+  - repo: https://github.com/repbyrepdev/claude-workflow-core
+    rev: v0.34.50
+    hooks:
+      - id: hash-drift-verify
+EOF
+	# No --plugin-cache → exercises the auto-discovery (pin-aware) block.
+	run bash -c "cd '$CONSUMER' && HASH_DRIFT_PLUGIN_CACHE_BASE='$BASE' bash '$SCRIPT' --verify 2>&1"
+	# Pinned 0.34.50 matches the consumer mirrors → clean. The OLD highest-semver
+	# behavior would pick 0.34.52 → foo.sh drift → exit 1 (regression tripwire).
+	[ "$status" -eq 0 ]
+	[[ $output == *"clean"* ]]
+}
+
+@test "--verify skew fallback: pinned version absent from cache → highest-semver + NOTE (#2331)" {
+	PRODUCER="$TEST_TMP/producer"
+	CONSUMER="$TEST_TMP/consumer"
+	mkdir -p "$PRODUCER" "$CONSUMER"
+	_make_producer "$PRODUCER"
+	(cd "$PRODUCER" && bash "$SCRIPT" --generate)
+	_make_consumer "$CONSUMER" "$PRODUCER"
+	BASE="$TEST_TMP/cachebase"
+	mkdir -p "$BASE/0.34.52/.claude"
+	cp "$PRODUCER/.claude/.source-hashes.json" "$BASE/0.34.52/.claude/.source-hashes.json"
+	# Consumer pins a version that has NO installed cache.
+	cat >"$CONSUMER/.pre-commit-config.yaml" <<'EOF'
+repos:
+  - repo: https://github.com/repbyrepdev/claude-workflow-core
+    rev: v0.99.0
+    hooks:
+      - id: hash-drift-verify
+EOF
+	run bash -c "cd '$CONSUMER' && HASH_DRIFT_PLUGIN_CACHE_BASE='$BASE' bash '$SCRIPT' --verify 2>&1"
+	# Falls back to the only installed cache (0.34.52) and emits the skew NOTE so
+	# the operator isn't misled into thinking it verified against the pinned ver.
+	[[ $output == *"NOTE pinned plugin v0.99.0 has no installed cache"* ]]
+	[[ $output == *"comparing against installed v0.34.52"* ]]
+}
