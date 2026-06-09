@@ -342,7 +342,10 @@ if [ -z "$PLUGIN_CACHE" ]; then
 			# claude-workflow-core entry yields empty output with rc 0, which
 			# falls through to the highest-semver fallback (the correct,
 			# pre-#2331 behavior) — only a real parse failure exits 2.
-			_pin_err=$(mktemp)
+			_pin_err=$(mktemp) || {
+				echo "hash-drift: mktemp failed for pin parse" >&2
+				exit 2
+			}
 			if ! pinned=$(yq -r '.repos[] | select(.repo == "https://github.com/repbyrepdev/claude-workflow-core") | .rev' .pre-commit-config.yaml 2>"$_pin_err"); then
 				echo "hash-drift: yq failed parsing .pre-commit-config.yaml for the plugin pin:" >&2
 				cat "$_pin_err" >&2
