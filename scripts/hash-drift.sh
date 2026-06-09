@@ -336,7 +336,21 @@ if [ -z "$PLUGIN_CACHE" ]; then
 		# installed — and say so, so the NOTE isn't mistaken for real drift.
 		pinned=""
 		if [ -f .pre-commit-config.yaml ] && command -v yq >/dev/null 2>&1; then
-			pinned=$(yq -r '.repos[] | select(.repo == "https://github.com/repbyrepdev/claude-workflow-core") | .rev' .pre-commit-config.yaml 2>/dev/null | head -1 || true)
+			# Fail closed on a GENUINE yq error (malformed config / yq bug) —
+			# mirrors the repo convention (override-parse read below,
+			# list-phase1-agents.sh). A VALID config that simply has no
+			# claude-workflow-core entry yields empty output with rc 0, which
+			# falls through to the highest-semver fallback (the correct,
+			# pre-#2331 behavior) — only a real parse failure exits 2.
+			_pin_err=$(mktemp)
+			if ! pinned=$(yq -r '.repos[] | select(.repo == "https://github.com/repbyrepdev/claude-workflow-core") | .rev' .pre-commit-config.yaml 2>"$_pin_err"); then
+				echo "hash-drift: yq failed parsing .pre-commit-config.yaml for the plugin pin:" >&2
+				cat "$_pin_err" >&2
+				rm -f "$_pin_err"
+				exit 2
+			fi
+			rm -f "$_pin_err"
+			pinned=$(printf '%s\n' "$pinned" | head -1)
 			pinned=${pinned#v}
 		fi
 		# Highest-semver candidate (used as fallback below).

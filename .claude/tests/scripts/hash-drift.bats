@@ -655,6 +655,8 @@ repos:
       - id: hash-drift-verify
 EOF
 	run bash -c "cd '$CONSUMER' && HASH_DRIFT_PLUGIN_CACHE_BASE='$BASE' bash '$SCRIPT' --verify 2>&1"
+	# Fallback cache 0.34.52 == the consumer mirrors → clean exit 0 (CR r1 major).
+	[ "$status" -eq 0 ]
 	# Falls back to the only installed cache (0.34.52) and emits the skew NOTE so
 	# the operator isn't misled into thinking it verified against the pinned ver.
 	[[ $output == *"NOTE pinned plugin v0.99.0 has no installed cache"* ]]
