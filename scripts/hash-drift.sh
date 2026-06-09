@@ -327,7 +327,36 @@ cd "$CONSUMER_ROOT"
 if [ -z "$PLUGIN_CACHE" ]; then
 	PLUGIN_CACHE_BASE="${HASH_DRIFT_PLUGIN_CACHE_BASE:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 	if [ -d "$PLUGIN_CACHE_BASE" ]; then
-		# Pick highest semver subdir.
+		# #2331 pin-aware resolution: verify against the plugin version the
+		# consumer actually PINS (.pre-commit-config.yaml `rev:` for the
+		# claude-workflow-core repo), NOT whatever happens to be the
+		# highest-semver cache. Comparing mirrors against a different version
+		# than the one pinned reports false "drift" (version skew). Fall back
+		# to the highest-semver cache only when the pinned version is not
+		# installed — and say so, so the NOTE isn't mistaken for real drift.
+		pinned=""
+		if [ -f .pre-commit-config.yaml ] && command -v yq >/dev/null 2>&1; then
+			# Fail closed on a GENUINE yq error (malformed config / yq bug) —
+			# mirrors the repo convention (override-parse read below,
+			# list-phase1-agents.sh). A VALID config that simply has no
+			# claude-workflow-core entry yields empty output with rc 0, which
+			# falls through to the highest-semver fallback (the correct,
+			# pre-#2331 behavior) — only a real parse failure exits 2.
+			_pin_err=$(mktemp) || {
+				echo "hash-drift: mktemp failed for pin parse" >&2
+				exit 2
+			}
+			if ! pinned=$(yq -r '.repos[] | select(.repo == "https://github.com/repbyrepdev/claude-workflow-core") | .rev' .pre-commit-config.yaml 2>"$_pin_err"); then
+				echo "hash-drift: yq failed parsing .pre-commit-config.yaml for the plugin pin:" >&2
+				cat "$_pin_err" >&2
+				rm -f "$_pin_err"
+				exit 2
+			fi
+			rm -f "$_pin_err"
+			pinned=$(printf '%s\n' "$pinned" | head -1)
+			pinned=${pinned#v}
+		fi
+		# Highest-semver candidate (used as fallback below).
 		shopt -s nullglob
 		cands=("$PLUGIN_CACHE_BASE"/*)
 		shopt -u nullglob
@@ -342,7 +371,14 @@ if [ -z "$PLUGIN_CACHE" ]; then
 				latest=$higher
 			fi
 		done
-		[ -n "$latest" ] && PLUGIN_CACHE="$PLUGIN_CACHE_BASE/$latest"
+		if [ -n "$pinned" ] && [[ $pinned =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ -d "$PLUGIN_CACHE_BASE/$pinned" ]; then
+			PLUGIN_CACHE="$PLUGIN_CACHE_BASE/$pinned"
+		elif [ -n "$latest" ]; then
+			PLUGIN_CACHE="$PLUGIN_CACHE_BASE/$latest"
+			if [ -n "$pinned" ] && [ "$pinned" != "$latest" ]; then
+				echo "hash-drift: NOTE pinned plugin v$pinned has no installed cache; comparing against installed v$latest. Install the pinned version (e.g. bootstrap-machine.sh --tag v$pinned) to verify against exactly what you pin." >&2
+			fi
+		fi
 	fi
 fi
 
