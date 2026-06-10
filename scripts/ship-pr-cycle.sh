@@ -1925,7 +1925,7 @@ EOF
 			# is coming. Advance instead of looping to the watch timeout (the
 			# false "CR is down" trap that parked PR #2330 for ~15h).
 			_set_stage "auto-triage"
-			echo "→ CR-in-CI not applicable (PR paths path-filtered out of CR auto_review + CR not a required check); advanced to auto-triage"
+			echo "→ CR-in-CI not applicable (PR paths filtered out of CR auto_review + CR not a required check); advanced to auto-triage"
 			;;
 		2)
 			echo "ship-pr-cycle: cr-in-ci-wait — watch-until-done.sh exited rc=2" >&2
