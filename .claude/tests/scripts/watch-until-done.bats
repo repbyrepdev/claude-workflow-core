@@ -65,6 +65,10 @@ EOF
 	chmod +x "$TEST_TMP/fakebin/gh"
 }
 
+# Timeout convention below: the exit-3 tests use --timeout 30 (well above the
+# 3-consecutive-absent-poll threshold at --interval 1) so the watcher reaches
+# exit 3 before timing out; the keep-waiting tests use --timeout 3 to hit the
+# timeout fast (exit 2), proving they do NOT take the exit-3 path.
 @test "path-filtered: CR absent + others terminal + not required → exit 3 (#2332)" {
 	local checks=$'gitleaks\tpass\t2s\nlabel\tpass\t1s'
 	_make_fake_gh
