@@ -1918,6 +1918,15 @@ EOF
 			_set_stage "auto-triage"
 			echo "→ CR-in-CI completed with findings; advanced to auto-triage"
 			;;
+		3)
+			# #2332: watch-until-done determined CR is not applicable — the PR's
+			# paths are outside .coderabbit.yaml auto_review, CodeRabbit is NOT a
+			# required check, and every other check is terminal, so no CR check
+			# is coming. Advance instead of looping to the watch timeout (the
+			# false "CR is down" trap that parked PR #2330 for ~15h).
+			_set_stage "auto-triage"
+			echo "→ CR-in-CI not applicable (PR paths filtered out of CR auto_review + CR not a required check); advanced to auto-triage"
+			;;
 		2)
 			echo "ship-pr-cycle: cr-in-ci-wait — watch-until-done.sh exited rc=2" >&2
 			echo "  watch-until-done.sh stderr (above) indicates timeout vs invocation error." >&2
