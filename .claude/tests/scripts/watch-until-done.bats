@@ -25,8 +25,13 @@ teardown() {
 	fi
 }
 
-# Fake `gh` serving canned responses for the calls the script makes. Scenario
-# is passed per-run via env (no `export` — that trips SC2030/2031 in bats):
+# Fake `gh` serving canned responses for the calls the script makes. The script
+# invokes gh with its built-in `--jq` flag (e.g. `gh api … --jq '.protected'`),
+# so gh applies the filter itself and emits a SCALAR ("main", "true"/"false") —
+# NOT raw JSON. This stub therefore prints those post-`--jq` scalars directly;
+# returning JSON objects would NOT match real gh and would break the script's
+# `[ "$protected" = false ]` / scalar comparisons. Scenario is passed per-run
+# via env (no `export` — that trips SC2030/2031 in bats):
 #   FAKE_CHECKS         `gh pr checks` output, tab-separated (name<TAB>bucket)
 #   FAKE_CR_REQUIRED    yes|no — is CodeRabbit in the base branch's required set
 #   FAKE_PROTECTED      true|false — is the base branch protected (default true)
