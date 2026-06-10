@@ -196,7 +196,10 @@ if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
 	# every `[ -e ]` false, every hook falls through to "excluded", and the
 	# blind spot is silently reintroduced.
 	if [ -n "${COMPOSE_CR_CONSUMER_HOOKS_DIR:-}" ]; then
+		# Normalize a relative override to absolute too (mirrors _consumer_root
+		# below) so it isn't mis-resolved against $_hooks_dir inside the `cd`.
 		_consumer_hooks="$COMPOSE_CR_CONSUMER_HOOKS_DIR"
+		case "$_consumer_hooks" in /*) ;; *) _consumer_hooks="$PWD/$_consumer_hooks" ;; esac
 	else
 		_consumer_root="${OUT:+$(dirname "$OUT")}"
 		_consumer_root="${_consumer_root:-$PWD}"
