@@ -150,7 +150,6 @@ _make_cache() {
 	# No SESSION_START_CONSUMER_PIN_CONFIG → the hook must anchor to the repo
 	# root. A real git repo with the pinned config at its ROOT, run from a
 	# nested subdir, must still surface the staleness advisory.
-	command -v git >/dev/null || skip "git required"
 	local repo="$TEST_TMP/consumer"
 	mkdir -p "$repo/deep/nested/subdir"
 	# The nested `git init` is LOAD-BEARING for determinism: it makes $repo the
@@ -170,7 +169,6 @@ _make_cache() {
 @test "repo-root anchor: up-to-date via repo-root branch → silent (#2344)" {
 	# The new branch must also stay SILENT on the happy path (pin == cache max),
 	# not only emit the advisory — guards the CONFIG path assembly.
-	command -v git >/dev/null || skip "git required"
 	local repo="$TEST_TMP/uptodate"
 	mkdir -p "$repo/sub"
 	git -C "$repo" init -q
@@ -186,7 +184,6 @@ _make_cache() {
 	# Anchoring widens the search from $PWD up to the git root. In a subdir of a
 	# NON-consumer parent repo (monorepo / $HOME-as-repo) the resolved root has
 	# no .pre-commit-config — the hook must stay silent, never false-advise.
-	command -v git >/dev/null || skip "git required"
 	local repo="$TEST_TMP/outer"
 	mkdir -p "$repo/sub"
 	git -C "$repo" init -q
