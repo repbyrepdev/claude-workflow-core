@@ -18,8 +18,7 @@ setup() {
 }
 
 teardown() {
-	# shellcheck disable=SC2164
-	cd /tmp
+	cd /tmp || return
 	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */watchdone.* ]]; then
 		rm -rf "$TEST_TMP"
 	fi

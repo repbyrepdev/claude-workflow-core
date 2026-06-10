@@ -77,7 +77,7 @@ _cr_required_state() {
 	# failure here (403 token scope / 5xx / network) is indeterminate →
 	# "unknown" (fail closed: keep waiting, don't risk skipping a required CR).
 	req=$(gh api "repos/$owner_repo/branches/$base/protection" \
-		--jq '((.required_status_checks.contexts // []) + ((.required_status_checks.checks // []) | map(.context))) | any(. == "CodeRabbit")' 2>/dev/null) || {
+		--jq '((.required_status_checks.contexts // []) + ((.required_status_checks.checks // []) | map(.context))) | any(ascii_downcase == "coderabbit")' 2>/dev/null) || {
 		echo unknown
 		return
 	}
