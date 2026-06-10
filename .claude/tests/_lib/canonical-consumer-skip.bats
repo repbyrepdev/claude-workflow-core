@@ -133,3 +133,66 @@ teardown() {
 	[ "$status" -eq 1 ]
 	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
+
+# --- canonical_consumer_skip_committed (#2250/#2328: committed-blob variant) ---
+
+@test "#2328 committed: consumer + committed byte-identical canonical → SKIP (rc 0)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	git add -A && git commit -qm mirror
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip_committed ".claude/hooks/foo.sh"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "#2328 committed: consumer + committed-DIFFERS from canonical → NO skip (rc 1)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	printf '# committed drift\n' >>"$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	git add -A && git commit -qm drift
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip_committed ".claude/hooks/foo.sh"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
+
+@test "#2250 TOCTOU: committed-DRIFT then worktree-REVERTED — worktree skips but committed does NOT" {
+	# The exact TOCTOU #2250 fixes: a consumer COMMITTED a mirror drift (a real
+	# finding on the committed blob CR reviewed via -t committed) then reverted the
+	# WORKING TREE to canonical. The working-tree predicate is fooled (worktree ==
+	# canonical) and would SKIP → silently drop the real finding. The committed
+	# predicate sees the DIFFERING committed blob → must NOT skip.
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	printf '# committed drift\n' >>"$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	git add -A && git commit -qm drift
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh" # worktree reverted to canonical
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip ".claude/hooks/foo.sh" # working-tree → fooled → SKIP
+	[ "$status" -eq 0 ]
+	run canonical_consumer_skip_committed ".claude/hooks/foo.sh" # committed → NO skip (the fix)
+	[ "$status" -eq 1 ]
+}
+
+@test "#2328 committed: file present in worktree but NOT committed (not in HEAD) → NO skip (rc 1)" {
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh" # untracked, not committed
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip_committed ".claude/hooks/foo.sh"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
+
+@test "#2328 committed: plugin repo (has plugin.json) → NEVER skip (rc 1)" {
+	cd "$PLUGIN"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip_committed "hooks/foo.sh"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}

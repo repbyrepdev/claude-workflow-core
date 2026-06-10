@@ -34,6 +34,16 @@ fi
 # Fail-SAFE toward reviewing: if the predicate is unavailable, never exclude.
 canonical_review_excluded() {
 	[ -n "${1:-}" ] || return 1
+	# #2250/#2329: the review layers review the COMMITTED state (phase1 agents
+	# scope on `git diff <base>..HEAD`; phase2 CR-CLI reviews `-t committed`), so
+	# exclude based on the COMMITTED blob — a committed-then-reverted mirror change
+	# must stay reviewed (TOCTOU). Fall back to the working-tree predicate only if
+	# the committed one is unavailable. The pre-commit GATES call
+	# canonical_consumer_skip directly (staged content) and are unaffected.
+	if command -v canonical_consumer_skip_committed >/dev/null 2>&1; then
+		canonical_consumer_skip_committed "$1"
+		return
+	fi
 	command -v canonical_consumer_skip >/dev/null 2>&1 || return 1
 	canonical_consumer_skip "$1"
 }

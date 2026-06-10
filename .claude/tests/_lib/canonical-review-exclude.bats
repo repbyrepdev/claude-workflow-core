@@ -42,6 +42,7 @@ teardown() {
 @test "excluded: consumer + byte-identical canonical → EXCLUDE (rc 0)" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: review layers exclude on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	run canonical_review_excluded ".claude/hooks/foo.sh"
@@ -49,10 +50,11 @@ teardown() {
 	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
-@test "excluded: consumer + modified canonical → review it (rc 1)" {
+@test "excluded: consumer + modified (committed-drift) canonical → review it (rc 1)" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	printf '# local drift\n' >>"$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm drift # committed blob DIFFERS from canonical
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	run canonical_review_excluded ".claude/hooks/foo.sh"
@@ -199,6 +201,7 @@ teardown() {
 @test "phase2_filtered_count (consumer): drops findings on canonical mirrors, keeps consumer-authored" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \
@@ -266,6 +269,7 @@ teardown() {
 	mkdir -p "$REPO/.claude/_lib"
 	cp "$PLUGIN/_lib/canonical-consumer-skip.sh" "$REPO/.claude/_lib/canonical-consumer-skip.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirrors # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \
@@ -299,6 +303,7 @@ teardown() {
 @test "filtered_finding_count: finding keyed by .file (not .fileName) is handled" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \
@@ -312,6 +317,7 @@ teardown() {
 @test "filtered_finding_count: path-less finding is KEPT (never under-counted)" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \

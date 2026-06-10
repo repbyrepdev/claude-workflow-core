@@ -83,3 +83,52 @@ canonical_consumer_skip() {
 	done
 	return 1
 }
+
+# canonical_consumer_skip_committed <repo-relative-path>
+#   Same decision as canonical_consumer_skip, but compares the COMMITTED blob
+#   (git show HEAD:path) to the pinned canonical instead of the WORKING-TREE file.
+#   The REVIEW layers review the COMMITTED state — phase1 agents scope on
+#   `git diff <base>..HEAD`, phase2 CR-CLI reviews `-t committed` — so the
+#   exclusion they use MUST match what was reviewed. With the working-tree
+#   predicate, a consumer that COMMITTED a mirror change (→ a real finding on the
+#   committed blob CR reviewed) then REVERTED it to canonical in the working tree
+#   would have that finding wrongly DROPPED (#2250 TOCTOU → a false-clean lets
+#   unreviewed committed code reach push). The pre-commit GATES keep
+#   canonical_consumer_skip (working-tree / staged) — they validate staged
+#   content, not the committed blob.
+#   exit 0 → SKIP (consumer + committed blob byte-identical to pinned canonical)
+#   exit 1 → DO NOT skip (plugin / not committed / committed-differs / unresolvable)
+canonical_consumer_skip_committed() {
+	local repo_rel="${1:-}"
+	[ -n "$repo_rel" ] || return 1
+
+	local repo_root
+	repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+	[ -n "$repo_root" ] || return 1
+
+	# Plugin repo → never skip (full self-enforcement), same as the working-tree
+	# predicate.
+	[ -f "$repo_root/.claude-plugin/plugin.json" ] && return 1
+
+	local plugin_root
+	plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || return 1
+	[ -n "$plugin_root" ] || return 1
+	[ -f "$plugin_root/.claude-plugin/plugin.json" ] || return 1
+
+	# The path must exist in HEAD as a committed blob; a new/uncommitted consumer
+	# file (not in HEAD) is NOT a committed mirror → review it (fail-safe).
+	git cat-file -e "HEAD:$repo_rel" 2>/dev/null || return 1
+
+	# cmp the COMMITTED blob (byte-stream, so trailing newlines are preserved —
+	# capturing via $() would strip them) against each canonical candidate. A skip
+	# fires only on byte-identical content. git/cmp error inside the `if` does not
+	# trip set -e (it is a tested condition) and falls through to "do not skip".
+	local stripped="${repo_rel#.claude/}" cand
+	for cand in "$plugin_root/$stripped" "$plugin_root/$repo_rel"; do
+		[ -f "$cand" ] || continue
+		if git show "HEAD:$repo_rel" 2>/dev/null | cmp -s - "$cand"; then
+			return 0
+		fi
+	done
+	return 1
+}
