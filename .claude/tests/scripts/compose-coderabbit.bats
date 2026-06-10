@@ -238,3 +238,33 @@ EOF
 	# Dir exists but has no *.sh → injection is a no-op, no hook exclusions.
 	[[ $output != *"!.claude/hooks/"* ]]
 }
+
+@test "#2257: consumer-OVERRIDDEN hook stays reviewed; byte-identical mirror excluded + annotated" {
+	# Canonical set alpha+beta. Consumer mirror: alpha byte-identical, beta
+	# OVERRIDDEN (differs). Only alpha is excluded; beta stays reviewed —
+	# excluding a consumer-authored override would be a CR-in-CI blind spot.
+	mkdir -p "$TMP/hooks" "$TMP/consumer-hooks"
+	printf '#!/bin/bash\necho canonical\n' >"$TMP/hooks/alpha.sh"
+	printf '#!/bin/bash\necho canonical\n' >"$TMP/hooks/beta.sh"
+	cp "$TMP/hooks/alpha.sh" "$TMP/consumer-hooks/alpha.sh"
+	printf '#!/bin/bash\necho CONSUMER OVERRIDE\n' >"$TMP/consumer-hooks/beta.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer-hooks" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+	[ -z "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/beta.sh")' "$TMP/.coderabbit.yaml")" ]
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 1 ]
+	# part 2: appended exclusions are annotated (self-consistent composed config).
+	grep -q 'canonical-mirror-hook exclusions are appended' "$TMP/.coderabbit.yaml"
+}
+
+@test "#2257: absent consumer mirror → excluded (byte-identical assumed = prior behavior)" {
+	# When the consumer dir lacks the hook entirely, default to excluding (the
+	# pre-#2257 behavior) — there is nothing consumer-authored to review.
+	mkdir -p "$TMP/hooks" "$TMP/consumer-hooks"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer-hooks" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+}

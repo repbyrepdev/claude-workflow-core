@@ -180,8 +180,22 @@ if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
 	# Capture enumeration failure (dir exists but unsearchable, or a TOCTOU race)
 	# and fail CLOSED — a silently-empty _excl would drop every exclusion and
 	# re-enable the verbatim treadmill with no signal.
+	# #2257: emit an exclusion for a canonical hook ONLY when the consumer's
+	# .claude/hooks/<name> is BYTE-IDENTICAL to the canonical. A consumer may
+	# override a plugin hook (.claude/local-overrides.yml); refresh-from-source
+	# keeps the override, so .claude/hooks/<name> is genuinely consumer-authored
+	# and MUST stay reviewed by CR-in-CI (excluding it would be a real blind
+	# spot). Default the consumer hooks dir to the compose cwd's .claude/hooks
+	# (where the composed .coderabbit.yaml lives); COMPOSE_CR_CONSUMER_HOOKS_DIR
+	# overrides for tests. Absent consumer file → exclude (byte-identical mirror
+	# assumed = prior behavior); present-and-DIFFERS → consumer override → keep
+	# reviewed. Computed before the `cd` so $PWD is the original compose cwd.
+	_consumer_hooks="${COMPOSE_CR_CONSUMER_HOOKS_DIR:-$PWD/.claude/hooks}"
 	if ! _excl=$(cd "$_hooks_dir" && for _h in *.sh; do
 		[ -e "$_h" ] || continue
+		if [ -e "$_consumer_hooks/$_h" ] && ! cmp -s "$_h" "$_consumer_hooks/$_h"; then
+			continue
+		fi
 		printf '!.claude/hooks/%s\n' "$_h"
 	done | LC_ALL=C sort); then
 		echo "compose-coderabbit: failed enumerating canonical hooks in $_hooks_dir" >&2
@@ -195,7 +209,9 @@ if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
 		if ! result=$(printf '%s\n' "$result" | EXCL="$_excl" yq '
 			.reviews.auto_review.path_filters =
 				((.reviews.auto_review.path_filters // []) +
-					(strenv(EXCL) | split("\n") | map(select(. != ""))))
+					(strenv(EXCL) | split("\n") | map(select(. != "")))) |
+			.reviews.auto_review.path_filters head_comment =
+				"#2254/#2257: per-file canonical-mirror-hook exclusions are appended below by compose-coderabbit.sh; byte-identical mirrors ONLY (consumer-overridden hooks stay reviewed). Generated — do not hand-edit."
 		' 2>"$_yqe"); then
 			echo "compose-coderabbit: failed appending canonical-hook exclusions:" >&2
 			cat "$_yqe" >&2
