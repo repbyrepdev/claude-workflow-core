@@ -85,8 +85,8 @@ canonical_consumer_skip() {
 }
 
 # canonical_consumer_skip_committed <repo-relative-path>
-#   Same decision as canonical_consumer_skip, but compares the COMMITTED blob
-#   (git show HEAD:path) to the pinned canonical instead of the WORKING-TREE file.
+#   Same decision as canonical_consumer_skip, but compares the COMMITTED blob's
+#   git object id (#2327) to the pinned canonical instead of the WORKING-TREE file.
 #   The REVIEW layers review the COMMITTED state — phase1 agents scope on
 #   `git diff <base>..HEAD`, phase2 CR-CLI reviews `-t committed` — so the
 #   exclusion they use MUST match what was reviewed. With the working-tree
@@ -115,20 +115,27 @@ canonical_consumer_skip_committed() {
 	[ -n "$plugin_root" ] || return 1
 	[ -f "$plugin_root/.claude-plugin/plugin.json" ] || return 1
 
-	# The path must exist in HEAD as a committed blob; a new/uncommitted consumer
-	# file (not in HEAD) is NOT a committed mirror → review it (fail-safe).
-	git cat-file -e "HEAD:$repo_rel" 2>/dev/null || return 1
+	# Resolve the COMMITTED blob's object id ONCE — atomic (no second read of a
+	# possibly-changing HEAD; #2327 r1 silent-failure-hunter). `git rev-parse
+	# --verify` also gates traversal: an out-of-tree refspec like `HEAD:../x` or
+	# an absolute `HEAD:/etc/...` is rejected by git, so a CR-finding-supplied
+	# path cannot escape the tree (#2327 r1 security-review). Fail-safe paths:
+	#   - not in HEAD (new/uncommitted file)         → return 1 (review it)
+	#   - a non-blob path (a committed dir/gitlink)  → its tree/commit oid can
+	#     never equal a blob oid → falls through to review
+	# oids are newline-free, so the $() captures are byte-exact.
+	local committed_oid
+	committed_oid="$(git rev-parse --verify --quiet "HEAD:$repo_rel" 2>/dev/null)" || return 1
+	[ -n "$committed_oid" ] || return 1
 
-	# cmp the COMMITTED blob (byte-stream, so trailing newlines are preserved —
-	# capturing via $() would strip them) against each canonical candidate. A skip
-	# fires only on byte-identical content. git/cmp error inside the `if` does not
-	# trip set -e (it is a tested condition) and falls through to "do not skip".
+	# A skip fires only on an exact oid match = byte-identical committed content.
+	# `git hash-object` computes the blob oid of a file's content with the same
+	# hash algorithm as rev-parse. hash-object failure → empty → no match →
+	# review (fail-safe). `[ … ] && return 0` is a tested condition (set -e safe).
 	local stripped="${repo_rel#.claude/}" cand
 	for cand in "$plugin_root/$stripped" "$plugin_root/$repo_rel"; do
 		[ -f "$cand" ] || continue
-		if git show "HEAD:$repo_rel" 2>/dev/null | cmp -s - "$cand"; then
-			return 0
-		fi
+		[ "$committed_oid" = "$(git hash-object "$cand" 2>/dev/null)" ] && return 0
 	done
 	return 1
 }
