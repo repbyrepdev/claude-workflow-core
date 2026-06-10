@@ -73,6 +73,7 @@ reviews:
     # CLAUDE.md/AGENTS.md drive auto-invocation + operating rules, so they ARE
     # reviewed. Repos append repo-specific source paths via overlay.
     path_filters:
+      #2254/#2257: the trailing !.claude/hooks/<name> entries in this list are per-file canonical-mirror-hook exclusions auto-appended by compose-coderabbit.sh (byte-identical mirrors ONLY; consumer-overridden hooks stay reviewed). Earlier entries are from base/overlay. Regenerated each compose.
       - ".claude/skills/**/*.md"
       - "CLAUDE.md"
       - "AGENTS.md"
@@ -84,6 +85,11 @@ reviews:
       - "!.github/release.yml"
       - "!.claude/.session-state/**"
       - "!.claude/audit/**"
+      # #2362: generated SHA-256 registry — integrity is enforced mechanically by
+      # the source-hashes-regen gate + hash-drift (sha256sum), not by review. CR
+      # is an LLM and cannot compute SHA-256, so it fabricates "corrected" hashes
+      # and flags them critical (a guaranteed false positive). Exclude it.
+      - "!.claude/.source-hashes.json"
       - "!**/*.svg"
       - "!**/*.png"
       # v0.34.36 (#2249) canonical-review-exclusion CR-layer globs — NARROWED.
@@ -185,6 +191,7 @@ reviews:
       - '!.claude/hooks/review-log.sh'
       - '!.claude/hooks/security-reminder.sh'
       - '!.claude/hooks/session-start-chmod-self-heal.sh'
+      - '!.claude/hooks/session-start-consumer-pin-staleness.sh'
       - '!.claude/hooks/session-start-report.sh'
       - '!.claude/hooks/session-start-stale-marker-sweep.sh'
       - '!.claude/hooks/session-start-stale-pin.sh'

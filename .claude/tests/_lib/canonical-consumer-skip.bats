@@ -174,8 +174,10 @@ teardown() {
 	. "$LIB"
 	run canonical_consumer_skip ".claude/hooks/foo.sh" # working-tree → fooled → SKIP
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]                                             # silent rc-function
 	run canonical_consumer_skip_committed ".claude/hooks/foo.sh" # committed → NO skip (the fix)
 	[ "$status" -eq 1 ]
+	[ -z "$output" ] # silent rc-function
 }
 
 @test "#2328 committed: file present in worktree but NOT committed (not in HEAD) → NO skip (rc 1)" {
