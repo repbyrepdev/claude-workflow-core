@@ -88,6 +88,7 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CR_REQUIRED=no \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
 	[ "$status" -eq 0 ]
+	[[ $output == *"CodeRabbit: pass"* ]]
 }
 
 @test "CR required + absent → keeps waiting (timeout exit 2), NOT premature exit 3 (#2332)" {
