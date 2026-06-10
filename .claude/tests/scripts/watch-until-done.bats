@@ -2,9 +2,11 @@
 # covers: scripts/cr/watch-until-done.sh
 #
 # #2332: the CR-in-CI watcher must treat a path-filtered PR (CodeRabbit posts
-# no check) as TERMINAL (exit 3) instead of polling to the timeout — but only
-# when CR is NOT a required check and every other check is terminal. When CR
-# IS required, it must keep waiting (never prematurely skip a required review).
+# no check) as TERMINAL (exit 3) instead of polling to the timeout — but ONLY
+# when CR is definitely NOT a required check AND every other check is terminal.
+# It must keep waiting (never prematurely exit 3) when CR IS required, when a
+# non-CR check is still pending, while the CR row is present, or when the
+# CR-required state is indeterminate (fail CLOSED).
 
 setup() {
 	SCRIPT="${BATS_TEST_DIRNAME}/../../../scripts/cr/watch-until-done.sh"
@@ -23,18 +25,33 @@ teardown() {
 	fi
 }
 
-# Write a fake `gh` serving canned responses for the four calls the script
-# makes. Scenario is passed to each run via the env (FAKE_CHECKS = gh pr checks
-# output, tab-separated; FAKE_CR_REQUIRED = yes|no for CodeRabbit-required).
+# Fake `gh` serving canned responses for the calls the script makes. Scenario
+# is passed per-run via env (no `export` — that trips SC2030/2031 in bats):
+#   FAKE_CHECKS         `gh pr checks` output, tab-separated (name<TAB>bucket)
+#   FAKE_CR_REQUIRED    yes|no — is CodeRabbit in the base branch's required set
+#   FAKE_PROTECTED      true|false — is the base branch protected (default true)
+#   FAKE_BRANCH_READ_FAIL  1 — make the branch-object read fail (gh error sim)
 _make_fake_gh() {
 	cat >"$TEST_TMP/fakebin/gh" <<'EOF'
 #!/bin/bash
-# Route on "$1 $2"; `gh api <path> ...` matches "api "* regardless of the path.
+# Route on "$1 $2". For `gh api <path> ...` the path is $2; distinguish the
+# branch-PROTECTION read (CR-required) from the branch-OBJECT read (.protected)
+# by the path suffix.
 case "$1 $2" in
 "pr checks") printf '%s\n' "$FAKE_CHECKS" ;;
 "pr view") echo "main" ;;
 "repo view") echo "owner/repo" ;;
-"api "*) if [ "${FAKE_CR_REQUIRED:-no}" = yes ]; then echo "true"; else echo "false"; fi ;;
+"api "*)
+	case "$2" in
+	*/protection)
+		if [ "${FAKE_CR_REQUIRED:-no}" = yes ]; then echo true; else echo false; fi
+		;;
+	*)
+		[ "${FAKE_BRANCH_READ_FAIL:-}" = 1 ] && exit 1
+		echo "${FAKE_PROTECTED:-true}"
+		;;
+	esac
+	;;
 *)
 	echo "fake-gh: unhandled: $*" >&2
 	exit 1
@@ -48,6 +65,18 @@ EOF
 	local checks=$'gitleaks\tpass\t2s\nlabel\tpass\t1s'
 	_make_fake_gh
 	run env FAKE_CHECKS="$checks" FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
+	[ "$status" -eq 3 ]
+	[[ $output == *"not applicable"* ]]
+}
+
+@test "unprotected base → CR not required → path-filtered exit 3 (plugin's own main) (#2332)" {
+	# The plugin's main is unprotected: _cr_required_state must resolve 'no'
+	# from the branch-object read alone (never reaching the protection read),
+	# keeping the path-filtered PR exit-3 eligible.
+	local checks=$'gitleaks\tpass\t2s\nlabel\tpass\t1s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_PROTECTED=false \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
 	[ "$status" -eq 3 ]
 	[[ $output == *"not applicable"* ]]
@@ -69,4 +98,40 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CR_REQUIRED=yes \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
 	[ "$status" -eq 2 ]
+	[[ $output == *"timeout reached"* ]]
+}
+
+@test "path-filtered but a NON-CR check still PENDING → keeps waiting (exit 2), not exit 3 (#2332)" {
+	# CR absent + not required, BUT a non-CR check is still pending — the
+	# watcher must NOT declare 'not applicable' (exit 3) while a real check is
+	# mid-flight. It waits → times out → exit 2. This is the exact bug class
+	# the _other_checks_terminal allowlist guards against.
+	local checks=$'gitleaks\tpass\t2s\nlabel\tpending\t1s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
+	[ "$status" -eq 2 ]
+	[[ $output == *"timeout reached"* ]]
+}
+
+@test "CR present-but-pending resets the absent counter → no premature exit 3 (#2332)" {
+	# The CR row is present (pending), so ABSENT_WITH_OTHERS never reaches the
+	# threshold — exit 3 can't fire even though CR is not required. Times out.
+	local checks=$'CodeRabbit\tpending\t5s\ngitleaks\tpass\t2s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
+	[ "$status" -eq 2 ]
+	[[ $output == *"timeout reached"* ]]
+}
+
+@test "indeterminate CR-required (gh branch read errors) → keeps waiting (exit 2), fail closed (#2332)" {
+	# A transient gh/auth error resolving CR-required must NOT enable exit 3:
+	# _cr_required_state returns 'unknown' → treated like 'yes' → keep waiting.
+	local checks=$'gitleaks\tpass\t2s\nlabel\tpass\t1s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_BRANCH_READ_FAIL=1 \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
+	[ "$status" -eq 2 ]
+	[[ $output == *"timeout reached"* ]]
 }
