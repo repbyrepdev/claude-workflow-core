@@ -196,3 +196,47 @@ teardown() {
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
 }
+
+@test "#2327 committed: empty arg → NO skip (rc 1)" {
+	# Parity with the working-tree empty-arg guard: the committed predicate must
+	# reject an empty path before any git op.
+	cd "$REPO"
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip_committed ""
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
+
+@test "#2327 committed: lib resolved from consumer tree (plugin_root lacks plugin.json) → NO skip even if committed-identical (rc 1)" {
+	# Committed mirror of the security-critical working-tree fail-safe: when the
+	# lib resolves from the consumer's OWN tree (plugin_root has no plugin.json),
+	# a byte-identical COMMITTED file must still NOT be skipped — a consumer
+	# cannot self-authorize skipping enforcement on its own committed blob.
+	mkdir -p "$REPO/.claude/_lib"
+	cp "$LIB" "$REPO/.claude/_lib/canonical-consumer-skip.sh"
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	git add -A && git commit -qm mirror
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$REPO/.claude/_lib/canonical-consumer-skip.sh"
+	run canonical_consumer_skip_committed ".claude/hooks/foo.sh"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
+
+@test "#2327 committed: as-is path mapping shared-path (.claude/tests/) committed-identical → SKIP (rc 0)" {
+	# Parity with the working-tree as-is test: .claude/tests/ shares its path in
+	# plugin + consumer, so the stripped candidate misses and the as-is candidate
+	# must fire — here against the consumer's COMMITTED blob.
+	mkdir -p "$PLUGIN/.claude/tests" "$REPO/.claude/tests"
+	printf 'shared-path canonical\n' >"$PLUGIN/.claude/tests/foo.bats"
+	cp "$PLUGIN/.claude/tests/foo.bats" "$REPO/.claude/tests/foo.bats"
+	cd "$REPO"
+	git add -A && git commit -qm mirror
+	# shellcheck source=../../../_lib/canonical-consumer-skip.sh
+	. "$LIB"
+	run canonical_consumer_skip_committed ".claude/tests/foo.bats"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
