@@ -32,8 +32,9 @@ teardown() {
 }
 
 _write_config_pinning() {
-	# $1 = rev (e.g. v0.34.40); writes a config with a claude-workflow-core block
-	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core\n    rev: %s\n    hooks:\n      - id: bash-safety\n' "$1" >"$CONFIG"
+	# $1 = rev (e.g. v0.34.40); $2 = optional dest path (default $CONFIG).
+	# Writes a config with a claude-workflow-core block.
+	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core\n    rev: %s\n    hooks:\n      - id: bash-safety\n' "$1" >"${2:-$CONFIG}"
 }
 
 _make_cache() {
@@ -143,4 +144,69 @@ _make_cache() {
 	run bash "$SCRIPT"
 	[ "$status" -eq 0 ]
 	[[ $output == *"but v0.34.49 is installed"* ]]
+}
+
+@test "repo-root anchor: resolves config from a SUBDIR via git rev-parse, no override (#2344)" {
+	# No SESSION_START_CONSUMER_PIN_CONFIG → the hook must anchor to the repo
+	# root. A real git repo with the pinned config at its ROOT, run from a
+	# nested subdir, must still surface the staleness advisory.
+	local repo="$TEST_TMP/consumer"
+	mkdir -p "$repo/deep/nested/subdir"
+	# The nested `git init` is LOAD-BEARING for determinism: it makes $repo the
+	# nearest work tree, so `git rev-parse --show-toplevel` from the subdir
+	# returns $repo regardless of whether $TMPDIR sits inside an outer repo.
+	git -C "$repo" init -q
+	_write_config_pinning v0.34.40 "$repo/.pre-commit-config.yaml"
+	_make_cache 0.34.40 0.34.49
+	unset SESSION_START_CONSUMER_PIN_CONFIG
+	# Config exists ONLY at the repo root — a $PWD-relative resolution from the
+	# subdir would miss it and exit silently, so the advisory proves anchoring.
+	run bash -c "cd '$repo/deep/nested/subdir' && bash '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"pins claude-workflow-core v0.34.40 but v0.34.49 is installed"* ]]
+}
+
+@test "repo-root anchor: up-to-date via repo-root branch → silent (#2344)" {
+	# The new branch must also stay SILENT on the happy path (pin == cache max),
+	# not only emit the advisory — guards the CONFIG path assembly.
+	local repo="$TEST_TMP/uptodate"
+	mkdir -p "$repo/sub"
+	git -C "$repo" init -q
+	_write_config_pinning v0.34.49 "$repo/.pre-commit-config.yaml"
+	_make_cache 0.34.49
+	unset SESSION_START_CONSUMER_PIN_CONFIG
+	run bash -c "cd '$repo/sub' && bash '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "repo-root anchor: outer repo whose root lacks a config → silent, no over-reach (#2344)" {
+	# Anchoring widens the search from $PWD up to the git root. In a subdir of a
+	# NON-consumer parent repo (monorepo / $HOME-as-repo) the resolved root has
+	# no .pre-commit-config — the hook must stay silent, never false-advise.
+	local repo="$TEST_TMP/outer"
+	mkdir -p "$repo/sub"
+	git -C "$repo" init -q
+	# No .pre-commit-config.yaml at the repo root.
+	_make_cache 0.34.49
+	unset SESSION_START_CONSUMER_PIN_CONFIG
+	run bash -c "cd '$repo/sub' && bash '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test 'repo-root anchor: falls back to $PWD when git is unavailable/not-a-repo (#2344)' {
+	# Force the fallback: a git on PATH that always fails (simulates "not a
+	# work tree" / git absent). The advisory hook must never error and must
+	# read the config at $PWD instead.
+	local dir="$TEST_TMP/nongit"
+	mkdir -p "$dir/fakebin"
+	_write_config_pinning v0.34.40 "$dir/.pre-commit-config.yaml"
+	_make_cache 0.34.40 0.34.49
+	printf '#!/bin/sh\nexit 1\n' >"$dir/fakebin/git"
+	chmod +x "$dir/fakebin/git"
+	unset SESSION_START_CONSUMER_PIN_CONFIG
+	run bash -c "cd '$dir' && PATH='$dir/fakebin:$PATH' bash '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"pins claude-workflow-core v0.34.40 but v0.34.49 is installed"* ]]
 }

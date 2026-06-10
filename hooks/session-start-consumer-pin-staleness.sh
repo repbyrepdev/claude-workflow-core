@@ -15,7 +15,7 @@ set -euo pipefail
 # ~/.claude/settings.json cache-PATH refs vs the on-disk cache. This one
 # checks the CONSUMER REPO's own .pre-commit-config plugin pin vs the cache.
 #
-# Behavior: pure ADVISORY (exit 0 always). Reads $PWD/.pre-commit-config.yaml,
+# Behavior: pure ADVISORY (exit 0 always). Reads the repo-root .pre-commit-config.yaml,
 # extracts the rev pinned for repbyrepdev/claude-workflow-core, compares to the
 # highest plugin-cache version dir, warns on drift (both directions).
 #
@@ -36,7 +36,15 @@ if [ "${SESSION_START_CONSUMER_PIN_SKIP:-0}" = "1" ]; then
 	exit 0
 fi
 
-CONFIG="${SESSION_START_CONSUMER_PIN_CONFIG:-$PWD/.pre-commit-config.yaml}"
+if [ -n "${SESSION_START_CONSUMER_PIN_CONFIG:-}" ]; then
+	CONFIG="$SESSION_START_CONSUMER_PIN_CONFIG"
+else
+	# Anchor to the repo root so a SessionStart firing from a subdirectory
+	# still finds the config — a $PWD-relative path would miss it. Fall back
+	# to $PWD outside a git work tree (advisory hook: must never fail).
+	_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || _repo_root="$PWD"
+	CONFIG="$_repo_root/.pre-commit-config.yaml"
+fi
 CACHE_DIR="${SESSION_START_CONSUMER_PIN_CACHE_DIR:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 
 # Not a repo with a pre-commit config → nothing to check.
