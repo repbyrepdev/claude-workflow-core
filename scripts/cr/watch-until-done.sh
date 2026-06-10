@@ -12,11 +12,45 @@ set -euo pipefail
 #   0 — CR completed successfully (pass)
 #   1 — CR completed with failure
 #   2 — timeout reached OR invocation error (arg validation, gh failure)
+#   3 — CR not applicable: posted nothing (PR paths outside .coderabbit.yaml
+#       auto_review path_filters), CR is not a required check, and every other
+#       check is terminal — there is no CR check to wait for (#2332)
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# REPO_ROOT pre-seeds the value the sourced _common.sh consumes (its
+# `: "${REPO_ROOT:=...}"` default-assign + export); it is read by that lib,
+# not locally — hence the SC2034 suppression. The script-relative fallback
+# is more robust than _common.sh's bare `pwd` when cwd != repo root.
+# shellcheck disable=SC2034
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
 # shellcheck source=../_common.sh
 source "$SCRIPT_DIR/../_common.sh"
+
+# #2332: detect the "CR posts nothing because the PR is path-filtered out of
+# .coderabbit.yaml auto_review" case, so the poll loop can exit terminal
+# instead of waiting out the full timeout (the false "CR is down" trap that
+# parked PR #2330 for ~15h). Used ONLY to avoid an infinite wait — never to
+# skip a review that is actually coming: CR posts its pending check within
+# seconds when it engages, so sustained absence reliably means it will not.
+_cr_is_required() {
+	# 0 = "CodeRabbit" is a required status check on the PR's base branch.
+	local owner_repo base
+	owner_repo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null) || return 1
+	base=$(gh pr view "$PR" --json baseRefName --jq '.baseRefName' 2>/dev/null) || return 1
+	gh api "repos/$owner_repo/branches/$base/protection" \
+		--jq '((.required_status_checks.contexts // []) + ((.required_status_checks.checks // []) | map(.context))) | any(. == "CodeRabbit")' 2>/dev/null |
+		grep -qx true
+}
+
+_other_checks_terminal() {
+	# 0 = no NON-CodeRabbit check row is still pending/queued (all terminal).
+	# $1 = raw `gh pr checks` output (tab-separated: name<TAB>state<TAB>...).
+	printf '%s\n' "$1" | awk -F'\t' '
+		tolower($1) == "coderabbit" { next }
+		{ s = tolower($2); if (s == "pending" || s == "queued" || s == "") pend = 1 }
+		END { exit pend ? 1 : 0 }
+	'
+}
 
 PR=""
 INTERVAL=20
@@ -36,7 +70,7 @@ while [ $# -gt 0 ]; do
 		exit 0
 		;;
 	*)
-		if [ -z "$PR" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+		if [ -z "$PR" ] && [[ $1 =~ ^[0-9]+$ ]]; then
 			PR="$1"
 			shift
 		else
@@ -46,11 +80,16 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$PR" ] || scm_fail "usage: $0 <pr-num> [--interval SEC] [--timeout SEC]"
-[[ "$INTERVAL" =~ ^[0-9]+$ ]] || scm_fail "interval must be numeric"
-[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || scm_fail "timeout must be numeric"
+[[ $INTERVAL =~ ^[0-9]+$ ]] || scm_fail "interval must be numeric"
+[[ $TIMEOUT =~ ^[0-9]+$ ]] || scm_fail "timeout must be numeric"
 
 START=$(date +%s)
 echo "Watching CodeRabbit on PR #$PR (poll every ${INTERVAL}s, timeout ${TIMEOUT}s)..."
+
+# #2332: resolve once whether CodeRabbit is a required check (doesn't change
+# during the watch). If NOT required and CR posts nothing (path-filtered PR),
+# the absent-CR branch exits terminal (3) rather than waiting out the timeout.
+if _cr_is_required; then CR_REQUIRED=yes; else CR_REQUIRED=no; fi
 
 # Poll loop: parse field 2 (state) of the CodeRabbit row from
 # `gh pr checks` output (one row per status check). Track consecutive
@@ -105,6 +144,19 @@ while :; do
 			if [ "$ABSENT_WITH_OTHERS" = "$ABSENT_WARN_THRESHOLD" ]; then
 				scm_warn "CodeRabbit row absent from gh checks for $ABSENT_WITH_OTHERS consecutive polls — is coderabbitai installed on this repo?"
 			fi
+		fi
+		# #2332: CR genuinely not coming — absent for the warn threshold, NOT a
+		# required check, and every OTHER check terminal → the PR's paths are
+		# path-filtered out of CR auto_review, so no CR check is coming. Exit
+		# terminal (3) instead of polling to the full timeout (the false "CR is
+		# down" trap that parked PR #2330 for ~15h). ABSENT_WITH_OTHERS is only
+		# nonzero when CR has been sustained-absent, so this never fires while
+		# CR is present/queued (that branch resets the counter).
+		if [ "$ABSENT_WITH_OTHERS" -ge "$ABSENT_WARN_THRESHOLD" ] &&
+			[ "$CR_REQUIRED" = no ] && _other_checks_terminal "$RAW"; then
+			echo "[${ELAPSED}s] CodeRabbit: absent + not a required check + all other checks terminal → not applicable (PR paths outside .coderabbit.yaml auto_review). Treating as terminal; force '@coderabbitai review' if a review is desired."
+			scm_log cr-watch "$(printf '{"pr":%s,"outcome":"not-applicable-path-filtered","elapsed":%s}' "$PR" "$ELAPSED")"
+			exit 3
 		fi
 		echo "[${ELAPSED}s] CodeRabbit: ${STATE:-not-started} (poll again in ${INTERVAL}s)"
 		sleep "$INTERVAL"
