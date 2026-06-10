@@ -144,3 +144,34 @@ _make_cache() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"but v0.34.49 is installed"* ]]
 }
+
+@test "repo-root anchor: resolves config from a SUBDIR via git rev-parse, no override (#2344)" {
+	# No SESSION_START_CONSUMER_PIN_CONFIG → the hook must anchor to the repo
+	# root. A real git repo with the pinned config at its ROOT, run from a
+	# nested subdir, must still surface the staleness advisory.
+	local repo="$TEST_TMP/consumer"
+	mkdir -p "$repo/deep/nested/subdir"
+	git -C "$repo" init -q
+	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core\n    rev: v0.34.40\n    hooks:\n      - id: bash-safety\n' >"$repo/.pre-commit-config.yaml"
+	_make_cache 0.34.40 0.34.49
+	unset SESSION_START_CONSUMER_PIN_CONFIG
+	run bash -c "cd '$repo/deep/nested/subdir' && bash '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"pins claude-workflow-core v0.34.40 but v0.34.49 is installed"* ]]
+}
+
+@test 'repo-root anchor: falls back to $PWD when git is unavailable/not-a-repo (#2344)' {
+	# Force the fallback: a git on PATH that always fails (simulates "not a
+	# work tree" / git absent). The advisory hook must never error and must
+	# read the config at $PWD instead.
+	local dir="$TEST_TMP/nongit"
+	mkdir -p "$dir/fakebin"
+	printf 'repos:\n  - repo: https://github.com/repbyrepdev/claude-workflow-core\n    rev: v0.34.40\n    hooks:\n      - id: bash-safety\n' >"$dir/.pre-commit-config.yaml"
+	_make_cache 0.34.40 0.34.49
+	printf '#!/bin/sh\nexit 1\n' >"$dir/fakebin/git"
+	chmod +x "$dir/fakebin/git"
+	unset SESSION_START_CONSUMER_PIN_CONFIG
+	run bash -c "cd '$dir' && PATH='$dir/fakebin:$PATH' bash '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"pins claude-workflow-core v0.34.40 but v0.34.49 is installed"* ]]
+}
