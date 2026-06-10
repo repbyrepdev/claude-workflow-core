@@ -180,8 +180,50 @@ if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
 	# Capture enumeration failure (dir exists but unsearchable, or a TOCTOU race)
 	# and fail CLOSED — a silently-empty _excl would drop every exclusion and
 	# re-enable the verbatim treadmill with no signal.
+	# #2257: emit an exclusion for a canonical hook ONLY when the consumer's
+	# .claude/hooks/<name> is BYTE-IDENTICAL to the canonical. A consumer may
+	# override a plugin hook (.claude/local-overrides.yml); refresh-from-source
+	# keeps the override, so .claude/hooks/<name> is genuinely consumer-authored
+	# and MUST stay reviewed by CR-in-CI (excluding it would be a real blind
+	# spot). Absent consumer file → exclude (byte-identical mirror assumed =
+	# prior behavior); present-and-DIFFERS → consumer override → keep reviewed.
+	#
+	# #2257 r2: resolve the consumer hooks dir to an ABSOLUTE path BEFORE the
+	# `cd "$_hooks_dir"` subshell (so a relative value still compares the right
+	# files). Default to the dir CONTAINING the output .coderabbit.yaml (the
+	# consumer repo root) when --out is given, else $PWD; the env var overrides
+	# for tests. Then SIGNAL if that dir is absent — otherwise a wrong cwd makes
+	# every `[ -e ]` false, every hook falls through to "excluded", and the
+	# blind spot is silently reintroduced.
+	if [ -n "${COMPOSE_CR_CONSUMER_HOOKS_DIR:-}" ]; then
+		# Normalize a relative override to absolute too (mirrors _consumer_root
+		# below) so it isn't mis-resolved against $_hooks_dir inside the `cd`.
+		_consumer_hooks="$COMPOSE_CR_CONSUMER_HOOKS_DIR"
+		case "$_consumer_hooks" in /*) ;; *) _consumer_hooks="$PWD/$_consumer_hooks" ;; esac
+	else
+		_consumer_root="${OUT:+$(dirname "$OUT")}"
+		_consumer_root="${_consumer_root:-$PWD}"
+		case "$_consumer_root" in /*) ;; *) _consumer_root="$PWD/$_consumer_root" ;; esac
+		_consumer_hooks="$_consumer_root/.claude/hooks"
+	fi
+	[ -d "$_consumer_hooks" ] || echo "compose-coderabbit: NOTE: consumer hooks dir '$_consumer_hooks' not found — every canonical hook will be excluded; set COMPOSE_CR_CONSUMER_HOOKS_DIR (or run from the consumer repo root) if that is wrong" >&2
 	if ! _excl=$(cd "$_hooks_dir" && for _h in *.sh; do
 		[ -e "$_h" ] || continue
+		# Exclude only a byte-identical mirror. `cmp -s` exits 0=identical,
+		# 1=differ, 2=error (unreadable / IO). differ → keep reviewed (consumer
+		# override). error → ALSO keep reviewed (fail SAFE toward more review,
+		# never a blind spot) but EMIT a diagnostic so it is not silent. rc is
+		# captured via `|| _c=$?` (a bare `cmp; _c=$?` would abort under set -e).
+		if [ -e "$_consumer_hooks/$_h" ]; then
+			_c=0
+			cmp -s "$_h" "$_consumer_hooks/$_h" || _c=$?
+			if [ "$_c" -eq 1 ]; then
+				continue
+			elif [ "$_c" -ge 2 ]; then
+				echo "compose-coderabbit: WARNING: cmp failed comparing canonical '$_h' to consumer mirror (rc=$_c); keeping it REVIEWED (not excluded)" >&2
+				continue
+			fi
+		fi
 		printf '!.claude/hooks/%s\n' "$_h"
 	done | LC_ALL=C sort); then
 		echo "compose-coderabbit: failed enumerating canonical hooks in $_hooks_dir" >&2
@@ -195,7 +237,9 @@ if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
 		if ! result=$(printf '%s\n' "$result" | EXCL="$_excl" yq '
 			.reviews.auto_review.path_filters =
 				((.reviews.auto_review.path_filters // []) +
-					(strenv(EXCL) | split("\n") | map(select(. != ""))))
+					(strenv(EXCL) | split("\n") | map(select(. != "")))) |
+			.reviews.auto_review.path_filters head_comment =
+				"#2254/#2257: the trailing !.claude/hooks/<name> entries in this list are per-file canonical-mirror-hook exclusions auto-appended by compose-coderabbit.sh (byte-identical mirrors ONLY; consumer-overridden hooks stay reviewed). Earlier entries are from base/overlay. Regenerated each compose."
 		' 2>"$_yqe"); then
 			echo "compose-coderabbit: failed appending canonical-hook exclusions:" >&2
 			cat "$_yqe" >&2

@@ -182,7 +182,7 @@ EOF
 	mkdir -p "$TMP/hooks"
 	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
 	printf '#!/bin/bash\n' >"$TMP/hooks/beta.sh"
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
 	[ "$status" -eq 0 ]
 	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
 	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/beta.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/beta.sh" ]
@@ -197,10 +197,10 @@ EOF
 @test "#2254: hook-exclusion injection is idempotent (recomposed from base)" {
 	mkdir -p "$TMP/hooks"
 	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
 	[ "$status" -eq 0 ]
 	n1=$(yq -r '[.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")] | length' "$TMP/.coderabbit.yaml")
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
 	[ "$status" -eq 0 ]
 	n2=$(yq -r '[.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")] | length' "$TMP/.coderabbit.yaml")
 	# Exactly one occurrence each run (not doubled) — result recomputed from base.
@@ -221,7 +221,7 @@ reviews:
 EOF
 	mkdir -p "$TMP/hooks"
 	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$TMP/pf-base.yaml" --out "$TMP/.coderabbit.yaml"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/hooks" "$SCRIPT" --base "$TMP/pf-base.yaml" --out "$TMP/.coderabbit.yaml"
 	[ "$status" -eq 0 ]
 	# Pre-existing filters SURVIVE (appended-to, not replaced).
 	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!**/*.md")' "$TMP/.coderabbit.yaml")" = "!**/*.md" ]
@@ -237,4 +237,54 @@ EOF
 	[ "$status" -eq 0 ]
 	# Dir exists but has no *.sh → injection is a no-op, no hook exclusions.
 	[[ $output != *"!.claude/hooks/"* ]]
+}
+
+@test "#2257: consumer-OVERRIDDEN hook stays reviewed; byte-identical mirror excluded + annotated" {
+	# Canonical set alpha+beta. Consumer mirror: alpha byte-identical, beta
+	# OVERRIDDEN (differs). Only alpha is excluded; beta stays reviewed —
+	# excluding a consumer-authored override would be a CR-in-CI blind spot.
+	mkdir -p "$TMP/hooks" "$TMP/consumer-hooks"
+	printf '#!/bin/bash\necho canonical\n' >"$TMP/hooks/alpha.sh"
+	printf '#!/bin/bash\necho canonical\n' >"$TMP/hooks/beta.sh"
+	cp "$TMP/hooks/alpha.sh" "$TMP/consumer-hooks/alpha.sh"
+	printf '#!/bin/bash\necho CONSUMER OVERRIDE\n' >"$TMP/consumer-hooks/beta.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer-hooks" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+	[ -z "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/beta.sh")' "$TMP/.coderabbit.yaml")" ]
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 1 ]
+	# part 2: the appended exclusions are annotated. The comment renders directly
+	# under `path_filters:` (above the entries); grep is robust (yq head_comment
+	# read-back is finicky). Matches the reworded annotation.
+	grep -q 'canonical-mirror-hook exclusions auto-appended' "$TMP/.coderabbit.yaml"
+}
+
+@test "#2257: absent consumer mirror → excluded (byte-identical assumed = prior behavior)" {
+	# When the consumer dir lacks the hook entirely, default to excluding (the
+	# pre-#2257 behavior) — there is nothing consumer-authored to review.
+	mkdir -p "$TMP/hooks" "$TMP/consumer-hooks"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer-hooks" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+	# exactly one exclusion — pin the count so a stray/duplicate entry can't slip.
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 1 ]
+}
+
+@test "#2257: cmp ERROR (consumer mirror unreadable) → kept REVIEWED + WARNING, not silently excluded" {
+	# A consumer mirror path that EXISTS but cmp cannot byte-compare: a directory
+	# named like the hook forces `cmp -s file dir` → rc 2 deterministically (no
+	# root-bypass concern, unlike chmod 000). The hook must stay REVIEWED (fail
+	# safe toward more review, never a blind spot) AND a WARNING must be emitted.
+	mkdir -p "$TMP/hooks" "$TMP/consumer-hooks/alpha.sh"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer-hooks" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	# kept REVIEWED (NOT excluded)
+	[ -z "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" ]
+	# WARNING emitted (not silent)
+	[[ $output == *"cmp failed comparing canonical 'alpha.sh'"* ]]
 }
