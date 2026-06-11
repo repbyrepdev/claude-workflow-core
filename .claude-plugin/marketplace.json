@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "claude-workflow-core",
-      "description": "v0.4.0 — 15 workflow skills + 20 pre-commit-hooks + 18 _lib helpers + 3 session-resilience hooks. Also a pre-commit hooks repo (consumers wire via `repo: github.com/repbyrepdev/claude-workflow-core rev: v0.4.0`).",
+      "description": "Portable Claude Code workflow skills + session-resilience hooks. Also a pre-commit hooks repo (consumers pin a release tag; see GitHub Releases / the plugin.json `version` field for the canonical version).",
       "source": "./"
     }
   ]

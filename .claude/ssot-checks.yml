@@ -45,6 +45,11 @@
 # expression to target. The count is kept honest by review, not by a gate.
 
 checks:
+  # Coupling note: this check depends on README.md literally containing the
+  # phrase "<N> required status checks". If that prose is reworded, the regex
+  # stops matching and check-ssot-drift.sh treats it as an empty claim (a
+  # silent no-op, per its documented design) — so keep the README phrasing in
+  # sync when editing this entry. (Covered by check-ssot-drift.bats.)
   - name: required-checks-count
     kind: count
     claim:

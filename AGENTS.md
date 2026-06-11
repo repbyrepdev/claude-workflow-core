@@ -18,16 +18,20 @@ workflow contract.
 
 ## Reviewer contract
 
-When invoked as a **code reviewer**, you are READ-ONLY:
+When invoked as a **code reviewer**, you are READ-ONLY — do **not** modify
+files; return findings only.
 
-- Do **not** modify files. Return findings only.
-- Emit findings as a JSON array; each entry:
-  `{file, line, severity, category, description, suggestion}`.
-- Severity is one of `critical | high | medium | minor | info`.
-- Review only the diff on the current branch (`git diff main...HEAD`), not
-  pre-existing code.
+The output contract is defined by the reviewer definitions under `agents/`
+(each `*-readonly.md`) — they are canonical, so follow them exactly rather
+than the summary here. Emit a JSON array of findings (empty `[]` if clean),
+each of the shape:
 
-The canonical read-only reviewer definitions live under `agents/`:
+```
+{severity: high|medium|low, file: <path>, line: <number>, category: <string>, description: <1-2 sentences; fold any suggested change into this field>, confidence: 0-10}
+```
+
+Review only the diff on the current branch (`git diff main...HEAD`), not
+pre-existing code. The per-agent lenses:
 
 | Agent | Lens |
 | --- | --- |
@@ -44,7 +48,7 @@ The canonical read-only reviewer definitions live under `agents/`:
 | --- | --- | --- |
 | **GitHub Copilot** | `.github/copilot-instructions.md` | Delegates here; see the Phase 0.5 section below |
 | **Gemini CLI** | `.gemini/policy.toml`, `.gemini/settings.json` | Free-tier review lane |
-| **OpenAI Codex** | `.codex/config.toml` | ChatGPT-Plus auth; gpt-5.x review models |
+| **OpenAI Codex** | `.codex/config.toml` | Scoped for a future Phase 0.7 — **not yet wired**; ChatGPT-Plus auth, gpt-5.x review models |
 
 All three default to their best free / already-paid tier — never a paid API
 key unless the operator opts in explicitly.

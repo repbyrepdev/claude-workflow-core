@@ -242,7 +242,7 @@ The plugin self-verifies through three layers:
 | **Content drift** | `scripts/hash-drift.sh --verify` | Consumer `.claude/hooks/*.sh` + `.claude/_lib/*.sh` match the plugin's `.source-hashes.json` |
 | **Claim drift** | `pre-commit-hooks/check-ssot-drift.sh` (active via `.claude/ssot-checks.yml`) | Numeric / list claims in prose match their SSOT file |
 
-The `.bats` suite (98 files) is the primary behavioral verification — run `scripts/test-touched.sh` for the iteration loop, `scripts/test.sh` for the full pass.
+The `.bats` suite is the primary behavioral verification — run `scripts/test-touched.sh` for the iteration loop, `scripts/test.sh` for the full pass. (No hardcoded file count: it would drift every time a test is added.)
 
 There are 3 required status checks (CodeRabbit, gitleaks, pr-lint), declared in `.github/required-checks-list.yml` (SSOT) and validated by the `required-checks-count` drift check above.
 
