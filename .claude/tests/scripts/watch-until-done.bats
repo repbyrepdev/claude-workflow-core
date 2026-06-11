@@ -182,3 +182,17 @@ EOF
 	[[ $output == *"gh pr checks failed"* ]]
 	[[ $output == *"no output"* ]]
 }
+
+@test "gh pr checks rc=1 with an ERROR message (no check rows) → scm_fail exit 2 (#2352)" {
+	# A genuine invocation error (auth/network/unknown PR) prints a NON-empty
+	# error line with no tab-separated check rows. The fragile empty-RAW proxy
+	# would have let this fall through to the pending branch (silent failure,
+	# polling to timeout — the phase0.5 prefilter caught it); the NF>=2 check-row
+	# test fails loud instead, surfacing the real error.
+	_make_fake_gh
+	run env FAKE_CHECKS="error: could not resolve to a PullRequest with the number 999" \
+		FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
+	[ "$status" -eq 2 ]
+	[[ $output == *"no parseable check rows"* ]]
+}

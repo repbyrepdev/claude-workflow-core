@@ -180,11 +180,19 @@ while :; do
 	case "$gh_rc" in
 	0 | 8) : ;; # all-pass or pending: parse RAW + continue the poll below
 	1)
-		# rc=1 is overloaded. A parseable table (some check failed) or gh's
-		# "no checks reported on …" message means gh RAN — fall through to the
-		# normal STATE parsing (a failed CR row exits 1; absence is treated as
-		# pending). Only EMPTY output is a true invocation error worth aborting.
-		[ -n "$RAW" ] || scm_fail "gh pr checks failed for #$PR (rc=1, no output)"
+		# rc=1 is overloaded. A parseable checks TABLE (tab-separated rows,
+		# NF>=2 — at least one check failed) means gh RAN: fall through to the
+		# STATE parse (a failed CR row exits 1; CR-absence is treated as
+		# pending). Anything ELSE at rc=1 — empty output, gh's "no checks
+		# reported on …" line, OR a genuine invocation error (auth/network/
+		# unknown PR) that prints an error message — has NO tab-separated check
+		# rows; it must NOT silently fall through to the pending branch (that
+		# masks the real error, polling to timeout). Test for an actual check
+		# ROW, not just non-empty RAW, so the contract does not couple to gh's
+		# blank-vs-message error output (#2352 phase0.5 prefilter r1). Fail loud.
+		if ! printf '%s\n' "$RAW" | awk -F'\t' 'NF>=2{f=1} END{exit !f}'; then
+			scm_fail "gh pr checks failed for #$PR (rc=1, no parseable check rows): ${RAW:-<no output>}"
+		fi
 		;;
 	*)
 		scm_fail "gh pr checks failed for #$PR (rc=$gh_rc): $RAW"
