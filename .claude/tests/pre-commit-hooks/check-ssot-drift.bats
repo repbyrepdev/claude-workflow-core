@@ -56,7 +56,10 @@ EOF
 @test "check-ssot-drift passes when claim count matches SSOT (3 == 3)" {
 	write_config
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	# Clean pass AND no skip message: proves the check actually evaluated the
+	# fixture (a missing/unparsed config would skip or error, not silently pass).
 	[ "$status" -eq 0 ]
+	[[ $output != *skipping* ]]
 }
 
 @test "check-ssot-drift BLOCKS when claim count diverges (claim 3 vs SSOT 4)" {
