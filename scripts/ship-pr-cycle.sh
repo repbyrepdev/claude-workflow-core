@@ -1573,7 +1573,9 @@ EOF
 			# even when the code is substantively clean. Mirror phase1's scaler
 			# cap — after the round budget, advance to push: the residual is
 			# diminishing-returns noise and the SERVER-SIDE CR-in-CI is the
-			# authoritative merge gate. Count this-SHA CR-CLI runs from the log
+			# authoritative merge gate. Count this-BRANCH CR-CLI runs (#2354: per-branch, NOT per-SHA — a
+			# fix-commit's new HEAD must not reset the count, else the ROUNDS cap
+			# never bounds cross-commit phase2 churn) from the log
 			# (each _phase2_run_cr_cli appends one entry, incl. the current one).
 			local cap p2runs cr_log head_sha
 			cap=$(_scaler_rounds)
@@ -1593,10 +1595,42 @@ EOF
 				# vacuously advance a cap of 1).
 				p2runs=0
 			else
-				local p2runs_err_file p2runs_rc=0
+				local p2runs_err_file p2runs_rc=0 branch_shas branch_shas_rc=0
+				local branch_shas_err_file branch_shas_err=""
+				# #2354: resolve the branch commit list fail-LOUD too (mirror the
+				# head_sha + jq fail-closed idiom above). The cap counts CR-CLI
+				# runs whose recorded short .sha prefixes ANY branch commit, so a
+				# silently-swallowed rev-list failure (e.g. BASE_BRANCH is not a
+				# local ref) would yield an EMPTY commit set → every run filtered
+				# out → p2runs=0, vacuously (mis)driving the cap. Capture rc AND
+				# stderr (CR phase2 r2: match the jq stderr-capture below, not the
+				# head_sha discard) so the diagnostic surfaces git's own message.
+				branch_shas_err_file=$(mktemp -t ship-cycle-p2-revshas-err.XXXXXX) ||
+					scm_fail "mktemp for phase2 round-cap rev-list stderr failed"
+				branch_shas=$(git rev-list "$BASE_BRANCH..HEAD" 2>"$branch_shas_err_file") || branch_shas_rc=$?
+				if [ -s "$branch_shas_err_file" ]; then
+					branch_shas_err=$(cat "$branch_shas_err_file")
+				fi
+				rm -f "$branch_shas_err_file"
+				if [ "$branch_shas_rc" -ne 0 ]; then
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-list \"$BASE_BRANCH..HEAD\" failed (rc=$branch_shas_rc): ${branch_shas_err:-<no stderr>}; cannot count this-branch CR-CLI runs (is $BASE_BRANCH a local ref?)" >&2
+					return 2
+				fi
 				p2runs_err_file=$(mktemp -t ship-cycle-p2runs-err.XXXXXX) ||
 					scm_fail "mktemp for phase2 round-cap jq stderr failed"
-				p2runs=$(jq -rs --arg s "$head_sha" '[.[] | select(.sha == $s)] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
+				# $bs = branch full shas; $s = a log entry's recorded SHORT sha.
+				# Match by `full | startswith(short)` (a short sha is a prefix of
+				# its commit's full sha) — robust to git's adaptive short-sha width
+				# drift across commits, so no `--short` normalization is needed.
+				# Assumes APPEND-ONLY branch history (CR #2370): the ship-cycle's
+				# git-commit skill creates NEW commits — never --amend/rebase — so
+				# every logged sha stays a live branch-commit prefix. A history
+				# rewrite WOULD orphan that run's log entry (it drops from the
+				# count), but the effect is benign: the cap engages one round later
+				# (the rewritten commit re-logs its own phase2 run) and NEVER
+				# wrong-advances. Strictly safer than the prior per-SHA counter,
+				# which missed EVERY new commit (the bug this fixes).
+				p2runs=$(jq -rs --arg shas "$branch_shas" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
 				if [ "$p2runs_rc" -ne 0 ]; then
 					echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
 					rm -f "$p2runs_err_file"

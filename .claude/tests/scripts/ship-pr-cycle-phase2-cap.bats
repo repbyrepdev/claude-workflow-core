@@ -14,9 +14,10 @@
 # Drives `ship-pr-cycle.sh next` against a tmp git repo (same harness as
 # ship-pr-cycle-cr-conflict-check.bats). The findings>0 branch makes NO `gh`
 # call — it only invokes the CR-CLI (stubbed), the scaler (stubbed), and counts
-# this-sha runs from cr-local-review.jsonl (seeded). Outcomes covered:
-# p2runs>=cap → push; p2runs<cap → directive+stay; cap honors the scaler value
-# (dynamic, not a constant); missing log → p2runs fallback=1.
+# this-BRANCH runs (git rev-list main..HEAD; #2354) from cr-local-review.jsonl
+# (seeded). Outcomes covered: p2runs>=cap → push; p2runs<cap → directive+stay;
+# cap honors the scaler value (dynamic, not a constant); missing log → p2runs=0
+# (legit first run); rev-list/rev-parse/jq failure → fail-closed (rc 2).
 
 # @bats test bodies run as subshells, so shellcheck flags the per-test
 # STUB_ROUNDS export (SC2030/SC2031) as "lost in subshell" — false positive:
@@ -39,6 +40,14 @@ setup() {
 		cd "$TEST_TMP"
 		git init -q
 		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init
+		# #2354: the phase2 round-cap now counts CR-CLI runs PER-BRANCH
+		# (git rev-list main..HEAD), so the fixture must model a real PR branch —
+		# main + >=1 commit ahead. The commit is --allow-empty so git diff
+		# main...HEAD stays empty (the content-hash cache key is unchanged) while
+		# git rev-list main..HEAD is non-empty (the cap counts the branch commit).
+		git branch -M main
+		git checkout -q -b feat-2354-cap
+		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m work
 		mkdir -p .claude/scripts/cr .claude/hooks .claude/logs
 	) || {
 		echo "FATAL: TEST_TMP fixture init failed (git/mkdir)" >&2
@@ -236,6 +245,66 @@ _seed_coverage() {
 	[ "$(_cur_stage)" = phase2 ]
 }
 
+@test "phase2 cap — git rev-list BASE..HEAD failure fails closed (#2354)" {
+	# #2354 fail-LOUD: the per-branch commit list is resolved before counting;
+	# a rev-list failure must halt (rc 2), not feed an empty --arg to jq and
+	# silently count 0 runs (which would vacuously (mis)drive the cap). Selective
+	# git stub: fail ONLY `rev-list` and delegate everything else to real git so
+	# REPO_ROOT resolution + the head_sha rev-parse + the cache-key diff still run.
+	_seed_stage phase2
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	local real_git
+	real_git=$(command -v git)
+	mkdir -p "$TEST_TMP/gitstub"
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'if [ "$1" = "rev-list" ]; then'
+		echo '  echo "stub git: forced rev-list failure" >&2; exit 1'
+		echo 'fi'
+		printf 'exec %q "$@"\n' "$real_git"
+	} >"$TEST_TMP/gitstub/git"
+	chmod +x "$TEST_TMP/gitstub/git"
+	PATH="$TEST_TMP/gitstub:$PATH"
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"git rev-list"*"failed"* ]]
+	[[ $output == *"cannot count this-branch CR-CLI runs"* ]]
+	[ "$(_cur_stage)" = phase2 ]
+}
+
+@test "phase2 round-cap counts runs PER-BRANCH across fix-commits, not per-SHA (#2354)" {
+	# The treadmill: per-SHA counting reset the cap each fix-commit, so the
+	# ROUNDS cap never bounded cross-commit phase2 iteration. Seed CR-CLI runs
+	# against TWO commits on the branch (a prior fix-commit + the new HEAD): the
+	# cap must count BOTH (2/2 → advance), where per-SHA would see only the HEAD's
+	# single run (1/2 → stay) and loop on the next nitpick.
+	cd "$TEST_TMP" || return 1
+	local sha1_short sha2 sha2_short
+	sha1_short="$SHA_SHORT" # setup()'s branch commit = a prior fix-commit
+	# A new HEAD on the same branch → branch now has 2 commits ahead of main.
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m fix
+	sha2=$(git rev-parse HEAD)
+	sha2_short=$(git rev-parse --short HEAD)
+	printf '{"version":1,"stage":"phase2","branch":"feat-2354-cap","sha":"%s","history":[]}\n' \
+		"$sha2" >"$STATE_DIR/$sha2.json"
+	# One run-log entry per branch commit: per-SHA counts 1 (HEAD), per-branch 2.
+	: >"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2}\n' "$sha1_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2}\n' "$sha2_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	# Coverage scoped to the new HEAD so the cap can advance once REACHED.
+	mkdir -p "$ROOT/.claude/audit"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' \
+		"$sha2" >"$ROOT/.claude/audit/prove-yourself.jsonl"
+	export STUB_ROUNDS=2
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"round-cap reached (2/2)"* ]] # per-branch=2; per-SHA would be 1/2
+	[[ $output == *"advanced to push"* ]]
+	[ "$(jq -r '.stage' "$STATE_DIR/$sha2.json")" = push ]
+}
+
 @test "phase2 CR review timeout (local-review exit 4) → defers to server CR-in-CI, advances to push (#234)" {
 	# A CR review timeout (local-review.sh exit 4 — client-side `timeout` kill
 	# or CR's server-side recoverable:false timeout event) is not a code defect:
@@ -262,17 +331,20 @@ STUB
 }
 
 # --- v0.32.11 (#249-grp / #282): content-hash review cache integration --------
-# The cap tests above exercise the cache-MISS path (the fixture has no `main`
-# ref → phase2_review_cache_key returns empty → cache inactive → the CR-CLI stub
-# runs). These drive the cache-HIT path — the branch that was previously dead
-# code in this file — by seeding phase2-results.jsonl with the key for THIS
-# repo's review surface so the dispatch REUSES the count without invoking the
-# CR-CLI, then asserting the advance-on-coverage decision.
+# The cap tests above exercise the cache-MISS path: setup() now creates `main`
+# (so the key computes), but seeds NO .review-cache entry → phase2_review_cache_key
+# finds no cached result → cache inactive → the CR-CLI stub runs. These drive the
+# cache-HIT path — the branch that was previously dead code in this file — by
+# seeding phase2-results.jsonl with the key for THIS repo's review surface so the
+# dispatch REUSES the count without invoking the CR-CLI, then asserting the
+# advance-on-coverage decision.
 
-# Seed the phase2 review-result cache. $1 = cached findings count. Renames the
-# default branch to `main` so the dispatch's `git diff main...HEAD` (BASE_BRANCH
-# defaults to main) resolves; main==HEAD → empty diff → the stable empty-blob
-# key, computed here exactly as the lib does (empty stdin → git hash-object).
+# Seed the phase2 review-result cache. $1 = cached findings count. Deliberately
+# force-renames the CURRENT branch (setup()'s feat-2354-cap) to main via
+# `git branch -M main`, repointing main onto HEAD — NOT idempotent: it makes
+# main==HEAD so the cache-key diff resolves. main...HEAD is then empty (the branch
+# commits are --allow-empty, so no content change), yielding the stable empty-blob
+# key computed here exactly as the lib does (empty stdin → git hash-object).
 _seed_cache() {
 	(cd "$ROOT" && git branch -M main) || return 1
 	local key
