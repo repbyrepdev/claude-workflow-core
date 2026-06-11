@@ -204,7 +204,7 @@ while :; do
 		# merge-gate will block on it). Surface it ONCE; the watch stays
 		# CR-scoped and continues polling.
 		if [ -z "$SIBLING_FAIL_WARNED" ] &&
-			printf '%s\n' "$RAW" | awk -F'\t' 'tolower($1) == "coderabbit" {next} tolower($2) ~ /^(fail|failure|error|cancel|cancelled|canceled)$/ {exit 0} END {exit 1}'; then
+			printf '%s\n' "$RAW" | awk -F'\t' 'tolower($1) == "coderabbit" {next} tolower($2) ~ /^(fail|failure|error|cancel|cancelled|canceled)$/ {found = 1} END {exit !found}'; then
 			scm_warn "a non-CodeRabbit check has FAILED on #$PR (gh rc=1); the CR watch continues, but the PR will not merge until that check is addressed"
 			SIBLING_FAIL_WARNED=1
 		fi

@@ -206,8 +206,13 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=yes \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
 	[ "$status" -eq 2 ]
-	[[ $output == *"non-CodeRabbit check has FAILED"* ]]
 	[[ $output == *"timeout reached"* ]]
+	# CR #2371: assert the warn fires EXACTLY once (the SIBLING_FAIL_WARNED
+	# one-shot). Presence-only passed even when the warn was UNREACHABLE — the
+	# count is the real contract. Kept LAST so bats enforces it.
+	local warn_count
+	warn_count=$(grep -c "non-CodeRabbit check has FAILED" <<<"$output" || true)
+	[ "$warn_count" -eq 1 ]
 }
 
 @test "gh pr checks rc=2 (unexpected) → scm_fail exit 2 with rc in message (#2352)" {
