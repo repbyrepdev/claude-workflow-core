@@ -196,3 +196,39 @@ EOF
 	[ "$status" -eq 2 ]
 	[[ $output == *"no parseable check rows"* ]]
 }
+
+@test "gh pr checks rc=1 with a failed NON-CR sibling → warns once, watch continues (#2352)" {
+	# rc=1 from a failed non-CodeRabbit check (CR absent), CR required so no
+	# exit-3: the watch must SURFACE the sibling failure (scm_warn) — not let the
+	# eventual CR-timeout be the only signal — then keep polling (→ timeout exit 2).
+	local checks=$'gitleaks\tfail\t2s\nlabel\tpass\t1s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=yes \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
+	[ "$status" -eq 2 ]
+	[[ $output == *"non-CodeRabbit check has FAILED"* ]]
+	[[ $output == *"timeout reached"* ]]
+}
+
+@test "gh pr checks rc=2 (unexpected) → scm_fail exit 2 with rc in message (#2352)" {
+	# Any rc outside {0,8,1} is a genuine invocation error → fail loud, surfacing
+	# the actual rc. Guards the `*)` arm (distinct message from the rc=1 arm).
+	_make_fake_gh
+	run env FAKE_CHECKS="boom" FAKE_CHECKS_RC=2 FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
+	[ "$status" -eq 2 ]
+	[[ $output == *"(rc=2)"* ]]
+}
+
+@test "gh pr checks rc=8 with CR still pending → keeps polling to timeout, not abort (#2352)" {
+	# rc=8 (pending) with the CR row itself pending must POLL — the keep-polling
+	# half of the rc=8 contract the rc=8+CR-pass test does NOT exercise (that one
+	# exits 0 on the first poll). Times out → exit 2, NOT scm_fail.
+	local checks=$'CodeRabbit\tpending\t5s\nother\tpending\t1s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=8 FAKE_CR_REQUIRED=yes \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
+	[ "$status" -eq 2 ]
+	[[ $output == *"timeout reached"* ]]
+	[[ $output != *"gh pr checks failed"* ]]
+}

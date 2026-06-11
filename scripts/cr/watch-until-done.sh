@@ -153,6 +153,9 @@ CR_REQUIRED=$(_cr_required_state)
 # we can distinguish "CR not yet queued" from "CR not installed on repo".
 ABSENT_WITH_OTHERS=0
 ABSENT_WARN_THRESHOLD=3
+# #2352 phase1 r1: one-shot guard so a FAILED non-CodeRabbit check (surfaced in
+# the rc=1 branch below) is warned about once, not on every poll.
+SIBLING_FAIL_WARNED=""
 while :; do
 	ELAPSED=$(($(date +%s) - START))
 	if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
@@ -192,6 +195,18 @@ while :; do
 		# blank-vs-message error output (#2352 phase0.5 prefilter r1). Fail loud.
 		if ! printf '%s\n' "$RAW" | awk -F'\t' 'NF>=2{f=1} END{exit !f}'; then
 			scm_fail "gh pr checks failed for #$PR (rc=1, no parseable check rows): ${RAW:-<no output>}"
+		fi
+		# #2352 phase1 r1 (silent-failure-hunter): rc=1 means >=1 check FAILED.
+		# A failed CodeRabbit row is handled by the STATE parse below (exit 1).
+		# But if the failure is a NON-CR sibling while CR is still pending/absent,
+		# the poll keeps waiting for CR — so the eventual exit-2 "timeout" would
+		# be the operator's ONLY signal, hiding that a sibling already failed (the
+		# merge-gate will block on it). Surface it ONCE; the watch stays
+		# CR-scoped and continues polling.
+		if [ -z "$SIBLING_FAIL_WARNED" ] &&
+			printf '%s\n' "$RAW" | awk -F'\t' 'tolower($1) == "coderabbit" {next} tolower($2) ~ /^(fail|failure|error|cancel|cancelled|canceled)$/ {exit 0} END {exit 1}'; then
+			scm_warn "a non-CodeRabbit check has FAILED on #$PR (gh rc=1); the CR watch continues, but the PR will not merge until that check is addressed"
+			SIBLING_FAIL_WARNED=1
 		fi
 		;;
 	*)
