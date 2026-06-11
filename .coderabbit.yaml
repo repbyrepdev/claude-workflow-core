@@ -86,9 +86,11 @@ reviews:
       - "!.claude/.session-state/**"
       - "!.claude/audit/**"
       # #2362: generated SHA-256 registry — integrity is enforced mechanically by
-      # the source-hashes-regen gate + hash-drift (sha256sum), not by review. CR
-      # is an LLM and cannot compute SHA-256, so it fabricates "corrected" hashes
-      # and flags them critical (a guaranteed false positive). Exclude it.
+      # the source-hashes-regen gate + hash-drift (sha256sum), not by review. On a
+      # mirrored-file change CR computes the BASE-version hash of that file (not
+      # HEAD), so it flags .source-hashes.json (which records the HEAD hashes) as
+      # "wrong" — a REAL base-version value, NOT a fabrication, but a guaranteed
+      # false positive against the HEAD registry. Exclude it.
       - "!.claude/.source-hashes.json"
       - "!**/*.svg"
       - "!**/*.png"
@@ -270,6 +272,15 @@ reviews:
       enabled: true
     semgrep:
       enabled: true
+    github-checks:
+      # #2271/#2270: CI/CD pipeline log analysis — CR reads the GitHub Actions
+      # check-run logs to surface pipeline failures in the review. In the base
+      # SSOT so ALL consumers inherit it. timeout_ms = how long CR waits for the
+      # checks to reach terminal before analyzing (CR default 90000; 120000 =
+      # 2-min buffer for cold runners + the CodeRabbit check's own latency; max
+      # 900000). Schema: docs.coderabbit.ai/tools/github-checks.
+      enabled: true
+      timeout_ms: 120000
     markdownlint:
       enabled: false # too noisy on CLAUDE.md/SKILL.md prose
     languagetool:
