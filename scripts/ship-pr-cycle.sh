@@ -1573,7 +1573,9 @@ EOF
 			# even when the code is substantively clean. Mirror phase1's scaler
 			# cap — after the round budget, advance to push: the residual is
 			# diminishing-returns noise and the SERVER-SIDE CR-in-CI is the
-			# authoritative merge gate. Count this-SHA CR-CLI runs from the log
+			# authoritative merge gate. Count this-BRANCH CR-CLI runs (#2354: per-branch, NOT per-SHA — a
+			# fix-commit's new HEAD must not reset the count, else the ROUNDS cap
+			# never bounds cross-commit phase2 churn) from the log
 			# (each _phase2_run_cr_cli appends one entry, incl. the current one).
 			local cap p2runs cr_log head_sha
 			cap=$(_scaler_rounds)
@@ -1596,7 +1598,7 @@ EOF
 				local p2runs_err_file p2runs_rc=0
 				p2runs_err_file=$(mktemp -t ship-cycle-p2runs-err.XXXXXX) ||
 					scm_fail "mktemp for phase2 round-cap jq stderr failed"
-				p2runs=$(jq -rs --arg s "$head_sha" '[.[] | select(.sha == $s)] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
+				p2runs=$(jq -rs --arg shas "$(git rev-list "$BASE_BRANCH..HEAD")" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
 				if [ "$p2runs_rc" -ne 0 ]; then
 					echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
 					rm -f "$p2runs_err_file"

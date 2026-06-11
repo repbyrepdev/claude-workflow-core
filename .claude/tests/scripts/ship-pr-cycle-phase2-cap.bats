@@ -39,6 +39,14 @@ setup() {
 		cd "$TEST_TMP"
 		git init -q
 		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init
+		# #2354: the phase2 round-cap now counts CR-CLI runs PER-BRANCH
+		# (git rev-list main..HEAD), so the fixture must model a real PR branch —
+		# main + >=1 commit ahead. The commit is --allow-empty so git diff
+		# main...HEAD stays empty (the content-hash cache key is unchanged) while
+		# git rev-list main..HEAD is non-empty (the cap counts the branch commit).
+		git branch -M main
+		git checkout -q -b feat-2354-cap
+		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m work
 		mkdir -p .claude/scripts/cr .claude/hooks .claude/logs
 	) || {
 		echo "FATAL: TEST_TMP fixture init failed (git/mkdir)" >&2
@@ -234,6 +242,37 @@ _seed_coverage() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"git rev-parse --short HEAD failed"* ]]
 	[ "$(_cur_stage)" = phase2 ]
+}
+
+@test "phase2 round-cap counts runs PER-BRANCH across fix-commits, not per-SHA (#2354)" {
+	# The treadmill: per-SHA counting reset the cap each fix-commit, so the
+	# ROUNDS cap never bounded cross-commit phase2 iteration. Seed CR-CLI runs
+	# against TWO commits on the branch (a prior fix-commit + the new HEAD): the
+	# cap must count BOTH (2/2 → advance), where per-SHA would see only the HEAD's
+	# single run (1/2 → stay) and loop on the next nitpick.
+	cd "$TEST_TMP" || return 1
+	local sha1_short sha2 sha2_short
+	sha1_short="$SHA_SHORT" # setup()'s branch commit = a prior fix-commit
+	# A new HEAD on the same branch → branch now has 2 commits ahead of main.
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m fix
+	sha2=$(git rev-parse HEAD)
+	sha2_short=$(git rev-parse --short HEAD)
+	printf '{"version":1,"stage":"phase2","branch":"feat-2354-cap","sha":"%s","history":[]}\n' \
+		"$sha2" >"$STATE_DIR/$sha2.json"
+	# One run-log entry per branch commit: per-SHA counts 1 (HEAD), per-branch 2.
+	: >"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2}\n' "$sha1_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2}\n' "$sha2_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	# Coverage scoped to the new HEAD so the cap can advance once REACHED.
+	mkdir -p "$ROOT/.claude/audit"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' \
+		"$sha2" >"$ROOT/.claude/audit/prove-yourself.jsonl"
+	export STUB_ROUNDS=2
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"round-cap reached (2/2)"* ]] # per-branch=2; per-SHA would be 1/2
+	[[ $output == *"advanced to push"* ]]
+	[ "$(jq -r '.stage' "$STATE_DIR/$sha2.json")" = push ]
 }
 
 @test "phase2 CR review timeout (local-review exit 4) → defers to server CR-in-CI, advances to push (#234)" {
