@@ -1,0 +1,56 @@
+# v4.4.D (#381) + v4.28-W2 (#647): SSOT drift check config. Each entry
+# pairs a claim in a prose/config file with the authoritative SSOT file
+# value. Pre-commit `check-ssot-drift.sh` fails the commit on mismatch.
+#
+# This file is itself SSOT — adding a new drift check means adding a new
+# entry here, not editing the script. It is PER-REPO (not byte-mirrored
+# from the plugin): each repo enumerates the claims that matter to it,
+# like CLAUDE.md. The consumers ship their own (currently empty) copy.
+#
+# Two check kinds:
+#
+# kind: count  (default — v4.4.D)
+#   Compares a numeric claim against a yq-derived count.
+#   Schema:
+#     name:          unique identifier
+#     kind:          "count" (omittable — defaults to count)
+#     claim.file:    path to file making the numeric claim
+#     claim.regex:   ERE pattern; first capture group must be the number
+#     ssot.file:     authoritative file
+#     ssot.count:    yq expression returning the true count (integer)
+#     description:   one-line why — shown on mismatch
+#
+# kind: list  (v4.28-W2 #647)
+#   Compares an inline enumeration against the authoritative list in an
+#   SSOT file. Catches drift where someone restates an SSOT list inline
+#   and lets it diverge silently.
+#   Schema:
+#     name:          unique identifier
+#     kind:          "list"
+#     claim.file:    path to file with inline enumeration
+#     claim.regex:   ERE matching ONE entry per match; capture group 1 =
+#                    item value. CONSTRAINT: must NOT contain a literal
+#                    pipe (sed uses it as the list-mode delimiter).
+#     ssot.file:     authoritative file
+#     ssot.list:     yq expression returning a list of strings
+#     description:   one-line why — shown on mismatch
+#
+# Both kinds: empty claim-extraction = no-op. Set-comparison is
+# order-independent.
+#
+# NOTE — no skill-count check: README states an "N skills" total, but
+# skills are auto-discovered directories (`skills/*/SKILL.md`) with no
+# yq-countable manifest (`.claude-plugin/marketplace.json` lists only the
+# plugin itself), so a `kind: count` check has no valid `ssot.count`
+# expression to target. The count is kept honest by review, not by a gate.
+
+checks:
+  - name: required-checks-count
+    kind: count
+    claim:
+      file: README.md
+      regex: '([0-9]+) required status checks'
+    ssot:
+      file: .github/required-checks-list.yml
+      count: '.required | length'
+    description: README's stated required-status-check count must match the required-checks-list.yml entry count
