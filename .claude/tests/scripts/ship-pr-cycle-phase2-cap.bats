@@ -269,8 +269,8 @@ _seed_coverage() {
 	PATH="$TEST_TMP/gitstub:$PATH"
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"git rev-list"* ]]
-	[[ $output == *"failed"* ]]
+	[[ $output == *"git rev-list"*"failed"* ]]
+	[[ $output == *"cannot count this-branch CR-CLI runs"* ]]
 	[ "$(_cur_stage)" = phase2 ]
 }
 
