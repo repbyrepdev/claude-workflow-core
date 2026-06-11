@@ -1622,6 +1622,14 @@ EOF
 				# Match by `full | startswith(short)` (a short sha is a prefix of
 				# its commit's full sha) — robust to git's adaptive short-sha width
 				# drift across commits, so no `--short` normalization is needed.
+				# Assumes APPEND-ONLY branch history (CR #2370): the ship-cycle's
+				# git-commit skill creates NEW commits — never --amend/rebase — so
+				# every logged sha stays a live branch-commit prefix. A history
+				# rewrite WOULD orphan that run's log entry (it drops from the
+				# count), but the effect is benign: the cap engages one round later
+				# (the rewritten commit re-logs its own phase2 run) and NEVER
+				# wrong-advances. Strictly safer than the prior per-SHA counter,
+				# which missed EVERY new commit (the bug this fixes).
 				p2runs=$(jq -rs --arg shas "$branch_shas" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
 				if [ "$p2runs_rc" -ne 0 ]; then
 					echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
