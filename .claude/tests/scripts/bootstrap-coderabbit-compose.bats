@@ -42,8 +42,25 @@ EOF
 	# the base SSOT's label set changes (was 6 at #234, now 1 — pre-existing
 	# stale hardcode caught during #2270).
 	base_n=$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.base.yaml")
+	# Guard the dynamic count (#2270 phase1 silent-failure-hunter): a null/empty
+	# base labeling_instructions makes base_n empty->0 and the append->1 pass
+	# spuriously; an unchecked yq error masks the cause. Require a positive
+	# integer so a regressed/empty base fails LOUD here, not as a count mismatch.
+	[[ $base_n =~ ^[0-9]+$ ]] && [ "$base_n" -ge 1 ]
 	[ "$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.yaml")" -eq "$((base_n + 1))" ]
 	[ "$(yq -r '.reviews.labeling_instructions[-1].label' "$TMP/target/.coderabbit.yaml")" = "area:coalesce" ]
+}
+
+@test "github-checks tool is pinned in the composed config (#2270/#2271)" {
+	# Value-pin github-checks (pr-test-analyzer): without this, a future base.yaml
+	# edit that drops the tool (or changes the timeout) passes every byte/hash
+	# gate (they just re-record) — only this asserts the tool + value land in the
+	# composed config consumers inherit.
+	mkdir -p "$TMP/gc"
+	run bash "$SCRIPT" "$TMP/gc"
+	[ "$status" -eq 0 ]
+	[ "$(yq -r '.reviews.tools."github-checks".enabled' "$TMP/gc/.coderabbit.yaml")" = "true" ]
+	[ "$(yq -r '.reviews.tools."github-checks".timeout_ms' "$TMP/gc/.coderabbit.yaml")" -eq 120000 ]
 }
 
 @test "--dry-run previews 'would compose' and writes NOTHING (#234 r1)" {
