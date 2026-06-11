@@ -239,8 +239,16 @@ _log() {
 # NOTE: cascade already set PLUGIN_JSON above (for the .version read); the lib
 # honors that pre-set value (${PLUGIN_JSON:-...}) so both read the SAME manifest.
 _CASCADE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_CASCADE_IDENTITY_LIB="$_CASCADE_LIB_DIR/../_lib/resolve-plugin-identity.sh"
+# Fail with the script's precondition exit code (2) + a clear message when the
+# SSOT lib is missing, rather than letting the bare `.` abort with rc 1 under
+# set -e (CR phase2 major).
+if [ ! -f "$_CASCADE_IDENTITY_LIB" ]; then
+	echo "cascade-to-consumers: identity lib missing at $_CASCADE_IDENTITY_LIB" >&2
+	exit 2
+fi
 # shellcheck source=../_lib/resolve-plugin-identity.sh
-. "$_CASCADE_LIB_DIR/../_lib/resolve-plugin-identity.sh"
+. "$_CASCADE_IDENTITY_LIB"
 require_plugin_identity
 
 # Render the issue body for a consumer. Args: consumer_name old_ver.

@@ -45,6 +45,9 @@ fi
 
 # Derive short slug (owner/repo) + owner from the URL: strip the github.com
 # scheme/host prefix and any trailing .git, then take the first path segment.
+# Precedence: an env-provided PLUGIN_REPO_SHORT/PLUGIN_OWNER is preserved by the
+# ${VAR:-...} defaulting, but is STILL normalized (.git stripped) and must pass
+# the well-formedness gate below — a malformed explicit override is blanked too.
 PLUGIN_REPO_SHORT="${PLUGIN_REPO_SHORT:-${PLUGIN_REPO_URL#https://github.com/}}"
 PLUGIN_REPO_SHORT="${PLUGIN_REPO_SHORT%.git}"
 PLUGIN_OWNER="${PLUGIN_OWNER:-${PLUGIN_REPO_SHORT%%/*}}"
@@ -59,7 +62,7 @@ PLUGIN_OWNER="${PLUGIN_OWNER:-${PLUGIN_REPO_SHORT%%/*}}"
 # gate fails closed REGARDLESS of the caller's set -e (the blanking is
 # unconditional, not dependent on a jq abort).
 if [ -n "$PLUGIN_REPO_URL" ] && ! [[ $PLUGIN_REPO_SHORT =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-	echo "resolve-plugin-identity: PLUGIN_REPO_URL ('$PLUGIN_REPO_URL') is not a parseable https://github.com/owner/repo URL — set PLUGIN_REPO_SHORT/PLUGIN_OWNER explicitly to override" >&2
+	echo "resolve-plugin-identity: PLUGIN_REPO_URL ('$PLUGIN_REPO_URL') is not a parseable https://github.com/owner/repo URL — set PLUGIN_REPO_SHORT/PLUGIN_OWNER explicitly to a well-formed owner/repo slug to override" >&2
 	PLUGIN_REPO_SHORT=""
 	PLUGIN_OWNER=""
 fi

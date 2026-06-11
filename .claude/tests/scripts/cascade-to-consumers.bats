@@ -117,8 +117,9 @@ case "$1" in
         done
         # Capture the issue body (cascade pipes it via --body-file -) so tests
         # can assert the rendered identity (#2310). Always consume stdin so the
-        # producer pipe closes; default to /dev/null when unobserved.
-        cat >"${GH_STUB_BODY_LOG:-/dev/null}" 2>/dev/null || true
+        # producer pipe closes; default to /dev/null when unobserved. No silent
+        # mask: a write failure to a real BODY_LOG surfaces (/dev/null cannot fail).
+        cat >"${GH_STUB_BODY_LOG:-/dev/null}"
         if [ "${GH_STUB_FAIL_CREATE:-0}" = "1" ]; then
           echo "gh: stubbed create failure" >&2
           exit 1
