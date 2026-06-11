@@ -233,6 +233,14 @@ _log() {
 	jq -cn "${jq_args[@]}" "$filter" >>"$LOG_FILE"
 }
 
+# Plugin identity SSOT (#2310): derive the repo URL + name from plugin.json so
+# the cascade issue body carries no hardcoded self-references. Fail-closed at
+# load if identity is incomplete (require_plugin_identity → rc 2 under set -e).
+_CASCADE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../_lib/resolve-plugin-identity.sh
+. "$_CASCADE_LIB_DIR/../_lib/resolve-plugin-identity.sh"
+require_plugin_identity
+
 # Render the issue body for a consumer. Args: consumer_name old_ver.
 # Heredoc indirection via printf so callers can pipe directly into
 # `gh issue create --body-file -` without intermediate tmp files
@@ -242,12 +250,12 @@ _render_body() {
 	cat <<EOF
 **Area:** Infrastructure
 
-claude-workflow-core has released **v$NEW_VER** (previously pinned: v$old).
+$PLUGIN_NAME has released **v$NEW_VER** (previously pinned: v$old).
 
 Run on this machine to refresh:
 
 \`\`\`bash
-~/claude-workflow-core/scripts/refresh-from-source.sh --consumer $name
+~/$PLUGIN_NAME/scripts/refresh-from-source.sh --consumer $name
 \`\`\`
 
 This will:
@@ -257,7 +265,7 @@ This will:
 
 After running locally, commit + push the result via ship-pr-cycle.
 
-[Plugin release notes](https://github.com/repbyrepdev/claude-workflow-core/releases/tag/v$NEW_VER)
+[Plugin release notes]($PLUGIN_REPO_URL/releases/tag/v$NEW_VER)
 
 ---
 

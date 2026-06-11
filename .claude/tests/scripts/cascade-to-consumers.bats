@@ -16,12 +16,16 @@ setup() {
 	(
 		set -e
 		PLUGIN="$TEST_TMP/plugin"
-		mkdir -p "$PLUGIN/scripts" "$PLUGIN/.github" "$PLUGIN/.claude-plugin" "$PLUGIN/.claude/logs"
+		mkdir -p "$PLUGIN/scripts" "$PLUGIN/.github" "$PLUGIN/.claude-plugin" "$PLUGIN/.claude/logs" "$PLUGIN/_lib"
 		cp "$SCRIPT" "$PLUGIN/scripts/cascade-to-consumers.sh"
 		chmod +x "$PLUGIN/scripts/cascade-to-consumers.sh"
+		# cascade now sources the plugin-identity lib (#2310); provide it in the
+		# fixture so require_plugin_identity passes (the manifest below also gains
+		# a .repository field for the same reason).
+		cp "$REPO_ROOT/_lib/resolve-plugin-identity.sh" "$PLUGIN/_lib/resolve-plugin-identity.sh"
 
 		cat >"$PLUGIN/.claude-plugin/plugin.json" <<'JSON'
-{"name":"test","version":"1.2.3"}
+{"name":"test","version":"1.2.3","repository":"https://github.com/test-org/test"}
 JSON
 
 		cat >"$PLUGIN/.github/consumers.yml" <<'YAML'
