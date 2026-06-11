@@ -1376,6 +1376,11 @@ reviews:
       - "!.github/release.yml"
       - "!.claude/.session-state/**"
       - "!.claude/audit/**"
+      # #2362: generated SHA-256 registry — integrity is enforced mechanically by
+      # the source-hashes-regen gate + hash-drift (sha256sum), not by review. CR
+      # is an LLM and cannot compute SHA-256, so it fabricates "corrected" hashes
+      # and flags them critical (a guaranteed false positive). Exclude it.
+      - "!.claude/.source-hashes.json"
       - "!**/*.svg"
       - "!**/*.png"
       # v0.34.36 (#2249) canonical-review-exclusion CR-layer globs — NARROWED.

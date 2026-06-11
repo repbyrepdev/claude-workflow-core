@@ -42,6 +42,7 @@ teardown() {
 @test "excluded: consumer + byte-identical canonical → EXCLUDE (rc 0)" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: review layers exclude on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	run canonical_review_excluded ".claude/hooks/foo.sh"
@@ -49,10 +50,11 @@ teardown() {
 	[ -z "$output" ] # silent rc-function — must not leak stdout/stderr
 }
 
-@test "excluded: consumer + modified canonical → review it (rc 1)" {
+@test "excluded: consumer + modified (committed-drift) canonical → review it (rc 1)" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	printf '# local drift\n' >>"$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm drift # committed blob DIFFERS from canonical
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	run canonical_review_excluded ".claude/hooks/foo.sh"
@@ -101,6 +103,39 @@ teardown() {
 	run canonical_review_excluded ".claude/hooks/foo.sh"
 	[ "$status" -eq 1 ]
 	[ -z "$output" ] # fail-safe is silent — no stdout/stderr leak (#2240 phase2 CR)
+}
+
+@test "excluded: committed predicate gone, working-tree present → #2329 fallback EXCLUDES worktree mirror (rc 0)" {
+	# #2327 r1 pr-test-analyzer: the #2329 committed→working-tree fallback branch.
+	# An OLDER cached canonical-consumer-skip.sh (pre-#2328) defines only the
+	# working-tree predicate; canonical_review_excluded must fall back to it, NOT
+	# fail-safe to review. Simulate by unset-ing the committed fn post-source.
+	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
+	cd "$REPO"
+	# Byte-identical in the WORKING TREE (NOT committed) — the fallback's
+	# working-tree predicate skips on the worktree file without needing a commit.
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	unset -f canonical_consumer_skip_committed
+	run canonical_review_excluded ".claude/hooks/foo.sh"
+	[ "$status" -eq 0 ] # fell back to working-tree predicate → excluded
+	[ -z "$output" ]
+}
+
+@test "excluded: new (uncommitted) mirror not in HEAD → review it (rc 1), unlike working-tree" {
+	# #2327 r1 pr-test-analyzer: the new-file behavior CHANGE at the review layer.
+	# A file byte-identical to canonical in the WORKING TREE but not yet committed
+	# is reviewed (committed predicate gates on HEAD) — phase1 scopes on
+	# `git diff base..HEAD`. The old working-tree predicate would have EXCLUDED it.
+	cd "$REPO"
+	printf 'readme\n' >README.md
+	git add -A && git commit -qm base                # HEAD exists, but foo.sh is NOT in it
+	cp "$PLUGIN/hooks/foo.sh" ".claude/hooks/foo.sh" # worktree mirror, uncommitted
+	# shellcheck source=../../../_lib/canonical-review-exclude.sh
+	. "$LIB"
+	run canonical_review_excluded ".claude/hooks/foo.sh"
+	[ "$status" -eq 1 ] # not in HEAD → committed predicate reviews it
+	[ -z "$output" ]
 }
 
 # --- canonical_review_noncanonical_changed (diff minus excluded) ---
@@ -199,6 +234,7 @@ teardown() {
 @test "phase2_filtered_count (consumer): drops findings on canonical mirrors, keeps consumer-authored" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \
@@ -266,6 +302,7 @@ teardown() {
 	mkdir -p "$REPO/.claude/_lib"
 	cp "$PLUGIN/_lib/canonical-consumer-skip.sh" "$REPO/.claude/_lib/canonical-consumer-skip.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirrors # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \
@@ -299,6 +336,7 @@ teardown() {
 @test "filtered_finding_count: finding keyed by .file (not .fileName) is handled" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \
@@ -312,6 +350,7 @@ teardown() {
 @test "filtered_finding_count: path-less finding is KEPT (never under-counted)" {
 	cp "$PLUGIN/hooks/foo.sh" "$REPO/.claude/hooks/foo.sh"
 	cd "$REPO"
+	git add -A && git commit -qm mirror # #2329: phase2 exclusion is on the COMMITTED blob
 	# shellcheck source=../../../_lib/canonical-review-exclude.sh
 	. "$LIB"
 	printf '%s\n' \

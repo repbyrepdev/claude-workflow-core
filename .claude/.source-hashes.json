@@ -1,7 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
-    ".coderabbit.base.yaml": "433da99dba4525ced5720cc15506262d1602ee0b8ca657b4c2fb007dc4b10372",
+    ".coderabbit.base.yaml": "5c69c6df11096494890538ff65c0e4837e91229277d8f05b76f4d9a197b8018e",
     ".codex/config.toml": "dc2544585ac5b695db435ec6d814005d311326d9814b82901c7bf46d9bdd9af3",
     ".gemini/policy.toml": "c9f74f98b608c1bd188d6c2bda7910bc405a23148a06bbe3339488f57c31729a",
     ".gemini/settings.json": "70d6b428283918e0fbc517798d815aac925fffcbba03c733f5182ba5e5727621",
@@ -17,8 +17,8 @@
     "_lib/bash-safety-check.sh": "8b02ff4595ef404ea2f33fa9f09ce5439cfb6e59e2df2e51a67334578327ed4a",
     "_lib/bash4-features-check.sh": "3d0a27aa98d369e7fa482472eba8192128f4e4db42d275b1b7096d9610a18dbc",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",
-    "_lib/canonical-consumer-skip.sh": "1fd1570a227f1f34fc3e34354b54d69c57a104cda625a318d724e1219e5e0840",
-    "_lib/canonical-review-exclude.sh": "26fce67caf9ec26ceca8c14cbf2b4cffa0db6b992e95fe3bc13c05b257032a74",
+    "_lib/canonical-consumer-skip.sh": "020d05b3ee1578456219c25d907a880f6830dc069d790c72f4404831b0649901",
+    "_lib/canonical-review-exclude.sh": "c49d0c4bd4b822d9534884e5363a5489ec6e2b77ee8d10be679661377c69cae1",
     "_lib/cmd-anchor.sh": "54ad7902014df8cd66bd0c1142bfdfe8f583227875a519d0aa04f98abf1e2806",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
     "_lib/content-hash-cache.sh": "58370546a2e3be3ec0629d7b89796b1b7976a3f9d96022496bf7b28d9ba96e6e",
