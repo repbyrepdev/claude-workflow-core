@@ -38,7 +38,7 @@
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",
     "_lib/resolve-plugin-helper.sh": "71cc5c26e63cb8868b3c00cb35a2bac9834f60651bae87adec40c4d7972a1a65",
-    "_lib/resolve-plugin-identity.sh": "5182ebf492cb776fea8991f0d85271e4c2454f0fe774114bfe4700f6f13298f2",
+    "_lib/resolve-plugin-identity.sh": "840f813a59fd70ae1e4f341a1f39947e11b23d7255070feb1a5da5bfe8480c67",
     "_lib/resolve-plugin-pin.sh": "e69d69552d12d9bbf4891b594e3cb3f5e882f8c59d23acae480effb9fd5ca82a",
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
     "_lib/ship-cycle-directives.sh": "3c8327d3cf5778956e87bf8dde3dcdb49959dce072704ef0ba931dd9c7fae4b7",

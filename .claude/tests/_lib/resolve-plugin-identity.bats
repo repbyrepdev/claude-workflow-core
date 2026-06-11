@@ -89,10 +89,23 @@ EOF
 	[ "$output" = "$TEST_TMP/custom/cache" ]
 }
 
+@test "resolve_plugin_cache_base fails closed (rc 2) without PLUGIN_NAME or override (#2310 r2)" {
+	# Absent manifest → empty PLUGIN_NAME; no PLUGIN_CACHE_BASE override. The base
+	# resolver must rc 2 (not emit a malformed .../cache// path).
+	export PLUGIN_JSON="$TEST_TMP/nonexistent.json"
+	unset PLUGIN_CACHE_BASE
+	# shellcheck source=/dev/null
+	. "$LIB" 2>/dev/null
+	run resolve_plugin_cache_base
+	[ "$status" -eq 2 ]
+}
+
 @test "resolve_plugin_installed_versions lists semver dirs in sort -V order" {
 	export PLUGIN_CACHE_BASE="$TEST_TMP/cache"
 	mkdir -p "$PLUGIN_CACHE_BASE/0.1.0" "$PLUGIN_CACHE_BASE/0.10.0" "$PLUGIN_CACHE_BASE/0.2.0"
-	mkdir -p "$PLUGIN_CACHE_BASE/not-a-version"
+	# non-semver, prerelease, and extra-segment dirs must ALL be excluded by the
+	# strict X.Y.Z regex (#2310 phase2 r2 — the old glob let prerelease through).
+	mkdir -p "$PLUGIN_CACHE_BASE/not-a-version" "$PLUGIN_CACHE_BASE/1.2.3-rc1" "$PLUGIN_CACHE_BASE/1.2.3.4"
 	# shellcheck source=/dev/null
 	. "$LIB"
 	run resolve_plugin_installed_versions

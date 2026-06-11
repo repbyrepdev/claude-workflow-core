@@ -83,8 +83,19 @@ require_plugin_identity() {
 # resolve_plugin_cache_base — single override point for the plugin-cache root.
 # Default: $HOME/.claude/plugins/cache/<name>/<name> (the doubled-name layout
 # Claude Code uses). PLUGIN_CACHE_BASE overrides for tests / non-default installs.
+# Fails closed (rc 2) when neither PLUGIN_CACHE_BASE nor PLUGIN_NAME is set,
+# rather than emitting a malformed `.../cache//` path (CR phase2 r2) — a caller
+# that skipped require_plugin_identity still cannot get a garbage cache root.
 resolve_plugin_cache_base() {
-	printf '%s' "${PLUGIN_CACHE_BASE:-$HOME/.claude/plugins/cache/$PLUGIN_NAME/$PLUGIN_NAME}"
+	if [ -n "${PLUGIN_CACHE_BASE:-}" ]; then
+		printf '%s' "$PLUGIN_CACHE_BASE"
+		return 0
+	fi
+	[ -n "${PLUGIN_NAME:-}" ] || {
+		echo "resolve-plugin-identity: resolve_plugin_cache_base needs PLUGIN_NAME (or PLUGIN_CACHE_BASE) — call require_plugin_identity first" >&2
+		return 2
+	}
+	printf '%s' "$HOME/.claude/plugins/cache/$PLUGIN_NAME/$PLUGIN_NAME"
 }
 
 # resolve_plugin_installed_versions — print installed semver dir NAMES under the
@@ -93,15 +104,17 @@ resolve_plugin_cache_base() {
 # does not run the loop in a subshell (which would lose the "found any?" state).
 resolve_plugin_installed_versions() {
 	local base
-	base="$(resolve_plugin_cache_base)"
+	base="$(resolve_plugin_cache_base)" || return 2
 	[ -d "$base" ] || return 1
 	local versions=() d v
 	for d in "$base"/*/; do
 		[ -d "$d" ] || continue
 		v="$(basename "$d")"
-		case "$v" in
-		[0-9]*.[0-9]*.[0-9]*) versions+=("$v") ;;
-		esac
+		# Strict X.Y.Z only — multi-digit segments OK (0.34.59), but reject
+		# prerelease / extra-segment dirs (1.2.3-rc1, 1.2.3.4) that the prior
+		# `[0-9]*.[0-9]*.[0-9]*` glob let through (CR phase2 r2). A glob can't
+		# express "exactly three numeric dot-segments", so use a regex.
+		[[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && versions+=("$v")
 	done
 	[ "${#versions[@]}" -gt 0 ] || return 1
 	printf '%s\n' "${versions[@]}" | sort -V
