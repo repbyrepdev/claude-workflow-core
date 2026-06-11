@@ -18,6 +18,20 @@ area:infrastructure:
           - pre-commit-hooks/**
           - skills/**
           - _lib/**
+          # #2314: top-level config files/dirs that existed but matched no glob —
+          # a PR touching ONLY these got no area label, so pr-lint stayed pending
+          # and blocked merge. (.coderabbit*.yaml added beyond the CR plan list —
+          # same verified gap.)
+          - .coderabbit.yaml
+          - .coderabbit.base.yaml
+          - .coderabbit.overlay.yaml
+          - .gitleaks.toml
+          - .yamllint.yaml
+          - .semgrep/**
+          - .codex/**
+          - .gemini/**
+          - templates/**
+          - agents/**
 area:docs:
   - changed-files:
       - any-glob-to-any-file:
