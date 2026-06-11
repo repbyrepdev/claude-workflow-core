@@ -25,13 +25,17 @@ required:
     notes: Third-party SaaS review; runs server-side, not in Actions.
   - check_name: gitleaks
     workflow_file: gitleaks.yml
-    event: pull_request
-    notes: Secret scan with default rules
+    event: pull_request, push
+    notes: Secret scan with custom allowlist via .gitleaks.toml
   - check_name: pr-lint
     workflow_file: pr-lint.yml
     event: pull_request
     notes: |
       Sequential checks enforcing area:* label, issue link, and PR
-      template section headings — see pr-lint.yml for exact step list
+      template section headings — see pr-lint.yml for exact step list.
+      Intentionally omits the `opened` trigger (fires on `labeled` instead)
+      so pr-labeler's area:* labels are present before check-labels runs
+      (#356/#357 race fix); the area label is derived from .github/labeler.yml,
+      which must therefore cover every changed path (see #2314).
 
 advisory: []
