@@ -37,8 +37,12 @@ EOF
 	# does not fail a test — SC2314).
 	run diff -q "$TMP/target/.coderabbit.base.yaml" "$TMP/target/.coderabbit.yaml"
 	[ "$status" -ne 0 ]
-	# Base PR labels (6) + overlay (1) = 7, with the domain label appended.
-	[ "$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.yaml")" -eq 7 ]
+	# Overlay appends 1 label to whatever the base ships (array-append). Assert
+	# the append DYNAMICALLY (base count + 1) so the test does not go stale when
+	# the base SSOT's label set changes (was 6 at #234, now 1 — pre-existing
+	# stale hardcode caught during #2270).
+	base_n=$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.base.yaml")
+	[ "$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.yaml")" -eq "$((base_n + 1))" ]
 	[ "$(yq -r '.reviews.labeling_instructions[-1].label' "$TMP/target/.coderabbit.yaml")" = "area:coalesce" ]
 }
 
