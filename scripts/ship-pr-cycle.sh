@@ -1596,15 +1596,24 @@ EOF
 				p2runs=0
 			else
 				local p2runs_err_file p2runs_rc=0 branch_shas branch_shas_rc=0
+				local branch_shas_err_file branch_shas_err=""
 				# #2354: resolve the branch commit list fail-LOUD too (mirror the
 				# head_sha + jq fail-closed idiom above). The cap counts CR-CLI
 				# runs whose recorded short .sha prefixes ANY branch commit, so a
 				# silently-swallowed rev-list failure (e.g. BASE_BRANCH is not a
 				# local ref) would yield an EMPTY commit set → every run filtered
-				# out → p2runs=0, vacuously (mis)driving the cap. Capture rc; halt.
-				branch_shas=$(git rev-list "$BASE_BRANCH..HEAD" 2>/dev/null) || branch_shas_rc=$?
+				# out → p2runs=0, vacuously (mis)driving the cap. Capture rc AND
+				# stderr (CR phase2 r2: match the jq stderr-capture below, not the
+				# head_sha discard) so the diagnostic surfaces git's own message.
+				branch_shas_err_file=$(mktemp -t ship-cycle-p2-revshas-err.XXXXXX) ||
+					scm_fail "mktemp for phase2 round-cap rev-list stderr failed"
+				branch_shas=$(git rev-list "$BASE_BRANCH..HEAD" 2>"$branch_shas_err_file") || branch_shas_rc=$?
+				if [ -s "$branch_shas_err_file" ]; then
+					branch_shas_err=$(cat "$branch_shas_err_file")
+				fi
+				rm -f "$branch_shas_err_file"
 				if [ "$branch_shas_rc" -ne 0 ]; then
-					echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-list \"$BASE_BRANCH..HEAD\" failed (rc=$branch_shas_rc); cannot count this-branch CR-CLI runs (is $BASE_BRANCH a local ref?)" >&2
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-list \"$BASE_BRANCH..HEAD\" failed (rc=$branch_shas_rc): ${branch_shas_err:-<no stderr>}; cannot count this-branch CR-CLI runs (is $BASE_BRANCH a local ref?)" >&2
 					return 2
 				fi
 				p2runs_err_file=$(mktemp -t ship-cycle-p2runs-err.XXXXXX) ||
