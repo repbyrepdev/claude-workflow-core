@@ -30,7 +30,9 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Use the repo .gitleaks.toml (custom allowlist for .enc files,
-          # pre-SOPS history, and .source-hashes.json) so the action does not
-          # false-positive on allowlisted content (#2314 — .gitleaks.toml now exists).
+          # Use the repo .gitleaks.toml: it keeps the full default ruleset
+          # ([extend] useDefault = true) and adds ONE allowlist entry for
+          # .claude/.source-hashes.json, whose SHA-256 digests trip the
+          # generic-api-key entropy rule. Without GITLEAKS_CONFIG the action
+          # scanned with default rules only and false-positived on that file (#2314).
           GITLEAKS_CONFIG: .gitleaks.toml

@@ -22,9 +22,7 @@ area:infrastructure:
           # a PR touching ONLY these got no area label, so pr-lint stayed pending
           # and blocked merge. (.coderabbit*.yaml added beyond the CR plan list —
           # same verified gap.)
-          - .coderabbit.yaml
-          - .coderabbit.base.yaml
-          - .coderabbit.overlay.yaml
+          - .coderabbit*.yaml
           - .gitleaks.toml
           - .yamllint.yaml
           - .semgrep/**
