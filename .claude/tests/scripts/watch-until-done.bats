@@ -32,6 +32,8 @@ teardown() {
 # `[ "$protected" = false ]` / scalar comparisons. Scenario is passed per-run
 # via env (no `export` — that trips SC2030/2031 in bats):
 #   FAKE_CHECKS         `gh pr checks` output, tab-separated (name<TAB>bucket)
+#   FAKE_CHECKS_RC      exit code for `gh pr checks` (default 0; gh overloads it:
+#                       0=all pass, 8=>=1 pending, 1=>=1 failed/none/error) (#2352)
 #   FAKE_CR_REQUIRED    yes|no — is CodeRabbit in the base branch's required set
 #   FAKE_PROTECTED      true|false — is the base branch protected (default true)
 #   FAKE_BRANCH_READ_FAIL  1 — make the branch-object read fail (gh error sim)
@@ -42,7 +44,7 @@ _make_fake_gh() {
 # branch-PROTECTION read (CR-required) from the branch-OBJECT read (.protected)
 # by the path suffix.
 case "$1 $2" in
-"pr checks") printf '%s\n' "$FAKE_CHECKS" ;;
+"pr checks") printf '%s\n' "$FAKE_CHECKS"; exit "${FAKE_CHECKS_RC:-0}" ;;
 "pr view") echo "main" ;;
 "repo view") echo "owner/repo" ;;
 "api "*)
@@ -143,4 +145,40 @@ EOF
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
 	[ "$status" -eq 2 ]
 	[[ $output == *"timeout reached"* ]]
+}
+
+@test "gh pr checks rc=8 (pending) tolerated — parses RAW, CR pass → exit 0 (#2352)" {
+	# gh returns rc=8 when >=1 check is still pending (here a non-CR check) while
+	# the CR row already passed. The old `if !` aborted on ANY non-zero rc; now
+	# rc=8 falls through to the normal parse → CR pass → exit 0 (no scm_fail).
+	local checks=$'CodeRabbit\tpass\t30s\nother\tpending\t1s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=8 FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
+	[ "$status" -eq 0 ]
+	[[ $output == *"CodeRabbit: pass"* ]]
+	[[ $output != *"gh pr checks failed"* ]]
+}
+
+@test "gh pr checks rc=1 with a failed CR row → surfaces CR failure exit 1, not scm_fail (#2352)" {
+	# rc=1 with a parseable table (CR row = fail) means gh RAN; the watcher must
+	# surface the CR failure (exit 1), not the old generic invocation-error exit 2.
+	local checks=$'CodeRabbit\tfail\t30s\ngitleaks\tpass\t2s'
+	_make_fake_gh
+	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
+	[ "$status" -eq 1 ]
+	[[ $output == *"CodeRabbit: fail"* ]]
+	[[ $output != *"gh pr checks failed"* ]]
+}
+
+@test "gh pr checks rc=1 with EMPTY output → scm_fail exit 2, true invocation error (#2352)" {
+	# rc=1 with no output at all is a genuine gh invocation error (auth/network)
+	# — must still fail loud (exit 2), not silently poll through to the timeout.
+	_make_fake_gh
+	run env FAKE_CHECKS="" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=no \
+		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
+	[ "$status" -eq 2 ]
+	[[ $output == *"gh pr checks failed"* ]]
+	[[ $output == *"no output"* ]]
 }

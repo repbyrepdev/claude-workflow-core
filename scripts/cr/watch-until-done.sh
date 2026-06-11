@@ -163,11 +163,33 @@ while :; do
 
 	# Split gh call from awk parse: if we pipe directly + `|| true`, every
 	# gh failure (auth, network, PR not found) collapses to STATE="" and
-	# routes to the pending branch — silently polling until timeout
-	# instead of surfacing the real error. Fail loud on gh error.
-	if ! RAW=$(gh pr checks "$PR" 2>&1); then
-		scm_fail "gh pr checks failed for #$PR: $RAW"
-	fi
+	# routes to the pending branch — silently polling until timeout instead
+	# of surfacing the real error.
+	#
+	# #2352: but `gh pr checks` OVERLOADS its exit code to signal aggregate
+	# check state, not just invocation failure — so the old `if ! ...` aborted
+	# the watch the moment ANY check was pending or failed. Capture rc:
+	#   rc=0  — all checks passed
+	#   rc=8  — >=1 check still pending/queued (expected mid-CI — keep polling)
+	#   rc=1  — >=1 check failed, OR no checks exist, OR a genuine gh error
+	#   other — genuine invocation error
+	# (rc capture uses `cmd || rc=$?`; `cmd; rc=$?` aborts under set -e and
+	# `if ! cmd` always yields 0 — neither preserves gh's real exit code.)
+	gh_rc=0
+	RAW=$(gh pr checks "$PR" 2>&1) || gh_rc=$?
+	case "$gh_rc" in
+	0 | 8) : ;; # all-pass or pending: parse RAW + continue the poll below
+	1)
+		# rc=1 is overloaded. A parseable table (some check failed) or gh's
+		# "no checks reported on …" message means gh RAN — fall through to the
+		# normal STATE parsing (a failed CR row exits 1; absence is treated as
+		# pending). Only EMPTY output is a true invocation error worth aborting.
+		[ -n "$RAW" ] || scm_fail "gh pr checks failed for #$PR (rc=1, no output)"
+		;;
+	*)
+		scm_fail "gh pr checks failed for #$PR (rc=$gh_rc): $RAW"
+		;;
+	esac
 	# `-F '\t'`: `gh pr checks` uses tab-separated columns. Default FS
 	# splits on any whitespace, which would break if a check name ever
 	# contained spaces.
