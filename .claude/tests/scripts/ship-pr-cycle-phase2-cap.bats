@@ -339,11 +339,12 @@ STUB
 # dispatch REUSES the count without invoking the CR-CLI, then asserting the
 # advance-on-coverage decision.
 
-# Seed the phase2 review-result cache. $1 = cached findings count. setup() already
-# renamed the default branch to `main`; the `git branch -M main` here is idempotent
-# (kept so this helper is self-contained). main==HEAD on the empty fixture → empty
-# diff → the stable empty-blob key, computed here exactly as the lib does (empty
-# stdin → git hash-object).
+# Seed the phase2 review-result cache. $1 = cached findings count. Deliberately
+# force-renames the CURRENT branch (setup()'s feat-2354-cap) to main via
+# `git branch -M main`, repointing main onto HEAD — NOT idempotent: it makes
+# main==HEAD so the cache-key diff resolves. main...HEAD is then empty (the branch
+# commits are --allow-empty, so no content change), yielding the stable empty-blob
+# key computed here exactly as the lib does (empty stdin → git hash-object).
 _seed_cache() {
 	(cd "$ROOT" && git branch -M main) || return 1
 	local key
