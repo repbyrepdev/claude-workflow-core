@@ -79,9 +79,11 @@ EOF
 }
 
 @test ".gitignore keeps .claude/ssot-checks.yml trackable (negation wins)" {
-	# git check-ignore exits non-zero when a path is NOT ignored — the state we
-	# want. A zero exit would mean the negation failed and the guard would ship
-	# dormant on a fresh clone.
+	# git check-ignore exits 1 for a NOT-ignored path (what we want) and 128 on
+	# a fatal error; assert the precise code plus empty output so a git error
+	# cannot masquerade as a clean not-ignored result. A 0 exit would mean the
+	# negation failed and the guard would ship dormant on a fresh clone.
 	run git -C "$REPO_ROOT" check-ignore .claude/ssot-checks.yml
-	[ "$status" -ne 0 ]
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
