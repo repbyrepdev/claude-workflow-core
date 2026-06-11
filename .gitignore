@@ -39,3 +39,9 @@ node_modules/
 # by bootstrap-repo.sh. Must be tracked so a fresh clone has it (else
 # log-retention.sh exits 2 on the missing SSOT — the bug #250 fixes).
 !.claude/log-retention.yml
+
+# Re-include .claude/ssot-checks.yml — SSOT config for the check-ssot-drift.sh
+# pre-commit guard (#2315). Must be tracked so the guard is active on a fresh
+# clone (else check-ssot-drift.sh exits 0 silently — the dormant-guard the
+# #2315 work activates). Per-repo: consumers ship their own copy.
+!.claude/ssot-checks.yml

@@ -8,7 +8,7 @@ Damien Adams' Claude Code plugin — **portable workflow skills + session-resili
 
 The current canonical version is the `version` field in `.claude-plugin/plugin.json` (SSOT — see GitHub Releases / CHANGELOG for per-version notes). The inventory below tracks the SHAPE of the plugin (skills + hooks), not version-specific deltas, so the document doesn't rot every release.
 
-### Skills (15 total)
+### Skills (18 total)
 
 **Ship-PR workflow** — extracted from homelab and FCP toolkit where they were duplicated:
 
@@ -21,6 +21,8 @@ The current canonical version is the `version` field in `.claude-plugin/plugin.j
 | `github-pr-review` | Multi-agent local review (Phase 0/1/2) wrapper |
 | `github-pr-merge` | Verifier + user gate + post-merge housekeeping |
 | `session-start` | Memory check + board state + open PRs + Renovate dashboard + git state |
+| `ship-pr-cycle` | Drive the staged local review pipeline (Phase 0.5 → 1 → 2 → push → CR-in-CI → merge) as a state machine — the canonical entry point (#130) |
+| `cr-resolve-conflict` | Resolve PR merge conflicts against the base branch |
 
 **Meta + workflow primitives (v0.2.0 baseline)**:
 
@@ -34,6 +36,7 @@ The current canonical version is the `version` field in `.claude-plugin/plugin.j
 | `retro` | Session retrospective from `.claude/session-log.jsonl` |
 | `prove-yourself-audit` | Mechanical enforcement of the prove-yourself rule |
 | `cr-plan` | CodeRabbit Issue Planner parser → epic + sub-issues |
+| `bootstrap-repo` | Seed a new or existing repo with the canonical SSOT (hooks, configs, templates) from the plugin |
 
 ### Session-resilience hooks (3)
 
@@ -228,6 +231,20 @@ Compares `.claude/hooks/*.sh` + `.claude/_lib/*.sh` against the
 plugin's `.source-hashes.json`. Drift → exit 1 with per-file
 report + remediation pointer to refresh-from-source OR add to
 `.claude/local-overrides.yml`.
+
+## Verification
+
+The plugin self-verifies through three layers:
+
+| Layer | Mechanism | What it checks |
+| --- | --- | --- |
+| **Bootstrap parity** | `.github/workflows/plugin-self-bootstrap-verify.yml` | The plugin can bootstrap itself — generated artifacts match the committed ones |
+| **Content drift** | `scripts/hash-drift.sh --verify` | Consumer `.claude/hooks/*.sh` + `.claude/_lib/*.sh` match the plugin's `.source-hashes.json` |
+| **Claim drift** | `pre-commit-hooks/check-ssot-drift.sh` (active via `.claude/ssot-checks.yml`) | Numeric / list claims in prose match their SSOT file |
+
+The `.bats` suite is the primary behavioral verification — run `scripts/test-touched.sh` for the iteration loop, `scripts/test.sh` for the full pass. (No hardcoded file count: it would drift every time a test is added.)
+
+There are 3 required status checks, declared with their names in `.github/required-checks-list.yml` (SSOT) and count-validated by the `required-checks-count` drift check above.
 
 ## Consumers
 
