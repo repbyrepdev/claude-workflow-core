@@ -16,12 +16,16 @@ setup() {
 	(
 		set -e
 		PLUGIN="$TEST_TMP/plugin"
-		mkdir -p "$PLUGIN/scripts" "$PLUGIN/.github" "$PLUGIN/.claude-plugin" "$PLUGIN/.claude/logs"
+		mkdir -p "$PLUGIN/scripts" "$PLUGIN/.github" "$PLUGIN/.claude-plugin" "$PLUGIN/.claude/logs" "$PLUGIN/_lib"
 		cp "$SCRIPT" "$PLUGIN/scripts/cascade-to-consumers.sh"
 		chmod +x "$PLUGIN/scripts/cascade-to-consumers.sh"
+		# cascade now sources the plugin-identity lib (#2310); provide it in the
+		# fixture so require_plugin_identity passes (the manifest below also gains
+		# a .repository field for the same reason).
+		cp "$REPO_ROOT/_lib/resolve-plugin-identity.sh" "$PLUGIN/_lib/resolve-plugin-identity.sh"
 
 		cat >"$PLUGIN/.claude-plugin/plugin.json" <<'JSON'
-{"name":"test","version":"1.2.3"}
+{"name":"test","version":"1.2.3","repository":"https://github.com/test-org/test"}
 JSON
 
 		cat >"$PLUGIN/.github/consumers.yml" <<'YAML'
@@ -111,6 +115,11 @@ case "$1" in
             j=$((i+1)); repo="${!j}"; break
           fi
         done
+        # Capture the issue body (cascade pipes it via --body-file -) so tests
+        # can assert the rendered identity (#2310). Always consume stdin so the
+        # producer pipe closes; default to /dev/null when unobserved. No silent
+        # mask: a write failure to a real BODY_LOG surfaces (/dev/null cannot fail).
+        cat >"${GH_STUB_BODY_LOG:-/dev/null}"
         if [ "${GH_STUB_FAIL_CREATE:-0}" = "1" ]; then
           echo "gh: stubbed create failure" >&2
           exit 1
@@ -155,6 +164,7 @@ GHSCRIPT
 	export PATH="$TEST_TMP/bin:$PATH"
 	export GH_STUB_LOG="$TEST_TMP/gh-stub.log"
 	export GH_STUB_CLOSE_LOG="$TEST_TMP/gh-stub-close.log"
+	export GH_STUB_BODY_LOG="$TEST_TMP/gh-issue-body.txt"
 }
 
 teardown() {
@@ -419,4 +429,36 @@ YAML
 	# "no priors found" rather than silence on this path.
 	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
 	grep -q '"action":"supersede-none"' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
+}
+
+@test "issue body interpolates the DERIVED plugin identity (#2310)" {
+	cd "$TEST_TMP/plugin" || return 1
+	run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 0 ]
+	# The body (captured from gh stdin) must carry the identity DERIVED from the
+	# fixture manifest (name=test, repository=https://github.com/test-org/test),
+	# proving $PLUGIN_NAME / $PLUGIN_REPO_URL interpolation — not a hardcode.
+	[ -f "$TEST_TMP/gh-issue-body.txt" ]
+	run cat "$TEST_TMP/gh-issue-body.txt"
+	[[ $output == *"test has released"* ]]
+	[[ $output == *"~/test/scripts/refresh-from-source.sh"* ]]
+	# Key assertion LAST: the release-notes link is built from $PLUGIN_REPO_URL.
+	[[ $output == *"https://github.com/test-org/test/releases/tag/v"* ]]
+}
+
+@test "cascade fails closed (rc 2) when manifest identity is incomplete (#2310)" {
+	cd "$TEST_TMP/plugin" || return 1
+	# Empty .repository → lib derives an empty URL (jq -er succeeds on "", so no
+	# set-e abort at source) → require_plugin_identity at load aborts the cascade
+	# (rc 2) BEFORE any consumer work.
+	cat >"$TEST_TMP/plugin/.claude-plugin/plugin.json" <<'EOF'
+{
+  "name": "test",
+  "version": "1.2.3",
+  "repository": ""
+}
+EOF
+	run scripts/cascade-to-consumers.sh --consumer alpha
+	[ "$status" -eq 2 ]
+	[[ $output == *"incomplete"* ]]
 }
