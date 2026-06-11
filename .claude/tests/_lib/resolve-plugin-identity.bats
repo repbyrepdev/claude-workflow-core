@@ -149,3 +149,35 @@ EOF
 	run require_plugin_identity
 	[ "$status" -eq 2 ]
 }
+
+@test "require_plugin_identity returns 2 on a present-but-incomplete manifest (.repository missing) (#2310)" {
+	# Manifest exists with .name but NO .repository (realistic partial manifest).
+	# Source + gate inside `run bash -c` (no set -e there) so the missing-field
+	# jq failure can't abort under a caller errexit and leave the gate undefined.
+	cat >"$PLUGIN/.claude-plugin/plugin.json" <<'EOF'
+{
+  "name": "test-plugin-name",
+  "version": "1.2.3"
+}
+EOF
+	run bash -c '. "$1" 2>/dev/null; require_plugin_identity' _ "$LIB"
+	[ "$status" -eq 2 ]
+}
+
+@test "require_plugin_identity returns 2 on a non-github (ssh) repository URL (#2310 fix A)" {
+	# An ssh-form URL does NOT match the https github prefix-strip, so the
+	# well-formedness gate blanks SHORT/OWNER. NAME + URL stay non-empty, so a
+	# rc-2 here proves the malformed slug was blanked (not accepted).
+	cat >"$PLUGIN/.claude-plugin/plugin.json" <<'EOF'
+{
+  "name": "test-plugin-name",
+  "version": "1.2.3",
+  "repository": "git@github.com:test-owner/test-plugin-name.git"
+}
+EOF
+	# shellcheck source=/dev/null
+	. "$LIB" 2>/dev/null
+	[ -z "$PLUGIN_REPO_SHORT" ] # well-formedness gate blanked the malformed slug
+	run require_plugin_identity
+	[ "$status" -eq 2 ]
+}

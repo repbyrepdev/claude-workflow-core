@@ -2,12 +2,14 @@
 # set-u: opt-out — sourced library; inherits the caller's set -u/-e options.
 # v0.34.59 (#2310 / #2316) — SSOT for plugin identity + cache-path resolution.
 #
-# WHY: plugin self-references (repo URL, name, owner) were hardcoded across
+# WHY: plugin self-references (repo URL, name, owner) are hardcoded across
 # cascade-to-consumers.sh / install-plugin-git-hooks.sh / bootstrap-repo.sh.
-# This lib derives them ONCE from .claude-plugin/plugin.json (already the
-# version SSOT) so a fork/rename auto-adapts, and centralizes plugin-cache
-# path resolution. Identity is DERIVED, not hardcoded (per #2309 Task 1); the
-# exported constant names match #2316 Task 1.
+# This lib centralizes identity derivation from .claude-plugin/plugin.json
+# (already the version SSOT) so a fork/rename auto-adapts, and centralizes
+# plugin-cache path resolution. cascade-to-consumers.sh is the FIRST consumer
+# (#2310); install-plugin-git-hooks.sh + bootstrap-repo.sh still hardcode their
+# self-refs and are slated to migrate (#2309 follow-on). Identity is DERIVED,
+# not hardcoded (per #2309 Task 1); the exported constant names match #2316.
 #
 # `set -euo pipefail` is intentionally OMITTED — repo convention for sourced
 # libs (see resolve-plugin-helper.sh, canonical-review-exclude.sh): a sourced
@@ -46,6 +48,21 @@ fi
 PLUGIN_REPO_SHORT="${PLUGIN_REPO_SHORT:-${PLUGIN_REPO_URL#https://github.com/}}"
 PLUGIN_REPO_SHORT="${PLUGIN_REPO_SHORT%.git}"
 PLUGIN_OWNER="${PLUGIN_OWNER:-${PLUGIN_REPO_SHORT%%/*}}"
+
+# Well-formedness gate (#2310 phase1: code-reviewer + pr-test-analyzer +
+# silent-failure-hunter converged). The github prefix-strip is a no-op for a
+# non-github / ssh (git@github.com:owner/repo) / otherwise-malformed URL, which
+# would leave PLUGIN_REPO_SHORT carrying scheme/host/':'/'@' artifacts or extra
+# path segments — a wrong-but-nonempty identity that would slip past the
+# non-empty require_plugin_identity gate. A clean slug is exactly `owner/repo`
+# (one '/', no scheme/host chars). Blank SHORT/OWNER on a malformed slug so the
+# gate fails closed REGARDLESS of the caller's set -e (the blanking is
+# unconditional, not dependent on a jq abort).
+if [ -n "$PLUGIN_REPO_URL" ] && ! [[ $PLUGIN_REPO_SHORT =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+	echo "resolve-plugin-identity: PLUGIN_REPO_URL ('$PLUGIN_REPO_URL') is not a parseable https://github.com/owner/repo URL — set PLUGIN_REPO_SHORT/PLUGIN_OWNER explicitly to override" >&2
+	PLUGIN_REPO_SHORT=""
+	PLUGIN_OWNER=""
+fi
 export PLUGIN_NAME PLUGIN_REPO_URL PLUGIN_REPO_SHORT PLUGIN_OWNER
 
 # require_plugin_identity — fail-closed gate. Callers source the lib then call

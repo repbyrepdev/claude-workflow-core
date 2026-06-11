@@ -236,6 +236,8 @@ _log() {
 # Plugin identity SSOT (#2310): derive the repo URL + name from plugin.json so
 # the cascade issue body carries no hardcoded self-references. Fail-closed at
 # load if identity is incomplete (require_plugin_identity → rc 2 under set -e).
+# NOTE: cascade already set PLUGIN_JSON above (for the .version read); the lib
+# honors that pre-set value (${PLUGIN_JSON:-...}) so both read the SAME manifest.
 _CASCADE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../_lib/resolve-plugin-identity.sh
 . "$_CASCADE_LIB_DIR/../_lib/resolve-plugin-identity.sh"
