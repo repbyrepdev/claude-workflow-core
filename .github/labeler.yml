@@ -21,7 +21,9 @@ area:infrastructure:
           # #2314: top-level config files/dirs that existed but matched no glob —
           # a PR touching ONLY these got no area label, so pr-lint stayed pending
           # and blocked merge. (.coderabbit*.yaml added beyond the CR plan list —
-          # same verified gap.)
+          # same verified gap.) Phase2 CR r1 extended the same class to
+          # .gitignore + .memory-aliases (both verified via `git ls-files`);
+          # biome.json was rejected — it does not exist in this repo.
           - .coderabbit*.yaml
           - .gitleaks.toml
           - .yamllint.yaml
@@ -30,6 +32,8 @@ area:infrastructure:
           - .gemini/**
           - templates/**
           - agents/**
+          - .gitignore
+          - .memory-aliases
 area:docs:
   - changed-files:
       - any-glob-to-any-file:
