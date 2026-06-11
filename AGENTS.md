@@ -27,8 +27,11 @@ than the summary here. Emit a JSON array of findings (empty `[]` if clean),
 each of the shape:
 
 ```
-{severity: high|medium|low, file: <path>, line: <number>, category: <string>, description: <1-2 sentences; fold any suggested change into this field>, confidence: 0-10}
+{severity: high|medium|low, file: <path>, line: <number|null>, category: <string>, description: <1-2 sentences; fold any suggested change into this field>, confidence: 0-10}
 ```
+
+`line` is the single source line for the finding, or `null` when it does not
+map to one line (a missing file, or a structural / whole-file issue).
 
 Review only the diff on the current branch (`git diff main...HEAD`), not
 pre-existing code. The per-agent lenses:
