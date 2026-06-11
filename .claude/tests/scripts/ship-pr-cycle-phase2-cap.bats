@@ -14,9 +14,10 @@
 # Drives `ship-pr-cycle.sh next` against a tmp git repo (same harness as
 # ship-pr-cycle-cr-conflict-check.bats). The findings>0 branch makes NO `gh`
 # call — it only invokes the CR-CLI (stubbed), the scaler (stubbed), and counts
-# this-sha runs from cr-local-review.jsonl (seeded). Outcomes covered:
-# p2runs>=cap → push; p2runs<cap → directive+stay; cap honors the scaler value
-# (dynamic, not a constant); missing log → p2runs fallback=1.
+# this-BRANCH runs (git rev-list main..HEAD; #2354) from cr-local-review.jsonl
+# (seeded). Outcomes covered: p2runs>=cap → push; p2runs<cap → directive+stay;
+# cap honors the scaler value (dynamic, not a constant); missing log → p2runs=0
+# (legit first run); rev-list/rev-parse/jq failure → fail-closed (rc 2).
 
 # @bats test bodies run as subshells, so shellcheck flags the per-test
 # STUB_ROUNDS export (SC2030/SC2031) as "lost in subshell" — false positive:
@@ -244,6 +245,35 @@ _seed_coverage() {
 	[ "$(_cur_stage)" = phase2 ]
 }
 
+@test "phase2 cap — git rev-list BASE..HEAD failure fails closed (#2354)" {
+	# #2354 fail-LOUD: the per-branch commit list is resolved before counting;
+	# a rev-list failure must halt (rc 2), not feed an empty --arg to jq and
+	# silently count 0 runs (which would vacuously (mis)drive the cap). Selective
+	# git stub: fail ONLY `rev-list` and delegate everything else to real git so
+	# REPO_ROOT resolution + the head_sha rev-parse + the cache-key diff still run.
+	_seed_stage phase2
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	local real_git
+	real_git=$(command -v git)
+	mkdir -p "$TEST_TMP/gitstub"
+	{
+		echo '#!/usr/bin/env bash'
+		echo 'if [ "$1" = "rev-list" ]; then'
+		echo '  echo "stub git: forced rev-list failure" >&2; exit 1'
+		echo 'fi'
+		printf 'exec %q "$@"\n' "$real_git"
+	} >"$TEST_TMP/gitstub/git"
+	chmod +x "$TEST_TMP/gitstub/git"
+	PATH="$TEST_TMP/gitstub:$PATH"
+	run "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"git rev-list"* ]]
+	[[ $output == *"failed"* ]]
+	[ "$(_cur_stage)" = phase2 ]
+}
+
 @test "phase2 round-cap counts runs PER-BRANCH across fix-commits, not per-SHA (#2354)" {
 	# The treadmill: per-SHA counting reset the cap each fix-commit, so the
 	# ROUNDS cap never bounded cross-commit phase2 iteration. Seed CR-CLI runs
@@ -301,17 +331,19 @@ STUB
 }
 
 # --- v0.32.11 (#249-grp / #282): content-hash review cache integration --------
-# The cap tests above exercise the cache-MISS path (the fixture has no `main`
-# ref → phase2_review_cache_key returns empty → cache inactive → the CR-CLI stub
-# runs). These drive the cache-HIT path — the branch that was previously dead
-# code in this file — by seeding phase2-results.jsonl with the key for THIS
-# repo's review surface so the dispatch REUSES the count without invoking the
-# CR-CLI, then asserting the advance-on-coverage decision.
+# The cap tests above exercise the cache-MISS path: setup() now creates `main`
+# (so the key computes), but seeds NO .review-cache entry → phase2_review_cache_key
+# finds no cached result → cache inactive → the CR-CLI stub runs. These drive the
+# cache-HIT path — the branch that was previously dead code in this file — by
+# seeding phase2-results.jsonl with the key for THIS repo's review surface so the
+# dispatch REUSES the count without invoking the CR-CLI, then asserting the
+# advance-on-coverage decision.
 
-# Seed the phase2 review-result cache. $1 = cached findings count. Renames the
-# default branch to `main` so the dispatch's `git diff main...HEAD` (BASE_BRANCH
-# defaults to main) resolves; main==HEAD → empty diff → the stable empty-blob
-# key, computed here exactly as the lib does (empty stdin → git hash-object).
+# Seed the phase2 review-result cache. $1 = cached findings count. setup() already
+# renamed the default branch to `main`; the `git branch -M main` here is idempotent
+# (kept so this helper is self-contained). main==HEAD on the empty fixture → empty
+# diff → the stable empty-blob key, computed here exactly as the lib does (empty
+# stdin → git hash-object).
 _seed_cache() {
 	(cd "$ROOT" && git branch -M main) || return 1
 	local key

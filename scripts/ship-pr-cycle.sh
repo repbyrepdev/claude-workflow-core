@@ -1595,10 +1595,25 @@ EOF
 				# vacuously advance a cap of 1).
 				p2runs=0
 			else
-				local p2runs_err_file p2runs_rc=0
+				local p2runs_err_file p2runs_rc=0 branch_shas branch_shas_rc=0
+				# #2354: resolve the branch commit list fail-LOUD too (mirror the
+				# head_sha + jq fail-closed idiom above). The cap counts CR-CLI
+				# runs whose recorded short .sha prefixes ANY branch commit, so a
+				# silently-swallowed rev-list failure (e.g. BASE_BRANCH is not a
+				# local ref) would yield an EMPTY commit set → every run filtered
+				# out → p2runs=0, vacuously (mis)driving the cap. Capture rc; halt.
+				branch_shas=$(git rev-list "$BASE_BRANCH..HEAD" 2>/dev/null) || branch_shas_rc=$?
+				if [ "$branch_shas_rc" -ne 0 ]; then
+					echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-list \"$BASE_BRANCH..HEAD\" failed (rc=$branch_shas_rc); cannot count this-branch CR-CLI runs (is $BASE_BRANCH a local ref?)" >&2
+					return 2
+				fi
 				p2runs_err_file=$(mktemp -t ship-cycle-p2runs-err.XXXXXX) ||
 					scm_fail "mktemp for phase2 round-cap jq stderr failed"
-				p2runs=$(jq -rs --arg shas "$(git rev-list "$BASE_BRANCH..HEAD")" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
+				# $bs = branch full shas; $s = a log entry's recorded SHORT sha.
+				# Match by `full | startswith(short)` (a short sha is a prefix of
+				# its commit's full sha) — robust to git's adaptive short-sha width
+				# drift across commits, so no `--short` normalization is needed.
+				p2runs=$(jq -rs --arg shas "$branch_shas" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
 				if [ "$p2runs_rc" -ne 0 ]; then
 					echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
 					rm -f "$p2runs_err_file"
