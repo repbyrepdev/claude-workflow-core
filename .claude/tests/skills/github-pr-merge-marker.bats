@@ -8,6 +8,17 @@
 setup() {
 	WRAPPER="${BATS_TEST_DIRNAME}/../../../skills/github-pr-merge/run.sh"
 	[ -f "$WRAPPER" ]
+	# A no-op gh on PATH keeps the run hermetic. The arg-validation tests below
+	# exit before any gh call, but this guards against a future path slipping a
+	# gh invocation in ahead of the arg checks.
+	TEST_TMP=$(mktemp -d -t pr-merge-marker.XXXXXX) || return 1
+	printf '#!/bin/bash\n' >"$TEST_TMP/gh"
+	chmod +x "$TEST_TMP/gh"
+}
+
+teardown() {
+	[ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */pr-merge-marker.* ]] && rm -rf "$TEST_TMP"
+	return 0
 }
 
 @test "Layer 2 marker rm: tests deferred to mock-gh test suite" {
@@ -25,4 +36,25 @@ setup() {
 	# Flexible regex tolerates "$PR" / $PR / ${PR} variable quoting styles.
 	run grep -E 'gh pr view.*--json[[:space:]]+headRefOid' "$WRAPPER"
 	[ "$status" -eq 0 ]
+}
+
+# --- #2293 edge-case expansion: behavioral arg-validation (exit 2 before any
+# --- gh call — these need no gh-mock, unlike the deferred Layer 2 e2e above). ---
+
+@test "--pr without a value → arg error (exit 2)" {
+	run env PATH="$TEST_TMP:$PATH" bash "$WRAPPER" --pr
+	[ "$status" -eq 2 ]
+	[[ $output == *"requires a value"* ]]
+}
+
+@test "missing --pr → usage error (exit 2)" {
+	run env PATH="$TEST_TMP:$PATH" bash "$WRAPPER" --squash
+	[ "$status" -eq 2 ]
+	[[ $output == *Usage* ]]
+}
+
+@test "unknown flag → arg error (exit 2)" {
+	run env PATH="$TEST_TMP:$PATH" bash "$WRAPPER" --pr 5 --bogus-flag
+	[ "$status" -eq 2 ]
+	[[ $output == *"unknown arg"* ]]
 }
