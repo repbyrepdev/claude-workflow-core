@@ -127,7 +127,10 @@ EOF
 
 @test "check-ssot-drift passes when the config file is absent (exit 0)" {
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/does-not-exist.yml' '$SCRIPT'"
+	# Clean pass with no output proves the absent-config short-circuit ran (a
+	# real check run would emit drift/skip text).
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "check-ssot-drift skips a check whose files are not staged" {
