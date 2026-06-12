@@ -37,5 +37,15 @@ required:
       so pr-labeler's area:* labels are present before check-labels runs
       (#356/#357 race fix); the area label is derived from .github/labeler.yml,
       which must therefore cover every changed path (see #2314).
+  - check_name: verify
+    workflow_file: plugin-self-bootstrap-verify.yml
+    event: pull_request
+    notes: |
+      Plugin self-bootstrap parity gate (#108): bootstraps this plugin into a
+      clean tree and asserts the emitted SSOT files match the live ones. Made
+      required (#2234) — it runs in ~8s and passes on every PR, so enforcing it
+      mechanically gates bootstrap drift before merge. Plugin-scoped: consumers
+      do not run this workflow and required-checks-list.yml is a per-repo seed
+      (NOT byte-gated), so this entry stays OUT of the bootstrap heredoc.
 
 advisory: []
