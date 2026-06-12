@@ -49,3 +49,45 @@ reviews:
   # consumer overlay AND must be defined in that repo's labels.yml). Re-adding
   # domain labeling here would tell CR to apply labels no repo defines — the
   # exact media-server #956 drift this change removes at root.
+
+# code_generation (#2297/#2272): plugin-ONLY CR docstring + unit-test generation
+# guidance for this repo's shell surface (scripts/hooks/skills/_lib). Lives in the
+# OVERLAY (not .coderabbit.base.yaml) so it does NOT propagate to consumers via
+# bootstrap — the base stays repo-agnostic; a consumer wanting code-gen guidance
+# adds its own overlay block. Schema: path_instructions nests under docstrings /
+# unit_tests (CodeRabbit config reference), NOT directly under code_generation.
+code_generation:
+  docstrings:
+    path_instructions:
+      - path: "scripts/*.sh"
+        instructions: >-
+          Plugin propagation/CI script. Generate a header-comment block (purpose,
+          usage/args, exit codes 0 pass / 1 fail / 2 usage) in the repo's existing
+          style; keep `set -euo pipefail` on line 2 directly under the shebang.
+          Reference the SSOT file a value derives from (.github/*.yml, read via yq)
+          rather than restating it.
+      - path: "pre-commit-hooks/*.sh"
+        instructions: >-
+          Pre-commit gate. Document the staged-files scope (git diff --cached), the
+          bypass env var, and the 0/1/2 exit contract in the header.
+      - path: "hooks/*.sh"
+        instructions: >-
+          Generic .claude hook. Document the `# event:` it fires on and any bypass
+          env var in the header; note repo_guard_require gating if present.
+      - path: "skills/*/run.sh"
+        instructions: >-
+          Skill wrapper. Document the SKILL_WRAPPER side-effects it runs (preflight
+          gates, Copilot draft, post-commit cascade) so callers do not bypass it.
+      - path: "_lib/*.sh"
+        instructions: >-
+          Shared helper sourced by hooks/scripts. Document the functions it exports
+          and their contracts; note it must stay bash-3.2 compatible (macOS — no
+          mapfile / associative-array assumptions).
+  unit_tests:
+    path_instructions:
+      - path: "**/*.sh"
+        instructions: >-
+          Generate bats tests, not ad-hoc scripts. REQUIRE exactly ONE `# covers:`
+          line; assert behavior (exit status + stdout/stderr content), not mere
+          source-presence; use `mktemp -d` fixtures; end the file with a trailing
+          newline; never guard a required path behind `|| skip` (a silent pass).
