@@ -10,6 +10,11 @@
 # Injection points exercised: PROVE_YOURSELF_GATE_SKIP[_REASON] (bypass),
 # PROVE_YOURSELF_SKILL (stub skill / fail-closed path), and the review-log +
 # prove-yourself state-file fixtures for the coverage math.
+#
+# Every test asserts behaviour (stdout/stderr content or a filesystem side
+# effect), not just exit status: silent paths assert empty output, the bypass
+# asserts its stderr notice, and graduation asserts both the marker contents
+# AND the success message. Outputs were dogfooded against the live hook.
 
 setup() {
 	SCRIPT="${BATS_TEST_DIRNAME}/../../../pre-commit-hooks/prove-yourself-gate.sh"
@@ -77,6 +82,8 @@ _run_gate() {
 @test "PROVE_YOURSELF_GATE_SKIP=1 with reason → passes + audit-logged" {
 	run bash -c "cd '$TEST_TMP' && PROVE_YOURSELF_GATE_SKIP=1 PROVE_YOURSELF_GATE_SKIP_REASON='ci hotfix' PROVE_YOURSELF_SKILL='$STUB' '$SCRIPT'"
 	[ "$status" -eq 0 ]
+	# The bypass announces itself on stderr (not a silent pass).
+	[[ $output == *bypass* ]]
 	[ -f "$TEST_TMP/.claude/logs/prove-yourself-gate-skip.jsonl" ]
 	# Key assertion last: the reason reached the audit log.
 	grep -q 'ci hotfix' "$TEST_TMP/.claude/logs/prove-yourself-gate-skip.jsonl"
@@ -87,6 +94,7 @@ _run_gate() {
 	# plan's 'deny without reason' is NOT what the hook does (dogfooded).
 	run bash -c "cd '$TEST_TMP' && PROVE_YOURSELF_GATE_SKIP=1 PROVE_YOURSELF_SKILL='$STUB' '$SCRIPT'"
 	[ "$status" -eq 0 ]
+	[[ $output == *bypass* ]]
 	grep -q 'no-reason' "$TEST_TMP/.claude/logs/prove-yourself-gate-skip.jsonl"
 }
 
@@ -109,8 +117,10 @@ _run_gate() {
 	_seed_cover 1
 	_run_gate
 	[ "$status" -eq 0 ]
-	# Key assertions last: the marker exists AND records this round (not just any
-	# stray .json), proving graduation_mark wrote a well-formed marker.
+	# The success path announces graduation on stderr...
+	[[ $output == *graduated* ]]
+	# ...and (key assertions last) the marker exists AND records this round (not
+	# just any stray .json), proving graduation_mark wrote a well-formed marker.
 	marker=$(find "$TEST_TMP/.claude/.session-state/phase-graduation" -name '*.json' 2>/dev/null | head -1)
 	[ -n "$marker" ]
 	[ "$(jq -r '.phase1_round' "$marker")" = "1" ]
@@ -149,8 +159,9 @@ _run_gate() {
 	_seed_round 0
 	_run_gate
 	[ "$status" -eq 0 ]
-	# Zero findings short-circuits before the graduation step, so no marker is
-	# written — distinguishes 'ran the coverage math, nothing to enforce' from
-	# 'bailed early because no review log'.
+	# Zero findings short-circuits silently before the graduation step, so no
+	# marker is written — distinguishes 'ran the coverage math, nothing to
+	# enforce' from 'bailed early because no review log'.
+	[ -z "$output" ]
 	[ -z "$(find "$TEST_TMP/.claude/.session-state/phase-graduation" -name '*.json' 2>/dev/null)" ]
 }
