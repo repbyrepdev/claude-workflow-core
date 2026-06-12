@@ -87,12 +87,19 @@ fi
 #   gh pr merge (no arg — uses current branch's PR, look up via gh)
 PR_NUM=""
 # Try `gh pr merge <N>` form first (most common).
+# `|| true` on these extraction substitutions is load-bearing under
+# `set -euo pipefail`: a grep with no match exits non-zero, pipefail
+# propagates that, and a bare `PR_NUM=$(failing-pipeline)` would then ABORT
+# the whole hook (exit 1) — which Claude Code treats as a NON-blocking error,
+# letting the `gh pr merge` proceed UNGATED. The `|| true` keeps a no-match
+# as empty-PR_NUM so control reaches the branch fallback + the friendly
+# `could not extract PR number` deny below (which DOES block).
 if printf '%s' "$CMD" | grep -qE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+'; then
-	PR_NUM=$(printf '%s' "$CMD" | grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' | grep -oE '[0-9]+$' | head -1)
+	PR_NUM=$(printf '%s' "$CMD" | grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
 fi
 # Fallback: extract `--pr <N>` if present.
 if [ -z "$PR_NUM" ]; then
-	PR_NUM=$(printf '%s' "$CMD" | grep -oE '\-\-pr[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1)
+	PR_NUM=$(printf '%s' "$CMD" | grep -oE '\-\-pr[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
 fi
 # Final fallback: resolve from current branch.
 if [ -z "$PR_NUM" ]; then

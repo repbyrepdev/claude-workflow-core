@@ -56,3 +56,69 @@ EOF
 	run git -C "$SANDBOX" rev-parse --verify HEAD
 	[ "$status" -ne 0 ]
 }
+
+# --- #2293 edge-case expansion: happy path, partial stage, fail-closed,
+# --- dry-run. (Operator --message-file schema checks are warn-only by design,
+# --- so these target the behaviors that actually change commit state.) ---
+
+@test "happy path: a valid message commits and advances HEAD" {
+	echo "content" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: add a file in the happy-path sandbox
+
+Exercises the successful commit path of the git-commit wrapper.
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
+	[ "$status" -eq 0 ]
+	# Key assertions last: a commit object now exists AND carries our subject.
+	run git -C "$SANDBOX" log -1 --pretty=%s
+	[ "$status" -eq 0 ]
+	[[ $output == *"add a file in the happy-path sandbox"* ]]
+}
+
+@test "partial stage: only the staged file is committed" {
+	echo "staged" >"$SANDBOX/staged.txt"
+	echo "loose" >"$SANDBOX/unstaged.txt" # left untracked on purpose
+	git -C "$SANDBOX" add staged.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: commit only the staged file
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
+	[ "$status" -eq 0 ]
+	# The committed tree contains staged.txt but NOT the untracked file.
+	run git -C "$SANDBOX" ls-tree --name-only HEAD
+	[[ $output == *staged.txt* ]]
+	[[ $output != *unstaged.txt* ]]
+}
+
+@test "no message + --no-copilot → fail-closed (exit 2), nothing committed" {
+	echo "x" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot"
+	[ "$status" -eq 2 ]
+	[[ $output == *"no commit message provided"* ]]
+	# HEAD never came into existence.
+	run git -C "$SANDBOX" rev-parse --verify HEAD
+	[ "$status" -ne 0 ]
+}
+
+@test "--dry-run prints the message without creating a commit" {
+	echo "x" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: dry-run must not create a commit
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt --dry-run"
+	[ "$status" -eq 0 ]
+	[[ $output == *"would commit"* ]]
+	# Dry-run is side-effect-free: no commit object exists.
+	run git -C "$SANDBOX" rev-parse --verify HEAD
+	[ "$status" -ne 0 ]
+}
