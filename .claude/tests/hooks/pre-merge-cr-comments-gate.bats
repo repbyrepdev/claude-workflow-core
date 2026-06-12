@@ -37,6 +37,7 @@ setup() {
 	ln -s "$REAL_SCRIPT" "$TEST_TMP/.claude/hooks/guard.sh"
 	ln -s "$libs/hook-deny.sh" "$TEST_TMP/.claude/_lib/hook-deny.sh"
 	ln -s "$libs/hook-inline-sentinel.sh" "$TEST_TMP/.claude/_lib/hook-inline-sentinel.sh"
+	ln -s "$libs/cmd-anchor.sh" "$TEST_TMP/.claude/_lib/cmd-anchor.sh"
 	SCRIPT="$TEST_TMP/.claude/hooks/guard.sh"
 	# No-op gh: the only gh call is the no-PR-number branch fallback; an empty
 	# result drives the "could not extract PR number" path deterministically.
@@ -215,9 +216,41 @@ _gh_returns() {
 
 @test "a --flag=value on a real merge is not mistaken for an env preamble" {
 	# `gh pr merge 42 --auto=true` contains `=` but NOT in the first token, so it
-	# must still be detected as a merge (the first-token-only preamble check).
+	# must still be detected as a merge (the SSOT ENV_PREFIX only peels a leading
+	# preamble, and the anchor matches gh at command-start).
 	_install_helper 1
 	run _run_gate "gh pr merge 42 --auto=true"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+# --- SSOT-anchor robustness (was fail-open in the bespoke parser, fixed by
+# --- routing through _lib/cmd-anchor.sh + the CR-hardened ENV_PREFIX) ---
+
+@test 'quoted env-value preamble still fires (ENV_PREFIX handles X="a b")' {
+	# The CR-hardened ENV_PREFIX matches single/double-quoted assignment values,
+	# so a real merge behind `VAR=\"a b\"` is detected (a fail-open in the prior
+	# bespoke parser, which split on the space inside the quotes).
+	_install_helper 1
+	run _run_gate 'GIT_AUTHOR_NAME="a b" gh pr merge 42'
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "bash -c wrapped real merge fires (inner command checked)" {
+	# The WRAPPED_CMD extraction pulls the inner command out of a bash -c wrapper.
+	_install_helper 1
+	run _run_gate "bash -c 'gh pr merge 42'"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "multi-space gh pr merge still fires (anchor uses [[:space:]]+)" {
+	_install_helper 1
+	run _run_gate "gh  pr  merge 42"
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]]
 	[[ $output == *"#42"* ]]

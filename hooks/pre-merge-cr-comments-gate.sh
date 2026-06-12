@@ -62,63 +62,45 @@ if ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/nul
 fi
 [ -z "$CMD" ] && exit 0
 
-# Scope: fire ONLY when `gh pr merge` appears at a COMMAND position — the start
-# of the command, after a shell separator (;/&&/||/|/&), or after a leading
-# `VAR=val` env-assignment preamble (APPROVE=1, SKILL_WRAPPER=1, the gate's own
-# *_SKIP, ...). #2393: the prior glob `*\ gh\ pr\ merge\ *` matched the phrase
-# ANYWHERE — including inside a quoted `-m "... gh pr merge ..."` commit message
-# — so a benign commit that merely mentioned the phrase false-fired the gate
-# (it even false-fired the issue-creation command that filed #2393). Approach:
-# normalize separators to newlines, then per segment strip the env-assignment
-# preamble + leading whitespace and test for a `gh pr merge` prefix. The phrase
-# inside a quoted argument is NOT at a segment start, so it no longer matches.
-# bash-3.2 compatible (no mapfile).
-_cmd_invokes_gh_pr_merge() {
-	local norm="$1" seg firsttoken
-	norm="${norm//&&/$'\n'}"
-	norm="${norm//||/$'\n'}"
-	norm="${norm//;/$'\n'}"
-	norm="${norm//|/$'\n'}"
-	norm="${norm//&/$'\n'}"
-	while IFS= read -r seg; do
-		# ltrim leading whitespace
-		seg="${seg#"${seg%%[![:space:]]*}"}"
-		# strip a leading VAR=val env-assignment preamble (first token only, so
-		# `gh pr merge --foo=bar` is NOT mistaken for an assignment)
-		while :; do
-			firsttoken="${seg%%[[:space:]]*}"
-			case "$firsttoken" in
-			[A-Za-z_]*=*)
-				case "$seg" in
-				*[[:space:]]*)
-					seg="${seg#*[[:space:]]}"
-					seg="${seg#"${seg%%[![:space:]]*}"}"
-					;;
-				*)
-					seg=""
-					break
-					;;
-				esac
-				;;
-			*) break ;;
-			esac
-		done
-		# optional `sudo `/`command ` wrapper
-		case "$seg" in
-		"sudo "*)
-			seg="${seg#sudo }"
-			seg="${seg#"${seg%%[![:space:]]*}"}"
-			;;
-		esac
-		case "$seg" in
-		"gh pr merge" | "gh pr merge "*) return 0 ;;
-		esac
-	done <<INNEREOF
-$norm
-INNEREOF
-	return 1
-}
-if ! _cmd_invokes_gh_pr_merge "$CMD"; then
+# Scope: fire ONLY when `gh pr merge` is invoked at a COMMAND position. Reuse the
+# canonical command-anchor SSOT (_lib/cmd-anchor.sh, #677) + the CR-hardened
+# ENV_PREFIX byte-copied from skill-bypass-guard.sh — the SAME detection that
+# guard uses for `gh pr merge`, so the two gates cannot drift. #2393: the prior
+# glob `*\ gh\ pr\ merge\ *` matched the phrase ANYWHERE, including inside a
+# quoted `-m "... gh pr merge ..."` commit message, so a benign commit that
+# merely mentioned the phrase false-fired the gate (it even false-fired the
+# issue-creation command that filed #2393). The anchor requires command-start or
+# a shell separator, so a quoted mid-string `gh pr merge` no longer matches;
+# ENV_PREFIX peels a leading `VAR=val` preamble incl. quoted values (`X="a b"`);
+# a `bash -c '...'` wrapper's inner command is also checked.
+#
+# Out of scope HERE (matching skill-bypass-guard.sh): `sudo`/`command`/`env`
+# wrappers and `{ }`/`( )` grouping. Extending coverage belongs in the shared
+# _lib/cmd-anchor.sh so every gate benefits in ONE place — adding it bespoke here
+# is the exact regex drift #677 created the lib to prevent.
+ANCHOR_LIB="${HOOK_DIR}/../_lib/cmd-anchor.sh"
+if [ -f "$ANCHOR_LIB" ]; then
+	# shellcheck source=../_lib/cmd-anchor.sh
+	source "$ANCHOR_LIB"
+else
+	# Fallback when the SSOT lib is unavailable: keep the same anchor inline.
+	CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
+	CMD_SEGMENT_END='([[:space:]]|$)'
+fi
+# CR-hardened env-assignment prefix — byte-identical to skill-bypass-guard.sh so
+# the two gates stay in lockstep (unquoted values must NOT start with a quote,
+# forcing the quoted alternations to own quoted values; CR #634 finding 136).
+ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge${CMD_SEGMENT_END}"
+# Inner command of a `bash -c '...'` style wrapper (CR #634 finding 177).
+WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s|.*(bash\|sh\|zsh\|/bin/bash\|/bin/sh\|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*|\3|p" | head -1)
+_ghm_fires=0
+if printf '%s' "$CMD" | grep -qE "$GHM_PATTERN"; then
+	_ghm_fires=1
+elif [ -n "$WRAPPED_CMD" ] && printf '%s' "$WRAPPED_CMD" | grep -qE "$GHM_PATTERN"; then
+	_ghm_fires=1
+fi
+if [ "$_ghm_fires" != "1" ]; then
 	exit 0
 fi
 
