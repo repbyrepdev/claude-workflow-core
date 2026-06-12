@@ -389,10 +389,10 @@ code_generation:
           Pre-commit gate. Keep `set -euo pipefail` on line 2 (directly under the shebang); document the staged-files scope (git diff --cached), the bypass env var, and the 0/1/2 exit contract in the header.
       - path: "hooks/*.sh"
         instructions: >-
-          Generic .claude hook. Document the `# event:` it fires on and any bypass env var in the header; note repo_guard_require gating if present.
+          Generic .claude hook. Keep `set -euo pipefail` on line 2 (directly under the shebang). Document the `# event:` it fires on and any bypass env var in the header; note repo_guard_require gating if present.
       - path: "skills/*/run.sh"
         instructions: >-
-          Skill wrapper. Document the SKILL_WRAPPER side-effects it runs (preflight gates, Copilot draft, post-commit cascade) so callers do not bypass it.
+          Skill wrapper. Keep `set -euo pipefail` on line 2 directly under the shebang. Document the SKILL_WRAPPER side-effects it runs (preflight gates, Copilot draft, post-commit cascade) so callers do not bypass it.
       - path: "_lib/*.sh"
         instructions: >-
           Shared helper sourced by hooks/scripts. Document the functions it exports and their contracts; note it must stay bash-3.2 compatible (macOS — no mapfile / associative-array assumptions).
