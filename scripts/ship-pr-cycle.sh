@@ -2062,6 +2062,20 @@ EOF
 			echo "ship-pr-cycle: cr-autofix — cannot resolve PR (gh rc=$cr_gh_rc): ${cr_gh_err:-not pushed?}" >&2
 			return 2
 		fi
+		# 0 unresolved on entry → nothing to autofix; advance like auto-triage's
+		# 0-count path. auto-triage routes here when threads ARE unresolved, but
+		# they can be cleared WITHOUT a new commit — a stranded-outdated thread
+		# resolved via `@coderabbitai resolve`, or CR auto-resolving — and the
+		# entry-SHA advance below only fires on a commit, so the stage would
+		# otherwise loop forever (the resolved-without-commit stall). Re-count so
+		# such a PR still reaches the merge gate.
+		local cra_unresolved cra_unrl_rc=0
+		cra_unresolved=$(_count_unresolved_threads "$cr_pr_num") || cra_unrl_rc=$?
+		if [ "$cra_unrl_rc" -eq 0 ] && [ "$cra_unresolved" = "0" ]; then
+			_set_stage "cr-conflict-check"
+			echo "→ no unresolved CR threads (resolved without a commit); advanced to cr-conflict-check"
+			return 0
+		fi
 		# Capture _get_state_field rc explicitly — it now returns 2 on
 		# corrupt state (mirroring _get_stage discipline). Don't let
 		# `entry_sha=$(...)` swallow the rc; halt cr-autofix instead of

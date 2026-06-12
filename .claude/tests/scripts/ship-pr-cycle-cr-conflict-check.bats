@@ -104,6 +104,20 @@ _cur_stage() {
 	jq -r '.stage' "$STATE_DIR/$SHA.json"
 }
 
+@test "cr-autofix + 0 unresolved (resolved without a commit) advances to cr-conflict-check" {
+	# Regression for the resolved-without-commit stall: when a stranded-outdated
+	# thread is cleared via @coderabbitai resolve (no new commit), cr-autofix
+	# used to loop forever — its only advance was the entry-SHA change. The stub
+	# gh reports 0 unresolved threads, so the stage must re-count and advance to
+	# cr-conflict-check (mirroring auto-triage's 0-count path).
+	_seed_stage cr-autofix
+	cd "$TEST_TMP" || return 1
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"no unresolved CR threads (resolved without a commit)"* ]]
+	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
 @test "cr-conflict-check + CLEAN/MERGEABLE (local==PR head) advances to merge-gate" {
 	_seed_stage cr-conflict-check
 	cd "$TEST_TMP" || return 1
