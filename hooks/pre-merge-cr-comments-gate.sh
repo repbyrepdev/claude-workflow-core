@@ -92,14 +92,23 @@ fi
 # forcing the quoted alternations to own quoted values; CR #634 finding 136).
 ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
 GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge${CMD_SEGMENT_END}"
-# Inner command of a `bash -c '...'` style wrapper (CR #634 finding 177).
-# Use `#` as the sed delimiter (NOT `|`): with a `|` delimiter, `\|` is a
-# LITERAL pipe on GNU sed (Linux/CI), silently breaking the bash|sh|zsh
-# alternation so WRAPPED_CMD is always empty there — CR-in-CI #2397 caught this
-# portability bug. `#` lets the `|` alternation work on both BSD and GNU sed.
-# (skill-bypass-guard.sh carries the same `|`-delimiter form; unifying this into
-# the shared lib with the portable delimiter is tracked in #2396.)
-WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*#\3#p" | head -1)
+# Inner command of a `bash -c '...'` or `bash -c "..."` wrapper (CR #634
+# finding 177). TWO passes, one per quote style, so the closing quote must
+# MATCH the opening one AND the inner command may carry the OTHER quote
+# (`bash -c "do 'x'"`). A single ERE can't express "same quote" portably:
+# `\1` backreferences are unsupported in BSD sed -E (macOS), so CR-in-CI
+# #2397's backreference suggestion extracts nothing there — verified on BSD.
+# `#` is the sed delimiter so the `bash|sh|zsh` alternation isn't parsed
+# against a `|` delimiter (where `\|` is a literal pipe on GNU sed, silently
+# breaking the alternation — also #2397). skill-bypass-guard.sh still uses the
+# older single-pattern form; unifying both into the shared _lib/cmd-anchor.sh
+# is tracked in #2396.
+_ws_sq="s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*'([^']*)'.*#\3#p"
+_ws_dq='s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*"([^"]*)".*#\3#p'
+WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "$_ws_sq" | head -1)
+if [ -z "$WRAPPED_CMD" ]; then
+	WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "$_ws_dq" | head -1)
+fi
 _ghm_fires=0
 if printf '%s' "$CMD" | grep -qE "$GHM_PATTERN"; then
 	_ghm_fires=1

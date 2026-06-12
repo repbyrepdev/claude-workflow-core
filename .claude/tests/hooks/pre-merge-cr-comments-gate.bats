@@ -239,10 +239,21 @@ _gh_returns() {
 	[[ $output == *"#42"* ]]
 }
 
-@test "bash -c wrapped real merge fires (inner command checked)" {
-	# The WRAPPED_CMD extraction pulls the inner command out of a bash -c wrapper.
+@test "bash -c single-quoted real merge fires (inner command checked)" {
+	# The WRAPPED_CMD single-quote pass pulls the inner command out of the wrapper.
 	_install_helper 1
 	run _run_gate "bash -c 'gh pr merge 42'"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "bash -c double-quoted real merge fires (per-quote extraction)" {
+	# The double-quote pass handles `bash -c "..."`; a single ERE backreference
+	# for "same quote" is non-portable on BSD sed (#2397), so extraction is two
+	# passes — this asserts the double-quote pass detects the wrapped merge.
+	_install_helper 1
+	run _run_gate 'bash -c "gh pr merge 42"'
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]]
 	[[ $output == *"#42"* ]]
