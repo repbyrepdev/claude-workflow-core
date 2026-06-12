@@ -28,8 +28,8 @@ setup() {
 	}
 
 	# Top-level tracked paths intentionally WITHOUT an area label. Empty today
-	# (every top-level path is globbed after #2314/#2315). Add a path here with
-	# a one-line reason if a genuinely non-PR-relevant top-level file appears.
+	# (every top-level path is globbed as of #2314). Add a path here with a
+	# one-line reason if a genuinely non-PR-relevant top-level file appears.
 	LABELER_COVERAGE_EXCEPT=()
 }
 
@@ -37,6 +37,11 @@ setup() {
 #   "dir/**" or "dir/*" → the top-level dir "dir"
 #   "**/<pat>"          → reduce to the trailing pattern for top-level files
 #   file globs / exact names → bash glob compare
+# The two case arms are ORDER-SENSITIVE: the "*/​**" arm must precede "*/​*"
+# because a "/**" suffix also matches the "*/​*" pattern. The leading-"**/"
+# strip is forward-looking — today "**/*.md" reduces to the same "*.md" the
+# *.md glob already yields — but keeps the matcher correct if a "**/<pat>"
+# entry is added later.
 _labeler_path_matches() {
 	local path="$1"
 	shift
@@ -94,19 +99,64 @@ _labeler_path_matches() {
 	}
 }
 
+@test "every labeler.yml key declares at least one glob" {
+	# A key with an empty/missing any-glob-to-any-file list passes the area:*
+	# check above but emits no labeled event for its area — silently
+	# re-introducing the #2314 block for that label. Assert each key carries
+	# at least one glob.
+	keys=$(yq -r 'keys[]' "$LABELER") || {
+		echo "FAIL: yq failed reading keys from $LABELER" >&2
+		return 1
+	}
+	[ -n "$keys" ] || {
+		echo "FAIL: labeler.yml has no keys" >&2
+		return 1
+	}
+	n=0
+	while IFS= read -r key; do
+		[ -n "$key" ] || continue
+		count=$(K="$key" yq -r '.[env(K)][]."changed-files"[]."any-glob-to-any-file"[]' "$LABELER" | grep -c .)
+		[ "${count:-0}" -gt 0 ] || {
+			echo "FAIL: labeler key '$key' declares zero globs (empty/missing any-glob-to-any-file)" >&2
+			return 1
+		}
+		n=$((n + 1))
+	done <<<"$keys"
+	[ "$n" -gt 0 ] || {
+		echo "FAIL: zero labeler keys validated" >&2
+		return 1
+	}
+}
+
 @test "every top-level tracked path maps to a labeler glob (coverage drift guard)" {
-	# Hoist the glob extraction: a yq failure here would otherwise mark every
-	# path unmatched with a misleading diagnostic.
+	# Capture (not process-substitute) so a yq failure is caught by exit status,
+	# not only by the emptiness backstop below.
+	globs_raw=$(yq -r 'to_entries[].value[]."changed-files"[]."any-glob-to-any-file"[]' "$LABELER") || {
+		echo "FAIL: yq failed extracting globs from $LABELER" >&2
+		return 1
+	}
 	globs=()
 	while IFS= read -r g; do
 		[ -n "$g" ] && globs+=("$g")
-	done < <(yq -r 'to_entries[].value[]."changed-files"[]."any-glob-to-any-file"[]' "$LABELER")
+	done <<<"$globs_raw"
 	[ "${#globs[@]}" -gt 0 ] || {
 		echo "FAIL: extracted zero globs from $LABELER (yq path wrong or file empty?)" >&2
 		return 1
 	}
 
+	# Capture the path source too: a git failure (bad REPO_ROOT, unborn HEAD)
+	# must FAIL loud, never pass vacuously by skipping the loop entirely.
+	paths_raw=$(git -C "$REPO_ROOT" ls-tree --name-only HEAD) || {
+		echo "FAIL: git ls-tree failed in $REPO_ROOT" >&2
+		return 1
+	}
+	[ -n "$paths_raw" ] || {
+		echo "FAIL: git ls-tree returned zero top-level paths" >&2
+		return 1
+	}
+
 	unmatched=()
+	examined=0
 	while IFS= read -r path; do
 		[ -n "$path" ] || continue
 		skip=
@@ -116,10 +166,17 @@ _labeler_path_matches() {
 			done
 		fi
 		[ -n "$skip" ] && continue
+		examined=$((examined + 1))
 		_labeler_path_matches "$path" "${globs[@]}" || unmatched+=("$path")
-	done < <(git -C "$REPO_ROOT" ls-tree --name-only HEAD)
+	done <<<"$paths_raw"
 
-	# Key assertion last: every top-level path is covered; name the gaps loudly.
+	# Non-vacuous guard: at least one path must actually have been checked.
+	[ "$examined" -gt 0 ] || {
+		echo "FAIL: zero top-level paths examined (all excepted, or git ls-tree empty?)" >&2
+		return 1
+	}
+
+	# Key assertion last: every examined path is covered; name the gaps loudly.
 	[ "${#unmatched[@]}" -eq 0 ] || {
 		echo "FAIL: top-level path(s) match NO labeler glob — a PR touching only" >&2
 		echo "  these gets no area label, so pr-lint stays pending and merge blocks:" >&2
