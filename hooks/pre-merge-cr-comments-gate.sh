@@ -93,7 +93,13 @@ fi
 ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
 GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge${CMD_SEGMENT_END}"
 # Inner command of a `bash -c '...'` style wrapper (CR #634 finding 177).
-WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s|.*(bash\|sh\|zsh\|/bin/bash\|/bin/sh\|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*|\3|p" | head -1)
+# Use `#` as the sed delimiter (NOT `|`): with a `|` delimiter, `\|` is a
+# LITERAL pipe on GNU sed (Linux/CI), silently breaking the bash|sh|zsh
+# alternation so WRAPPED_CMD is always empty there — CR-in-CI #2397 caught this
+# portability bug. `#` lets the `|` alternation work on both BSD and GNU sed.
+# (skill-bypass-guard.sh carries the same `|`-delimiter form; unifying this into
+# the shared lib with the portable delimiter is tracked in #2396.)
+WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*#\3#p" | head -1)
 _ghm_fires=0
 if printf '%s' "$CMD" | grep -qE "$GHM_PATTERN"; then
 	_ghm_fires=1
