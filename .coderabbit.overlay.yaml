@@ -55,7 +55,9 @@ reviews:
 # OVERLAY (not .coderabbit.base.yaml) so it does NOT propagate to consumers via
 # bootstrap — the base stays repo-agnostic; a consumer wanting code-gen guidance
 # adds its own overlay block. Schema: path_instructions nests under docstrings /
-# unit_tests (CodeRabbit config reference), NOT directly under code_generation.
+# unit_tests, NOT directly under code_generation (CodeRabbit config reference:
+# docs.coderabbit.ai/reference/configuration) — a flat form is silently ignored,
+# so coderabbit-config-sync.bats pins the correct nesting.
 code_generation:
   docstrings:
     path_instructions:
