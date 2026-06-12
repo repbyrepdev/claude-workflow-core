@@ -62,6 +62,10 @@ if [ -n "${STUB_GH_RC:-}" ] && [ "${STUB_GH_RC}" != "0" ]; then
 	exit "${STUB_GH_RC}"
 fi
 if [ "${1:-}" = "api" ]; then
+	if [ -n "${STUB_API_RC:-}" ] && [ "${STUB_API_RC}" != "0" ]; then
+		echo "stub gh api: forced failure (STUB_API_RC=${STUB_API_RC})" >&2
+		exit "${STUB_API_RC}"
+	fi
 	printf '%s\n' '{"data":{"node":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'
 	exit 0
 fi
@@ -116,6 +120,19 @@ _cur_stage() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"no unresolved CR threads (resolved without a commit)"* ]]
 	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
+@test "cr-autofix + count-query failure fails closed (return non-0, no silent advance)" {
+	# CR phase2 (critical): a masked count failure would look like "nothing to
+	# autofix" and hide unresolved findings. The stage must surface the error and
+	# halt at cr-autofix, mirroring auto-triage's fail-closed count path.
+	_seed_stage cr-autofix
+	cd "$TEST_TMP" || return 1
+	export STUB_API_RC=2
+	run "$SCRIPT" next
+	[ "$status" -ne 0 ]
+	[[ $output == *"thread count query failed"* ]]
+	[ "$(_cur_stage)" = cr-autofix ]
 }
 
 @test "cr-conflict-check + CLEAN/MERGEABLE (local==PR head) advances to merge-gate" {

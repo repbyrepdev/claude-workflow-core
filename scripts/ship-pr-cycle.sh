@@ -2071,7 +2071,15 @@ EOF
 		# such a PR still reaches the merge gate.
 		local cra_unresolved cra_unrl_rc=0
 		cra_unresolved=$(_count_unresolved_threads "$cr_pr_num") || cra_unrl_rc=$?
-		if [ "$cra_unrl_rc" -eq 0 ] && [ "$cra_unresolved" = "0" ]; then
+		# Fail CLOSED on a count-query error (mirrors auto-triage): surface it and
+		# halt, never silently fall through to the autofix directive — a masked
+		# count failure would hide unresolved findings behind a "nothing to
+		# autofix" appearance.
+		if [ "$cra_unrl_rc" -ne 0 ]; then
+			echo "ship-pr-cycle: cr-autofix — thread count query failed (rc=$cra_unrl_rc); refusing to advance (see helper stderr above)" >&2
+			return "$cra_unrl_rc"
+		fi
+		if [ "$cra_unresolved" = "0" ]; then
 			_set_stage "cr-conflict-check"
 			echo "→ no unresolved CR threads (resolved without a commit); advanced to cr-conflict-check"
 			return 0
