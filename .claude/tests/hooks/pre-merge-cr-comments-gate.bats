@@ -183,3 +183,42 @@ _gh_returns() {
 	[[ $output == *deny* ]]
 	[[ $output == *"#99"* ]]
 }
+
+# --- #2393: command-position anchoring (no false-fire on quoted substring) ---
+
+@test "gh pr merge inside a quoted commit message → pass-through (no false-fire)" {
+	# #2393: a benign commit that merely mentions the phrase must NOT fire the
+	# gate. _install_helper 1 would DENY if the gate fired — a pass-through proves
+	# the phrase inside a quoted -m argument is not at a command position.
+	_install_helper 1
+	run _run_gate 'git commit -m "fix gh pr merge gate false-fire"'
+	[ "$status" -eq 0 ]
+	[[ $output != *deny* ]]
+}
+
+@test "gh pr merge inside a quoted echo argument → pass-through" {
+	_install_helper 1
+	run _run_gate 'echo "see the gh pr merge docs for details"'
+	[ "$status" -eq 0 ]
+	[[ $output != *deny* ]]
+}
+
+@test "env-preamble before a real merge still fires (APPROVE=1 gh pr merge)" {
+	# The command-position parser must still strip a VAR=val preamble and detect
+	# the real merge underneath it.
+	_install_helper 1
+	run _run_gate "APPROVE=1 gh pr merge 42"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "a --flag=value on a real merge is not mistaken for an env preamble" {
+	# `gh pr merge 42 --auto=true` contains `=` but NOT in the first token, so it
+	# must still be detected as a merge (the first-token-only preamble check).
+	_install_helper 1
+	run _run_gate "gh pr merge 42 --auto=true"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}

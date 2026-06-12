@@ -62,18 +62,65 @@ if ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/nul
 fi
 [ -z "$CMD" ] && exit 0
 
-# Scope: only fire on `gh pr merge` invocations (with or without other
-# flags, with or without `--admin`, with or without leading env vars).
-# Anchor `gh pr merge` to either command-start OR a shell separator
-# (`;`/`&&`/`||`/`|`) so the substring inside a quoted commit-message or
-# `--body` doesn't false-fire — same anchor pattern as
-# phase1-before-cr.sh + skill-bypass-guard.
-case "$CMD" in
-*\ gh\ pr\ merge\ * | *\ gh\ pr\ merge | gh\ pr\ merge\ * | gh\ pr\ merge | *\;[[:space:]]*gh\ pr\ merge* | *\&\&[[:space:]]*gh\ pr\ merge* | *\|[[:space:]]*gh\ pr\ merge*) ;;
-*)
+# Scope: fire ONLY when `gh pr merge` appears at a COMMAND position — the start
+# of the command, after a shell separator (;/&&/||/|/&), or after a leading
+# `VAR=val` env-assignment preamble (APPROVE=1, SKILL_WRAPPER=1, the gate's own
+# *_SKIP, ...). #2393: the prior glob `*\ gh\ pr\ merge\ *` matched the phrase
+# ANYWHERE — including inside a quoted `-m "... gh pr merge ..."` commit message
+# — so a benign commit that merely mentioned the phrase false-fired the gate
+# (it even false-fired the issue-creation command that filed #2393). Approach:
+# normalize separators to newlines, then per segment strip the env-assignment
+# preamble + leading whitespace and test for a `gh pr merge` prefix. The phrase
+# inside a quoted argument is NOT at a segment start, so it no longer matches.
+# bash-3.2 compatible (no mapfile).
+_cmd_invokes_gh_pr_merge() {
+	local norm="$1" seg firsttoken
+	norm="${norm//&&/$'\n'}"
+	norm="${norm//||/$'\n'}"
+	norm="${norm//;/$'\n'}"
+	norm="${norm//|/$'\n'}"
+	norm="${norm//&/$'\n'}"
+	while IFS= read -r seg; do
+		# ltrim leading whitespace
+		seg="${seg#"${seg%%[![:space:]]*}"}"
+		# strip a leading VAR=val env-assignment preamble (first token only, so
+		# `gh pr merge --foo=bar` is NOT mistaken for an assignment)
+		while :; do
+			firsttoken="${seg%%[[:space:]]*}"
+			case "$firsttoken" in
+			[A-Za-z_]*=*)
+				case "$seg" in
+				*[[:space:]]*)
+					seg="${seg#*[[:space:]]}"
+					seg="${seg#"${seg%%[![:space:]]*}"}"
+					;;
+				*)
+					seg=""
+					break
+					;;
+				esac
+				;;
+			*) break ;;
+			esac
+		done
+		# optional `sudo `/`command ` wrapper
+		case "$seg" in
+		"sudo "*)
+			seg="${seg#sudo }"
+			seg="${seg#"${seg%%[![:space:]]*}"}"
+			;;
+		esac
+		case "$seg" in
+		"gh pr merge" | "gh pr merge "*) return 0 ;;
+		esac
+	done <<INNEREOF
+$norm
+INNEREOF
+	return 1
+}
+if ! _cmd_invokes_gh_pr_merge "$CMD"; then
 	exit 0
-	;;
-esac
+fi
 
 # Inline-sentinel bypass — operator-acknowledged escape. Logged so
 # repeated use surfaces in the audit feed for review.
