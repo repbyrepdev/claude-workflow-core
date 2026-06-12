@@ -17,7 +17,8 @@ setup() {
 }
 
 teardown() {
-	[ -n "${TEST_TMP:-}" ] && [[ $TEST_TMP == */pr-merge-marker.* ]] && rm -rf "$TEST_TMP"
+	[ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */pr-merge-marker.* ]] && rm -rf "$TEST_TMP"
+	return 0
 }
 
 @test "Layer 2 marker rm: tests deferred to mock-gh test suite" {

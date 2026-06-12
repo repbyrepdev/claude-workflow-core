@@ -40,10 +40,16 @@ teardown() {
 	[ -n "${TEST_TMP:-}" ] && [[ $TEST_TMP == */edit-corrupt-guard.* ]] && rm -rf "$TEST_TMP"
 }
 
-# Write/Edit payload: $1=tool_name $2=content/new_string $3=file_path
-_payload() {
+# Write-shape payload (content only — real Write/Bash schema): $1=tool $2=content $3=path
+_payload_write() {
 	jq -nc --arg t "$1" --arg c "$2" --arg f "${3:-/tmp/x.sh}" \
-		'{tool_name:$t, tool_input:{content:$c, new_string:$c, file_path:$f}}'
+		'{tool_name:$t, tool_input:{content:$c, file_path:$f}}'
+}
+
+# Edit-shape payload (new_string only — real Edit schema): $1=tool $2=new_string $3=path
+_payload_edit() {
+	jq -nc --arg t "$1" --arg c "$2" --arg f "${3:-/tmp/x.sh}" \
+		'{tool_name:$t, tool_input:{new_string:$c, file_path:$f}}'
 }
 
 # MultiEdit payload with a single edit: $1=new_string $2=file_path
@@ -64,13 +70,13 @@ _run_guard() {
 }
 
 @test "clean Write content → allowed (exit 0, no deny)" {
-	run _run_guard "$(_payload Write 'echo hello world')"
+	run _run_guard "$(_payload_write Write 'echo hello world')"
 	[ "$status" -eq 0 ]
 	[[ $output != *deny* ]]
 }
 
 @test "Write content with the corruption signature → DENIED" {
-	run _run_guard "$(_payload Write "$CORRUPT")"
+	run _run_guard "$(_payload_write Write "$CORRUPT")"
 	# Real hook_deny: deny-JSON on stdout + exit 0; assert the decision AND that
 	# the reason names the corruption signature (not just any deny).
 	[ "$status" -eq 0 ]
@@ -79,7 +85,7 @@ _run_guard() {
 }
 
 @test "Edit new_string with the signature → DENIED" {
-	run _run_guard "$(_payload Edit "$CORRUPT")"
+	run _run_guard "$(_payload_edit Edit "$CORRUPT")"
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]]
 	[[ $output == *corruption* ]]
@@ -94,13 +100,13 @@ _run_guard() {
 
 @test "non-Write/Edit/MultiEdit tool → allowed (exit 0)" {
 	# The case-default short-circuits any other tool name.
-	run _run_guard "$(_payload Bash "$CORRUPT")"
+	run _run_guard "$(_payload_write Bash "$CORRUPT")"
 	[ "$status" -eq 0 ]
 	[[ $output != *deny* ]]
 }
 
 @test "empty content → allowed (exit 0, e.g. truncate-write)" {
-	run _run_guard "$(_payload Write '')"
+	run _run_guard "$(_payload_write Write '')"
 	[ "$status" -eq 0 ]
 	[[ $output != *deny* ]]
 }
@@ -115,7 +121,7 @@ _run_guard() {
 }
 
 @test "COMMIT_CORRUPT_GUARD_SKIP=1 → bypass + audit log written" {
-	run _run_guard "$(_payload Write "$CORRUPT")" COMMIT_CORRUPT_GUARD_SKIP=1
+	run _run_guard "$(_payload_write Write "$CORRUPT")" COMMIT_CORRUPT_GUARD_SKIP=1
 	[ "$status" -eq 0 ]
 	# Bypass announces itself AND records the audit (jq present → audit-logged).
 	[[ $output == *bypassing* ]]
@@ -127,7 +133,7 @@ _run_guard() {
 	# The guard's own bats/source files intentionally contain the pattern, so
 	# an exact-path match must short-circuit BEFORE detection (else this very
 	# file could never be written).
-	run _run_guard "$(_payload Write "$CORRUPT" '.claude/tests/hooks/edit-corruption-pretooluse-guard.bats')"
+	run _run_guard "$(_payload_write Write "$CORRUPT" '.claude/tests/hooks/edit-corruption-pretooluse-guard.bats')"
 	[ "$status" -eq 0 ]
 	[[ $output != *deny* ]]
 }
