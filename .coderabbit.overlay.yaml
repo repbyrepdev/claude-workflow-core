@@ -70,8 +70,9 @@ code_generation:
           rather than restating it.
       - path: "pre-commit-hooks/*.sh"
         instructions: >-
-          Pre-commit gate. Document the staged-files scope (git diff --cached), the
-          bypass env var, and the 0/1/2 exit contract in the header.
+          Pre-commit gate. Keep `set -euo pipefail` on line 2 (directly under the
+          shebang); document the staged-files scope (git diff --cached), the bypass
+          env var, and the 0/1/2 exit contract in the header.
       - path: "hooks/*.sh"
         instructions: >-
           Generic .claude hook. Document the `# event:` it fires on and any bypass
