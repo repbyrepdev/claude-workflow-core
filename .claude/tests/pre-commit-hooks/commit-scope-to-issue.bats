@@ -34,13 +34,20 @@ teardown() {
 	[ "$status" -eq 0 ]
 }
 
-@test "commit with [no-issue: reason] passes and is audit-logged" {
+@test "commit with [no-issue: reason] passes (exit 0)" {
 	printf 'chore: housekeeping\n\n[no-issue: scratch cleanup]\n' >"$MSG"
 	run bash -c "cd '$TEST_TMP' && '$SCRIPT' '$MSG'"
 	[ "$status" -eq 0 ]
-	# The hook only writes the audit log when jq is available; skip the log
-	# assertion (not the exit-0 behaviour, already checked) when jq is absent.
-	command -v jq >/dev/null || skip "jq required for the audit-log assertion"
+}
+
+@test "commit with [no-issue: reason] writes the audit log (jq required)" {
+	# jq is a hard dependency of this workflow (the hook AND the bats runner
+	# both require it), so make it a fail-closed precondition rather than a
+	# skip-as-pass that would silently neuter this assertion.
+	command -v jq >/dev/null
+	printf 'chore: housekeeping\n\n[no-issue: scratch cleanup]\n' >"$MSG"
+	run bash -c "cd '$TEST_TMP' && '$SCRIPT' '$MSG'"
+	[ "$status" -eq 0 ]
 	[ -f "$TEST_TMP/.claude/logs/no-issue-commits.jsonl" ]
 	# Key assertion last: the reason was captured into the audit log.
 	grep -q 'scratch cleanup' "$TEST_TMP/.claude/logs/no-issue-commits.jsonl"

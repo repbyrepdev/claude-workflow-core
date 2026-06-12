@@ -68,7 +68,10 @@ _run_gate() {
 
 @test "no review log → passes (exit 0)" {
 	_run_gate
+	# Clean pass with no output proves the no-log short-circuit ran (a real
+	# coverage path would emit a coverage/graduation message).
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "PROVE_YOURSELF_GATE_SKIP=1 with reason → passes + audit-logged" {
@@ -95,7 +98,9 @@ _run_gate() {
 
 @test "skill check-commit non-zero → forwards the exit code" {
 	run bash -c "cd '$TEST_TMP' && STUB_RC=3 PROVE_YOURSELF_SKILL='$STUB' '$SCRIPT'"
+	# The stub is silent, so the hook forwards the code with no extra output.
 	[ "$status" -eq 3 ]
+	[ -z "$output" ]
 }
 
 @test "round findings fully covered → passes + graduation marker written" {
