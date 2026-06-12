@@ -415,6 +415,23 @@ repos:
       - id: prove-yourself-gate
 EOF
 
+# === DRY-SENTINEL (#2225): the plugin-cache-discovery snippet repeated across
+# === the shim heredocs below is INTENTIONALLY inline — do NOT refactor it into
+# === a shared emitter. CR/reviewers periodically re-flag the duplicated
+# === cache-discovery block (~15 lines per shim) as a DRY violation; the
+# === decision (CR plan #2225) is "document, don't refactor", for four reasons:
+#   1. Single authoring site — this file is already the ONE place the snippet is
+#      written; consumers receive it via bootstrap and never hand-edit it.
+#   2. The shims use `<<'EOF'` (non-interpolating) heredocs ON PURPOSE so they
+#      emit literal $VARS into the consumer shim. DRY-via-concatenation would
+#      force escaping dozens of vars — trading 5 duplicated lines for fragile
+#      escaping that the heredoc-parity gate would then police byte-for-byte.
+#   3. Chicken-and-egg: the snippet's whole job is to FIND the plugin cache that
+#      holds the shared resolver lib — it therefore cannot itself be sourced
+#      from that resolver, so it must live inline in every shim.
+#   4. The snippets intentionally DIFFER per shim (guard conditions, REPO_ROOT
+#      depth, error messages); they are not byte-identical, so a shared emitter
+#      would need per-shim parameters anyway, erasing the supposed gain.
 # --- .claude/skills/ship-pr-cycle/run.sh -----------------------------
 _write .claude/skills/ship-pr-cycle/run.sh 755 <<'EOF'
 #!/bin/bash
