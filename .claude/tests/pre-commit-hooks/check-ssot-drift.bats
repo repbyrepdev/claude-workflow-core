@@ -157,5 +157,8 @@ EOF
 @test "check-ssot-drift exits 2 on a malformed config" {
 	printf 'checks: [unclosed sequence\n' >"$TEST_TMP/bad.yml"
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/bad.yml' '$SCRIPT'"
+	# Key assertions last: exit 2 AND the parse-failure message pin the intended
+	# branch (the only exit-2 path is the yq config-parse failure).
 	[ "$status" -eq 2 ]
+	[[ $output == *parsing* ]]
 }

@@ -53,11 +53,13 @@ _seed_round() {
 		"$1" >"$TEST_TMP/.claude/review-log/${HEAD_SHA}.jsonl"
 }
 
-# Write a prove-yourself record covering <covers_count>, dated after the round.
+# _seed_cover <covers_count> [source=phase1] [ts=2020-01-02T00:00:00Z]
+# Default ts is AFTER the round start; default source is phase1.
 _seed_cover() {
 	_COVER_N=$((${_COVER_N:-0} + 1))
-	printf '{"source":"phase1","covers_count":%s,"ts":"2020-01-02T00:00:00Z"}\n' \
-		"$1" >"$TEST_TMP/.claude/.session-state/prove-yourself/cover-${_COVER_N}.json"
+	printf '{"source":"%s","covers_count":%s,"ts":"%s"}\n' \
+		"${2:-phase1}" "$1" "${3:-2020-01-02T00:00:00Z}" \
+		>"$TEST_TMP/.claude/.session-state/prove-yourself/cover-${_COVER_N}.json"
 }
 
 _run_gate() {
@@ -102,8 +104,11 @@ _run_gate() {
 	_seed_cover 1
 	_run_gate
 	[ "$status" -eq 0 ]
-	# Key assertion last: the graduation marker was written for this branch.
-	[ -n "$(find "$TEST_TMP/.claude/.session-state/phase-graduation" -name '*.json' 2>/dev/null)" ]
+	# Key assertions last: the marker exists AND records this round (not just any
+	# stray .json), proving graduation_mark wrote a well-formed marker.
+	marker=$(find "$TEST_TMP/.claude/.session-state/phase-graduation" -name '*.json' 2>/dev/null | head -1)
+	[ -n "$marker" ]
+	[ "$(jq -r '.phase1_round' "$marker")" = "1" ]
 }
 
 @test "round findings under-covered → BLOCKED (exit 1)" {
@@ -113,4 +118,34 @@ _run_gate() {
 	# Key assertions last: non-zero exit AND the coverage-gap message.
 	[ "$status" -eq 1 ]
 	[[ $output == *coverage* ]]
+}
+
+@test "a non-phase1 source record does NOT count toward coverage (BLOCKED)" {
+	# The source filter (records without source==phase1 are excluded) is what
+	# stops a --source cr / phase0.5 record from satisfying the Phase 1 gate.
+	_seed_round 2
+	_seed_cover 2 cr
+	_run_gate
+	[ "$status" -eq 1 ]
+	[[ $output == *coverage* ]]
+}
+
+@test "coverage filed before the round start does NOT count (BLOCKED)" {
+	# The time-window (ts >= round-start) is what stops prior-PR records from
+	# giving every commit a free pass.
+	_seed_round 2
+	_seed_cover 2 phase1 2019-12-31T00:00:00Z
+	_run_gate
+	[ "$status" -eq 1 ]
+	[[ $output == *coverage* ]]
+}
+
+@test "a round with zero findings passes without graduating" {
+	_seed_round 0
+	_run_gate
+	[ "$status" -eq 0 ]
+	# Zero findings short-circuits before the graduation step, so no marker is
+	# written — distinguishes 'ran the coverage math, nothing to enforce' from
+	# 'bailed early because no review log'.
+	[ -z "$(find "$TEST_TMP/.claude/.session-state/phase-graduation" -name '*.json' 2>/dev/null)" ]
 }

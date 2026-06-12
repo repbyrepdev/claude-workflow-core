@@ -38,6 +38,9 @@ teardown() {
 	printf 'chore: housekeeping\n\n[no-issue: scratch cleanup]\n' >"$MSG"
 	run bash -c "cd '$TEST_TMP' && '$SCRIPT' '$MSG'"
 	[ "$status" -eq 0 ]
+	# The hook only writes the audit log when jq is available; skip the log
+	# assertion (not the exit-0 behaviour, already checked) when jq is absent.
+	command -v jq >/dev/null || skip "jq required for the audit-log assertion"
 	[ -f "$TEST_TMP/.claude/logs/no-issue-commits.jsonl" ]
 	# Key assertion last: the reason was captured into the audit log.
 	grep -q 'scratch cleanup' "$TEST_TMP/.claude/logs/no-issue-commits.jsonl"
@@ -76,4 +79,28 @@ teardown() {
 @test "missing commit-msg file arg is a no-op (exit 0)" {
 	run bash -c "cd '$TEST_TMP' && '$SCRIPT'"
 	[ "$status" -eq 0 ]
+}
+
+@test "a #NNN reference in the subject line passes (matches anywhere)" {
+	printf 'fix #45: inline subject reference\n' >"$MSG"
+	run bash -c "cd '$TEST_TMP' && '$SCRIPT' '$MSG'"
+	[ "$status" -eq 0 ]
+}
+
+@test "an empty [no-issue:] marker does NOT bypass (BLOCKED)" {
+	# The bypass regex requires a non-empty reason ([^]]+), so an empty marker
+	# must fall through to the block — not grant a free pass.
+	printf 'chore: no real reason\n\n[no-issue:]\n' >"$MSG"
+	run bash -c "cd '$TEST_TMP' && '$SCRIPT' '$MSG'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"issue reference"* ]]
+}
+
+@test "an exemption prefix without the trailing space is NOT exempt (BLOCKED)" {
+	# The exemption glob requires a literal trailing space ('Revert '*), so
+	# 'Reverting ...' must still be enforced.
+	printf 'Reverting an earlier change, no issue ref\n' >"$MSG"
+	run bash -c "cd '$TEST_TMP' && '$SCRIPT' '$MSG'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"issue reference"* ]]
 }
