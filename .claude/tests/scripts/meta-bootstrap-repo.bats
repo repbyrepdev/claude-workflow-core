@@ -49,12 +49,26 @@ teardown() {
 	# if the exec bit was dropped).
 	[ -x "$TEST_TMP/target/.claude/hooks/phase0.5-copilot-prefilter.sh" ]
 	[ -x "$TEST_TMP/target/.claude/hooks/post-commit-ship-cycle.sh" ]
-	# #234: the byte-SSOT CodeRabbit base is written, AND the live
-	# .coderabbit.yaml is composed from it. With no per-repo overlay, the
-	# composed config must equal the base verbatim (compose-coderabbit.sh).
+	# #234/#2379: the byte-SSOT CodeRabbit base is written, AND the live
+	# .coderabbit.yaml is composed from it. compose-coderabbit.sh appends the
+	# #2254/#2257 canonical-mirror-hook path_filter excludes — and its yq pass
+	# reflows base's folded block scalars + drops blank lines (yq v4.52.5) — so
+	# the composed config is NOT byte-identical to base. The prior
+	# `diff base composed` was stale (predated #2254) + brittle to yq formatting.
+	# Real invariant: the bootstrap's composed .coderabbit.yaml reproduces a
+	# fresh compose of the bootstrapped base with the same hook context (compose's
+	# own correctness is unit-tested in bootstrap-coderabbit-compose.bats).
 	[ -f "$TEST_TMP/target/.coderabbit.base.yaml" ]
 	[ -f "$TEST_TMP/target/.coderabbit.yaml" ]
-	diff "$TEST_TMP/target/.coderabbit.base.yaml" "$TEST_TMP/target/.coderabbit.yaml"
+	run env COMPOSE_CR_CONSUMER_HOOKS_DIR="$TEST_TMP/target/.claude/hooks" \
+		"$REPO_ROOT/scripts/compose-coderabbit.sh" \
+		--base "$TEST_TMP/target/.coderabbit.base.yaml" \
+		--out "$TEST_TMP/recompose.yaml"
+	[ "$status" -eq 0 ]
+	diff "$TEST_TMP/recompose.yaml" "$TEST_TMP/target/.coderabbit.yaml"
+	# Sanity: the compose actually injected the #2254 canonical-mirror excludes
+	# (not a vacuous no-op) — a base-only file would have zero.
+	grep -q '!.claude/hooks/' "$TEST_TMP/target/.coderabbit.yaml"
 }
 
 @test "--target repo --verify-only on bootstrapped dir succeeds (re-runs clean)" {
