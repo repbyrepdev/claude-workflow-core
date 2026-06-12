@@ -87,3 +87,81 @@ EOF
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
 }
+
+# --- #2291: extended coverage — kind:list, no-config, staging filter,
+# --- yq-missing fail-closed, and malformed-config behaviour ---
+
+# A kind:list config: inline items (one per regex match) vs an SSOT yq list.
+write_list_config() {
+	cat >"$TEST_TMP/ssot-checks.yml" <<EOF
+checks:
+  - name: required-checks-list
+    kind: list
+    claim:
+      file: $TEST_TMP/claim-list.md
+      regex: 'check: ([a-z]+)'
+    ssot:
+      file: $TEST_TMP/required.yml
+      list: '.required[].check_name'
+    description: test-list
+EOF
+}
+
+@test "kind:list passes when the inline set matches the SSOT list" {
+	printf 'check: a\ncheck: b\ncheck: c\n' >"$TEST_TMP/claim-list.md"
+	write_list_config
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output != *drift* ]]
+}
+
+@test "kind:list BLOCKS when the inline set diverges from the SSOT list" {
+	printf 'check: a\ncheck: b\ncheck: c\n' >"$TEST_TMP/claim-list.md"
+	# SSOT gains a fourth entry the inline list lacks → drift.
+	printf 'required:\n  - check_name: a\n  - check_name: b\n  - check_name: c\n  - check_name: d\n' >"$TEST_TMP/required.yml"
+	write_list_config
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -ne 0 ]
+	[[ $output == *drift* ]]
+}
+
+@test "check-ssot-drift passes when the config file is absent (exit 0)" {
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/does-not-exist.yml' '$SCRIPT'"
+	# Clean pass with no output proves the absent-config short-circuit ran (a
+	# real check run would emit drift/skip text).
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "check-ssot-drift skips a check whose files are not staged" {
+	# A mismatched count config that WOULD block if evaluated...
+	printf 'required:\n  - check_name: a\n  - check_name: b\n  - check_name: c\n  - check_name: d\n' >"$TEST_TMP/required.yml"
+	write_config
+	# ...but staging an unrelated file activates the staging filter, which skips
+	# checks whose claim/ssot files are not among the staged paths.
+	(cd "$TEST_TMP" && : >other.txt && git add other.txt)
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output != *drift* ]]
+}
+
+@test "check-ssot-drift fails closed when yq is unavailable (exit 1)" {
+	write_config
+	# A PATH with git + bash but no yq → command -v yq fails → fail-closed.
+	nobin="$TEST_TMP/nobin"
+	mkdir -p "$nobin"
+	ln -s "$(command -v git)" "$nobin/git"
+	ln -s "$(command -v bash)" "$nobin/bash"
+	run bash -c "cd '$TEST_TMP' && PATH='$nobin' SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -eq 1 ]
+	[[ $output == *yq* ]]
+}
+
+@test "check-ssot-drift exits 2 on a malformed config" {
+	printf 'checks: [unclosed sequence\n' >"$TEST_TMP/bad.yml"
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/bad.yml' '$SCRIPT'"
+	# Key assertions last: exit 2 AND the parse-failure message pin the intended
+	# branch (the only exit-2 path is the yq config-parse failure).
+	[ "$status" -eq 2 ]
+	[[ $output == *parsing* ]]
+}
