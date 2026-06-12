@@ -62,18 +62,62 @@ if ! CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/nul
 fi
 [ -z "$CMD" ] && exit 0
 
-# Scope: only fire on `gh pr merge` invocations (with or without other
-# flags, with or without `--admin`, with or without leading env vars).
-# Anchor `gh pr merge` to either command-start OR a shell separator
-# (`;`/`&&`/`||`/`|`) so the substring inside a quoted commit-message or
-# `--body` doesn't false-fire — same anchor pattern as
-# phase1-before-cr.sh + skill-bypass-guard.
-case "$CMD" in
-*\ gh\ pr\ merge\ * | *\ gh\ pr\ merge | gh\ pr\ merge\ * | gh\ pr\ merge | *\;[[:space:]]*gh\ pr\ merge* | *\&\&[[:space:]]*gh\ pr\ merge* | *\|[[:space:]]*gh\ pr\ merge*) ;;
-*)
+# Scope: fire ONLY when `gh pr merge` is invoked at a COMMAND position. Reuse the
+# canonical command-anchor SSOT (_lib/cmd-anchor.sh, #677) + the CR-hardened
+# ENV_PREFIX byte-copied from skill-bypass-guard.sh — the SAME detection that
+# guard uses for `gh pr merge`, so the two gates cannot drift. #2393: the prior
+# glob `*\ gh\ pr\ merge\ *` matched the phrase ANYWHERE, including inside a
+# quoted `-m "... gh pr merge ..."` commit message, so a benign commit that
+# merely mentioned the phrase false-fired the gate (it even false-fired the
+# issue-creation command that filed #2393). The anchor requires command-start or
+# a shell separator, so a quoted mid-string `gh pr merge` no longer matches;
+# ENV_PREFIX peels a leading `VAR=val` preamble incl. quoted values (`X="a b"`);
+# a `bash -c '...'` wrapper's inner command is also checked.
+#
+# Out of scope HERE (matching skill-bypass-guard.sh): `sudo`/`command`/`env`
+# wrappers and `{ }`/`( )` grouping. Extending coverage belongs in the shared
+# _lib/cmd-anchor.sh so every gate benefits in ONE place — adding it bespoke here
+# is the exact regex drift #677 created the lib to prevent.
+ANCHOR_LIB="${HOOK_DIR}/../_lib/cmd-anchor.sh"
+if [ -f "$ANCHOR_LIB" ]; then
+	# shellcheck source=../_lib/cmd-anchor.sh
+	source "$ANCHOR_LIB"
+else
+	# Fallback when the SSOT lib is unavailable: keep the same anchor inline.
+	CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
+	CMD_SEGMENT_END='([[:space:]]|$)'
+fi
+# CR-hardened env-assignment prefix — byte-identical to skill-bypass-guard.sh so
+# the two gates stay in lockstep (unquoted values must NOT start with a quote,
+# forcing the quoted alternations to own quoted values; CR #634 finding 136).
+ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge${CMD_SEGMENT_END}"
+# Inner command of a `bash -c '...'` or `bash -c "..."` wrapper (CR #634
+# finding 177). TWO passes, one per quote style, so the closing quote must
+# MATCH the opening one AND the inner command may carry the OTHER quote
+# (`bash -c "do 'x'"`). A single ERE can't express "same quote" portably:
+# `\1` backreferences are unsupported in BSD sed -E (macOS), so CR-in-CI
+# #2397's backreference suggestion extracts nothing there — verified on BSD.
+# `#` is the sed delimiter so the `bash|sh|zsh` alternation isn't parsed
+# against a `|` delimiter (where `\|` is a literal pipe on GNU sed, silently
+# breaking the alternation — also #2397). skill-bypass-guard.sh still uses the
+# older single-pattern form; unifying both into the shared _lib/cmd-anchor.sh
+# is tracked in #2396.
+_ws_sq="s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*'([^']*)'.*#\3#p"
+_ws_dq='s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*"([^"]*)".*#\3#p'
+WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "$_ws_sq" | head -1)
+if [ -z "$WRAPPED_CMD" ]; then
+	WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "$_ws_dq" | head -1)
+fi
+_ghm_fires=0
+if printf '%s' "$CMD" | grep -qE "$GHM_PATTERN"; then
+	_ghm_fires=1
+elif [ -n "$WRAPPED_CMD" ] && printf '%s' "$WRAPPED_CMD" | grep -qE "$GHM_PATTERN"; then
+	_ghm_fires=1
+fi
+if [ "$_ghm_fires" != "1" ]; then
 	exit 0
-	;;
-esac
+fi
 
 # Inline-sentinel bypass — operator-acknowledged escape. Logged so
 # repeated use surfaces in the audit feed for review.

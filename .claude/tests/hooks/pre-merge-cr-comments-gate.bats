@@ -37,6 +37,7 @@ setup() {
 	ln -s "$REAL_SCRIPT" "$TEST_TMP/.claude/hooks/guard.sh"
 	ln -s "$libs/hook-deny.sh" "$TEST_TMP/.claude/_lib/hook-deny.sh"
 	ln -s "$libs/hook-inline-sentinel.sh" "$TEST_TMP/.claude/_lib/hook-inline-sentinel.sh"
+	ln -s "$libs/cmd-anchor.sh" "$TEST_TMP/.claude/_lib/cmd-anchor.sh"
 	SCRIPT="$TEST_TMP/.claude/hooks/guard.sh"
 	# No-op gh: the only gh call is the no-PR-number branch fallback; an empty
 	# result drives the "could not extract PR number" path deterministically.
@@ -182,4 +183,86 @@ _gh_returns() {
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]]
 	[[ $output == *"#99"* ]]
+}
+
+# --- #2393: command-position anchoring (no false-fire on quoted substring) ---
+
+@test "gh pr merge inside a quoted commit message → pass-through (no false-fire)" {
+	# #2393: a benign commit that merely mentions the phrase must NOT fire the
+	# gate. _install_helper 1 would DENY if the gate fired — a pass-through proves
+	# the phrase inside a quoted -m argument is not at a command position.
+	_install_helper 1
+	run _run_gate 'git commit -m "fix gh pr merge gate false-fire"'
+	[ "$status" -eq 0 ]
+	[[ $output != *deny* ]]
+}
+
+@test "gh pr merge inside a quoted echo argument → pass-through" {
+	_install_helper 1
+	run _run_gate 'echo "see the gh pr merge docs for details"'
+	[ "$status" -eq 0 ]
+	[[ $output != *deny* ]]
+}
+
+@test "env-preamble before a real merge still fires (APPROVE=1 gh pr merge)" {
+	# The command-position parser must still strip a VAR=val preamble and detect
+	# the real merge underneath it.
+	_install_helper 1
+	run _run_gate "APPROVE=1 gh pr merge 42"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "a --flag=value on a real merge is not mistaken for an env preamble" {
+	# `gh pr merge 42 --auto=true` contains `=` but NOT in the first token, so it
+	# must still be detected as a merge (the SSOT ENV_PREFIX only peels a leading
+	# preamble, and the anchor matches gh at command-start).
+	_install_helper 1
+	run _run_gate "gh pr merge 42 --auto=true"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+# --- SSOT-anchor robustness (was fail-open in the bespoke parser, fixed by
+# --- routing through _lib/cmd-anchor.sh + the CR-hardened ENV_PREFIX) ---
+
+@test 'quoted env-value preamble still fires (ENV_PREFIX handles X="a b")' {
+	# The CR-hardened ENV_PREFIX matches single/double-quoted assignment values,
+	# so a real merge behind `VAR=\"a b\"` is detected (a fail-open in the prior
+	# bespoke parser, which split on the space inside the quotes).
+	_install_helper 1
+	run _run_gate 'GIT_AUTHOR_NAME="a b" gh pr merge 42'
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "bash -c single-quoted real merge fires (inner command checked)" {
+	# The WRAPPED_CMD single-quote pass pulls the inner command out of the wrapper.
+	_install_helper 1
+	run _run_gate "bash -c 'gh pr merge 42'"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "bash -c double-quoted real merge fires (per-quote extraction)" {
+	# The double-quote pass handles `bash -c "..."`; a single ERE backreference
+	# for "same quote" is non-portable on BSD sed (#2397), so extraction is two
+	# passes — this asserts the double-quote pass detects the wrapped merge.
+	_install_helper 1
+	run _run_gate 'bash -c "gh pr merge 42"'
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "multi-space gh pr merge still fires (anchor uses [[:space:]]+)" {
+	_install_helper 1
+	run _run_gate "gh  pr  merge 42"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
 }
