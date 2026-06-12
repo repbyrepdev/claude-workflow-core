@@ -61,7 +61,11 @@ _labeler_path_matches() {
 
 @test "labeler.yml exists and is valid YAML" {
 	run yq -o=json '.' "$LABELER"
+	# Assert behaviour, not just exit code: yq must emit real parsed content,
+	# not exit 0 on an empty or null document.
 	[ "$status" -eq 0 ]
+	[ -n "$output" ]
+	[ "$output" != "null" ]
 }
 
 @test "every labeler.yml key is an area:* label declared in labels.yml" {
