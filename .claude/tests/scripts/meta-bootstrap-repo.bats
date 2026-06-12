@@ -71,7 +71,13 @@ teardown() {
 	[ "$status" -eq 0 ]
 	# Compose must NOT warn about an unresolved consumer-hooks dir — that path
 	# silently over-excludes every canonical hook (compose-coderabbit.sh ~L209).
-	[[ $output != *"every canonical hook will be excluded"* ]]
+	# The warning is a cross-file contract: assert it is ABSENT from this run AND
+	# that the exact phrase still EXISTS in compose-coderabbit.sh, so a drift in
+	# the wording fails this test (forcing a co-update) instead of silently
+	# passing the negative match.
+	_warn="every canonical hook will be excluded"
+	grep -qF "$_warn" "$REPO_ROOT/scripts/compose-coderabbit.sh"
+	[[ $output != *"$_warn"* ]]
 	diff "$TEST_TMP/target/.coderabbit.recompose.yaml" "$TEST_TMP/target/.coderabbit.yaml"
 	# Completeness, not mere presence: in a fresh bootstrap EVERY canonical hook
 	# (hooks/*.sh) is excluded as a byte-identical mirror (#2254/#2257), so the
