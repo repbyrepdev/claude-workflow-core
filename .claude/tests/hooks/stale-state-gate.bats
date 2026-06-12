@@ -37,7 +37,9 @@ setup() {
 
 teardown() {
 	# Restore perms a refuse-bypass test may have dropped, so rm -rf works.
-	[ -n "${TEST_TMP:-}" ] && chmod -R u+rwx "$TEST_TMP" 2>/dev/null
+	# Explicit if + `|| true` so a chmod failure can't abort teardown before the
+	# rm below (an `&& ... || true` one-liner trips shellcheck SC2015).
+	if [ -n "${TEST_TMP:-}" ]; then chmod -R u+rwx "$TEST_TMP" 2>/dev/null || true; fi
 	[ -n "${TEST_TMP:-}" ] && [[ $TEST_TMP == */stale-state-gate.* ]] && rm -rf "$TEST_TMP"
 }
 
