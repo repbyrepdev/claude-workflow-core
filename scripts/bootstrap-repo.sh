@@ -417,9 +417,9 @@ EOF
 
 # === DRY-SENTINEL (#2225): the plugin-cache-discovery snippet repeated across
 # === the shim heredocs below is INTENTIONALLY inline — do NOT refactor it into
-# === a shared emitter. CR/reviewers periodically re-flag the ~5 duplicated
-# === lines as a DRY violation; the decision (CR plan #2225) is "document, don't
-# === refactor", for four reasons:
+# === a shared emitter. CR/reviewers periodically re-flag the duplicated
+# === cache-discovery block (~15 lines per shim) as a DRY violation; the
+# === decision (CR plan #2225) is "document, don't refactor", for four reasons:
 #   1. Single authoring site — this file is already the ONE place the snippet is
 #      written; consumers receive it via bootstrap and never hand-edit it.
 #   2. The shims use `<<'EOF'` (non-interpolating) heredocs ON PURPOSE so they
