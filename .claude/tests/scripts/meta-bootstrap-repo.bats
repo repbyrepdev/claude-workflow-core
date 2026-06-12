@@ -50,25 +50,41 @@ teardown() {
 	[ -x "$TEST_TMP/target/.claude/hooks/phase0.5-copilot-prefilter.sh" ]
 	[ -x "$TEST_TMP/target/.claude/hooks/post-commit-ship-cycle.sh" ]
 	# #234/#2379: the byte-SSOT CodeRabbit base is written, AND the live
-	# .coderabbit.yaml is composed from it. compose-coderabbit.sh appends the
-	# #2254/#2257 canonical-mirror-hook path_filter excludes — and its yq pass
-	# reflows base's folded block scalars + drops blank lines (yq v4.52.5) — so
-	# the composed config is NOT byte-identical to base. The prior
-	# `diff base composed` was stale (predated #2254) + brittle to yq formatting.
-	# Real invariant: the bootstrap's composed .coderabbit.yaml reproduces a
-	# fresh compose of the bootstrapped base with the same hook context (compose's
-	# own correctness is unit-tested in bootstrap-coderabbit-compose.bats).
+	# .coderabbit.yaml is composed from it. Since #2254/#2257,
+	# compose-coderabbit.sh appends per-file canonical-mirror-hook
+	# `!.claude/hooks/<name>` excludes to .reviews.auto_review.path_filters — and
+	# that yq pass reflows base's folded block scalars + drops blank lines — so
+	# the composed config is NOT byte-identical to base (the prior
+	# `diff base composed` was stale, predating #2254, + brittle to yq's reflow).
+	# Real invariant: the bootstrap's composed .coderabbit.yaml reproduces a fresh
+	# compose of the bootstrapped base via the SAME path production takes — --out
+	# INSIDE the target tree, so compose derives the consumer-hooks dir from
+	# dirname(--out)=target (the production branch, not the env-override branch).
+	# (compose's overlay-merge + tool-pinning correctness is unit-tested in
+	# bootstrap-coderabbit-compose.bats; the #2257 consumer-override branch is
+	# tracked for unit coverage in #2400.)
 	[ -f "$TEST_TMP/target/.coderabbit.base.yaml" ]
 	[ -f "$TEST_TMP/target/.coderabbit.yaml" ]
-	run env COMPOSE_CR_CONSUMER_HOOKS_DIR="$TEST_TMP/target/.claude/hooks" \
-		"$REPO_ROOT/scripts/compose-coderabbit.sh" \
+	run "$REPO_ROOT/scripts/compose-coderabbit.sh" \
 		--base "$TEST_TMP/target/.coderabbit.base.yaml" \
-		--out "$TEST_TMP/recompose.yaml"
+		--out "$TEST_TMP/target/.coderabbit.recompose.yaml"
 	[ "$status" -eq 0 ]
-	diff "$TEST_TMP/recompose.yaml" "$TEST_TMP/target/.coderabbit.yaml"
-	# Sanity: the compose actually injected the #2254 canonical-mirror excludes
-	# (not a vacuous no-op) — a base-only file would have zero.
-	grep -q '!.claude/hooks/' "$TEST_TMP/target/.coderabbit.yaml"
+	# Compose must NOT warn about an unresolved consumer-hooks dir — that path
+	# silently over-excludes every canonical hook (compose-coderabbit.sh ~L209).
+	[[ $output != *"every canonical hook will be excluded"* ]]
+	diff "$TEST_TMP/target/.coderabbit.recompose.yaml" "$TEST_TMP/target/.coderabbit.yaml"
+	# Completeness, not mere presence: in a fresh bootstrap EVERY canonical hook
+	# (hooks/*.sh) is excluded as a byte-identical mirror (#2254/#2257), so the
+	# composed exclude count must equal the canonical hook count — catches a
+	# partial/zero-injection regression the determinism diff above cannot. Count
+	# via yq on the parsed path_filters (NOT grep: the injected head_comment also
+	# quotes the `!.claude/hooks/<name>` pattern, so a raw grep over-counts by 1).
+	n_canonical=$(find "$REPO_ROOT/hooks" -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')
+	n_excluded=$(yq '[.reviews.auto_review.path_filters[] | select(test("^!\.claude/hooks/"))] | length' "$TEST_TMP/target/.coderabbit.yaml")
+	[ "$n_excluded" -gt 0 ]
+	[ "$n_excluded" -eq "$n_canonical" ]
+	# Base content survives compose (not just determinism): a known base key.
+	[ "$(yq '.reviews.profile' "$TEST_TMP/target/.coderabbit.yaml")" = assertive ]
 }
 
 @test "--target repo --verify-only on bootstrapped dir succeeds (re-runs clean)" {
