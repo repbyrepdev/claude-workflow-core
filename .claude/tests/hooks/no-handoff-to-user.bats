@@ -111,3 +111,30 @@ You should install ripgrep to speed up the search."
 	[ "$status" -eq 0 ]
 	[[ $output == *"hand-off detected"* ]]
 }
+
+# --- round-1 phase1 coverage gaps (pr-test-analyzer) ---
+
+@test "interleaved non-assistant entries → last ASSISTANT drives selection" {
+	# A user message sits between an earlier hand-off and a clean final
+	# assistant message. The jq filter selects the last ASSISTANT (not the last
+	# transcript line), so the clean final message wins → no directive. Proves
+	# the type filter, not just last-line slicing.
+	{
+		jq -nc '{type:"assistant",message:{content:[{type:"text",text:"You need to run the migration."}]}}'
+		jq -nc '{type:"user",message:{content:[{type:"text",text:"ok thanks"}]}}'
+		jq -nc '{type:"assistant",message:{content:[{type:"text",text:"All set, deployed and verified."}]}}'
+	} >"$TRANSCRIPT"
+	run _run "$TRANSCRIPT"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test '"execute the script yourself" → hand-off directive (explicit pattern)' {
+	# Hits the (run|execute) (this|that|the) (command|script) (yourself|manually)
+	# branch WITHOUT a please/you-need preamble, so it can only match that
+	# pattern — covering the second matcher branch in isolation.
+	_write_transcript "To finish, execute the script yourself and report back."
+	run _run "$TRANSCRIPT"
+	[ "$status" -eq 0 ]
+	[[ $output == *"hand-off detected"* ]]
+}

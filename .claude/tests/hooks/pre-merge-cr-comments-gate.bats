@@ -69,6 +69,19 @@ _run_gate() {
 		env PATH="$TEST_TMP/bin:$PATH" "$@" bash "$SCRIPT" 2>&1)
 }
 
+# Run the gate with RAW (already-built / malformed) stdin instead of a wrapped
+# command — for the non-JSON fail-closed path.
+_run_gate_raw() {
+	(cd "$TEST_TMP" && printf '%s' "$1" |
+		env PATH="$TEST_TMP/bin:$PATH" bash "$SCRIPT" 2>&1)
+}
+
+# Make the on-PATH gh stub echo a fixed PR number for the branch fallback.
+_gh_returns() {
+	printf '#!/bin/bash\necho "%s"\n' "$1" >"$TEST_TMP/bin/gh"
+	chmod +x "$TEST_TMP/bin/gh"
+}
+
 @test "real hook script exists and is executable" {
 	[ -x "$REAL_SCRIPT" ]
 }
@@ -118,6 +131,9 @@ _run_gate() {
 	[ "$status" -eq 0 ]
 	[[ $output == *bypassing* ]]
 	[[ $output != *deny* ]]
+	# The "audit-logged" guarantee is real: the sentinel helper writes a JSONL
+	# record (path derived from the prefix by hook-inline-sentinel.sh).
+	[ -f "$TEST_TMP/.claude/logs/pre-merge-cr-gate-skip.jsonl" ]
 }
 
 @test "no extractable PR number → fail-closed deny" {
@@ -134,4 +150,36 @@ _run_gate() {
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]]
 	[[ $output == *"helper not found"* ]]
+}
+
+# --- round-1 phase1 coverage gaps (pr-test-analyzer) ---
+
+@test "gh pr merge after a && separator → fires (DENIED on findings)" {
+	# The matcher anchors on shell separators too; a chained merge must still
+	# be gated (not just a leading 'gh pr merge').
+	_install_helper 1
+	run _run_gate "echo prepping && gh pr merge 42 --squash"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+}
+
+@test "unparseable (non-JSON) stdin → fail-closed deny" {
+	# Every gate in this PR fails closed on a malformed payload; this one parses
+	# the command via jq and denies when that fails.
+	run _run_gate_raw 'this is not json {'
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"failing closed"* ]]
+}
+
+@test "current-branch PR fallback resolves a number → DENIED on findings" {
+	# No <N> and no --pr: the hook resolves the PR from the current branch via
+	# gh. Stub gh to return one and assert the gate runs the helper against it.
+	_install_helper 1
+	_gh_returns 99
+	run _run_gate "gh pr merge --squash"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#99"* ]]
 }

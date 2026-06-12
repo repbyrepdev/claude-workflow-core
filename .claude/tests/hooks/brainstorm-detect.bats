@@ -95,3 +95,11 @@ _run_prompt() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"explicit"* ]]
 }
+
+@test "prompt under the .user_prompt key → also detected (middle fallback)" {
+	# Completes the .prompt // .user_prompt // .message chain — the middle key
+	# was the one link left unexercised.
+	run _run_raw "$(jq -nc --arg u "brainstorm the schema" '{user_prompt:$u}')"
+	[ "$status" -eq 0 ]
+	[[ $output == *"explicit"* ]]
+}

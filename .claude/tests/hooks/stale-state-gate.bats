@@ -155,3 +155,20 @@ _run_gate() {
 	grep -q 'scripts/some-file.sh' "$SENTINEL"
 	[[ $output == *BLOCKED* ]]
 }
+
+@test "jq unavailable → fails closed (exit 2, still BLOCKS)" {
+	# The deny-JSON decision needs jq; without it the gate must STILL block
+	# (exit 2 + reason) rather than silently allow the tool call. A regression
+	# making this fail-open would disable the entire ack gate on any box
+	# missing jq. PATH carries git + bash but not jq (sibling pattern from
+	# check-ssot-drift.bats' yq-missing test).
+	_seed_entry "lint-shell" "shellcheck-warn" "/tmp/diag-42.txt"
+	local nobin="$TEST_TMP/nobin"
+	mkdir -p "$nobin"
+	ln -s "$(command -v git)" "$nobin/git"
+	ln -s "$(command -v bash)" "$nobin/bash"
+	run bash -c "cd '$TEST_TMP' && printf '%s' '$(_payload Bash echo)' | PATH='$nobin' '$SCRIPT' 2>&1"
+	# Key assertions last: non-zero exit AND the block reason (fail-closed).
+	[ "$status" -eq 2 ]
+	[[ $output == *BLOCKED* ]]
+}
