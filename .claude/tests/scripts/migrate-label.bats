@@ -273,3 +273,21 @@ _seed() {
 	run yq -e '.reviews.labeling_instructions[] | select(.label == "area:infra")' .coderabbit.overlay.yaml
 	[ "$status" -ne 0 ]
 }
+
+@test "gh not installed => file edits apply, API rename skipped, exit 0" {
+	cd "$TEST_TMP"
+	_seed
+	# Build a PATH carrying the script's real tool deps but NO gh, so the
+	# `command -v gh` fallback branch is exercised (the gh stub is otherwise
+	# always on PATH). PATH override (not env -i) keeps HOME/git config intact.
+	mkdir -p "$TEST_TMP/nogh"
+	local t p
+	for t in bash yq git grep sed awk cat; do
+		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$TEST_TMP/nogh/$t"
+	done
+	run env PATH="$TEST_TMP/nogh" "$SCRIPT" --old area:infra --new area:infrastructure
+	[ "$status" -eq 0 ]
+	[[ $output == *"gh not installed — skip API rename"* ]]
+	# File edits still applied despite no gh.
+	yq -e '.[] | select(.name == "area:infrastructure")' .github/labels.yml >/dev/null
+}
