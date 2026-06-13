@@ -112,6 +112,13 @@
   pass_filenames: false
   stages: [pre-commit]
 
+- id: overlay-label-completeness
+  name: CR overlay labeling_instructions cover all labels.yml domain labels (#2287)
+  entry: pre-commit-hooks/overlay-label-completeness.sh
+  language: script
+  pass_filenames: false
+  stages: [pre-commit]
+
 - id: hash-drift-verify
   name: Verify consumer files match plugin SSOT (v0.25.0 #148)
   entry: pre-commit-hooks/hash-drift-verify.sh
