@@ -263,6 +263,7 @@ _seed() {
 @test "overlay rename touches only the matching labeling_instructions entry" {
 	cd "$TEST_TMP"
 	printf -- '- name: "area:infra"\n  color: "ededed"\n  description: d\n' >.github/labels.yml
+	printf -- 'area:infra:\n  - changed-files:\n      - any-glob-to-any-file: "x"\n' >.github/labeler.yml
 	printf -- 'reviews:\n  labeling_instructions:\n    - label: "area:infra"\n      instructions: a\n    - label: "type:bug"\n      instructions: b\n' >.coderabbit.overlay.yaml
 	run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
@@ -272,6 +273,16 @@ _seed() {
 	# Key assertion last: the matched label is renamed, no stale area:infra left.
 	run yq -e '.reviews.labeling_instructions[] | select(.label == "area:infra")' .coderabbit.overlay.yaml
 	[ "$status" -ne 0 ]
+}
+
+@test "absent required SSOT file => exit 2 (no silent no-op)" {
+	cd "$TEST_TMP"
+	# labels.yml + overlay present, labeler.yml absent → precondition error.
+	printf -- '- name: "area:infra"\n  color: "ededed"\n  description: d\n' >.github/labels.yml
+	printf -- 'reviews:\n  labeling_instructions:\n    - label: "area:infra"\n      instructions: a\n' >.coderabbit.overlay.yaml
+	run "$SCRIPT" --old area:infra --new area:infrastructure
+	[ "$status" -eq 2 ]
+	[[ $output == *"required SSOT .github/labeler.yml is absent"* ]]
 }
 
 @test "gh not installed => file edits apply, API rename skipped, exit 0" {
