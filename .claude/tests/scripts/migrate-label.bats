@@ -20,6 +20,10 @@ setup() {
 	cat >"$TEST_TMP/bin/gh" <<'EOF'
 #!/bin/bash
 if [ "$1" = "label" ] && [ "$2" = "list" ]; then
+	if [ "${GH_FAIL:-0}" = "1" ]; then
+		echo "gh: api error (stub)" >&2
+		exit 4
+	fi
 	cat "${GH_LABELS:-/dev/null}" 2>/dev/null
 	exit 0
 fi
@@ -47,7 +51,7 @@ EOF
 }
 
 teardown() {
-	unset GH_LABELS GH_LOG
+	unset GH_LABELS GH_LOG GH_FAIL
 	# shellcheck disable=SC2164
 	cd /tmp 2>/dev/null || cd "${BATS_TEST_DIRNAME:-/}" 2>/dev/null || true
 	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */migrate-label.* ]]; then
@@ -132,6 +136,7 @@ _seed() {
 	[ "$status" -eq 0 ]
 	run yq -r '.[].name' .github/labels.yml
 	[[ $output == *"area:infrastructure"* ]]
+	[[ $output == *"type:bug"* ]] # sibling entry untouched
 	# Key assertion last: area:infra must be fully gone (exact-match).
 	run yq -e '.[] | select(.name == "area:infra")' .github/labels.yml
 	[ "$status" -ne 0 ]
@@ -143,6 +148,7 @@ _seed() {
 	run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
 	yq -e '.["area:infrastructure"]' .github/labeler.yml >/dev/null
+	yq -e '.["type:bug"]' .github/labeler.yml >/dev/null # sibling key untouched
 	run yq -e '.["area:infra"]' .github/labeler.yml
 	[ "$status" -ne 0 ]
 }
@@ -214,4 +220,52 @@ _seed() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"would: gh label: edit area:infra"* ]]
 	[ ! -s "$GH_LOG" ]
+}
+
+@test "gh label skipped when OLD is not a GitHub label" {
+	cd "$TEST_TMP"
+	_seed
+	printf 'type:bug\nsomething-else\n' >"$TEST_TMP/labels.txt" # no area:infra
+	GH_LABELS="$TEST_TMP/labels.txt" run "$SCRIPT" --old area:infra --new area:infrastructure
+	[ "$status" -eq 0 ]
+	[[ $output == *"area:infra not a GitHub label — skip"* ]]
+	[ ! -s "$GH_LOG" ]
+}
+
+@test "gh label list failure exits 2 (no silent success)" {
+	cd "$TEST_TMP"
+	_seed
+	GH_FAIL=1 run "$SCRIPT" --old area:infra --new area:infrastructure
+	[ "$status" -eq 2 ]
+	[[ $output == *"gh label list failed"* ]]
+	[ ! -s "$GH_LOG" ]
+}
+
+@test "renames a label containing dot/glob-special chars" {
+	cd "$TEST_TMP"
+	printf -- '- name: "dep:foo.bar"\n  color: "ededed"\n  description: d\n' >.github/labels.yml
+	printf -- 'dep:foo.bar:\n  - changed-files:\n      - any-glob-to-any-file: "x"\n' >.github/labeler.yml
+	printf -- 'reviews:\n  labeling_instructions:\n    - label: "dep:foo.bar"\n      instructions: x\n' >.coderabbit.overlay.yaml
+	run "$SCRIPT" --old "dep:foo.bar" --new "dep:foobar"
+	[ "$status" -eq 0 ]
+	yq -e '.[] | select(.name == "dep:foobar")' .github/labels.yml >/dev/null
+	yq -e '.["dep:foobar"]' .github/labeler.yml >/dev/null
+	[ "$(yq -r '.reviews.labeling_instructions[].label' .coderabbit.overlay.yaml)" = "dep:foobar" ]
+	# Key assertion last: dotted old key fully gone (indexed access, not a path).
+	run yq -e '.["dep:foo.bar"]' .github/labeler.yml
+	[ "$status" -ne 0 ]
+}
+
+@test "overlay rename touches only the matching labeling_instructions entry" {
+	cd "$TEST_TMP"
+	printf -- '- name: "area:infra"\n  color: "ededed"\n  description: d\n' >.github/labels.yml
+	printf -- 'reviews:\n  labeling_instructions:\n    - label: "area:infra"\n      instructions: a\n    - label: "type:bug"\n      instructions: b\n' >.coderabbit.overlay.yaml
+	run "$SCRIPT" --old area:infra --new area:infrastructure
+	[ "$status" -eq 0 ]
+	run yq -r '.reviews.labeling_instructions[].label' .coderabbit.overlay.yaml
+	[[ $output == *"area:infrastructure"* ]]
+	[[ $output == *"type:bug"* ]] # non-matching entry untouched
+	# Key assertion last: the matched label is renamed, no stale area:infra left.
+	run yq -e '.reviews.labeling_instructions[] | select(.label == "area:infra")' .coderabbit.overlay.yaml
+	[ "$status" -ne 0 ]
 }
