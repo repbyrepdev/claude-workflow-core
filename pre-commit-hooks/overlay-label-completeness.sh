@@ -17,18 +17,19 @@ set -euo pipefail
 #
 # Wiring: registered in .pre-commit-hooks.yaml (id: overlay-label-completeness)
 # with pass_filenames:false and NO `files:` filter, so it runs on EVERY
-# pre-commit and self-gates at runtime — exiting 0 when the working tree has no
-# .coderabbit.overlay.yaml / .github/labels.yml (mirrors the runtime-gating
-# pattern of label-sync-on-labels-change). It reads the working-tree files, not
-# the staged index.
+# pre-commit and self-gates at runtime — exiting 0 when neither
+# .coderabbit.overlay.yaml nor .github/labels.yml is tracked in the index. It
+# reads the STAGED blobs (git show :path) so it validates what is being
+# committed, not unstaged working-tree WIP — the project pre-commit pattern
+# (cf. consumers-schema-check, #2287 CR phase2).
 #
 # Bypass: OVERLAY_LABEL_COMPLETENESS_SKIP=1 (audit-logged to stderr).
 #
 # Exit codes:
-#   0 — passed (plugin-source skip, missing overlay/labels SSOT, or sets match)
+#   0 — passed (plugin-source skip, overlay/labels not in index, or sets match)
 #   1 — completeness drift (overlay domain set != labels.yml domain set)
-#   2 — precondition error (yq missing, not a git tree, parse failure, or a
-#       labels.yml that is not a top-level sequence)
+#   2 — precondition error (yq missing, not a git tree, staged-read/parse
+#       failure, or a labels.yml that is not a top-level sequence)
 
 if [ "${OVERLAY_LABEL_COMPLETENESS_SKIP:-0}" = "1" ]; then
 	echo "overlay-label-completeness: OVERLAY_LABEL_COMPLETENESS_SKIP=1 — bypassing" >&2
@@ -60,18 +61,30 @@ fi
 OVERLAY=".coderabbit.overlay.yaml"
 LABELS=".github/labels.yml"
 
-# A repo without a CR overlay or a labels registry is out of scope (not drift).
-[ -f "$OVERLAY" ] || exit 0
-[ -f "$LABELS" ] || exit 0
+# Out of scope (not drift) when either SSOT is absent from the index. `git
+# cat-file -e :path` tests index presence; the staged blob is what this commit
+# would record (== HEAD when the file is unmodified), so the gate validates the
+# committed state rather than unstaged WIP.
+git cat-file -e ":$OVERLAY" 2>/dev/null || exit 0
+git cat-file -e ":$LABELS" 2>/dev/null || exit 0
+
+labels_staged=$(git show ":$LABELS") || {
+	echo "overlay-label-completeness: cannot read staged $LABELS — refusing (precondition)" >&2
+	exit 2
+}
+overlay_staged=$(git show ":$OVERLAY") || {
+	echo "overlay-label-completeness: cannot read staged $OVERLAY — refusing (precondition)" >&2
+	exit 2
+}
 
 # Shape-assert: labels.yml MUST be a top-level sequence. A valid-YAML mapping
 # (e.g. a label-object map) makes `.[].name` emit "null" with rc=0, which would
 # silently collapse to an empty domain set and mask drift (silent-failure-hunter
 # r1, dogfood-confirmed: yq v4 `.[].name` over a !!map => "null", rc=0). Treat a
 # non-sequence (or unparseable) labels.yml as a precondition error, not empty.
-labels_tag=$(yq -r '. | tag' "$LABELS" 2>/dev/null || echo "")
+labels_tag=$(printf '%s\n' "$labels_staged" | yq -r '. | tag' 2>/dev/null || echo "")
 if [ "$labels_tag" != "!!seq" ]; then
-	echo "overlay-label-completeness: $LABELS is not a top-level sequence (tag='$labels_tag') — refusing (precondition)" >&2
+	echo "overlay-label-completeness: staged $LABELS is not a top-level sequence (tag='$labels_tag') — refusing (precondition)" >&2
 	exit 2
 fi
 
@@ -84,16 +97,16 @@ _domain_filter() {
 
 # Separate the yq parse (genuine failure => precondition rc=2) from the domain
 # filter (empty == valid). labels.yml is already shape-asserted as a sequence.
-labels_raw=$(yq -r '.[].name' "$LABELS") || {
-	echo "overlay-label-completeness: failed to parse $LABELS — refusing (precondition)" >&2
+labels_raw=$(printf '%s\n' "$labels_staged" | yq -r '.[].name') || {
+	echo "overlay-label-completeness: failed to parse staged $LABELS — refusing (precondition)" >&2
 	exit 2
 }
 labels_domain=$(printf '%s\n' "$labels_raw" | _domain_filter)
 
 # overlay set: reviews.labeling_instructions[].label. `(... // [])` so an
 # overlay with no labeling_instructions yields an empty set (not a yq error).
-overlay_raw=$(yq -r '(.reviews.labeling_instructions // [])[].label' "$OVERLAY") || {
-	echo "overlay-label-completeness: failed to parse $OVERLAY — refusing (precondition)" >&2
+overlay_raw=$(printf '%s\n' "$overlay_staged" | yq -r '(.reviews.labeling_instructions // [])[].label') || {
+	echo "overlay-label-completeness: failed to parse staged $OVERLAY — refusing (precondition)" >&2
 	exit 2
 }
 overlay_domain=$(printf '%s\n' "$overlay_raw" | _domain_filter)

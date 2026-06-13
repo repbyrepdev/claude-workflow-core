@@ -30,17 +30,19 @@ teardown() {
 	fi
 }
 
-# _write_labels <name...> — write .github/labels.yml as a top-level seq.
+# _write_labels <name...> — write .github/labels.yml as a top-level seq and
+# STAGE it (the gate reads the staged blob via `git show :path`).
 _write_labels() {
 	: >"$TEST_TMP/.github/labels.yml"
 	local n
 	for n in "$@"; do
 		printf -- '- name: "%s"\n  color: "ededed"\n  description: d\n' "$n" >>"$TEST_TMP/.github/labels.yml"
 	done
+	git -C "$TEST_TMP" add .github/labels.yml
 }
 
 # _write_overlay <label...> — write .coderabbit.overlay.yaml with the given
-# reviews.labeling_instructions labels.
+# reviews.labeling_instructions labels and STAGE it.
 _write_overlay() {
 	{
 		echo "reviews:"
@@ -50,9 +52,10 @@ _write_overlay() {
 			printf -- '    - label: "%s"\n      instructions: "use for %s"\n' "$l" "$l"
 		done
 	} >"$TEST_TMP/.coderabbit.overlay.yaml"
+	git -C "$TEST_TMP" add .coderabbit.overlay.yaml
 }
 
-@test "plugin-source skip: .claude-plugin/plugin.json present => exit 0 even if drifted" {
+@test "plugin-source skip (name-pinned): announced + exit 0 even if drifted" {
 	cd "$TEST_TMP"
 	mkdir -p .claude-plugin
 	echo '{"name":"claude-workflow-core","version":"0.0.0"}' >.claude-plugin/plugin.json
@@ -60,6 +63,7 @@ _write_overlay() {
 	_write_overlay # empty labeling_instructions — would fail if not skipped
 	run "$HOOK"
 	[ "$status" -eq 0 ]
+	[[ $output == *"plugin source"* ]]
 }
 
 @test "complete: overlay domain set == labels.yml domain set => exit 0" {
@@ -98,26 +102,27 @@ _write_overlay() {
 	[[ $output == *"area:ghost"* ]]
 }
 
-@test "no overlay file => exit 0 (out of scope)" {
+@test "overlay not staged => exit 0 (out of scope)" {
 	cd "$TEST_TMP"
 	_write_labels "area:hooks"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
 }
 
-@test "no labels.yml => exit 0 (out of scope)" {
+@test "labels.yml not staged => exit 0 (out of scope)" {
 	cd "$TEST_TMP"
 	_write_overlay "area:hooks"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
 }
 
-@test "bypass env OVERLAY_LABEL_COMPLETENESS_SKIP=1 => exit 0" {
+@test "bypass env => exit 0 and no drift error emitted" {
 	cd "$TEST_TMP"
 	_write_labels "area:hooks" "area:coalesce"
 	_write_overlay "area:hooks"
 	OVERLAY_LABEL_COMPLETENESS_SKIP=1 run "$HOOK"
 	[ "$status" -eq 0 ]
+	[[ $output != *"drifted"* ]]
 }
 
 @test "wrong-shape labels.yml (top-level mapping, not seq) => exit 2 precondition" {
@@ -125,6 +130,7 @@ _write_overlay() {
 	# A mapping of label-objects: yq '.[].name' emits "null" rc=0 and would
 	# silently collapse to an empty domain set — the shape-assert catches it.
 	printf 'area:foo:\n  color: ededed\n' >"$TEST_TMP/.github/labels.yml"
+	git -C "$TEST_TMP" add .github/labels.yml
 	_write_overlay "area:hooks"
 	run "$HOOK"
 	[ "$status" -eq 2 ]
@@ -135,6 +141,7 @@ _write_overlay() {
 	cd "$TEST_TMP"
 	_write_labels "area:hooks" "area:coalesce"
 	printf 'reviews:\n  profile: assertive\n' >"$TEST_TMP/.coderabbit.overlay.yaml"
+	git -C "$TEST_TMP" add .coderabbit.overlay.yaml
 	run "$HOOK"
 	[ "$status" -eq 1 ]
 	[[ $output == *"MISSING from overlay"* ]]
@@ -150,4 +157,15 @@ _write_overlay() {
 	run "$HOOK"
 	[ "$status" -eq 1 ]
 	[[ $output == *"MISSING from overlay"* ]]
+}
+
+@test "staged content (not working-tree) is what is validated" {
+	cd "$TEST_TMP"
+	# Stage a COMPLETE overlay, then dirty the working tree to be incomplete.
+	# The gate reads the staged blob, so it must PASS (working-tree WIP ignored).
+	_write_labels "area:hooks"
+	_write_overlay "area:hooks"
+	printf 'reviews:\n  labeling_instructions: []\n' >"$TEST_TMP/.coderabbit.overlay.yaml"
+	run "$HOOK"
+	[ "$status" -eq 0 ]
 }
