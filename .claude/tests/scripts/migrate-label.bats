@@ -32,7 +32,8 @@ if [ "$1" = "label" ] && [ "$2" = "edit" ]; then
 	echo "edit $*" >>"${GH_LOG:-/dev/null}"
 	exit 0
 fi
-exit 0
+echo "migrate-label stub: unexpected gh invocation: $*" >&2
+exit 1
 EOF
 	chmod +x "$TEST_TMP/bin/gh"
 	export PATH="$TEST_TMP/bin:$PATH"
@@ -69,8 +70,11 @@ _seed() {
 
 # --- arg / precondition guards ----------------------------------------
 
-@test "script exists and is executable" {
+@test "script is executable and runs (--help exits 0 with usage)" {
 	[ -x "$SCRIPT" ]
+	run "$SCRIPT" --help
+	[ "$status" -eq 0 ]
+	[[ $output == *"Usage:"* ]]
 }
 
 @test "--help shows usage and exit codes" {
