@@ -45,8 +45,7 @@ required:
       clean tree and asserts the emitted SSOT files match the live ones. Made
       required (#2234) — it is fast and deterministic and passes on every PR, so
       enforcing it mechanically gates bootstrap drift before merge. Plugin-scoped:
-      consumers
-      do not run this workflow and required-checks-list.yml is a per-repo seed
-      (NOT byte-gated), so this entry stays OUT of the bootstrap heredoc.
+      consumers do not run this workflow and required-checks-list.yml is a per-repo
+      seed (NOT byte-gated), so this entry stays OUT of the bootstrap heredoc.
 
 advisory: []
