@@ -244,7 +244,7 @@ The plugin self-verifies through three layers:
 
 The `.bats` suite is the primary behavioral verification — run `scripts/test-touched.sh` for the iteration loop, `scripts/test.sh` for the full pass. (No hardcoded file count: it would drift every time a test is added.)
 
-There are 3 required status checks, declared with their names in `.github/required-checks-list.yml` (SSOT) and count-validated by the `required-checks-count` drift check above.
+There are 4 required status checks, declared with their names in `.github/required-checks-list.yml` (SSOT) and count-validated by the `required-checks-count` drift check above.
 
 ## Consumers
 
