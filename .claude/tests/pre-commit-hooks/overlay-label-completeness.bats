@@ -72,6 +72,7 @@ _write_overlay() {
 	_write_overlay "area:hooks" "type:test"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "universal area:infrastructure is excluded (not required in overlay)" {
@@ -80,6 +81,7 @@ _write_overlay() {
 	_write_overlay "area:hooks"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "incomplete: domain label in labels.yml missing from overlay => exit 1" {
@@ -107,6 +109,7 @@ _write_overlay() {
 	_write_labels "area:hooks"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "labels.yml not staged => exit 0 (out of scope)" {
@@ -114,6 +117,7 @@ _write_overlay() {
 	_write_overlay "area:hooks"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "bypass env => exit 0 and no drift error emitted" {
@@ -168,4 +172,5 @@ _write_overlay() {
 	printf 'reviews:\n  labeling_instructions: []\n' >"$TEST_TMP/.coderabbit.overlay.yaml"
 	run "$HOOK"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
