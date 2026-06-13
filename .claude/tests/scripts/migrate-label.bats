@@ -294,7 +294,11 @@ _seed() {
 	mkdir -p "$TEST_TMP/nogh"
 	local t p
 	for t in bash yq git grep sed awk cat; do
-		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$TEST_TMP/nogh/$t"
+		p=$(command -v "$t" 2>/dev/null) || {
+			echo "FATAL: required tool $t not found for gh-not-installed test" >&2
+			return 1
+		}
+		ln -sf "$p" "$TEST_TMP/nogh/$t"
 	done
 	run env PATH="$TEST_TMP/nogh" "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
