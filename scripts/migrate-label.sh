@@ -193,6 +193,9 @@ fi
 if ! command -v gh >/dev/null 2>&1; then
 	echo "  gh label: gh not installed — skip API rename (edit files only)"
 else
+	# --limit 500 is an explicit ceiling far above any real label set (gh
+	# defaults to 30 and silently truncates — see feedback_gh_query_limits); a
+	# repo with >500 labels is implausible. Raise it if that ever changes.
 	gh_names=$(gh label list --limit 500 --json name --jq '.[].name') || {
 		echo "migrate-label: gh label list failed (auth/network?) — cannot reconcile GitHub label state" >&2
 		exit 2

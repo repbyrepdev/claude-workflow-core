@@ -54,7 +54,7 @@ EOF
 teardown() {
 	unset GH_LABELS GH_LOG GH_FAIL
 	# shellcheck disable=SC2164
-	cd /tmp 2>/dev/null || cd "${BATS_TEST_DIRNAME:-/}" 2>/dev/null || true
+	cd /tmp 2>/dev/null || cd "${BATS_TEST_DIRNAME:-/tmp}" 2>/dev/null || true
 	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */migrate-label.* ]]; then
 		rm -rf "$TEST_TMP"
 	fi
