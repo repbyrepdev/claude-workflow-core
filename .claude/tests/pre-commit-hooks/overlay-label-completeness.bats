@@ -119,3 +119,35 @@ _write_overlay() {
 	OVERLAY_LABEL_COMPLETENESS_SKIP=1 run "$HOOK"
 	[ "$status" -eq 0 ]
 }
+
+@test "wrong-shape labels.yml (top-level mapping, not seq) => exit 2 precondition" {
+	cd "$TEST_TMP"
+	# A mapping of label-objects: yq '.[].name' emits "null" rc=0 and would
+	# silently collapse to an empty domain set — the shape-assert catches it.
+	printf 'area:foo:\n  color: ededed\n' >"$TEST_TMP/.github/labels.yml"
+	_write_overlay "area:hooks"
+	run "$HOOK"
+	[ "$status" -eq 2 ]
+	[[ $output == *"not a top-level sequence"* ]]
+}
+
+@test "overlay with reviews: but no labeling_instructions => missing labels, exit 1" {
+	cd "$TEST_TMP"
+	_write_labels "area:hooks" "area:coalesce"
+	printf 'reviews:\n  profile: assertive\n' >"$TEST_TMP/.coderabbit.overlay.yaml"
+	run "$HOOK"
+	[ "$status" -eq 1 ]
+	[[ $output == *"MISSING from overlay"* ]]
+	[[ $output == *"area:hooks"* ]]
+}
+
+@test "plugin.json with non-canonical name is NOT skipped (consumer-plugin enforced)" {
+	cd "$TEST_TMP"
+	mkdir -p .claude-plugin
+	echo '{"name":"some-consumer-plugin","version":"1.0.0"}' >.claude-plugin/plugin.json
+	_write_labels "area:hooks" "area:coalesce"
+	_write_overlay "area:hooks"
+	run "$HOOK"
+	[ "$status" -eq 1 ]
+	[[ $output == *"MISSING from overlay"* ]]
+}

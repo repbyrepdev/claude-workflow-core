@@ -8,20 +8,27 @@ set -euo pipefail
 # plugin base ships). Makes overlay-label completeness DETERMINISTIC at commit
 # time rather than relying on CR-in-CI to notice a missing label.
 #
-# Scope: CONSUMER repos only. The plugin source (identified by its
-# .claude-plugin/plugin.json manifest) deliberately ships NO domain
-# labeling_instructions in its overlay (#2256: the base ships only the
-# universal area:infrastructure), so the gate skips it.
+# Scope: CONSUMER repos only. The plugin source (identified by a
+# .claude-plugin/plugin.json whose name == claude-workflow-core) deliberately
+# ships NO domain labeling_instructions in its overlay (#2256: the base ships
+# only the universal area:infrastructure), so the gate skips it. The name pin
+# (not mere manifest presence) keeps a consumer that is ALSO a Claude plugin
+# enforced rather than silently un-gated.
 #
-# Wiring: registered in .pre-commit-hooks.yaml (id: overlay-label-completeness);
-# runs when .coderabbit.overlay.yaml or .github/labels.yml is staged.
+# Wiring: registered in .pre-commit-hooks.yaml (id: overlay-label-completeness)
+# with pass_filenames:false and NO `files:` filter, so it runs on EVERY
+# pre-commit and self-gates at runtime — exiting 0 when the working tree has no
+# .coderabbit.overlay.yaml / .github/labels.yml (mirrors the runtime-gating
+# pattern of label-sync-on-labels-change). It reads the working-tree files, not
+# the staged index.
 #
 # Bypass: OVERLAY_LABEL_COMPLETENESS_SKIP=1 (audit-logged to stderr).
 #
 # Exit codes:
 #   0 — passed (plugin-source skip, missing overlay/labels SSOT, or sets match)
 #   1 — completeness drift (overlay domain set != labels.yml domain set)
-#   2 — precondition error (yq missing, not a git tree, parse failure)
+#   2 — precondition error (yq missing, not a git tree, parse failure, or a
+#       labels.yml that is not a top-level sequence)
 
 if [ "${OVERLAY_LABEL_COMPLETENESS_SKIP:-0}" = "1" ]; then
 	echo "overlay-label-completeness: OVERLAY_LABEL_COMPLETENESS_SKIP=1 — bypassing" >&2
@@ -39,11 +46,15 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$REPO_ROOT"
 
-# Plugin-source skip: the plugin deliberately ships only the universal
-# area:infrastructure label and NO domain labeling_instructions (#2256), so
-# overlay-vs-labels completeness does not apply to it.
+# Plugin-source skip — name-pinned (not just any .claude-plugin/plugin.json) so
+# a consumer that is itself a Claude plugin is still enforced. Announced to
+# stderr (parity with the bypass-env log) so the skip is never a silent no-op.
 if [ -f .claude-plugin/plugin.json ]; then
-	exit 0
+	plugin_name=$(yq -r '.name // ""' .claude-plugin/plugin.json 2>/dev/null || echo "")
+	if [ "$plugin_name" = "claude-workflow-core" ]; then
+		echo "overlay-label-completeness: plugin source ($plugin_name) — skipping (base ships only the universal area:infrastructure, #2256)" >&2
+		exit 0
+	fi
 fi
 
 OVERLAY=".coderabbit.overlay.yaml"
@@ -53,15 +64,31 @@ LABELS=".github/labels.yml"
 [ -f "$OVERLAY" ] || exit 0
 [ -f "$LABELS" ] || exit 0
 
-# labels.yml domain set: area:*/type:* names, EXCLUDING the universal
-# area:infrastructure (plugin-base-shipped, not a consumer domain label).
-# Separate the yq parse (genuine failure => precondition rc=2) from the grep
-# filter (an empty result is VALID — a repo may define no domain labels).
+# Shape-assert: labels.yml MUST be a top-level sequence. A valid-YAML mapping
+# (e.g. a label-object map) makes `.[].name` emit "null" with rc=0, which would
+# silently collapse to an empty domain set and mask drift (silent-failure-hunter
+# r1, dogfood-confirmed: yq v4 `.[].name` over a !!map => "null", rc=0). Treat a
+# non-sequence (or unparseable) labels.yml as a precondition error, not empty.
+labels_tag=$(yq -r '. | tag' "$LABELS" 2>/dev/null || echo "")
+if [ "$labels_tag" != "!!seq" ]; then
+	echo "overlay-label-completeness: $LABELS is not a top-level sequence (tag='$labels_tag') — refusing (precondition)" >&2
+	exit 2
+fi
+
+# Shared domain-label filter: area:*/type:* names, EXCLUDING the universal
+# area:infrastructure. An empty result is VALID (a repo may define no domain
+# labels) — `|| true` so the no-match grep rc=1 under pipefail does not abort.
+_domain_filter() {
+	grep -E '^(area|type):' | grep -vx 'area:infrastructure' | sort -u || true
+}
+
+# Separate the yq parse (genuine failure => precondition rc=2) from the domain
+# filter (empty == valid). labels.yml is already shape-asserted as a sequence.
 labels_raw=$(yq -r '.[].name' "$LABELS") || {
 	echo "overlay-label-completeness: failed to parse $LABELS — refusing (precondition)" >&2
 	exit 2
 }
-labels_domain=$(printf '%s\n' "$labels_raw" | grep -E '^(area|type):' | grep -vx 'area:infrastructure' | sort -u || true)
+labels_domain=$(printf '%s\n' "$labels_raw" | _domain_filter)
 
 # overlay set: reviews.labeling_instructions[].label. `(... // [])` so an
 # overlay with no labeling_instructions yields an empty set (not a yq error).
@@ -69,10 +96,10 @@ overlay_raw=$(yq -r '(.reviews.labeling_instructions // [])[].label' "$OVERLAY")
 	echo "overlay-label-completeness: failed to parse $OVERLAY — refusing (precondition)" >&2
 	exit 2
 }
-overlay_domain=$(printf '%s\n' "$overlay_raw" | grep -E '^(area|type):' | grep -vx 'area:infrastructure' | sort -u || true)
+overlay_domain=$(printf '%s\n' "$overlay_raw" | _domain_filter)
 
-# Bidirectional set-diff (empty-line filter keeps comm inputs clean when a set
-# is empty; both inputs are already sort -u'd).
+# Bidirectional set-diff. The `grep -vE '^$'` keeps comm inputs clean when a set
+# is empty (`printf '%s\n' ""` emits one blank line); both sets are sort -u'd.
 missing_from_overlay=$(comm -23 <(printf '%s\n' "$labels_domain" | grep -vE '^$' || true) <(printf '%s\n' "$overlay_domain" | grep -vE '^$' || true))
 extra_in_overlay=$(comm -13 <(printf '%s\n' "$labels_domain" | grep -vE '^$' || true) <(printf '%s\n' "$overlay_domain" | grep -vE '^$' || true))
 
