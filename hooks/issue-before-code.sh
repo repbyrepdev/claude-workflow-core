@@ -97,8 +97,12 @@ if hook_inline_sentinel_check "ISSUE_BEFORE_CODE_SKIP" "$CMD" "issue-before-code
 fi
 
 # Extract the branch NAME: the first token after the create verb, up to
-# whitespace or a shell separator. Verb set matches the pre-filter (covers
-# -b/-B/-c/-C/--create). Type-agnostic (the convention check classifies it next).
+# whitespace or a shell separator. Type-agnostic (the convention check
+# classifies it next).
+# SYNC: the create-verb set here MUST stay in lockstep with the pre-filter
+# regex above (the `(checkout -[bB]|switch -[cC]|switch --create)` shape). If a
+# new create verb/flag is supported, update BOTH this grep and the pre-filter,
+# or a command the pre-filter admits could fail extraction (and fail-open).
 BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout[[:space:]]+-[bB]|switch[[:space:]]+-[cC]|switch[[:space:]]+--create)[[:space:]]+[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout|switch)[[:space:]]+(-[bBcC]|--create)[[:space:]]+//')
 if [ -z "$BRANCH" ]; then
 	# Pre-filter matched but extraction failed (weird spacing) — fail-open

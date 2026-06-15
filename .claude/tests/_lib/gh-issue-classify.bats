@@ -84,7 +84,7 @@ _classify() {
 	[ "$status" -eq 1 ]
 }
 
-@test "missing errfile arg → rc 1" {
+@test "empty errfile arg → rc 1" {
 	run bash -c '. "$1"; gh_issue_view_missing ""' _ "$LIB"
 	[ "$status" -eq 1 ]
 }

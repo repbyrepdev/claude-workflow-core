@@ -173,11 +173,13 @@ teardown() {
 
 @test "extract: scratch name with no issue → empty" {
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "myname/scratch-thing"
+	[ "$status" -eq 0 ]
 	[ -z "$output" ]
 }
 
 @test "extract: malformed work branch with no number → empty" {
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "feat/incomplete"
+	[ "$status" -eq 0 ]
 	[ -z "$output" ]
 }
 

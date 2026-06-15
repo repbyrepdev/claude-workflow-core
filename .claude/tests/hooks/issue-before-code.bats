@@ -116,6 +116,12 @@ _run_hook() {
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
+@test "git switch -C (force-create short form) malformed denied" {
+	_run_hook "git switch -C fix/badversion/5-x"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
 @test "trailing-dash slug denied (kebab-case violation)" {
 	_run_hook "git checkout -b feat/v1.2.3/5-foo-"
 	[ "$status" -eq 0 ]

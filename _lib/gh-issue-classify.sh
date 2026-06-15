@@ -29,6 +29,6 @@ gh_issue_view_missing() {
 	[ -n "$errfile" ] && [ -f "$errfile" ] || return 1
 	# Normalize to the documented 0/1 contract: grep returns 2 on a read error,
 	# which must collapse to rc 1 (cannot prove not-found → caller fails open).
-	grep -qiE 'could not resolve to an (issue|pull request)|issue[^.]*not found' "$errfile" && return 0
+	grep -qiE 'could not resolve to an (issue|pull request)|\bissue\b[^.]*\bnot found\b' "$errfile" && return 0
 	return 1
 }
