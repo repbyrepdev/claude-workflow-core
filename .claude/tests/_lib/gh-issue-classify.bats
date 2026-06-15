@@ -99,3 +99,12 @@ _classify() {
 	run bash -c '. "$1"; gh_issue_view_missing "$2"' _ "$LIB" "$TEST_TMP/empty.txt"
 	[ "$status" -eq 1 ]
 }
+
+@test "unreadable errfile (grep read error) → rc 1, not grep rc 2 (contract)" {
+	# grep returns 2 on a read error; the function must normalize to rc 1.
+	printf 'issue not found\n' >"$TEST_TMP/noread.txt"
+	chmod 000 "$TEST_TMP/noread.txt"
+	run bash -c '. "$1"; gh_issue_view_missing "$2"' _ "$LIB" "$TEST_TMP/noread.txt"
+	chmod 644 "$TEST_TMP/noread.txt"
+	[ "$status" -eq 1 ]
+}

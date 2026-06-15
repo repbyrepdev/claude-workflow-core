@@ -27,7 +27,7 @@
     "_lib/dogfood-fingerprint.sh": "71eb4e8990307ccb52f9e45b90d77c2c9d6b0435b7e608c16982afd56a95b722",
     "_lib/epic-completeness-check.sh": "c95052f36570f73071394d51024f7db592eb70ddfd64d8ac03eb26a09e5f04c0",
     "_lib/event-frontmatter.sh": "b7cb4c7bd793337813f695efdfc140238cb62955482de07a54dd7694551bef3f",
-    "_lib/gh-issue-classify.sh": "96b834e5fc888ab700002563db4d5f9f1be1422f56fdbd4cc731e820798a0864",
+    "_lib/gh-issue-classify.sh": "ebd33321f2a9a8403dd698ca50ee806e60cc96d2ba532b5d82a61fd9f31487d6",
     "_lib/hook-ack.sh": "02bb33f2e47e2221cbfe7b1536e05f02dead420c62e8f5a42641b6214d5af9b9",
     "_lib/hook-deny.sh": "94b8bc9233e3e664c5148400137889c9b8387303248928d2513f9bdefa9c20b6",
     "_lib/hook-inline-sentinel.sh": "d7a5e3b7431cdb033b50a4f938a6a57000acf4b7a9b807c27b759578ae56f272",
