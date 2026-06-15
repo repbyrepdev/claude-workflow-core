@@ -26,7 +26,9 @@ set -u
 
 gh_issue_view_missing() {
 	local errfile="${1:-}"
-	[ -n "$errfile" ] && [ -f "$errfile" ] || return 1
+	# -s (exists AND non-empty) makes the "missing/empty errfile → rc 1"
+	# contract explicit: an empty errfile returns 1 here rather than via grep.
+	[ -n "$errfile" ] && [ -s "$errfile" ] || return 1
 	# Normalize to the documented 0/1 contract: grep returns 2 on a read error,
 	# which must collapse to rc 1 (cannot prove not-found → caller fails open).
 	# 2>/dev/null: the function is rc-only — never leak grep's own stderr (e.g.

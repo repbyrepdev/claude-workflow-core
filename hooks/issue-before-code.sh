@@ -38,10 +38,12 @@ CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || 
 # Cheap pre-filter (no lib sourcing on the hot path — this hook fires on every
 # Bash command): is this a branch-creation command at all? Anchored match
 # tolerates a leading `VAR=val ` env prefix. Covers every create verb —
-# `checkout -b`/`-B` (force) and `switch -c`/`-C`/`--create` — so a malformed
-# force-create (`git checkout -B chore/labels/2289-x`) can't slip the gate.
+# `checkout -b`/`-B` (force), `switch -c`/`-C`, and `switch --create` in both
+# `--create <name>` and `--create=<name>` forms — so a malformed force-create
+# (`git checkout -B chore/labels/2289-x`) can't slip the gate. The separator is
+# embedded per-verb (space for short opts, space-or-`=` for `--create`).
 # Type-agnostic — the precise convention check happens only after the SSOT loads.
-if [[ ! $CMD =~ ^([[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*git[[:space:]]+(checkout[[:space:]]+-[bB]|switch[[:space:]]+(-[cC]|--create))[[:space:]]+[^[:space:]] ]]; then
+if [[ ! $CMD =~ ^([[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*git[[:space:]]+(checkout[[:space:]]+-[bB][[:space:]]+|switch[[:space:]]+-[cC][[:space:]]+|switch[[:space:]]+--create[[:space:]]+|switch[[:space:]]+--create=)[^[:space:]] ]]; then
 	exit 0
 fi
 
@@ -100,10 +102,11 @@ fi
 # whitespace or a shell separator. Type-agnostic (the convention check
 # classifies it next).
 # SYNC: the create-verb set here MUST stay in lockstep with the pre-filter
-# regex above (the `(checkout -[bB]|switch -[cC]|switch --create)` shape). If a
-# new create verb/flag is supported, update BOTH this grep and the pre-filter,
-# or a command the pre-filter admits could fail extraction (and fail-open).
-BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout[[:space:]]+-[bB]|switch[[:space:]]+-[cC]|switch[[:space:]]+--create)[[:space:]]+[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout|switch)[[:space:]]+(-[bBcC]|--create)[[:space:]]+//')
+# regex above (checkout -[bB]; switch -[cC]; switch --create with a space; and
+# switch --create=<name>). If a new create verb/flag is supported, update BOTH
+# this grep and the pre-filter, or a command the pre-filter admits could fail
+# extraction (and fail-open). The trailing sed strips whichever verb matched.
+BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout[[:space:]]+-[bB]|switch[[:space:]]+-[cC]|switch[[:space:]]+--create)[[:space:]]+[^[:space:];&|]+|switch[[:space:]]+--create=[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout|switch)[[:space:]]+(-[bBcC]|--create)[[:space:]]+//; s/^switch[[:space:]]+--create=//')
 if [ -z "$BRANCH" ]; then
 	# Pre-filter matched but extraction failed (weird spacing) — fail-open
 	# rather than block a legit command.
