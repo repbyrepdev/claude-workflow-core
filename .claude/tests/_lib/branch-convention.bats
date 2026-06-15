@@ -84,6 +84,16 @@ teardown() {
 	[ "$status" -eq 2 ]
 }
 
+@test "validate: trailing-dash slug → rc 2 (no trailing dash in kebab-case)" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-foo-"
+	[ "$status" -eq 2 ]
+}
+
+@test "validate: single-char slug → rc 0 (tail group is optional)" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-x"
+	[ "$status" -eq 0 ]
+}
+
 @test "validate: missing issue number segment → rc 2" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/no-issue-num"
 	[ "$status" -eq 2 ]

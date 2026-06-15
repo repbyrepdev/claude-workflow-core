@@ -18,9 +18,11 @@
 #
 # Hermetic: a stub `gh` on PATH drives the gh-dependent outcomes. The REAL hook
 # runs so its `../_lib/*.sh` resolves the real SSOTs + deny/sentinel libs
-# (exercising the real permissionDecision:deny path). The 'allow' tests assert
-# `$status -eq 0` too, so a crash that merely fails to print the deny JSON can't
-# pass spuriously (repo memory: the bats negative-assertion trap).
+# (exercising the real permissionDecision:deny path). EVERY test asserts
+# `$status -eq 0` (the hook always exits 0 — deny is signalled via JSON, not a
+# non-zero rc), so a crash that merely fails to print the deny JSON, or one that
+# crashes after printing it, can't pass spuriously (repo memory: the bats
+# negative-assertion trap).
 
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/issue-before-code.sh"
@@ -45,11 +47,13 @@ teardown() {
 }
 
 # Install a gh stub. $1 = mode controlling the `issue view` + `api user` arms.
+# Both arms match BOTH argv positions (api user / issue view) to mirror the
+# exact calls the hook makes and to catch an arg-shape regression in the stub.
 _stub_gh() {
 	local mode="$1"
 	cat >"$TEST_TMP/bin/gh" <<EOF
 #!/bin/bash
-if [ "\$1" = "api" ]; then
+if [ "\$1" = "api" ] && [ "\$2" = "user" ]; then
 	case "$mode" in
 	apifail) echo "gh: HTTP 401 auth error" >&2; exit 1 ;;
 	emptylogin) printf '' ; exit 0 ;;
@@ -80,30 +84,41 @@ _run_hook() {
 	run bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$payload" "$HOOK"
 }
 
-# --- malformed work branch → deny ---
+# --- malformed work branch → deny (hook still exits 0; deny is via JSON) ---
 
 @test "REGRESSION #2289: chore/labels/2289-x denied at creation" {
 	_run_hook "git checkout -b chore/labels/2289-area-infra-normalize"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
 @test "old dash version form (feat/v0.34-W/...) denied (converged out)" {
 	_run_hook "git checkout -b feat/v0.34-W/708-x"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
 @test "git switch -c malformed work branch also denied" {
 	_run_hook "git switch -c fix/badversion/5-x"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
 @test "git checkout -B (force-create) malformed denied" {
 	_run_hook "git checkout -B chore/labels/2289-x"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
 @test "git switch --create malformed denied" {
 	_run_hook "git switch --create fix/badversion/5-x"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "trailing-dash slug denied (kebab-case violation)" {
+	_run_hook "git checkout -b feat/v1.2.3/5-foo-"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
@@ -141,6 +156,7 @@ _run_hook() {
 @test "valid branch + issue missing on GitHub → deny (and names the extracted issue)" {
 	_stub_gh notfound
 	_run_hook "git checkout -b feat/v0.34.73/12345-phantom"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 	# proves branch_convention_extract_issue fed the right number through
 	[[ $output == *'12345'* ]]
@@ -149,6 +165,7 @@ _run_hook() {
 @test "valid branch + issue exists but NOT assigned → deny" {
 	_stub_gh unassigned
 	_run_hook "git checkout -b feat/v0.34.73/2416-x"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
@@ -194,6 +211,12 @@ _run_hook() {
 @test "valid + gh absent on PATH → allow (fail-open)" {
 	# Isolated bin with the tools the hook needs EXCEPT gh, so `command -v gh`
 	# fails and the gh-absent guard (not the transient path) is exercised.
+	# This list mirrors the external commands hooks/issue-before-code.sh invokes
+	# BEFORE the gh-absent exit (cat→PAYLOAD, jq→CMD, dirname→HOOK_DIR,
+	# grep/sed/head→BRANCH extract; mktemp is only reached on the gh path). It
+	# MUST be kept in sync if the hook starts using a new external tool before
+	# that exit — otherwise this test would crash on a missing tool, not the
+	# intended fail-open.
 	local gobin="$TEST_TMP/nogh" t src
 	mkdir -p "$gobin"
 	for t in cat jq grep sed head mktemp dirname; do

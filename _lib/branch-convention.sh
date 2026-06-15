@@ -30,10 +30,14 @@ set -u
 #   source "$(dirname "$0")/../_lib/branch-convention.sh"
 
 # The ONE canonical definition. Static parts single-quoted (so `\.` and the `$`
-# anchor stay literal); the type alternation is the only interpolation. Capture
-# groups: 1=type, 2=optional version suffix, 3=issue number.
+# anchor stay literal); the type alternation is the only interpolation. The slug
+# is lowercase-kebab with NO leading/trailing dash (the `([a-z0-9-]*[a-z0-9])?`
+# tail forbids a trailing `-` while still allowing a single-char slug). Capture
+# groups: 1=type, 2=optional version suffix, 3=issue number, 4=slug tail (unused).
+# The version suffix keeps `.` (SemVer 2.0 pre-release identifiers are
+# dot-separated, e.g. v1.2.3-rc.1) — matching the canonical meta-bootstrap form.
 _BRANCH_CONVENTION_TYPES='feat|fix|chore|docs|refactor|perf|test|build|ci|revert'
-_BRANCH_CONVENTION_RE='^('"$_BRANCH_CONVENTION_TYPES"')/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?/([0-9]+)-[a-z0-9][a-z0-9-]*$'
+_BRANCH_CONVENTION_RE='^('"$_BRANCH_CONVENTION_TYPES"')/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?/([0-9]+)-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 # A name that merely starts with a known type prefix is CLAIMING to be a work
 # branch; it must then fully match the convention or it is malformed (NOT a
 # harmless scratch branch).
