@@ -58,6 +58,16 @@ _classify() {
 	[ "$status" -eq 1 ]
 }
 
+@test "not-a-git-repository context → rc 1 (non-issue error, no false 'not found')" {
+	_classify _ "fatal: not a git repository (or any of the parent directories): .git"
+	[ "$status" -eq 1 ]
+}
+
+@test "HTTP 403 forbidden (permission) → rc 1 (no issue-not-found signal)" {
+	_classify _ "HTTP 403: Forbidden (https://api.github.com/repos/x/y/issues/5)"
+	[ "$status" -eq 1 ]
+}
+
 @test "repository-resolution error → rc 1 (not an issue not-found)" {
 	_classify _ "GraphQL: Could not resolve to a Repository with the name 'x/y'"
 	[ "$status" -eq 1 ]
