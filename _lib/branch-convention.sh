@@ -82,5 +82,7 @@ branch_convention_extract_issue() {
 	fi
 	if [[ $name =~ \#([0-9]+) ]]; then
 		printf '%s' "${BASH_REMATCH[1]:-}"
+		return 0
 	fi
+	return 0
 }

@@ -21,11 +21,14 @@ teardown() {
 	return 0
 }
 
-# Write $2 to a temp errfile and run gh_issue_view_missing on it; echoes nothing,
-# rc is the classification.
+# Write $2 to a temp errfile and run gh_issue_view_missing on it; rc is the
+# classification. The function is rc-only — it must NEVER print to stdout/stderr,
+# so the helper enforces the empty-output contract for every message-based test;
+# the caller then asserts the expected $status.
 _classify() {
 	printf '%s\n' "$2" >"$TEST_TMP/err.txt"
 	run bash -c '. "$1"; gh_issue_view_missing "$2"' _ "$LIB" "$TEST_TMP/err.txt"
+	[ -z "$output" ]
 }
 
 @test "real GraphQL missing-issue message → rc 0 (deny-worthy)" {
@@ -87,17 +90,20 @@ _classify() {
 @test "empty errfile arg → rc 1" {
 	run bash -c '. "$1"; gh_issue_view_missing ""' _ "$LIB"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "nonexistent errfile path → rc 1" {
 	run bash -c '. "$1"; gh_issue_view_missing "$2"' _ "$LIB" "$TEST_TMP/does-not-exist"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "empty errfile → rc 1 (cannot prove not-found)" {
 	: >"$TEST_TMP/empty.txt"
 	run bash -c '. "$1"; gh_issue_view_missing "$2"' _ "$LIB" "$TEST_TMP/empty.txt"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "unreadable errfile (grep read error) → rc 1, not grep rc 2 (contract)" {
@@ -107,4 +113,5 @@ _classify() {
 	run bash -c '. "$1"; gh_issue_view_missing "$2"' _ "$LIB" "$TEST_TMP/noread.txt"
 	chmod 644 "$TEST_TMP/noread.txt"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
