@@ -479,18 +479,14 @@ _dispatch_feature_branch() {
 	# from a malformed branch name).
 	if [ "$rule1_ok" = "1" ]; then
 		local issue_num
-		# `|| issue_num=""` is a deliberate `set -e` seatbelt, not dead code:
-		# branch_convention_extract_issue returns non-zero on a no-match (it only
-		# `return 0`s on a canonical match), so under `set -euo pipefail` an
-		# unguarded assignment could abort. rule1_ok==1 means it matches here, but
-		# the guard keeps this robust if the precondition ever loosens.
-		issue_num=$(branch_convention_extract_issue "$branch") || issue_num=""
-		if [ -z "$issue_num" ]; then
-			# Invariant: a rule1_ok (canonical) branch ALWAYS embeds an issue
-			# number. Empty here means branch_convention_extract_issue regressed
-			# — fail CLOSED (rc 1) rather than letting the gh-absent skip below
-			# silently downgrade it to PARTIAL.
-			_log "✗ internal: empty issue from canonical branch '$branch' (extract_issue regression?)"
+		# Fail CLOSED if extraction fails in ANY way — a rule1_ok (canonical)
+		# branch ALWAYS embeds an issue number, so either a non-zero rc OR an
+		# empty result is an extract_issue regression. `if !` captures the rc
+		# directly (no `|| issue_num=""` mask that would swallow the failure) and
+		# `[ -z ]` catches an empty result; without this the gh-absent skip below
+		# would silently downgrade a broken invariant to PARTIAL.
+		if ! issue_num=$(branch_convention_extract_issue "$branch") || [ -z "$issue_num" ]; then
+			_log "✗ internal: could not extract issue from validated branch '$branch' (extract_issue regression?)"
 			rc=1
 		elif ! command -v gh >/dev/null 2>&1; then
 			_log "ℹ gh not on PATH — skipping Rules 2+3 (issue + labels)"
