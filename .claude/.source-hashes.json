@@ -69,7 +69,7 @@
     "hooks/hook-ack-clear.sh": "cd23aa339be2513f4de8ae95100185c80eaf887c489f240065f8af989fe3440b",
     "hooks/install-hooks.sh": "d724e21b3a5b92bbc3799451d8e66bf8b37eb7ccfe58518ea8e74057e1dbf9c7",
     "hooks/install-session-state-hook.sh": "99ca60df89bef6d5dcf32beabd5896dfa5f46d2270e4b1b2132f34459c35ad24",
-    "hooks/issue-before-code.sh": "0f614259f94284bdd67149da0a1dfec1270223cf4c157f6b0d264e13372875da",
+    "hooks/issue-before-code.sh": "7fc076dccba06011cdd040a111f75d58c4abc0e7ab07baebde8cc35f4fac9d3c",
     "hooks/lint-dispatch.sh": "3d2d3c53c5457584669ab3571ce9b8f6e314469487f74ee2078ed5edd6cd16e5",
     "hooks/lint-gate-bash.sh": "5204867da5ac9468e407ddbf051b4af2f8a0eca240491bdd0ddc6e9fef2e8d40",
     "hooks/list-agent-files.sh": "4f1f850dd1f196b05c245edc9ee34cab67bb38d6714138cecf01599675dd1062",

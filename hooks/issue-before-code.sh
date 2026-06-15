@@ -120,6 +120,7 @@ case $? in
 	hook_deny "issue-before-code" \
 		"branch '$BRANCH' is not per convention. Expected: $(branch_convention_expected). Rename it, or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
 	;;
+*) exit 0 ;; # unreachable (validate only returns 0/1/2) — fail-open defensively
 esac
 
 # Valid convention branch → resolve the embedded issue number via the SSOT.

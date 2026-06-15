@@ -18,13 +18,9 @@
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/branch-convention.sh"
 	[ -f "$LIB" ] || return 1
-	TEST_TMP=$(mktemp -d -t bcv.XXXXXX) || return 1
 }
-
-teardown() {
-	[ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */bcv.* ]] && rm -rf "$TEST_TMP"
-	return 0
-}
+# No teardown: every test is stateless (sources the lib in a `bash -c` subshell;
+# no temp files), so there is nothing to clean up.
 
 # --- branch_convention_validate: valid canonical (rc 0) ---
 
@@ -78,7 +74,15 @@ teardown() {
 	done
 }
 
-# --- branch_convention_validate: malformed work branch (rc 2 → block) ---
+@test "validate: single-char slug → rc 0 (tail group is optional)" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-x"
+	[ "$status" -eq 0 ]
+}
+
+@test "validate: large multi-digit version + long slug → rc 0" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v10.20.30/12345-some-long-kebab-slug"
+	[ "$status" -eq 0 ]
+}
 
 @test "validate: REGRESSION #2289 — chore/labels/2289-x → rc 2 (malformed, blocked)" {
 	# 'labels' sits where vX.Y.Z must be. This is the exact branch that slipped
@@ -107,11 +111,6 @@ teardown() {
 @test "validate: trailing-dash slug → rc 2 (no trailing dash in kebab-case)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-foo-"
 	[ "$status" -eq 2 ]
-}
-
-@test "validate: single-char slug → rc 0 (tail group is optional)" {
-	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-x"
-	[ "$status" -eq 0 ]
 }
 
 @test "validate: missing issue number segment → rc 2" {
@@ -163,6 +162,12 @@ teardown() {
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "feat/v1.2.3-rc.1/9-thing"
 	[ "$status" -eq 0 ]
 	[ "$output" = "9" ]
+}
+
+@test "extract: large multi-digit issue number → digits" {
+	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "feat/v10.20.30/12345-some-long-kebab-slug"
+	[ "$status" -eq 0 ]
+	[ "$output" = "12345" ]
 }
 
 @test "extract: non-canonical with #NNN → fallback issue number" {
