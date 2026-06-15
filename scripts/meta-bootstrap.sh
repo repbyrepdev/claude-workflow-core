@@ -434,17 +434,22 @@ _dispatch_feature_branch() {
 		return 2
 	fi
 	local rc=0 skipped=0
-	# Source the branch-convention SSOT (_lib/branch-convention.sh) — the single
-	# canonical definition shared with the creation-time gate (issue-before-code)
-	# so the convention can never drift between enforcers (#2416).
-	local _bc_lib
-	_bc_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/branch-convention.sh
-	if [ ! -f "$_bc_lib" ]; then
-		_log "✗ missing SSOT lib: $_bc_lib"
+	# Source the shared SSOTs (#2416): branch-convention (the single canonical
+	# naming rule, also used by the creation-time gate issue-before-code) and the
+	# gh-issue-not-found classifier (shared so the missing-vs-transient rule can't
+	# drift between enforcers). Both live in ../_lib relative to this script.
+	local _lib_dir _bc_lib _cls_lib
+	_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib
+	_bc_lib="$_lib_dir/branch-convention.sh"
+	_cls_lib="$_lib_dir/gh-issue-classify.sh"
+	if [ ! -f "$_bc_lib" ] || [ ! -f "$_cls_lib" ]; then
+		_log "✗ missing SSOT lib(s) under: $_lib_dir"
 		return 1
 	fi
 	# shellcheck source=../_lib/branch-convention.sh
 	source "$_bc_lib"
+	# shellcheck source=../_lib/gh-issue-classify.sh
+	source "$_cls_lib"
 	# Resolve repo + current branch.
 	local repo_root
 	if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
@@ -474,6 +479,11 @@ _dispatch_feature_branch() {
 	# from a malformed branch name).
 	if [ "$rule1_ok" = "1" ]; then
 		local issue_num
+		# `|| issue_num=""` is a deliberate `set -e` seatbelt, not dead code:
+		# branch_convention_extract_issue returns non-zero on a no-match (it only
+		# `return 0`s on a canonical match), so under `set -euo pipefail` an
+		# unguarded assignment could abort. rule1_ok==1 means it matches here, but
+		# the guard keeps this robust if the precondition ever loosens.
 		issue_num=$(branch_convention_extract_issue "$branch") || issue_num=""
 		if ! command -v gh >/dev/null 2>&1; then
 			_log "ℹ gh not on PATH — skipping Rules 2+3 (issue + labels)"
@@ -482,8 +492,10 @@ _dispatch_feature_branch() {
 			local gh_err
 			gh_err=$(mktemp -t feature-branch-gh.XXXXXX 2>/dev/null || echo "")
 			if ! gh issue view "$issue_num" --json state >"${gh_err:-/dev/null}" 2>&1; then
-				# Distinguish "issue not found" from "gh auth/network".
-				if grep -q "not found\|Could not resolve" "${gh_err:-/dev/null}" 2>/dev/null; then
+				# Distinguish "issue not found" from "gh auth/network" via the
+				# shared SSOT classifier (a naive "Could not resolve" grep also
+				# matches the DNS-host transport error → false not-found).
+				if gh_issue_view_missing "${gh_err:-/dev/null}"; then
 					_log "✗ branch references issue #$issue_num but issue not found on GitHub"
 					_log "    fix: file the issue first via the github-issue-creation skill"
 				else

@@ -37,9 +37,11 @@ CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || 
 
 # Cheap pre-filter (no lib sourcing on the hot path — this hook fires on every
 # Bash command): is this a branch-creation command at all? Anchored match
-# tolerates a leading `VAR=val ` env prefix. Type-agnostic — the precise
-# convention check happens only after we've sourced the SSOT.
-if [[ ! $CMD =~ ^([[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*git[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+[^[:space:]] ]]; then
+# tolerates a leading `VAR=val ` env prefix. Covers every create verb —
+# `checkout -b`/`-B` (force) and `switch -c`/`-C`/`--create` — so a malformed
+# force-create (`git checkout -B chore/labels/2289-x`) can't slip the gate.
+# Type-agnostic — the precise convention check happens only after the SSOT loads.
+if [[ ! $CMD =~ ^([[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*git[[:space:]]+(checkout[[:space:]]+-[bB]|switch[[:space:]]+(-[cC]|--create))[[:space:]]+[^[:space:]] ]]; then
 	exit 0
 fi
 
@@ -74,15 +76,30 @@ else
 	echo "issue-before-code: missing $LIB_CONVENTION — skipping convention check" >&2
 	exit 0
 fi
+# Shared gh-error classifier SSOT (#2416 r2) — distinguishes a genuine missing
+# issue from a transient gh failure (a naive "Could not resolve" grep also
+# matches the DNS-host transport error → false-deny). Inline fallback mirrors
+# the lib if it is somehow absent.
+LIB_CLASSIFY="${HOOK_DIR}/../_lib/gh-issue-classify.sh"
+if [ -f "$LIB_CLASSIFY" ]; then
+	# shellcheck source=../_lib/gh-issue-classify.sh
+	source "$LIB_CLASSIFY"
+else
+	gh_issue_view_missing() {
+		[ -n "${1:-}" ] && [ -f "$1" ] || return 1
+		grep -qiE 'not found|could not resolve to an (issue|pull request)' "$1"
+	}
+fi
 
 # Inline-sentinel bypass.
 if hook_inline_sentinel_check "ISSUE_BEFORE_CODE_SKIP" "$CMD" "issue-before-code"; then
 	exit 0
 fi
 
-# Extract the branch NAME: the first token after `-b`/`-c`, up to whitespace or
-# a shell separator. Type-agnostic (the convention check classifies it next).
-BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout -b|switch -c)[[:space:]]+[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout -b|switch -c)[[:space:]]+//')
+# Extract the branch NAME: the first token after the create verb, up to
+# whitespace or a shell separator. Verb set matches the pre-filter (covers
+# -b/-B/-c/-C/--create). Type-agnostic (the convention check classifies it next).
+BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout[[:space:]]+-[bB]|switch[[:space:]]+-[cC]|switch[[:space:]]+--create)[[:space:]]+[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout|switch)[[:space:]]+(-[bBcC]|--create)[[:space:]]+//')
 if [ -z "$BRANCH" ]; then
 	# Pre-filter matched but extraction failed (weird spacing) — fail-open
 	# rather than block a legit command.
@@ -115,14 +132,15 @@ if ! command -v gh >/dev/null 2>&1; then
 	exit 0
 fi
 
-# Single gh call covers existence (success) + assignment (assignees). Capture
-# rc + stderr separately (this hook has set -u only, no pipefail) so we can
+# One gh call proves existence (success) + fetches the assignee list; the @me
+# comparison needs the `gh api user` call below. Capture rc + stderr separately
+# (this hook has set -u only, no pipefail) so the shared classifier can
 # distinguish a genuine "not found" (deny) from transient auth/network (skip).
 gh_err=$(mktemp)
 gh_rc=0
 gh_out=$(gh issue view "$ISSUE_NUM" --json assignees 2>"$gh_err") || gh_rc=$?
 if [ "$gh_rc" -ne 0 ]; then
-	if grep -q "not found\|Could not resolve" "$gh_err" 2>/dev/null; then
+	if gh_issue_view_missing "$gh_err"; then
 		# Issue genuinely doesn't exist — the branch references a phantom issue.
 		err_head=$(head -c 200 "$gh_err")
 		rm -f "$gh_err"

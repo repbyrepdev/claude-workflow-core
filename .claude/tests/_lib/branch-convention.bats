@@ -114,6 +114,8 @@ teardown() {
 # --- branch_convention_extract_issue ---
 
 @test "extract: canonical branch → path-segment issue number" {
+	# rc-0 paths (canonical + #NNN match) assert status too — a crash that
+	# happened to print the right digits can't pass spuriously.
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "feat/v0.34.73/2416-branch-convention-ssot"
 	[ "$status" -eq 0 ]
 	[ "$output" = "2416" ]
@@ -121,11 +123,13 @@ teardown() {
 
 @test "extract: version-suffix branch → issue after version" {
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "feat/v4.28.0-W4/708-foo-bar"
+	[ "$status" -eq 0 ]
 	[ "$output" = "708" ]
 }
 
 @test "extract: non-canonical with #NNN → fallback issue number" {
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "hotfix-for-#1234-thing"
+	[ "$status" -eq 0 ]
 	[ "$output" = "1234" ]
 }
 

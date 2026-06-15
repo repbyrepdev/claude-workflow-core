@@ -2,22 +2,25 @@
 # covers: hooks/issue-before-code.sh
 #
 # #2416 creation-time branch-convention + issue-lineage gate. PreToolUse Bash
-# hook that refuses `git checkout -b` / `git switch -c` for malformed work-
-# branch names (ALL types now, not just feat/) and for valid names whose issue
-# doesn't exist or isn't assigned to the operator. The convention is sourced
-# from the SSOT (_lib/branch-convention.sh) — these tests lock the decision
-# matrix end-to-end:
-#   malformed (chore/labels/2289-x; old dash vX.Y-Z form)  → deny
-#   scratch (no <type>/ prefix) / non-branch command       → allow
-#   inline ISSUE_BEFORE_CODE_SKIP sentinel                  → allow (bypass)
-#   valid + issue missing on GitHub                         → deny (not found)
-#   valid + issue exists + assigned @me                     → allow
-#   valid + issue exists but NOT assigned                   → deny
-#   transient gh failure                                    → allow (fail-open)
+# hook that refuses `git checkout -b|-B` / `git switch -c|-C|--create` for
+# malformed work-branch names (ALL types now, not just feat/) and for valid
+# names whose issue doesn't exist or isn't assigned to the operator. Convention
+# is sourced from the SSOT (_lib/branch-convention.sh); the missing-vs-transient
+# gh classification from _lib/gh-issue-classify.sh. These tests lock the
+# decision matrix end-to-end:
+#   malformed (chore/labels/2289-x; old dash form; force-create verbs)  → deny
+#   scratch (no <type>/ prefix) / non-branch command                    → allow
+#   inline ISSUE_BEFORE_CODE_SKIP sentinel                              → allow (bypass)
+#   valid + issue missing on GitHub                                     → deny (not found)
+#   valid + issue exists + assigned @me                                → allow
+#   valid + issue exists but NOT assigned                              → deny
+#   valid + transient gh failure (incl DNS-host) / gh absent / jq fail → allow (fail-open)
 #
-# Hermetic: a stub `gh` on PATH drives the existence/assignment/transient
-# outcomes. The REAL hook runs so its `../_lib/*.sh` resolves the real SSOT +
-# deny/sentinel libs (exercising the real permissionDecision:deny path).
+# Hermetic: a stub `gh` on PATH drives the gh-dependent outcomes. The REAL hook
+# runs so its `../_lib/*.sh` resolves the real SSOTs + deny/sentinel libs
+# (exercising the real permissionDecision:deny path). The 'allow' tests assert
+# `$status -eq 0` too, so a crash that merely fails to print the deny JSON can't
+# pass spuriously (repo memory: the bats negative-assertion trap).
 
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/issue-before-code.sh"
@@ -41,18 +44,27 @@ teardown() {
 	return 0
 }
 
-# Install a gh stub. $1 = mode: assigned|unassigned|notfound|transient
+# Install a gh stub. $1 = mode controlling the `issue view` + `api user` arms.
 _stub_gh() {
 	local mode="$1"
 	cat >"$TEST_TMP/bin/gh" <<EOF
 #!/bin/bash
-if [ "\$1" = "api" ]; then echo "me"; exit 0; fi
+if [ "\$1" = "api" ]; then
+	case "$mode" in
+	apifail) echo "gh: HTTP 401 auth error" >&2; exit 1 ;;
+	emptylogin) printf '' ; exit 0 ;;
+	*) echo "me"; exit 0 ;;
+	esac
+fi
 if [ "\$1" = "issue" ] && [ "\$2" = "view" ]; then
 	case "$mode" in
 	assigned) printf '%s' '{"assignees":[{"login":"me"}]}'; exit 0 ;;
 	unassigned) printf '%s' '{"assignees":[]}'; exit 0 ;;
 	notfound) echo "GraphQL: Could not resolve to an issue or pull request with the number" >&2; exit 1 ;;
-	transient) echo "error connecting to api.github.com" >&2; exit 1 ;;
+	dnshost) echo "fatal: unable to access: Could not resolve host: api.github.com" >&2; exit 1 ;;
+	transient) echo "error connecting to api.github.com port 443: Connection refused" >&2; exit 1 ;;
+	badjson) printf '%s' 'NOT VALID JSON'; exit 0 ;;
+	*) printf '%s' '{"assignees":[{"login":"me"}]}'; exit 0 ;;
 	esac
 fi
 echo "ibc-stub: unexpected gh \$*" >&2
@@ -85,15 +97,27 @@ _run_hook() {
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
+@test "git checkout -B (force-create) malformed denied" {
+	_run_hook "git checkout -B chore/labels/2289-x"
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "git switch --create malformed denied" {
+	_run_hook "git switch --create fix/badversion/5-x"
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
 # --- scratch / non-branch → allow ---
 
 @test "scratch name (no <type>/ prefix) allowed" {
 	_run_hook "git checkout -b myquickfix"
+	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
 @test "non-branch-creation command allowed (no false positive)" {
 	_run_hook "ls -la"
+	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
@@ -101,6 +125,7 @@ _run_hook() {
 
 @test "inline ISSUE_BEFORE_CODE_SKIP bypasses a malformed name" {
 	_run_hook 'ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON="test" git checkout -b chore/labels/2289-x'
+	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
@@ -109,6 +134,7 @@ _run_hook() {
 @test "valid branch + issue exists + assigned @me → allow" {
 	_stub_gh assigned
 	_run_hook "git checkout -b feat/v0.34.73/2416-branch-convention-ssot"
+	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
@@ -126,8 +152,59 @@ _run_hook() {
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
-@test "valid branch + transient gh failure → allow (fail-open)" {
+# --- fail-open paths (all must ALLOW, and exit 0) ---
+
+@test "valid + transient gh failure → allow (fail-open)" {
 	_stub_gh transient
 	_run_hook "git checkout -b feat/v0.34.73/2416-x"
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "REGRESSION: valid + DNS-host gh error → allow (NOT false not-found deny)" {
+	# The pre-#2416-r2 classifier matched 'Could not resolve' and would deny a
+	# DNS blip as 'issue not found'. The shared classifier must skip it.
+	_stub_gh dnshost
+	_run_hook "git checkout -b feat/v0.34.73/2416-x"
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "valid + gh api user fails → allow (fail-open)" {
+	_stub_gh apifail
+	_run_hook "git checkout -b feat/v0.34.73/2416-x"
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "valid + gh api user returns empty login → allow (fail-open)" {
+	_stub_gh emptylogin
+	_run_hook "git checkout -b feat/v0.34.73/2416-x"
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "valid + malformed assignees JSON (jq fails) → allow (fail-open)" {
+	_stub_gh badjson
+	_run_hook "git checkout -b feat/v0.34.73/2416-x"
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "valid + gh absent on PATH → allow (fail-open)" {
+	# Isolated bin with the tools the hook needs EXCEPT gh, so `command -v gh`
+	# fails and the gh-absent guard (not the transient path) is exercised.
+	local gobin="$TEST_TMP/nogh" t src
+	mkdir -p "$gobin"
+	for t in cat jq grep sed head mktemp dirname; do
+		src=$(command -v "$t") && ln -sf "$src" "$gobin/$t"
+	done
+	local payload
+	payload=$(jq -nc --arg c "git checkout -b feat/v0.34.73/2416-x" '{tool_input: {command: $c}}')
+	# Invoke the hook directly (its #!/bin/bash shebang is absolute, so the
+	# interpreter resolves regardless of PATH) with PATH scrubbed of gh; feed the
+	# payload via herestring. A `bash -c` wrapper would itself need bash on PATH.
+	run env PATH="$gobin" "$HOOK" <<<"$payload"
+	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }

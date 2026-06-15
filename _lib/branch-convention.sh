@@ -1,11 +1,13 @@
 #!/bin/bash
 set -u
 # _lib/branch-convention.sh — SSOT for the canonical work-branch naming
-# convention (#2416). Sourced by EVERY enforcer so the rule lives in exactly
-# ONE place and cannot drift: the creation-time gate (issue-before-code), the
-# PR-time verify (meta-bootstrap feature-branch), and pre-push. NO per-repo or
-# per-enforcer variants — that divergence (feat-only `vX.Y-Z` in one enforcer
-# vs all-types `vX.Y.Z` in another) is the bug this lib exists to kill.
+# convention (#2416). Sourced by every enforcer that validates a branch NAME so
+# the rule lives in exactly ONE place and cannot drift: the creation-time gate
+# (issue-before-code) and the PR-time verify (meta-bootstrap feature-branch).
+# NO per-repo or per-enforcer variants — that divergence (feat-only `vX.Y-Z` in
+# one enforcer vs all-types `vX.Y.Z` in another) is the bug this lib exists to
+# kill. (pre-push gates on tags/abandoned commits, not branch names, so it does
+# not consume this lib.)
 #
 # Canonical form: <type>/vX.Y.Z[-suffix]/<issue-num>-<slug>
 #   type   — Conventional Commits type: feat fix chore docs refactor perf test build ci revert
@@ -17,9 +19,9 @@ set -u
 #   branch_convention_re                   — echo the canonical regex (the SSOT)
 #   branch_convention_expected             — echo the human-readable expected form
 #   branch_convention_validate <name>      — rc 0 valid · rc 1 scratch (no type
-#                                            prefix → allowed) · rc 2 malformed
-#                                            work branch (claims <type>/ but does
-#                                            not match → block)
+#                                            prefix, or empty → allowed) · rc 2
+#                                            malformed work branch (claims
+#                                            <type>/ but does not match → block)
 #   branch_convention_extract_issue <name> — echo the embedded issue number
 #                                            (canonical path-segment, or #NNN);
 #                                            empty when none
@@ -44,7 +46,7 @@ branch_convention_expected() {
 }
 
 # rc 0 = valid canonical convention (caller should verify issue existence next)
-# rc 1 = scratch branch (no <type>/ prefix) — allowed, no issue check
+# rc 1 = scratch branch (no <type>/ prefix) OR empty name — allowed, no issue check
 # rc 2 = malformed work branch (claims a <type>/ prefix but does not match) — block
 branch_convention_validate() {
 	local name="${1:-}"
@@ -57,6 +59,11 @@ branch_convention_validate() {
 # Echo the issue number embedded in a branch name: the canonical path-segment
 # (group 3 of the convention RE) first, then an explicit `#NNN` fallback. Empty
 # output when no issue is embedded.
+#
+# The `#NNN` fallback is for callers that pass a NON-canonical name (the
+# issue-before-code hook only reaches this after a rc-0 canonical validate, so
+# it always hits the first branch — but this lib is a shared SSOT and the
+# fallback is exercised directly by the unit tests). Keep both branches.
 branch_convention_extract_issue() {
 	local name="${1:-}"
 	# `:-` defaults so `set -u` can never hard-error if a future regex edit
