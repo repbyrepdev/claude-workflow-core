@@ -69,33 +69,32 @@ if [ -f "$LIB_SENTINEL" ]; then
 else
 	hook_inline_sentinel_check() { return 1; }
 fi
-# The branch-convention SSOT. If it's somehow missing (packaging error), fail-
-# open rather than block legit work — the PR-time verify still catches drift.
+# Inline-sentinel bypass — checked BEFORE the SSOT libs so an operator can still
+# bypass even when a core lib is missing (the libs below fail CLOSED).
+if hook_inline_sentinel_check "ISSUE_BEFORE_CODE_SKIP" "$CMD" "issue-before-code"; then
+	exit 0
+fi
+
+# The branch-convention + gh-classifier SSOTs are REQUIRED dependencies of this
+# policy gate. A missing core lib fails CLOSED (deny) rather than silently
+# disabling malformed-branch / phantom-issue enforcement during packaging drift
+# — a gate that quietly turns itself off is worse than no gate. The bypass above
+# still lets an operator proceed in an emergency; the PR-time verify
+# (meta-bootstrap) also fails closed on the same condition.
+LIB_CLASSIFY="${HOOK_DIR}/../_lib/gh-issue-classify.sh"
 if [ -f "$LIB_CONVENTION" ]; then
 	# shellcheck source=../_lib/branch-convention.sh
 	source "$LIB_CONVENTION"
 else
-	echo "issue-before-code: missing $LIB_CONVENTION — skipping convention check" >&2
-	exit 0
+	hook_deny "issue-before-code" \
+		"missing required SSOT library: $LIB_CONVENTION — fix the install, or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
 fi
-# Shared gh-error classifier SSOT (#2416 r2) — distinguishes a genuine missing
-# issue from a transient gh failure (a naive "Could not resolve" grep also
-# matches the DNS-host transport error → false-deny). Inline fallback mirrors
-# the lib if it is somehow absent.
-LIB_CLASSIFY="${HOOK_DIR}/../_lib/gh-issue-classify.sh"
 if [ -f "$LIB_CLASSIFY" ]; then
 	# shellcheck source=../_lib/gh-issue-classify.sh
 	source "$LIB_CLASSIFY"
 else
-	# Classifier SSOT missing (packaging error) — degrade SAFELY: never report a
-	# definite not-found, so the hook fails open (skips the not-found deny) rather
-	# than carry an inline copy of the pattern that could drift from the SSOT.
-	gh_issue_view_missing() { return 1; }
-fi
-
-# Inline-sentinel bypass.
-if hook_inline_sentinel_check "ISSUE_BEFORE_CODE_SKIP" "$CMD" "issue-before-code"; then
-	exit 0
+	hook_deny "issue-before-code" \
+		"missing required SSOT library: $LIB_CLASSIFY — fix the install, or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
 fi
 
 # Extract the branch NAME: the first token after the create verb, up to

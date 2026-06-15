@@ -243,3 +243,35 @@ _run_hook() {
 	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
+
+# Build a hook layout under $TEST_TMP/repo with the deny + sentinel libs present
+# but branch-convention.sh ABSENT, so the convention-missing fail-closed path
+# fires. Echoes the path to the copied hook.
+_hook_without_convention_lib() {
+	local root="$TEST_TMP/repo"
+	mkdir -p "$root/hooks" "$root/_lib"
+	cp "$HOOK" "$root/hooks/issue-before-code.sh"
+	local libdir="${BATS_TEST_DIRNAME}/../../../_lib"
+	cp "$libdir/hook-deny.sh" "$libdir/hook-inline-sentinel.sh" "$root/_lib/"
+	# deliberately NOT copying branch-convention.sh
+	printf '%s' "$root/hooks/issue-before-code.sh"
+}
+
+@test "missing branch-convention SSOT lib → deny (fail-closed)" {
+	local hook payload
+	hook=$(_hook_without_convention_lib)
+	payload=$(jq -nc --arg c "git checkout -b wip" '{tool_input: {command: $c}}')
+	run bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$payload" "$hook"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'missing required SSOT library'* ]]
+}
+
+@test "missing SSOT lib + ISSUE_BEFORE_CODE_SKIP → allow (bypass reachable before fail-closed)" {
+	local hook payload
+	hook=$(_hook_without_convention_lib)
+	payload=$(jq -nc --arg c 'ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON="x" git checkout -b wip' '{tool_input: {command: $c}}')
+	run bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$payload" "$hook"
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}

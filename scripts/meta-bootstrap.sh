@@ -485,7 +485,14 @@ _dispatch_feature_branch() {
 		# unguarded assignment could abort. rule1_ok==1 means it matches here, but
 		# the guard keeps this robust if the precondition ever loosens.
 		issue_num=$(branch_convention_extract_issue "$branch") || issue_num=""
-		if ! command -v gh >/dev/null 2>&1; then
+		if [ -z "$issue_num" ]; then
+			# Invariant: a rule1_ok (canonical) branch ALWAYS embeds an issue
+			# number. Empty here means branch_convention_extract_issue regressed
+			# — fail CLOSED (rc 1) rather than letting the gh-absent skip below
+			# silently downgrade it to PARTIAL.
+			_log "✗ internal: empty issue from canonical branch '$branch' (extract_issue regression?)"
+			rc=1
+		elif ! command -v gh >/dev/null 2>&1; then
 			_log "ℹ gh not on PATH — skipping Rules 2+3 (issue + labels)"
 			skipped=$((skipped + 2))
 		else

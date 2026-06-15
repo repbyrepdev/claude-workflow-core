@@ -11,6 +11,9 @@
 #   - issue extraction: canonical path-segment + `#NNN` fallback;
 #   - re/expected accessors emit the single source.
 #
+# validate is rc-only — it must never print — so every validate case also
+# asserts empty output, catching a regression that leaks to stdout/stderr.
+#
 # Each test sources the lib fresh inside a `bash -c` subshell so the lib's
 # `set -u` is contained and the real `#!/bin/bash` interpreter is exercised
 # (not the test runner's zsh, where [[ =~ ]] populates $match not $BASH_REMATCH).
@@ -27,41 +30,49 @@ setup() {
 @test "validate: canonical feat branch → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v0.34.73/2416-branch-convention-ssot"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: chore with dotted version → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "chore/v0.34.72/2289-area-infra-normalize"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: version with -suffix (vX.Y.Z-W4) → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v4.28.0-W4/708-foo-bar"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: dot-separated SemVer pre-release suffix (-rc.1) → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-rc.1/9-thing"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: trailing-dot suffix → rc 2 (not SemVer-valid)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-W4./5-x"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: consecutive-dot suffix → rc 2 (not SemVer-valid)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-W..4/5-x"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: leading-dot suffix → rc 2 (not SemVer-valid)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-.W4/5-x"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: minimal slug + single-digit version → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "fix/v0.0.1/1-a"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: all 10 conventional types accepted" {
@@ -71,17 +82,23 @@ setup() {
 			echo "type '$t' should be valid but status=$status"
 			return 1
 		}
+		[ -z "$output" ] || {
+			echo "type '$t' should produce no output but got: $output"
+			return 1
+		}
 	done
 }
 
 @test "validate: single-char slug → rc 0 (tail group is optional)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-x"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: large multi-digit version + long slug → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v10.20.30/12345-some-long-kebab-slug"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 }
 
 @test "validate: REGRESSION #2289 — chore/labels/2289-x → rc 2 (malformed, blocked)" {
@@ -89,6 +106,7 @@ setup() {
 	# past the feat-only creation gate and only failed at PR time. Must block.
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "chore/labels/2289-area-infra-normalize"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: OLD dash version form (vX.Y-Z) → rc 2 (converged out)" {
@@ -96,26 +114,31 @@ setup() {
 	# The SSOT converged to dotted vX.Y.Z — the dash form is now malformed.
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v0.34-W/708-x"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: type prefix but no version/issue → rc 2" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/incomplete"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: uppercase slug → rc 2 (slug must be lowercase-kebab)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-Foo"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: trailing-dash slug → rc 2 (no trailing dash in kebab-case)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/5-foo-"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 @test "validate: missing issue number segment → rc 2" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3/no-issue-num"
 	[ "$status" -eq 2 ]
+	[ -z "$output" ]
 }
 
 # --- branch_convention_validate: scratch (rc 1 → allow, no issue check) ---
@@ -123,21 +146,25 @@ setup() {
 @test "validate: bare scratch name → rc 1" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "wip"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "validate: slashed scratch with non-type prefix → rc 1" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "myname/scratch-thing"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "validate: 'main' → rc 1 (scratch, not a work branch)" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "main"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 @test "validate: empty string → rc 1" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" ""
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 }
 
 # --- branch_convention_extract_issue ---
