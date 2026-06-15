@@ -221,18 +221,22 @@ _run_hook() {
 }
 
 @test "valid + gh absent on PATH → allow (fail-open)" {
-	# Isolated bin with the tools the hook needs EXCEPT gh, so `command -v gh`
-	# fails and the gh-absent guard (not the transient path) is exercised.
-	# This list mirrors the external commands hooks/issue-before-code.sh invokes
-	# BEFORE the gh-absent exit (cat→PAYLOAD, jq→CMD, dirname→HOOK_DIR,
-	# grep/sed/head→BRANCH extract; mktemp is only reached on the gh path). It
-	# MUST be kept in sync if the hook starts using a new external tool before
-	# that exit — otherwise this test would crash on a missing tool, not the
-	# intended fail-open.
-	local gobin="$TEST_TMP/nogh" t src
+	# Isolated bin containing EVERY executable on the current PATH EXCEPT gh, so
+	# `command -v gh` fails and the gh-absent guard (not the transient path) is
+	# exercised — without a hardcoded tool list to keep in sync as the hook's
+	# dependencies change.
+	local gobin="$TEST_TMP/nogh" d f b
 	mkdir -p "$gobin"
-	for t in cat jq grep sed head mktemp dirname; do
-		src=$(command -v "$t") && ln -sf "$src" "$gobin/$t"
+	local _dirs
+	IFS=: read -ra _dirs <<<"$PATH"
+	for d in "${_dirs[@]}"; do
+		[ "$d" = "$TEST_TMP/bin" ] && continue # skip our own poison-gh stub dir
+		[ -d "$d" ] || continue
+		for f in "$d"/*; do
+			b=$(basename "$f")
+			[ "$b" = gh ] && continue
+			[ -x "$f" ] && [ ! -e "$gobin/$b" ] && ln -sf "$f" "$gobin/$b"
+		done
 	done
 	local payload
 	payload=$(jq -nc --arg c "git checkout -b feat/v0.34.73/2416-x" '{tool_input: {command: $c}}')
@@ -245,8 +249,9 @@ _run_hook() {
 }
 
 # Build a hook layout under $TEST_TMP/repo with the deny + sentinel libs present
-# but branch-convention.sh ABSENT, so the convention-missing fail-closed path
-# fires. Echoes the path to the copied hook.
+# but BOTH SSOT libs (branch-convention.sh AND gh-issue-classify.sh) ABSENT. The
+# convention-missing fail-closed path fires first (before the classifier check),
+# which is what these tests exercise. Echoes the path to the copied hook.
 _hook_without_convention_lib() {
 	local root="$TEST_TMP/repo"
 	mkdir -p "$root/hooks" "$root/_lib"
