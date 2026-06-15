@@ -85,10 +85,10 @@ if [ -f "$LIB_CLASSIFY" ]; then
 	# shellcheck source=../_lib/gh-issue-classify.sh
 	source "$LIB_CLASSIFY"
 else
-	gh_issue_view_missing() {
-		[ -n "${1:-}" ] && [ -f "$1" ] || return 1
-		grep -qiE 'not found|could not resolve to an (issue|pull request)' "$1"
-	}
+	# Classifier SSOT missing (packaging error) — degrade SAFELY: never report a
+	# definite not-found, so the hook fails open (skips the not-found deny) rather
+	# than carry an inline copy of the pattern that could drift from the SSOT.
+	gh_issue_view_missing() { return 1; }
 fi
 
 # Inline-sentinel bypass.

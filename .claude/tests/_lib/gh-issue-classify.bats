@@ -38,9 +38,20 @@ _classify() {
 	[ "$status" -eq 0 ]
 }
 
-@test "bare 'not found' (HTTP 404) → rc 0" {
-	_classify _ "HTTP 404: Not Found (https://api.github.com/...)"
+@test "issue-anchored 'not found' phrasing → rc 0" {
+	_classify _ "issue #5 not found"
 	[ "$status" -eq 0 ]
+}
+
+@test "REGRESSION: 'Repository not found' → rc 1 (repo/permission, NOT issue-missing)" {
+	# A bare 'not found' match would deny this as a missing issue (#2416 r4).
+	_classify _ "GraphQL: Repository not found."
+	[ "$status" -eq 1 ]
+}
+
+@test "bare HTTP 404 with no issue context → rc 1 (not a missing-issue signal)" {
+	_classify _ "HTTP 404: Not Found (https://api.github.com/repos/x/y)"
+	[ "$status" -eq 1 ]
 }
 
 @test "DNS-host transport error → rc 1 (transient, NOT false not-found)" {

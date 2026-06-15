@@ -12,18 +12,20 @@ set -u
 #   "Could not resolve host: api.github.com"
 # for a DNS / network outage. A naive `grep "Could not resolve"` matches BOTH —
 # so a network blip would be mis-read as "issue not found" and FALSE-DENY
-# legitimate branch creation (silent-failure-hunter, #2416 r1). We anchor on the
-# issue-scoped phrasing ("could not resolve to an issue|pull request") plus a
-# literal "not found", which excludes the bare "could not resolve host/proxy"
-# transport error and the "could not resolve to a Repository" permission error.
+# legitimate branch creation (silent-failure-hunter, #2416 r1). BOTH alternations
+# are issue-anchored: the GraphQL "could not resolve to an issue|pull request"
+# AND an "issue ... not found" phrasing. A bare "not found" is deliberately NOT
+# matched — it would catch "Repository not found" (a repo/permission error, not a
+# missing issue) and re-introduce the false-deny class (#2416 r4). Excludes the
+# bare "could not resolve host/proxy" transport error too.
 #
 #   gh_issue_view_missing <errfile>
 #     rc 0 = the error means the issue genuinely does not exist (deny-worthy)
-#     rc 1 = not a not-found signal (transient/auth/network → caller fails open)
+#     rc 1 = not a not-found signal (transient/auth/network/repo → caller fails open)
 #   Missing/empty errfile → rc 1 (cannot prove not-found → treat as transient).
 
 gh_issue_view_missing() {
 	local errfile="${1:-}"
 	[ -n "$errfile" ] && [ -f "$errfile" ] || return 1
-	grep -qiE 'not found|could not resolve to an (issue|pull request)' "$errfile"
+	grep -qiE 'could not resolve to an (issue|pull request)|issue[^.]*not found' "$errfile"
 }
