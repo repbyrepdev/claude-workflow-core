@@ -30,14 +30,18 @@ set -u
 #   source "$(dirname "$0")/../_lib/branch-convention.sh"
 
 # The ONE canonical definition. Static parts single-quoted (so `\.` and the `$`
-# anchor stay literal); the type alternation is the only interpolation. The slug
-# is lowercase-kebab with NO leading/trailing dash (the `([a-z0-9-]*[a-z0-9])?`
-# tail forbids a trailing `-` while still allowing a single-char slug). Capture
-# groups: 1=type, 2=optional version suffix, 3=issue number, 4=slug tail (unused).
-# The version suffix keeps `.` (SemVer 2.0 pre-release identifiers are
-# dot-separated, e.g. v1.2.3-rc.1) — matching the canonical meta-bootstrap form.
+# anchor stay literal); the type alternation is the only interpolation.
+#   version  vX.Y.Z with an optional SemVer-2.0 pre-release suffix: `-` then
+#            dot-separated identifiers, each non-empty alnum/hyphen — so `-W4`
+#            and `-rc.1` pass while `-W4.`, `-.W4`, `-W..4` (leading/trailing/
+#            consecutive dots) do not.
+#   slug     lowercase-kebab with NO leading/trailing dash (the trailing
+#            `([a-z0-9-]*[a-z0-9])?` still allows a single-char slug).
+# validate uses the full-match rc only; branch_convention_extract_issue uses its
+# OWN sub-pattern (below), so neither depends on this regex's capture-group
+# numbering — a future suffix/slug tweak can't silently shift the issue index.
 _BRANCH_CONVENTION_TYPES='feat|fix|chore|docs|refactor|perf|test|build|ci|revert'
-_BRANCH_CONVENTION_RE='^('"$_BRANCH_CONVENTION_TYPES"')/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?/([0-9]+)-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+_BRANCH_CONVENTION_RE='^('"$_BRANCH_CONVENTION_TYPES"')/v[0-9]+\.[0-9]+\.[0-9]+(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?/[0-9]+-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 # A name that merely starts with a known type prefix is CLAIMING to be a work
 # branch; it must then fully match the convention or it is malformed (NOT a
 # harmless scratch branch).
@@ -46,7 +50,7 @@ _BRANCH_CONVENTION_TYPE_PREFIX_RE='^('"$_BRANCH_CONVENTION_TYPES"')/'
 branch_convention_re() { printf '%s' "$_BRANCH_CONVENTION_RE"; }
 
 branch_convention_expected() {
-	printf '%s' '<type>/vX.Y.Z/<issue-num>-<slug>  (type: feat|fix|chore|docs|refactor|perf|test|build|ci|revert; version dotted SemVer; slug lowercase-kebab)'
+	printf '%s' '<type>/vX.Y.Z[-suffix]/<issue-num>-<slug>  (type: feat|fix|chore|docs|refactor|perf|test|build|ci|revert; version dotted SemVer with optional -suffix; slug lowercase-kebab)'
 }
 
 # rc 0 = valid canonical convention (caller should verify issue existence next)
@@ -60,20 +64,20 @@ branch_convention_validate() {
 	return 1
 }
 
-# Echo the issue number embedded in a branch name: the canonical path-segment
-# (group 3 of the convention RE) first, then an explicit `#NNN` fallback. Empty
-# output when no issue is embedded.
+# Echo the issue number embedded in a branch name: the digits of the issue
+# path-segment (immediately after `<type>/vVERSION/`) first, then an explicit
+# `#NNN` fallback. Empty output when no issue is embedded.
 #
-# The `#NNN` fallback is for callers that pass a NON-canonical name (the
-# issue-before-code hook only reaches this after a rc-0 canonical validate, so
-# it always hits the first branch — but this lib is a shared SSOT and the
-# fallback is exercised directly by the unit tests). Keep both branches.
+# Uses a DEDICATED sub-pattern (not the full convention regex) so extraction
+# never depends on that regex's capture-group numbering — the `[^/]+` version
+# segment tolerates any suffix. The `#NNN` fallback is for callers that pass a
+# NON-canonical name (the issue-before-code hook only reaches this after a rc-0
+# canonical validate; this lib is a shared SSOT and the fallback is exercised
+# directly by the unit tests). `:-` defaults keep `set -u` safe.
 branch_convention_extract_issue() {
 	local name="${1:-}"
-	# `:-` defaults so `set -u` can never hard-error if a future regex edit
-	# changes the group count; valid branches still extract correctly.
-	if [[ $name =~ $_BRANCH_CONVENTION_RE ]]; then
-		printf '%s' "${BASH_REMATCH[3]:-}"
+	if [[ $name =~ ^[^/]+/v[^/]+/([0-9]+)- ]]; then
+		printf '%s' "${BASH_REMATCH[1]:-}"
 		return 0
 	fi
 	if [[ $name =~ \#([0-9]+) ]]; then

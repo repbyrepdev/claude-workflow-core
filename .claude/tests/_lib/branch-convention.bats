@@ -43,6 +43,26 @@ teardown() {
 	[ "$status" -eq 0 ]
 }
 
+@test "validate: dot-separated SemVer pre-release suffix (-rc.1) → rc 0" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-rc.1/9-thing"
+	[ "$status" -eq 0 ]
+}
+
+@test "validate: trailing-dot suffix → rc 2 (not SemVer-valid)" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-W4./5-x"
+	[ "$status" -eq 2 ]
+}
+
+@test "validate: consecutive-dot suffix → rc 2 (not SemVer-valid)" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-W..4/5-x"
+	[ "$status" -eq 2 ]
+}
+
+@test "validate: leading-dot suffix → rc 2 (not SemVer-valid)" {
+	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "feat/v1.2.3-.W4/5-x"
+	[ "$status" -eq 2 ]
+}
+
 @test "validate: minimal slug + single-digit version → rc 0" {
 	run bash -c '. "$1"; branch_convention_validate "$2"' _ "$LIB" "fix/v0.0.1/1-a"
 	[ "$status" -eq 0 ]
@@ -137,6 +157,14 @@ teardown() {
 	[ "$output" = "708" ]
 }
 
+@test "extract: dot-separated-suffix branch → issue (decoupled sub-pattern)" {
+	# extract uses its own ^[^/]+/v[^/]+/([0-9]+)- sub-pattern, so a dotted
+	# version suffix in the middle segment does not perturb the issue capture.
+	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "feat/v1.2.3-rc.1/9-thing"
+	[ "$status" -eq 0 ]
+	[ "$output" = "9" ]
+}
+
 @test "extract: non-canonical with #NNN → fallback issue number" {
 	run bash -c '. "$1"; branch_convention_extract_issue "$2"' _ "$LIB" "hotfix-for-#1234-thing"
 	[ "$status" -eq 0 ]
@@ -166,5 +194,5 @@ teardown() {
 @test "branch_convention_expected: emits human-readable form" {
 	run bash -c '. "$1"; branch_convention_expected' _ "$LIB"
 	[ "$status" -eq 0 ]
-	[[ $output == *'<type>/vX.Y.Z/<issue-num>-<slug>'* ]]
+	[[ $output == *'<type>/vX.Y.Z[-suffix]/<issue-num>-<slug>'* ]]
 }
