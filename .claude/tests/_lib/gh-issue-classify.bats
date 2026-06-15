@@ -12,7 +12,7 @@
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/gh-issue-classify.sh"
-	[ -f "$LIB" ]
+	[ -f "$LIB" ] || return 1
 	TEST_TMP=$(mktemp -d -t ghic.XXXXXX) || return 1
 }
 

@@ -26,7 +26,7 @@
 
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/issue-before-code.sh"
-	[ -f "$HOOK" ]
+	[ -f "$HOOK" ] || return 1
 	TEST_TMP=$(mktemp -d -t ibc.XXXXXX) || return 1
 	mkdir -p "$TEST_TMP/bin"
 	export PATH="$TEST_TMP/bin:$PATH"

@@ -17,7 +17,7 @@
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/branch-convention.sh"
-	[ -f "$LIB" ]
+	[ -f "$LIB" ] || return 1
 	TEST_TMP=$(mktemp -d -t bcv.XXXXXX) || return 1
 }
 
