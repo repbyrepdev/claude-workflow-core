@@ -2,17 +2,28 @@
 set -u
 # event: PreToolUse
 # matcher: Bash
-# v4.24-L (#577) — PreToolUse Bash: refuses `git checkout -b feat/*` (or
-# `git switch -c feat/*`) branch creation unless the branch name embeds a
-# linked issue number AND that issue is assigned to the current user.
+# v4.24-L (#577) · #2416 — PreToolUse Bash: refuses branch-creation
+# (`git checkout -b <name>` / `git switch -c <name>`) for ALL work-branch
+# types unless the name follows the canonical convention AND embeds a linked
+# issue that exists and is assigned to the current user.
 #
-# Pattern enforced (in priority order — comment-analyzer r2 #5/#6):
-#   1. explicit `#NNN` reference inside the branch name → direct NNN
-#   2. `feat/vX.Y-Z/NNN-slug` path-segment NNN (v4.28-W4 #708) → NNN
-#   3. `feat/vX.Y-Z/...` (no NNN segment) → resolve via gh issue search
-# `gh issue view NNN` must show @me as an assignee. Prevents the
-# "coding without a tracking issue" class of slip-ups flagged in #201 +
-# memory feedback_batch_related_subissues.
+# The convention is the SSOT in _lib/branch-convention.sh — the SAME definition
+# the PR-time verify (scripts/meta-bootstrap.sh feature-branch) uses. There is
+# NO inline branch regex here, so the creation-time gate and the PR-time verify
+# can never drift (#2416). Before #2416 this gate was feat/-only, which let a
+# mis-named `chore/labels/2289-...` branch slip past creation and only fail at
+# PR time.
+#
+# Decision (per branch_convention_validate):
+#   scratch   (no <type>/ prefix)            → allow (casual local branches)
+#   valid     (<type>/vX.Y.Z/<issue>-<slug>) → require issue exists + @me-assigned
+#   malformed (claims <type>/ but no match)  → DENY with convention guidance
+#
+# Issue resolution: branch_convention_extract_issue (path-segment NNN, or an
+# explicit #NNN). `gh issue view NNN` must succeed (issue exists) and list @me
+# as an assignee. Transient gh failures (auth/network/5xx) fail-open; only a
+# genuine "not found" denies. Prevents the "coding without a tracking issue"
+# class of slip-ups flagged in #201 + memory feedback_batch_related_subissues.
 #
 # Emergency bypass: inline `ISSUE_BEFORE_CODE_SKIP=1 git checkout -b …`
 # sentinel in the command string (PreToolUse hooks don't see the env).
@@ -24,24 +35,26 @@ PAYLOAD=$(cat 2>/dev/null || echo "{}")
 CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -z "$CMD" ] && exit 0
 
-# Detect branch-creation commands targeting `feat/` (convention). Let
-# chore/fix/docs/etc branches through — they're usually one-off and
-# don't need issue-lineage enforcement at this layer.
-# Anchored match: command must START with (possibly `env VAR=val`-
-# prefixed) `git checkout -b feat/` or `git switch -c feat/`. Substring
-# match would false-positive on commit messages that MENTION the
-# command pattern inside a heredoc.
-if [[ ! $CMD =~ ^([[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*git[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+feat/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)* ]]; then
+# Cheap pre-filter (no lib sourcing on the hot path — this hook fires on every
+# Bash command): is this a branch-creation command at all? Anchored match
+# tolerates a leading `VAR=val ` env prefix. Covers every create verb —
+# `checkout -b`/`-B`/`--orphan`, `switch -c`/`-C`/`--orphan`, and `switch
+# --create` in both `--create <name>` and `--create=<name>` forms — so a
+# malformed force/orphan-create (`git checkout --orphan chore/labels/2289-x`)
+# can't slip the gate. The separator is embedded per-verb (space for short
+# opts and --orphan, space-or-`=` for `--create`).
+# Type-agnostic — the precise convention check happens only after the SSOT loads.
+if [[ ! $CMD =~ ^([[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*git[[:space:]]+(checkout[[:space:]]+(-[bB]|--orphan)[[:space:]]+|switch[[:space:]]+(-[cC]|--create|--orphan)[[:space:]]+|switch[[:space:]]+--create=)[^[:space:]] ]]; then
 	exit 0
 fi
 
-# v4.24-Q (#604) — shared sentinel + deny libs.
-# Resolve via the hook's own install dir (not `git rev-parse`) so the
-# hook works when invoked from an unrelated cwd (test harness tmpdir,
-# arbitrary git repo checked out under the user's session, etc.).
+# v4.24-Q (#604) — shared sentinel + deny libs. Resolve via the hook's own
+# install dir (not `git rev-parse`) so the hook works when invoked from an
+# unrelated cwd (test harness tmpdir, arbitrary git repo under the session).
 HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
 LIB_DENY="${HOOK_DIR}/../_lib/hook-deny.sh"
 LIB_SENTINEL="${HOOK_DIR}/../_lib/hook-inline-sentinel.sh"
+LIB_CONVENTION="${HOOK_DIR}/../_lib/branch-convention.sh"
 if [ -f "$LIB_DENY" ]; then
 	# shellcheck source=../_lib/hook-deny.sh
 	source "$LIB_DENY"
@@ -57,105 +70,100 @@ if [ -f "$LIB_SENTINEL" ]; then
 else
 	hook_inline_sentinel_check() { return 1; }
 fi
-
-# Inline-sentinel bypass.
+# Inline-sentinel bypass — checked BEFORE the SSOT libs so an operator can still
+# bypass even when a core lib is missing (the libs below fail CLOSED).
 if hook_inline_sentinel_check "ISSUE_BEFORE_CODE_SKIP" "$CMD" "issue-before-code"; then
 	exit 0
 fi
 
-# Extract branch name — everything after `-b feat/` or `-c feat/` up to
-# whitespace/semicolon/ampersand/end-of-command.
-BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout -b|switch -c)[[:space:]]+feat/[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout -b|switch -c)[[:space:]]+//')
-if [ -z "$BRANCH" ]; then
-	# Pattern matched case but regex failed to extract — fail-open for
-	# weird spacing rather than block legit commands.
-	exit 0
-fi
-
-# Extract issue number from branch name (vX.Y-Z/NNN, vX.Y-Z, or #NNN).
-# Matches in order:
-#   1. feat/#NNN-description → direct NNN.
-#   2. feat/vX.Y-Z/NNN-slug → NNN as path-segment digit cluster after
-#      the version prefix. Disambiguates when multiple sub-issues share
-#      the same vX.Y-Z prefix (the version-prefix search would pick the
-#      first match alphabetically and silently route to the wrong issue).
-#      v4.28-W4 (#708): added because feat/v4.28-W4/708-... resolved to
-#      #710 — the first of seven v4.28-W4 siblings — even though the
-#      branch was clearly tagged with 708.
-#   3. feat/vX.Y-Z/... with no NNN segment → lookup via gh issue search.
-#
-# code-reviewer r1 #2: branch-pattern regex is now SSOT'd here so the
-# path-NNN extractor + version-prefix extractor stay in lockstep if
-# the `feat/vX.Y-Z` convention ever changes.
-VER_PREFIX_RE='^feat/v[0-9]+\.[0-9]+-[A-Za-z0-9]+'
-ISSUE_NUM=""
-if echo "$BRANCH" | grep -qE '#[0-9]+'; then
-	ISSUE_NUM=$(echo "$BRANCH" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
-fi
-
-if [ -z "$ISSUE_NUM" ]; then
-	ISSUE_NUM=$(echo "$BRANCH" | grep -oE "${VER_PREFIX_RE}/[0-9]+" | head -1 | grep -oE '/[0-9]+$' | tr -d '/')
-fi
-
-# Fall back to version-prefix resolution (feat/v4.24-L/... → lookup the
-# sub-issue titled "v4.24-L:" under the v4.24 epic). Slower but handles
-# the `vX.Y-Z/...` convention this repo uses when no NNN segment exists.
-#
-# silent-failure-hunter r2 #1 (CRITICAL): prior `2>/dev/null || echo ""`
-# masked transient gh API errors (5xx, network, rate-limit) and let them
-# fall through to the L108 "no resolvable issue link" deny — operator
-# saw "File the issue first" guidance when the real cause was a
-# transient backend error. This is a BLOCKING hook; misleading deny =
-# wasted user time + bypass via ISSUE_BEFORE_CODE_SKIP. Same r1 #2
-# pattern: capture rc separately + advisory exit on API failure (not
-# deny — issue resolution can't proceed without the API).
-if [ -z "$ISSUE_NUM" ]; then
-	VER_PREFIX=$(echo "$BRANCH" | grep -oE "$VER_PREFIX_RE" | head -1 | sed 's,^feat/,,')
-	if [ -n "$VER_PREFIX" ] && command -v gh >/dev/null 2>&1; then
-		# CR Phase 2 minor: pass VER_PREFIX via jq --arg instead of shell-
-		# interpolating into the gh --jq filter. Direct interpolation
-		# would let a hostile branch-name VER_PREFIX inject jq syntax.
-		# gh's `--jq` flag only takes a string filter (no --arg), so we
-		# split: gh emits raw JSON, jq applies the filter with --arg.
-		# Capture gh output to a var BEFORE piping to jq — this hook has
-		# `set -u` only (no pipefail), so a failing gh in a pipe would
-		# silently propagate jq's rc instead of gh's. Two-step gives us
-		# correct rc-capture for the existing gh_rc-branch advisory.
-		gh_err=$(mktemp)
-		gh_rc=0
-		gh_out=$(gh issue list --state all --search "$VER_PREFIX:" --json number,title 2>"$gh_err") || gh_rc=$?
-		if [ "$gh_rc" -eq 0 ]; then
-			# CR Phase 2 r4 trivial: guard jq failure same as the assignee
-			# block below so ISSUE_NUM stays empty (falls through to deny)
-			# rather than tripping `set -u`.
-			jq_err=$(mktemp)
-			ISSUE_NUM=$(printf '%s' "$gh_out" | jq -r --arg ver "$VER_PREFIX:" '[.[] | select(.title | startswith($ver))] | .[0].number // empty' 2>"$jq_err") || ISSUE_NUM=""
-			rm -f "$jq_err"
-		fi
-		if [ "$gh_rc" -ne 0 ]; then
-			echo "issue-before-code: gh issue list for $VER_PREFIX failed (rc=$gh_rc) — skipping ($(head -c 200 "$gh_err"))" >&2
-			rm -f "$gh_err"
-			exit 0
-		fi
-		rm -f "$gh_err"
-	fi
-fi
-
-if [ -z "$ISSUE_NUM" ]; then
+# The branch-convention + gh-classifier SSOTs are REQUIRED dependencies of this
+# policy gate. A missing core lib fails CLOSED (deny) rather than silently
+# disabling malformed-branch / phantom-issue enforcement during packaging drift
+# — a gate that quietly turns itself off is worse than no gate. The bypass above
+# still lets an operator proceed in an emergency; the PR-time verify
+# (meta-bootstrap) also fails closed on the same condition.
+LIB_CLASSIFY="${HOOK_DIR}/../_lib/gh-issue-classify.sh"
+if [ -f "$LIB_CONVENTION" ]; then
+	# shellcheck source=../_lib/branch-convention.sh
+	source "$LIB_CONVENTION"
+else
 	hook_deny "issue-before-code" \
-		"branch '$BRANCH' has no resolvable issue link (expected #NNN or vX.Y-Z prefix matching an open issue title). File the issue first or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
+		"missing required SSOT library: $LIB_CONVENTION — fix the install, or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
+fi
+if [ -f "$LIB_CLASSIFY" ]; then
+	# shellcheck source=../_lib/gh-issue-classify.sh
+	source "$LIB_CLASSIFY"
+else
+	hook_deny "issue-before-code" \
+		"missing required SSOT library: $LIB_CLASSIFY — fix the install, or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
 fi
 
-# Verify the issue is assigned to current user.
-if ! command -v gh >/dev/null 2>&1; then
-	# gh missing = can't verify; fail-open.
+# Extract the branch NAME: the first token after the create verb, up to
+# whitespace or a shell separator. Type-agnostic (the convention check
+# classifies it next).
+# SYNC: the create-verb set here MUST stay in lockstep with the pre-filter
+# regex above (checkout -[bB] | --orphan; switch -[cC] | --create | --orphan
+# with a space; and switch --create=<name>). If a new create verb/flag is
+# supported, update BOTH this grep and the pre-filter, or a command the
+# pre-filter admits could fail extraction (and fail-open). The trailing sed
+# strips whichever verb matched.
+BRANCH=$(printf '%s' "$CMD" | grep -oE '(checkout[[:space:]]+(-[bB]|--orphan)|switch[[:space:]]+(-[cC]|--create|--orphan))[[:space:]]+[^[:space:];&|]+|switch[[:space:]]+--create=[^[:space:];&|]+' | head -1 | sed -E 's/^(checkout|switch)[[:space:]]+(-[bBcC]|--create|--orphan)[[:space:]]+//; s/^switch[[:space:]]+--create=//')
+if [ -z "$BRANCH" ]; then
+	# Pre-filter matched but extraction failed (weird spacing) — fail-open
+	# rather than block a legit command.
 	exit 0
 fi
 
-# silent-failure-hunter r1 #1 + r3 #1: prior `2>/dev/null` discarded
-# stderr entirely; operator saw "gh auth failed" advisory whether the
-# real cause was auth, network, rate-limit, or 5xx. Now: rc-branch +
-# tempfile-stderr so the advisory carries the actual failure context.
+# Classify against the SSOT convention. This hook has `set -u` only (no set -e),
+# so the bare call's non-zero rc does not abort; `case $?` reads it directly.
+branch_convention_validate "$BRANCH"
+case $? in
+0) : ;;      # valid work branch — fall through to issue existence + assignment
+1) exit 0 ;; # scratch name (no <type>/ prefix) — allowed, no issue lineage
+2)
+	hook_deny "issue-before-code" \
+		"branch '$BRANCH' is not per convention. Expected: $(branch_convention_expected). Rename it, or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
+	;;
+*) exit 0 ;; # unreachable (validate only returns 0/1/2) — fail-open defensively
+esac
+
+# Valid convention branch → resolve the embedded issue number via the SSOT.
+ISSUE_NUM=$(branch_convention_extract_issue "$BRANCH")
+if [ -z "$ISSUE_NUM" ]; then
+	# Defensive: a valid branch always embeds an issue number; if extraction
+	# somehow returns empty, fail-open rather than block.
+	exit 0
+fi
+
+# Verify the issue EXISTS and is assigned to the current user. gh absent =
+# can't verify; fail-open.
+if ! command -v gh >/dev/null 2>&1; then
+	exit 0
+fi
+
+# One gh call proves existence (success) + fetches the assignee list; the @me
+# comparison needs the `gh api user` call below. Capture rc + stderr separately
+# (this hook has set -u only, no pipefail) so the shared classifier can
+# distinguish a genuine "not found" (deny) from transient auth/network (skip).
+gh_err=$(mktemp)
+gh_rc=0
+gh_out=$(gh issue view "$ISSUE_NUM" --json assignees 2>"$gh_err") || gh_rc=$?
+if [ "$gh_rc" -ne 0 ]; then
+	if gh_issue_view_missing "$gh_err"; then
+		# Issue genuinely doesn't exist — the branch references a phantom issue.
+		err_head=$(head -c 200 "$gh_err")
+		rm -f "$gh_err"
+		hook_deny "issue-before-code" \
+			"branch '$BRANCH' references issue #$ISSUE_NUM but it does not exist on GitHub ($err_head). File the issue first (github-issue-creation skill) or bypass: ISSUE_BEFORE_CODE_SKIP=1 ISSUE_BEFORE_CODE_SKIP_REASON=\"...\" <cmd>"
+	fi
+	# Transient backend error — don't block on it.
+	echo "issue-before-code: gh issue view #$ISSUE_NUM failed (rc=$gh_rc) — skipping verification ($(head -c 200 "$gh_err"))" >&2
+	rm -f "$gh_err"
+	exit 0
+fi
+rm -f "$gh_err"
+
+# Resolve current login for the assignee comparison.
 gh_err=$(mktemp)
 gh_rc=0
 ME=$(gh api user --jq .login 2>"$gh_err") || gh_rc=$?
@@ -170,31 +178,7 @@ if [ -z "$ME" ]; then
 	exit 0
 fi
 
-# silent-failure-hunter r1 #2: prior `gh issue view ... 2>/dev/null ||
-# echo "false"` made API failure (network, 5xx, rate-limit) indistin-
-# guishable from a genuinely-unassigned issue — operator saw the
-# "NOT assigned to" deny, blamed assignment, but the real cause was a
-# transient gh API error. Capture rc separately so we can branch on it.
-# CR Phase 2 minor: same jq-injection-safe pattern as the version-prefix
-# fallback above — capture gh output to a var first (this hook has set -u
-# only, no pipefail; a piped gh would propagate jq's rc instead of gh's),
-# then pipe through jq with --arg.
-gh_err=$(mktemp)
-gh_rc=0
-gh_out=$(gh issue view "$ISSUE_NUM" --json assignees 2>"$gh_err") || gh_rc=$?
-if [ "$gh_rc" -ne 0 ]; then
-	# API failed — different message + advisory exit. Don't deny on a
-	# transient backend error.
-	echo "issue-before-code: gh issue view #$ISSUE_NUM failed (rc=$gh_rc) — skipping assignee verification ($(head -c 200 "$gh_err"))" >&2
-	rm -f "$gh_err"
-	exit 0
-fi
-rm -f "$gh_err"
-
-# CR Phase 2 r4 trivial #2: jq could fail on malformed JSON (rare but
-# possible if gh schema changes or returns truncated content). Without
-# this guard, ASSIGNED stays unset → next `[ "$ASSIGNED" != "true" ]`
-# aborts under `set -u`. Capture jq stderr + default to advisory-exit.
+# Parse assignees (guard jq so a schema/truncation glitch can't trip set -u).
 jq_err=$(mktemp)
 jq_rc=0
 ASSIGNED=$(printf '%s' "$gh_out" | jq -r --arg me "$ME" '[.assignees[].login] | any(. == $me)' 2>"$jq_err") || jq_rc=$?

@@ -434,6 +434,22 @@ _dispatch_feature_branch() {
 		return 2
 	fi
 	local rc=0 skipped=0
+	# Source the shared SSOTs (#2416): branch-convention (the single canonical
+	# naming rule, also used by the creation-time gate issue-before-code) and the
+	# gh-issue-not-found classifier (shared so the missing-vs-transient rule can't
+	# drift between enforcers). Both live in ../_lib relative to this script.
+	local _lib_dir _bc_lib _cls_lib
+	_lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib
+	_bc_lib="$_lib_dir/branch-convention.sh"
+	_cls_lib="$_lib_dir/gh-issue-classify.sh"
+	if [ ! -f "$_bc_lib" ] || [ ! -f "$_cls_lib" ]; then
+		_log "✗ missing SSOT lib(s) under: $_lib_dir"
+		return 1
+	fi
+	# shellcheck source=../_lib/branch-convention.sh
+	source "$_bc_lib"
+	# shellcheck source=../_lib/gh-issue-classify.sh
+	source "$_cls_lib"
 	# Resolve repo + current branch.
 	local repo_root
 	if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
@@ -446,14 +462,14 @@ _dispatch_feature_branch() {
 		_log "✗ no current branch (detached HEAD?) — checkout a feature branch"
 		return 1
 	fi
-	# Rule 1: branch named per Conventional Commits type prefix + SemVer + issue-slug.
-	# Anchored both ends; slug restricted to lowercase kebab-case to match the
-	# repo's existing branch hygiene rules (orphan-branch sweep, etc).
-	local branch_re='^(feat|fix|chore|docs|refactor|perf|test|build|ci|revert)/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?/[0-9]+-[a-z0-9][a-z0-9-]*$'
+	# Rule 1: branch named per the SSOT convention (type prefix + dotted SemVer
+	# + issue-slug). branch_convention_validate returns 0 only for a fully-valid
+	# work branch; scratch (rc 1) and malformed (rc 2) both fail this PR-time
+	# gate, where the current branch must already be a convention branch.
 	local rule1_ok=1
-	if [[ ! $branch =~ $branch_re ]]; then
+	if ! branch_convention_validate "$branch"; then
 		_log "✗ branch name not per convention: $branch"
-		_log "    expected: <type>/vX.Y.Z/<issue-num>-<slug>"
+		_log "    expected: $(branch_convention_expected)"
 		_log "    fix: git branch -m <type>/vX.Y.Z/<issue-num>-<slug>"
 		rc=1
 		rule1_ok=0
@@ -463,16 +479,26 @@ _dispatch_feature_branch() {
 	# from a malformed branch name).
 	if [ "$rule1_ok" = "1" ]; then
 		local issue_num
-		issue_num=$(printf '%s' "$branch" | sed -E 's#^[^/]+/v[^/]+/([0-9]+)-.*#\1#')
-		if ! command -v gh >/dev/null 2>&1; then
+		# Fail CLOSED if extraction fails in ANY way — a rule1_ok (canonical)
+		# branch ALWAYS embeds an issue number, so either a non-zero rc OR an
+		# empty result is an extract_issue regression. `if !` captures the rc
+		# directly (no `|| issue_num=""` mask that would swallow the failure) and
+		# `[ -z ]` catches an empty result; without this the gh-absent skip below
+		# would silently downgrade a broken invariant to PARTIAL.
+		if ! issue_num=$(branch_convention_extract_issue "$branch") || [ -z "$issue_num" ]; then
+			_log "✗ internal: could not extract issue from validated branch '$branch' (extract_issue regression?)"
+			rc=1
+		elif ! command -v gh >/dev/null 2>&1; then
 			_log "ℹ gh not on PATH — skipping Rules 2+3 (issue + labels)"
 			skipped=$((skipped + 2))
 		else
 			local gh_err
 			gh_err=$(mktemp -t feature-branch-gh.XXXXXX 2>/dev/null || echo "")
 			if ! gh issue view "$issue_num" --json state >"${gh_err:-/dev/null}" 2>&1; then
-				# Distinguish "issue not found" from "gh auth/network".
-				if grep -q "not found\|Could not resolve" "${gh_err:-/dev/null}" 2>/dev/null; then
+				# Distinguish "issue not found" from "gh auth/network" via the
+				# shared SSOT classifier (a naive "Could not resolve" grep also
+				# matches the DNS-host transport error → false not-found).
+				if gh_issue_view_missing "${gh_err:-/dev/null}"; then
 					_log "✗ branch references issue #$issue_num but issue not found on GitHub"
 					_log "    fix: file the issue first via the github-issue-creation skill"
 				else
