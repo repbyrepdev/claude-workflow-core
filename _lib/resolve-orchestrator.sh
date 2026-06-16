@@ -64,13 +64,24 @@ resolve_ship_orchestrator() {
 		# Glob the marketplace segment so a non-default marketplace dir name still
 		# resolves. No match → the glob stays literal, the -f test fails, and the
 		# loud error below fires (no silent fall-back to a stale local driver).
+		# Collect ALL glob matches rather than first-match-and-break: if two
+		# marketplace dirs both carry the pinned driver, silently picking the
+		# filesystem-first one is non-deterministic — and for a resolution SSOT
+		# that is a corrupted-cache signal, not a coin-flip. Fail loudly listing
+		# both. (`${#arr[@]}` is set-u-safe when empty; the bare `"${arr[@]}"`
+		# expansion is reached only inside the >1 branch where the array is set.)
 		local cand
+		local matches=()
 		for cand in "$cache_root"/*/claude-workflow-core/"$pin"/scripts/ship-pr-cycle.sh; do
-			if [ -f "$cand" ]; then
-				orchestrator="$cand"
-				break
-			fi
+			[ -f "$cand" ] && matches+=("$cand")
 		done
+		if [ "${#matches[@]}" -gt 1 ]; then
+			echo "resolve-orchestrator: ERROR: multiple cached claude-workflow-core drivers for pin '$pin' under $cache_root (corrupted/duplicated cache):" >&2
+			printf '  %s\n' "${matches[@]}" >&2
+			echo "  run scripts/bootstrap-machine.sh to rebuild the plugin cache" >&2
+			return 2
+		fi
+		[ "${#matches[@]}" -eq 1 ] && orchestrator="${matches[0]}"
 		if [ -z "$orchestrator" ]; then
 			echo "resolve-orchestrator: ERROR: no cached claude-workflow-core driver for pin '$pin' under $cache_root — run scripts/bootstrap-machine.sh (or bump + refresh the pin)" >&2
 			return 2

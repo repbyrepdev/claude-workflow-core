@@ -67,6 +67,10 @@ teardown() {
 	. "$LIB"
 	run resolve_ship_orchestrator "$REPO"
 	[ "$status" -eq 2 ]
+	# the SPECIFIC error fired (not just any rc 2): missing pin lib. `run` merges
+	# stderr into $output, so the diagnostic is assertable.
+	[[ $output == *"resolve-plugin-pin.sh"* ]]
+	[[ $output == *"missing"* ]]
 }
 
 @test "resolve_ship_orchestrator: CONSUMER pin resolves but no cached driver → rc 2" {
@@ -80,6 +84,8 @@ teardown() {
 	. "$LIB"
 	run resolve_ship_orchestrator "$REPO"
 	[ "$status" -eq 2 ]
+	# the SPECIFIC error fired: pin resolved but no cached driver.
+	[[ $output == *"no cached"* ]]
 }
 
 @test "resolve_ship_orchestrator: PLUGIN repo but driver not executable → rc 2" {
@@ -91,6 +97,8 @@ teardown() {
 	. "$LIB"
 	run resolve_ship_orchestrator "$REPO"
 	[ "$status" -eq 2 ]
+	# the SPECIFIC error fired: present-but-not-executable driver.
+	[[ $output == *"not executable"* ]]
 }
 
 @test "resolve_ship_orchestrator: CONSUMER cache under a NON-default marketplace segment still resolves (glob, #2427)" {
@@ -126,4 +134,31 @@ teardown() {
 	mkdir -p "$NONGIT"
 	run bash -c "cd '$NONGIT' && . '$LIB' && resolve_ship_orchestrator"
 	[ "$status" -eq 2 ]
+	# the SPECIFIC error fired: not inside a git repository.
+	[[ $output == *"git repository"* ]]
+}
+
+@test "resolve_ship_orchestrator: CONSUMER pinned driver under MULTIPLE marketplaces → rc 2 (ambiguous, deterministic-fail)" {
+	# A corrupted/duplicated cache where two marketplace dirs BOTH carry the
+	# pinned driver must fail loudly (rc 2 + list both) rather than silently
+	# first-match by filesystem order — the resolver is the SSOT, so ambiguity is
+	# an error, not a coin-flip.
+	REPO="$TEST_TMP/consumer-dup"
+	mkdir -p "$REPO/.claude/_lib"
+	printf '#!/bin/bash\nresolve_plugin_pin() { echo "0.34.82"; }\n' >"$REPO/.claude/_lib/resolve-plugin-pin.sh"
+	: >"$REPO/.pre-commit-config.yaml"
+	CACHE="$TEST_TMP/cache-dup"
+	local mp d
+	for mp in marketplace-a marketplace-b; do
+		d="$CACHE/$mp/claude-workflow-core/0.34.82/scripts/ship-pr-cycle.sh"
+		mkdir -p "$(dirname "$d")"
+		printf '#!/bin/bash\n' >"$d"
+		chmod +x "$d"
+	done
+	export SHIP_CYCLE_CACHE_ROOT="$CACHE"
+	# shellcheck source=/dev/null
+	. "$LIB"
+	run resolve_ship_orchestrator "$REPO"
+	[ "$status" -eq 2 ]
+	[[ $output == *"multiple cached"* ]]
 }
