@@ -28,7 +28,11 @@ EOF
 	# hook-exclusion tests' exact counts aren't perturbed by the REAL plugin _lib
 	# dir (resolved via SCRIPT_DIR/../_lib when COMPOSE_CR_LIB_DIR is unset). The
 	# dedicated _lib test below overrides this with a fixture dir.
-	export COMPOSE_CR_LIB_DIR="$TMP/no-such-lib"
+	# #2449: use a real EMPTY dir (not a nonexistent path) — a DECLARED-but-missing
+	# canonical dir now fails closed (exit 2); an empty dir yields no enumeration
+	# (same net effect: no exclusions) while still existing.
+	mkdir -p "$TMP/empty-hooks" "$TMP/empty-lib"
+	export COMPOSE_CR_LIB_DIR="$TMP/empty-lib"
 }
 
 teardown() {
@@ -40,7 +44,7 @@ teardown() {
 	# #2254: point the hook-exclusion enumerator at a nonexistent dir so the
 	# CR-in-CI mirror-hook injection is skipped — isolating the base-verbatim
 	# merge behavior this test covers. (Injection is covered separately below.)
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/no-such-hooks" "$SCRIPT" --base "$BASE"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" "$SCRIPT" --base "$BASE"
 	[ "$status" -eq 0 ]
 	[[ $output == *"# header comment"* ]]
 	# Byte-identical to base.
@@ -102,7 +106,7 @@ EOF
 @test "empty/comment-only overlay (+ no hooks dir) → base verbatim + NOTE (#234)" {
 	printf '# only a comment\n' >"$TMP/ovl.yaml"
 	# #2254: skip the hook-exclusion injection (see above) to isolate verbatim.
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/no-such-hooks" "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
 	[ "$status" -eq 0 ]
 	[[ $output == *"# header comment"* ]]   # base verbatim
 	[[ $output == *"no mapping content"* ]] # NOTE on stderr (captured by run)
@@ -307,7 +311,7 @@ EOF
 	cp "$TMP/lib/gamma.sh" "$TMP/consumer-lib/gamma.sh"            # byte-identical → excluded
 	printf 'echo delta OVERRIDDEN\n' >"$TMP/consumer-lib/delta.sh" # differs → reviewed
 	# Neutralize hooks so the count isolates the _lib enumeration.
-	run env COMPOSE_CR_HOOKS_DIR="$TMP/no-such-hooks" COMPOSE_CR_LIB_DIR="$TMP/lib" COMPOSE_CR_CONSUMER_LIB_DIR="$TMP/consumer-lib" \
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" COMPOSE_CR_LIB_DIR="$TMP/lib" COMPOSE_CR_CONSUMER_LIB_DIR="$TMP/consumer-lib" \
 		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
 	[ "$status" -eq 0 ]
 	# byte-identical mirror → excluded per-file.
@@ -339,4 +343,22 @@ EOF
 	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/_lib/gamma.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/_lib/gamma.sh" ]
 	# exactly two exclusions, no dropped/merged/duplicated entry ($BASE had none).
 	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 2 ]
+}
+
+@test "#2449: declared canonical HOOKS dir that is MISSING aborts (exit 2) — fail-closed, no silent skip" {
+	# Project guideline (propagation scripts): a DECLARED (non-empty) SSOT input
+	# that is missing must ABORT (exit 2), never silently skip — a silent skip is
+	# a coverage hole that disables the consumer drift gate. An explicitly-set
+	# COMPOSE_CR_HOOKS_DIR pointing at a nonexistent dir is "declared but missing".
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/genuinely-absent-hooks" "$SCRIPT" --base "$BASE"
+	[ "$status" -eq 2 ]
+	[[ $output == *"canonical hooks dir is missing"* ]]
+}
+
+@test "#2449: declared canonical _LIB dir that is MISSING aborts (exit 2) — fail-closed" {
+	# Same guideline for the _lib mirror. Neutralize hooks with the empty dir so
+	# the abort is unambiguously the _lib check.
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" COMPOSE_CR_LIB_DIR="$TMP/genuinely-absent-lib" "$SCRIPT" --base "$BASE"
+	[ "$status" -eq 2 ]
+	[[ $output == *"canonical _lib dir is missing"* ]]
 }

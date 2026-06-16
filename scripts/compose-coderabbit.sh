@@ -209,11 +209,18 @@ case "$_consumer_root" in /*) ;; *) _consumer_root="$PWD/$_consumer_root" ;; esa
 # Two canonical-mirror dirs get per-file exclusions: hooks/ (MIXED — only
 # byte-identical mirrors excluded, consumer-authored stay reviewed) and _lib/
 # (#2241 — PURE mirror, but per-file because CR-in-CI drops the dir-glob).
-# COMPOSE_CR_{HOOKS,LIB}_DIR override the canonical dir; with no override + empty
-# SCRIPT_DIR the dir is empty and the guard skips cleanly. Enumeration failure
-# fails CLOSED (exit 2) — a silently-empty list would re-enable the treadmill.
+# COMPOSE_CR_{HOOKS,LIB}_DIR override the canonical dir; with no override AND
+# empty SCRIPT_DIR the path is empty ("not declared") and the guard skips
+# cleanly. A DECLARED (non-empty) canonical dir that is MISSING fails CLOSED
+# (exit 2) — a silent skip is a coverage hole that disables the consumer drift
+# gate (project guideline for propagation scripts). Enumeration failure also
+# fails CLOSED — a silently-empty list would re-enable the #2241 treadmill.
 _all_excl=""
 _hooks_canon="${COMPOSE_CR_HOOKS_DIR:-${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}}"
+if [ -n "$_hooks_canon" ] && [ ! -d "$_hooks_canon" ]; then
+	echo "compose-coderabbit: ERROR: declared canonical hooks dir is missing: $_hooks_canon (a missing declared SSOT input must abort, never silently skip)" >&2
+	exit 2
+fi
 if [ -n "$_hooks_canon" ] && [ -d "$_hooks_canon" ]; then
 	_hooks_consumer="${COMPOSE_CR_CONSUMER_HOOKS_DIR:-$_consumer_root/.claude/hooks}"
 	case "$_hooks_consumer" in /*) ;; *) _hooks_consumer="$PWD/$_hooks_consumer" ;; esac
@@ -226,6 +233,10 @@ if [ -n "$_hooks_canon" ] && [ -d "$_hooks_canon" ]; then
 }$_hx"
 fi
 _lib_canon="${COMPOSE_CR_LIB_DIR:-${SCRIPT_DIR:+$SCRIPT_DIR/../_lib}}"
+if [ -n "$_lib_canon" ] && [ ! -d "$_lib_canon" ]; then
+	echo "compose-coderabbit: ERROR: declared canonical _lib dir is missing: $_lib_canon (a missing declared SSOT input must abort, never silently skip)" >&2
+	exit 2
+fi
 if [ -n "$_lib_canon" ] && [ -d "$_lib_canon" ]; then
 	_lib_consumer="${COMPOSE_CR_CONSUMER_LIB_DIR:-$_consumer_root/.claude/_lib}"
 	case "$_lib_consumer" in /*) ;; *) _lib_consumer="$PWD/$_lib_consumer" ;; esac
