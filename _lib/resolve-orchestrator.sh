@@ -58,6 +58,14 @@ resolve_ship_orchestrator() {
 			echo "resolve-orchestrator: ERROR: could not resolve claude-workflow-core pin from $repo_root/.pre-commit-config.yaml" >&2
 			return 2
 		fi
+		# Defensive: resolve_plugin_pin regex-validates (^[A-Za-z0-9]...), so a rc-0
+		# EMPTY pin is impossible today — but the resolver must not TRUST that and
+		# build a malformed `…/claude-workflow-core//scripts/…` double-slash glob if
+		# the callee's contract ever changes. Fail closed with a clear error.
+		if [ -z "$pin" ]; then
+			echo "resolve-orchestrator: ERROR: resolve_plugin_pin returned an empty pin from $repo_root/.pre-commit-config.yaml (would build a malformed cache glob)" >&2
+			return 2
+		fi
 		local cache_root="${SHIP_CYCLE_CACHE_ROOT:-$HOME/.claude/plugins/cache}"
 		# Canonical cache layout:
 		#   <root>/<marketplace>/claude-workflow-core/<pin>/scripts/ship-pr-cycle.sh

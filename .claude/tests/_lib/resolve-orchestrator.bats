@@ -162,3 +162,19 @@ teardown() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"multiple cached"* ]]
 }
+
+@test "resolve_ship_orchestrator: CONSUMER pin resolver returns EMPTY at rc 0 → rc 2 (defensive, no double-slash glob)" {
+	# resolve_plugin_pin regex-validates so a rc-0 empty pin is impossible today,
+	# but the resolver must fail closed rather than build a malformed
+	# .../claude-workflow-core//scripts/... glob if that contract is ever violated.
+	REPO="$TEST_TMP/consumer-emptypin"
+	mkdir -p "$REPO/.claude/_lib"
+	# Stub returns empty stdout + rc 0 (echo succeeds) — the contract violation.
+	printf '#!/bin/bash\nresolve_plugin_pin() { echo ""; }\n' >"$REPO/.claude/_lib/resolve-plugin-pin.sh"
+	: >"$REPO/.pre-commit-config.yaml"
+	# shellcheck source=/dev/null
+	. "$LIB"
+	run resolve_ship_orchestrator "$REPO"
+	[ "$status" -eq 2 ]
+	[[ $output == *"empty pin"* ]]
+}
