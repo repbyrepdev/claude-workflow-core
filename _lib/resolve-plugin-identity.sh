@@ -121,10 +121,19 @@ resolve_plugin_installed_versions() {
 }
 
 # resolve_plugin_cache_latest — print the absolute path to the highest installed
-# semver version dir. Returns 1 if no versions are installed.
+# semver version dir. Returns 1 if no versions are installed; PROPAGATES rc 2
+# (hard error: unresolved identity / cache base) from resolve_plugin_installed_versions.
 resolve_plugin_cache_latest() {
-	local versions latest
-	versions="$(resolve_plugin_installed_versions)" || return 1
+	# #2427: capture + PROPAGATE the inner rc rather than collapsing every
+	# non-zero to 1. resolve_plugin_installed_versions returns 1 (no versions /
+	# base absent) OR 2 (hard error via resolve_plugin_cache_base — unresolved
+	# identity). The prior `|| return 1` masked the 2, so a caller could not
+	# distinguish "no cache installed" from "broken identity", violating the
+	# lib-level 0/1/2 contract (set -e captured via `rc=$?`, not `|| return`).
+	local versions latest rc
+	versions="$(resolve_plugin_installed_versions)"
+	rc=$?
+	[ "$rc" -eq 0 ] || return "$rc"
 	latest="$(printf '%s\n' "$versions" | tail -1)"
 	[ -n "$latest" ] || return 1
 	printf '%s' "$(resolve_plugin_cache_base)/$latest"

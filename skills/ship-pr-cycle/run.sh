@@ -40,45 +40,24 @@ if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
 	exit 2
 fi
 
-if [ -f "$REPO_ROOT/.claude-plugin/plugin.json" ]; then
-	# PLUGIN repo: the local checkout is the source of truth.
-	ORCHESTRATOR="$REPO_ROOT/scripts/ship-pr-cycle.sh"
-else
-	# CONSUMER repo: resolve the pinned version → exec the cache driver so the
-	# orchestrator is ALWAYS the version matching the pinned (SSOT-tracked,
-	# refreshed) reader. No local driver copy is consulted (it can't drift).
-	pin_lib="$REPO_ROOT/.claude/_lib/resolve-plugin-pin.sh"
-	if [ ! -r "$pin_lib" ]; then
-		echo "ship-pr-cycle skill: ERROR: $pin_lib missing — run scripts/refresh-from-source.sh to install the plugin _lib helpers" >&2
-		exit 2
-	fi
-	# shellcheck source=/dev/null
-	. "$pin_lib"
-	if ! pin=$(resolve_plugin_pin "$REPO_ROOT/.pre-commit-config.yaml"); then
-		echo "ship-pr-cycle skill: ERROR: could not resolve claude-workflow-core pin from $REPO_ROOT/.pre-commit-config.yaml" >&2
-		exit 2
-	fi
-	cache_root="${SHIP_CYCLE_CACHE_ROOT:-$HOME/.claude/plugins/cache}"
-	# Canonical cache layout:
-	#   <root>/<marketplace>/claude-workflow-core/<pin>/scripts/ship-pr-cycle.sh
-	# Glob the marketplace segment so a non-default marketplace dir name still
-	# resolves. No match → the glob stays literal, the -f test fails, and the
-	# loud error below fires (no silent fall-back to a stale local driver).
-	ORCHESTRATOR=""
-	for cand in "$cache_root"/*/claude-workflow-core/"$pin"/scripts/ship-pr-cycle.sh; do
-		if [ -f "$cand" ]; then
-			ORCHESTRATOR="$cand"
-			break
-		fi
-	done
-	if [ -z "$ORCHESTRATOR" ]; then
-		echo "ship-pr-cycle skill: ERROR: no cached claude-workflow-core driver for pin '$pin' under $cache_root — run scripts/bootstrap-machine.sh (or bump + refresh the pin)" >&2
-		exit 2
-	fi
+# v0.34.81 (#2427): the plugin-local-vs-pinned-cache resolution is now the SSOT
+# in _lib/resolve-orchestrator.sh, shared with hooks/post-commit-ship-cycle.sh
+# so the post-commit auto-fire can NEVER drift to a frozen repo-root driver
+# (the deadlock root cause). _lib is a sibling of skills/ in BOTH layouts:
+# skills/ship-pr-cycle/run.sh → ../../_lib (plugin _lib); .claude/skills/ship-
+# pr-cycle/run.sh → ../../_lib (.claude/_lib in a consumer).
+_LIB_RESOLVE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../_lib" 2>/dev/null && pwd)/resolve-orchestrator.sh"
+if [ ! -r "$_LIB_RESOLVE" ]; then
+	echo "ship-pr-cycle skill: ERROR: $_LIB_RESOLVE missing — run scripts/refresh-from-source.sh to install the plugin _lib helpers" >&2
+	exit 2
 fi
-
-if [ ! -x "$ORCHESTRATOR" ]; then
-	echo "ship-pr-cycle skill: ERROR: $ORCHESTRATOR missing or not executable" >&2
+# shellcheck source=../../_lib/resolve-orchestrator.sh
+. "$_LIB_RESOLVE"
+if ! ORCHESTRATOR=$(resolve_ship_orchestrator "$REPO_ROOT"); then
+	# resolve_ship_orchestrator already emitted a specific diagnostic to stderr
+	# (not-a-repo / missing pin lib / unresolvable pin / no cached driver /
+	# non-executable). Exit 2 — a resolution failure originates here, it is not
+	# a forwarded orchestrator exit code.
 	exit 2
 fi
 

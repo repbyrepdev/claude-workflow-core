@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # covers: hooks/phase1-directive-pending-guard.sh
+# shellcheck disable=SC2030,SC2031  # _setup_pending_repo + `run`/$() subshells modify+read TDIR/sha across @test bodies; intentional + isolated per test
 #
 # Tests for v0.27.0 #173 Layer 1 self-heal.
 # Full integration tests of the PreToolUse hook require the full plugin
@@ -392,4 +393,73 @@ teardown() {
 			false
 		}
 	done
+}
+
+# --- v0.34.81 (#2427) stamp-less self-heal ----------------------------------
+# A marker whose state JSON EXISTS but lacks phase1_directive_protocol was
+# written by a STALE driver (a frozen repo-root scripts/ship-pr-cycle.sh
+# predating the #2237 stamp) — an unstamped directive ship-cycle-guard rejects,
+# and every mechanical clear is itself directive-guard-blocked: the unrecoverable
+# 2026-06-16 deadlock. The self-heal clears such a marker EVEN when it is the
+# HEAD marker the other layers retain (Layer 0 skips HEAD; Layers 1/2 keep a
+# reachable sha) — age-guarded >1 min on the marker mtime to skip the write-
+# order race (driver writes the marker, then the state-JSON stamp ms later).
+
+@test "self-heal: stamp-less state JSON + AGED marker is self-CLEARED and the call ALLOWED (#2427)" {
+	_setup_pending_repo
+	sha=$(git -C "$TDIR" rev-parse HEAD)
+	# State JSON present but WITHOUT phase1_directive_protocol = stale-driver.
+	printf '{"stage":"phase1"}\n' >"$TDIR/.claude/.session-state/ship-cycle/${sha}.json"
+	# Age the marker past the 1-min write-order-race guard (portable -t CCYYMMDDhhmm).
+	touch -t 202001010000 "$TDIR/.claude/.session-state/ship-cycle/${sha}.phase1-directive.txt"
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+	# Self-healed: the stamp-less marker (the HEAD marker the other layers keep) is gone.
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/
+	[ "$status" -eq 0 ]
+	[[ $output != *.phase1-directive.txt* ]]
+}
+
+@test "self-heal: STAMPED state JSON (protocol present) marker is KEPT and still DENIES (#2427)" {
+	_setup_pending_repo
+	sha=$(git -C "$TDIR" rev-parse HEAD)
+	# Valid stamped directive (correct driver) — must NOT be self-healed even aged.
+	printf '{"stage":"phase1","phase1_directive_protocol":1}\n' >"$TDIR/.claude/.session-state/ship-cycle/${sha}.json"
+	touch -t 202001010000 "$TDIR/.claude/.session-state/ship-cycle/${sha}.phase1-directive.txt"
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
+}
+
+@test "self-heal: stamp-less but FRESH marker (<1 min) is KEPT — write-order-race guard (#2427)" {
+	_setup_pending_repo
+	sha=$(git -C "$TDIR" rev-parse HEAD)
+	printf '{"stage":"phase1"}\n' >"$TDIR/.claude/.session-state/ship-cycle/${sha}.json"
+	# Marker mtime is ~now (fresh, set by _setup_pending_repo) — do NOT age it; a
+	# sub-minute unstamped marker may be a correct driver mid-write.
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
+}
+
+@test "self-heal: corrupt/unreadable state JSON + aged marker is KEPT (fail-closed) (#2427)" {
+	_setup_pending_repo
+	sha=$(git -C "$TDIR" rev-parse HEAD)
+	# Invalid JSON → jq fails → _slh_proto != "absent" → KEEP (fail-closed; only a
+	# READABLE JSON that genuinely lacks the field self-heals).
+	printf 'not json {{{\n' >"$TDIR/.claude/.session-state/ship-cycle/${sha}.json"
+	touch -t 202001010000 "$TDIR/.claude/.session-state/ship-cycle/${sha}.phase1-directive.txt"
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
+	[ "$status" -eq 0 ]
+	[[ $output == *.phase1-directive.txt* ]]
 }

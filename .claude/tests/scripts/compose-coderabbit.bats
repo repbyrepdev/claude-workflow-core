@@ -24,6 +24,11 @@ reviews:
     base_branches:
       - main
 EOF
+	# #2427: neutralize the _lib per-file enumeration by default so the existing
+	# hook-exclusion tests' exact counts aren't perturbed by the REAL plugin _lib
+	# dir (resolved via SCRIPT_DIR/../_lib when COMPOSE_CR_LIB_DIR is unset). The
+	# dedicated _lib test below overrides this with a fixture dir.
+	export COMPOSE_CR_LIB_DIR="$TMP/no-such-lib"
 }
 
 teardown() {
@@ -257,7 +262,9 @@ EOF
 	# part 2: the appended exclusions are annotated. The comment renders directly
 	# under `path_filters:` (above the entries); grep is robust (yq head_comment
 	# read-back is finicky). Matches the reworded annotation.
-	grep -q 'canonical-mirror-hook exclusions auto-appended' "$TMP/.coderabbit.yaml"
+	# #2427: head_comment reworded ("canonical-mirror" — no longer "-hook" since it
+	# now covers !.claude/_lib/<name> too).
+	grep -q 'canonical-mirror exclusions auto-appended' "$TMP/.coderabbit.yaml"
 }
 
 @test "#2257: absent consumer mirror → excluded (byte-identical assumed = prior behavior)" {
@@ -285,6 +292,28 @@ EOF
 	[ "$status" -eq 0 ]
 	# kept REVIEWED (NOT excluded)
 	[ -z "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" ]
-	# WARNING emitted (not silent)
-	[[ $output == *"cmp failed comparing canonical 'alpha.sh'"* ]]
+	# WARNING emitted (not silent). #2427: the message now carries the full
+	# canonical path (dir-disambiguated for hooks vs _lib), so match loosely.
+	[[ $output == *"cmp failed comparing canonical"* ]]
+	[[ $output == *"alpha.sh"* ]]
+}
+
+@test "#2427: canonical _lib → per-file !.claude/_lib exclusions; consumer-overridden _lib stays reviewed" {
+	# Canonical _lib set: gamma (byte-identical mirror) + delta (consumer override).
+	# #2241: per-file because CR-in-CI drops the !.claude/_lib/** dir-glob.
+	mkdir -p "$TMP/lib" "$TMP/consumer-lib"
+	printf 'echo gamma\n' >"$TMP/lib/gamma.sh"
+	printf 'echo delta\n' >"$TMP/lib/delta.sh"
+	cp "$TMP/lib/gamma.sh" "$TMP/consumer-lib/gamma.sh"            # byte-identical → excluded
+	printf 'echo delta OVERRIDDEN\n' >"$TMP/consumer-lib/delta.sh" # differs → reviewed
+	# Neutralize hooks so the count isolates the _lib enumeration.
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/no-such-hooks" COMPOSE_CR_LIB_DIR="$TMP/lib" COMPOSE_CR_CONSUMER_LIB_DIR="$TMP/consumer-lib" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	# byte-identical mirror → excluded per-file.
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/_lib/gamma.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/_lib/gamma.sh" ]
+	# consumer-overridden → NOT excluded (stays reviewed).
+	[ -z "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/_lib/delta.sh")' "$TMP/.coderabbit.yaml")" ]
+	# exactly the one byte-identical _lib mirror excluded ($BASE had no path_filters).
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 1 ]
 }

@@ -28,8 +28,23 @@ if [ "${SHIP_CYCLE_POST_COMMIT_SKIP:-0}" = "1" ]; then
 	exit 0
 fi
 
-SCRIPT="$REPO_ROOT/scripts/ship-pr-cycle.sh"
-[ -x "$SCRIPT" ] || exit 0
+# v0.34.81 (#2427): resolve the orchestrator via the shared SSOT lib instead of
+# hardcoding "$REPO_ROOT/scripts/ship-pr-cycle.sh". In a CONSUMER that repo-root
+# path is the STALE FROZEN driver — this hook auto-firing it on every commit
+# emitted a stamp-less phase1 directive that ship-cycle-guard rejected: the
+# unrecoverable 3-way deadlock of the 2026-06-16 re-pin saga. The resolver
+# returns the plugin-local driver (plugin repo) OR the pinned-CACHE driver
+# (consumer), so a consumer NEVER auto-fires a frozen copy. _lib is a sibling of
+# hooks/ in both layouts (hooks/ → ../_lib; .claude/hooks/ → ../_lib). Best-
+# effort: any resolution failure (no pin lib / no cached driver / non-exec) →
+# exit 0 silently — this detached post-commit convenience must never block a
+# commit, preserving the prior `[ -x ] || exit 0` no-op-on-missing behavior.
+_LIB_RESOLVE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd)/resolve-orchestrator.sh"
+[ -r "$_LIB_RESOLVE" ] || exit 0
+# shellcheck source=../_lib/resolve-orchestrator.sh
+. "$_LIB_RESOLVE"
+SCRIPT=$(resolve_ship_orchestrator "$REPO_ROOT" 2>/dev/null) || exit 0
+[ -n "$SCRIPT" ] || exit 0
 
 LOG_DIR="$REPO_ROOT/.claude/logs"
 mkdir -p "$LOG_DIR"
@@ -86,6 +101,12 @@ if [ -d "$DIRECTIVE_DIR" ]; then
 		fi
 	done
 fi
+
+# v0.34.81 (#2427): export SKILL_WRAPPER=1 so the detached orchestrator's
+# internal gh / git-push / coderabbit calls aren't refused by skill-bypass-guard
+# / ship-cycle-guard — matching the skill wrapper's contract (run.sh), now that
+# post-commit resolves the SAME orchestrator via _lib/resolve-orchestrator.sh.
+export SKILL_WRAPPER=1
 
 # Detach: setsid + nohup so the resume call survives the commit's parent
 # shell exit. stdout/stderr → log file for post-mortem inspection.

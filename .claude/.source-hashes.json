@@ -39,8 +39,9 @@
     "_lib/phase1-agent-prompt.sh": "13408a8e02a048f4d8ab9de45f8ef41efa81105db8a4bf8031c1852db1f86aad",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",
+    "_lib/resolve-orchestrator.sh": "b2546d2269bdd202c5f0ecd2d47f93104a96e4de53500dd3321b17f5fe1b74dc",
     "_lib/resolve-plugin-helper.sh": "71cc5c26e63cb8868b3c00cb35a2bac9834f60651bae87adec40c4d7972a1a65",
-    "_lib/resolve-plugin-identity.sh": "840f813a59fd70ae1e4f341a1f39947e11b23d7255070feb1a5da5bfe8480c67",
+    "_lib/resolve-plugin-identity.sh": "79afcb5bb68cb3fa87d4a938f886b410803d7d666321c6e7c6203e31c198043e",
     "_lib/resolve-plugin-pin.sh": "e69d69552d12d9bbf4891b594e3cb3f5e882f8c59d23acae480effb9fd5ca82a",
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
     "_lib/ship-cycle-directives.sh": "3c8327d3cf5778956e87bf8dde3dcdb49959dce072704ef0ba931dd9c7fae4b7",
@@ -96,7 +97,7 @@
     "hooks/phase1-dashboard.sh": "5541a15593c9c249eaf0b7ad0e2637088bcfd5208cbe858e2afb32e356db75f4",
     "hooks/phase1-dedup.sh": "ebc9ab3f72f5f2497060d946bc7edc739c9789236354889f60de484f95628d3a",
     "hooks/phase1-directive-emit.sh": "26ad9f4c4f54947484925e06b964ca6a60ae4b39dd799cc5cc69ca0ba6e43abf",
-    "hooks/phase1-directive-pending-guard.sh": "407c75da8ba6908847595226597ec7424163cd129365bf46a6d469a79f2b9c98",
+    "hooks/phase1-directive-pending-guard.sh": "27a7a7fed0af64ddd2a2260f8aa83aa67f5a46aab972f41d519bd8a8c6ebd51c",
     "hooks/phase1-launch-completeness-gate.sh": "e2d95bb1f03466cfb3f43ee9b7653efd42e0528372afd06d5cd3b8ad50ff6d2e",
     "hooks/phase1-launcher.sh": "f15e73fc2135d395b63fb3d09a49f516ecaee09ff4546a9e3e9e90d6f739fb60",
     "hooks/phase1-log-pending-gate.sh": "8c0dc3e58326c321b236dddec1270528a69121e8b0d4eaff07adfa6d7f5a5b0c",
@@ -104,7 +105,7 @@
     "hooks/phase1-post-commit-resume.sh": "152a6e14c7aa860637923842c0231d0b3178fc212d17270d9c550837fa6686f1",
     "hooks/phase1-resume-message.sh": "0aad45ca709149d89495fb1c98207b409ae05d6cfc975eb81734949e65da4343",
     "hooks/phase1-scaler.sh": "12e386fae9fb927a8a4b6b93ad75b75c808e439673075ae3a33c94409696c4e4",
-    "hooks/post-commit-ship-cycle.sh": "d2fd56d5faa6f17135d393b763467ec0ef399591344203f8f9d5ab28c647a499",
+    "hooks/post-commit-ship-cycle.sh": "c76866008d15fef5ac75c99a4288f2ebcc8a77a77b8af11c32c71cd6cc51fd69",
     "hooks/post-commit-template-lint.sh": "ab1e055cb2061d9666e2106660c646f0db482c353f40e9d7ea85b21b4e7e0d5d",
     "hooks/post-merge-clean-phase1-markers.sh": "a383a80c886e58f153fc098944154f0452c132a81ec5bc04e7adfc0cdaf70dfe",
     "hooks/post-merge-release-fire.sh": "ce5f105388a329e6b2a8415ba429c4c80a566edaa375b9060e6a4b134b675e49",
@@ -132,7 +133,7 @@
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
     "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
-    "skills/ship-pr-cycle/run.sh": "4013a38cd5d87a3430d9a944ece106701376803fd076c6aeca06c50233e120f1"
+    "skills/ship-pr-cycle/run.sh": "7a1e055339ae285ddcf9fd66b77ab2091d461da97ae5af3f48fd38417accec0b"
   },
   "producer_root": ".",
   "schema_version": 1

@@ -159,95 +159,103 @@ else
 	result=$(cat "$BASE")
 fi
 
-# #2254: CR-in-CI canonical-mirror-hook exclusion. The .claude/hooks/ dir is
-# MIXED (canonical plugin mirrors + consumer-authored hooks), so the base
-# can't coarsely glob-exclude it, and CR-in-CI (server-side, glob-only) can't
-# hash-exclude per file — it re-reviews the byte-identical canonical MIRROR
-# hooks and floods every consumer PR (the "verbatim treadmill" that blocks
-# merges). Emit a per-file `!.claude/hooks/<name>` path_filter for each
-# CANONICAL hook (enumerated from this script's sibling hooks/ dir — the
-# authoritative set, resolvable from a dev-checkout OR the pinned cache;
-# overridable via COMPOSE_CR_HOOKS_DIR for tests). Consumer-AUTHORED hooks
-# (not in the canonical set) are NOT excluded, so CR still reviews them. Safe:
-# hash-drift forbids modifying canonical mirrors, so excluding them from CR is
-# not a blind spot. Idempotent: result is recomputed from the base each run.
+# #2254/#2257/#2427: CR-in-CI canonical-MIRROR exclusion. .claude/hooks/ +
+# .claude/_lib/ carry byte-identical plugin mirrors a consumer cannot modify
+# (hash-drift forbids it), so re-reviewing them is the "verbatim treadmill"
+# that floods every consumer re-pin PR. CR-in-CI is server-side + glob-only and
+# (empirically, #2241) IGNORES a `!.claude/_lib/**` dir-glob while honoring
+# EXACT-PATH per-file `!<dir>/<name>` excludes — so emit a per-file exclusion
+# for every CANONICAL file (sibling hooks/ + _lib/ — the authoritative set,
+# resolvable from a dev-checkout OR the pinned cache) whose consumer mirror is
+# BYTE-IDENTICAL. Consumer-OVERRIDDEN (differ) + consumer-AUTHORED (no canonical
+# sibling) files stay REVIEWED — no blind spot. Idempotent: recomputed each run.
 #
-# COMPOSE_CR_HOOKS_DIR (when set) wins regardless of SCRIPT_DIR, so an explicit
-# override still injects even if SCRIPT_DIR was unresolvable; with no override
-# and an empty SCRIPT_DIR, _hooks_dir is empty and the guard skips cleanly.
-_hooks_dir="${COMPOSE_CR_HOOKS_DIR:-${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}}"
-if [ -n "$_hooks_dir" ] && [ -d "$_hooks_dir" ]; then
-	# Capture enumeration failure (dir exists but unsearchable, or a TOCTOU race)
-	# and fail CLOSED — a silently-empty _excl would drop every exclusion and
-	# re-enable the verbatim treadmill with no signal.
-	# #2257: emit an exclusion for a canonical hook ONLY when the consumer's
-	# .claude/hooks/<name> is BYTE-IDENTICAL to the canonical. A consumer may
-	# override a plugin hook (.claude/local-overrides.yml); refresh-from-source
-	# keeps the override, so .claude/hooks/<name> is genuinely consumer-authored
-	# and MUST stay reviewed by CR-in-CI (excluding it would be a real blind
-	# spot). Absent consumer file → exclude (byte-identical mirror assumed =
-	# prior behavior); present-and-DIFFERS → consumer override → keep reviewed.
-	#
-	# #2257 r2: resolve the consumer hooks dir to an ABSOLUTE path BEFORE the
-	# `cd "$_hooks_dir"` subshell (so a relative value still compares the right
-	# files). Default to the dir CONTAINING the output .coderabbit.yaml (the
-	# consumer repo root) when --out is given, else $PWD; the env var overrides
-	# for tests. Then SIGNAL if that dir is absent — otherwise a wrong cwd makes
-	# every `[ -e ]` false, every hook falls through to "excluded", and the
-	# blind spot is silently reintroduced.
-	if [ -n "${COMPOSE_CR_CONSUMER_HOOKS_DIR:-}" ]; then
-		# Normalize a relative override to absolute too (mirrors _consumer_root
-		# below) so it isn't mis-resolved against $_hooks_dir inside the `cd`.
-		_consumer_hooks="$COMPOSE_CR_CONSUMER_HOOKS_DIR"
-		case "$_consumer_hooks" in /*) ;; *) _consumer_hooks="$PWD/$_consumer_hooks" ;; esac
-	else
-		_consumer_root="${OUT:+$(dirname "$OUT")}"
-		_consumer_root="${_consumer_root:-$PWD}"
-		case "$_consumer_root" in /*) ;; *) _consumer_root="$PWD/$_consumer_root" ;; esac
-		_consumer_hooks="$_consumer_root/.claude/hooks"
-	fi
-	[ -d "$_consumer_hooks" ] || echo "compose-coderabbit: NOTE: consumer hooks dir '$_consumer_hooks' not found — every canonical hook will be excluded; set COMPOSE_CR_CONSUMER_HOOKS_DIR (or run from the consumer repo root) if that is wrong" >&2
-	if ! _excl=$(cd "$_hooks_dir" && for _h in *.sh; do
-		[ -e "$_h" ] || continue
-		# Exclude only a byte-identical mirror. `cmp -s` exits 0=identical,
-		# 1=differ, 2=error (unreadable / IO). differ → keep reviewed (consumer
-		# override). error → ALSO keep reviewed (fail SAFE toward more review,
-		# never a blind spot) but EMIT a diagnostic so it is not silent. rc is
-		# captured via `|| _c=$?` (a bare `cmp; _c=$?` would abort under set -e).
-		if [ -e "$_consumer_hooks/$_h" ]; then
+# _emit_canonical_exclusions <canonical_dir> <consumer_dir> <yaml_path_prefix>
+#   stdout: newline-sorted `!<prefix><name>` for each *.sh in <canonical_dir>
+#           whose <consumer_dir>/<name> is absent OR byte-identical (cmp -s).
+#   rc 0 = enumerated (list may be empty); rc 2 = cd into canonical dir failed.
+# Absent consumer file → exclude (byte-identical mirror assumed). cmp rc 1
+# (differ) → consumer override → keep reviewed. cmp rc>=2 (error) → keep
+# reviewed + WARN (fail SAFE toward more review; rc captured via `|| _c=$?` so a
+# bare `cmp; _c=$?` cannot abort under set -e). Called in $(...) so the `cd` is
+# isolated to the command-substitution subshell.
+_emit_canonical_exclusions() {
+	local _canon=$1 _consumer=$2 _prefix=$3 _f _c
+	cd "$_canon" || return 2
+	for _f in *.sh; do
+		[ -e "$_f" ] || continue
+		if [ -e "$_consumer/$_f" ]; then
 			_c=0
-			cmp -s "$_h" "$_consumer_hooks/$_h" || _c=$?
+			cmp -s "$_f" "$_consumer/$_f" || _c=$?
 			if [ "$_c" -eq 1 ]; then
 				continue
 			elif [ "$_c" -ge 2 ]; then
-				echo "compose-coderabbit: WARNING: cmp failed comparing canonical '$_h' to consumer mirror (rc=$_c); keeping it REVIEWED (not excluded)" >&2
+				echo "compose-coderabbit: WARNING: cmp failed comparing canonical '$_canon/$_f' to consumer mirror (rc=$_c); keeping it REVIEWED (not excluded)" >&2
 				continue
 			fi
 		fi
-		printf '!.claude/hooks/%s\n' "$_h"
-	done | LC_ALL=C sort); then
-		echo "compose-coderabbit: failed enumerating canonical hooks in $_hooks_dir" >&2
+		printf '!%s%s\n' "$_prefix" "$_f"
+	done | LC_ALL=C sort
+}
+
+# Resolve the consumer repo root ONCE — the dir CONTAINING the output
+# .coderabbit.yaml when --out is given, else $PWD; normalized to absolute so a
+# relative value still compares the right files (#2257 r2). The per-dir env
+# overrides (COMPOSE_CR_CONSUMER_{HOOKS,LIB}_DIR) win below for tests.
+_consumer_root="${OUT:+$(dirname "$OUT")}"
+_consumer_root="${_consumer_root:-$PWD}"
+case "$_consumer_root" in /*) ;; *) _consumer_root="$PWD/$_consumer_root" ;; esac
+
+# Two canonical-mirror dirs get per-file exclusions: hooks/ (MIXED — only
+# byte-identical mirrors excluded, consumer-authored stay reviewed) and _lib/
+# (#2241 — PURE mirror, but per-file because CR-in-CI drops the dir-glob).
+# COMPOSE_CR_{HOOKS,LIB}_DIR override the canonical dir; with no override + empty
+# SCRIPT_DIR the dir is empty and the guard skips cleanly. Enumeration failure
+# fails CLOSED (exit 2) — a silently-empty list would re-enable the treadmill.
+_all_excl=""
+_hooks_canon="${COMPOSE_CR_HOOKS_DIR:-${SCRIPT_DIR:+$SCRIPT_DIR/../hooks}}"
+if [ -n "$_hooks_canon" ] && [ -d "$_hooks_canon" ]; then
+	_hooks_consumer="${COMPOSE_CR_CONSUMER_HOOKS_DIR:-$_consumer_root/.claude/hooks}"
+	case "$_hooks_consumer" in /*) ;; *) _hooks_consumer="$PWD/$_hooks_consumer" ;; esac
+	[ -d "$_hooks_consumer" ] || echo "compose-coderabbit: NOTE: consumer hooks dir '$_hooks_consumer' not found — every canonical hook will be excluded; set COMPOSE_CR_CONSUMER_HOOKS_DIR (or run from the consumer repo root) if that is wrong" >&2
+	if ! _hx=$(_emit_canonical_exclusions "$_hooks_canon" "$_hooks_consumer" ".claude/hooks/"); then
+		echo "compose-coderabbit: failed enumerating canonical hooks in $_hooks_canon" >&2
 		exit 2
 	fi
-	if [ -n "$_excl" ]; then
-		_yqe=$(mktemp -t compose-cr-excl.XXXXXX) || {
-			echo "compose-coderabbit: mktemp failed for hook-exclusion pass" >&2
-			exit 2
-		}
-		if ! result=$(printf '%s\n' "$result" | EXCL="$_excl" yq '
-			.reviews.auto_review.path_filters =
-				((.reviews.auto_review.path_filters // []) +
-					(strenv(EXCL) | split("\n") | map(select(. != "")))) |
-			.reviews.auto_review.path_filters head_comment =
-				"#2254/#2257: the trailing !.claude/hooks/<name> entries in this list are per-file canonical-mirror-hook exclusions auto-appended by compose-coderabbit.sh (byte-identical mirrors ONLY; consumer-overridden hooks stay reviewed). Earlier entries are from base/overlay. Regenerated each compose."
-		' 2>"$_yqe"); then
-			echo "compose-coderabbit: failed appending canonical-hook exclusions:" >&2
-			cat "$_yqe" >&2
-			rm -f "$_yqe"
-			exit 2
-		fi
-		rm -f "$_yqe"
+	[ -n "$_hx" ] && _all_excl="${_all_excl:+$_all_excl
+}$_hx"
+fi
+_lib_canon="${COMPOSE_CR_LIB_DIR:-${SCRIPT_DIR:+$SCRIPT_DIR/../_lib}}"
+if [ -n "$_lib_canon" ] && [ -d "$_lib_canon" ]; then
+	_lib_consumer="${COMPOSE_CR_CONSUMER_LIB_DIR:-$_consumer_root/.claude/_lib}"
+	case "$_lib_consumer" in /*) ;; *) _lib_consumer="$PWD/$_lib_consumer" ;; esac
+	[ -d "$_lib_consumer" ] || echo "compose-coderabbit: NOTE: consumer _lib dir '$_lib_consumer' not found — every canonical _lib file will be excluded; set COMPOSE_CR_CONSUMER_LIB_DIR (or run from the consumer repo root) if that is wrong" >&2
+	if ! _lx=$(_emit_canonical_exclusions "$_lib_canon" "$_lib_consumer" ".claude/_lib/"); then
+		echo "compose-coderabbit: failed enumerating canonical _lib in $_lib_canon" >&2
+		exit 2
 	fi
+	[ -n "$_lx" ] && _all_excl="${_all_excl:+$_all_excl
+}$_lx"
+fi
+
+if [ -n "$_all_excl" ]; then
+	_yqe=$(mktemp -t compose-cr-excl.XXXXXX) || {
+		echo "compose-coderabbit: mktemp failed for canonical-mirror exclusion pass" >&2
+		exit 2
+	}
+	if ! result=$(printf '%s\n' "$result" | EXCL="$_all_excl" yq '
+		.reviews.auto_review.path_filters =
+			((.reviews.auto_review.path_filters // []) +
+				(strenv(EXCL) | split("\n") | map(select(. != "")))) |
+		.reviews.auto_review.path_filters head_comment =
+			"#2254/#2257/#2427: the trailing !.claude/hooks/<name> + !.claude/_lib/<name> entries are per-file canonical-mirror exclusions auto-appended by compose-coderabbit.sh (byte-identical mirrors ONLY; consumer-overridden/authored files stay reviewed). CR-in-CI ignores the !.claude/_lib/** dir-glob (#2241) so per-file is required. Earlier entries are from base/overlay. Regenerated each compose."
+	' 2>"$_yqe"); then
+		echo "compose-coderabbit: failed appending canonical-mirror exclusions:" >&2
+		cat "$_yqe" >&2
+		rm -f "$_yqe"
+		exit 2
+	fi
+	rm -f "$_yqe"
 fi
 
 if [ -n "$OUT" ]; then

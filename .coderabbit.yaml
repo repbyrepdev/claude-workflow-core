@@ -73,7 +73,7 @@ reviews:
     # CLAUDE.md/AGENTS.md drive auto-invocation + operating rules, so they ARE
     # reviewed. Repos append repo-specific source paths via overlay.
     path_filters:
-      #2254/#2257: the trailing !.claude/hooks/<name> entries in this list are per-file canonical-mirror-hook exclusions auto-appended by compose-coderabbit.sh (byte-identical mirrors ONLY; consumer-overridden hooks stay reviewed). Earlier entries are from base/overlay. Regenerated each compose.
+      #2254/#2257/#2427: the trailing !.claude/hooks/<name> + !.claude/_lib/<name> entries are per-file canonical-mirror exclusions auto-appended by compose-coderabbit.sh (byte-identical mirrors ONLY; consumer-overridden/authored files stay reviewed). CR-in-CI ignores the !.claude/_lib/** dir-glob (#2241) so per-file is required. Earlier entries are from base/overlay. Regenerated each compose.
       - ".claude/skills/**/*.md"
       - "CLAUDE.md"
       - "AGENTS.md"
@@ -205,6 +205,38 @@ reviews:
       - '!.claude/hooks/stop-uncommitted-changes.sh'
       - '!.claude/hooks/teleport-stop-advisory.sh'
       - '!.claude/hooks/test-sh-scope-nudge.sh'
+      - '!.claude/_lib/bash-safety-check.sh'
+      - '!.claude/_lib/bash4-features-check.sh'
+      - '!.claude/_lib/board-paginate.sh'
+      - '!.claude/_lib/branch-convention.sh'
+      - '!.claude/_lib/canonical-consumer-skip.sh'
+      - '!.claude/_lib/canonical-review-exclude.sh'
+      - '!.claude/_lib/cmd-anchor.sh'
+      - '!.claude/_lib/cmd-prefix-regex.sh'
+      - '!.claude/_lib/content-hash-cache.sh'
+      - '!.claude/_lib/cr-phase2-coverage.sh'
+      - '!.claude/_lib/dogfood-fingerprint.sh'
+      - '!.claude/_lib/epic-completeness-check.sh'
+      - '!.claude/_lib/event-frontmatter.sh'
+      - '!.claude/_lib/gh-issue-classify.sh'
+      - '!.claude/_lib/hook-ack.sh'
+      - '!.claude/_lib/hook-deny.sh'
+      - '!.claude/_lib/hook-inline-sentinel.sh'
+      - '!.claude/_lib/lint-gate-core.sh'
+      - '!.claude/_lib/lint-log.sh'
+      - '!.claude/_lib/phase-graduation.sh'
+      - '!.claude/_lib/phase05-auth-summary.sh'
+      - '!.claude/_lib/phase05-dedupe.sh'
+      - '!.claude/_lib/phase1-agent-prompt.sh'
+      - '!.claude/_lib/post-commit-detect.sh'
+      - '!.claude/_lib/repo-guard.sh'
+      - '!.claude/_lib/resolve-orchestrator.sh'
+      - '!.claude/_lib/resolve-plugin-helper.sh'
+      - '!.claude/_lib/resolve-plugin-identity.sh'
+      - '!.claude/_lib/resolve-plugin-pin.sh'
+      - '!.claude/_lib/semantic-hash.sh'
+      - '!.claude/_lib/ship-cycle-directives.sh'
+      - '!.claude/_lib/ship-cycle-protocol.sh'
   # PR labels — by which files changed. Base ships ONLY the universal
   # area:infrastructure catch-all (present in every consumer's labels.yml).
   # Domain labels — area:hooks/skills/workflows, type:test/secrets, plus a
