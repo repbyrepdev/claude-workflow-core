@@ -129,7 +129,12 @@ resolve_plugin_cache_latest() {
 	# base absent) OR 2 (hard error via resolve_plugin_cache_base — unresolved
 	# identity). The prior `|| return 1` masked the 2, so a caller could not
 	# distinguish "no cache installed" from "broken identity", violating the
-	# lib-level 0/1/2 contract (set -e captured via `rc=$?`, not `|| return`).
+	# lib-level 0/1/2 contract. NOTE the `rc=$?` capture preserves the inner rc
+	# only in a guarded call context (`x=$(…) || …` / `if …`) — the documented
+	# call form (see header), which suspends the caller's set -e for the function
+	# body. A bare `latest=$(resolve_plugin_cache_latest)` under a caller's set -e
+	# could abort on the rc-1 path before `rc=$?` runs; callers MUST use the
+	# guarded form.
 	local versions latest rc
 	versions="$(resolve_plugin_installed_versions)"
 	rc=$?

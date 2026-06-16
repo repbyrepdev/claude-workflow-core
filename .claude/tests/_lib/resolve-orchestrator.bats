@@ -92,3 +92,38 @@ teardown() {
 	run resolve_ship_orchestrator "$REPO"
 	[ "$status" -eq 2 ]
 }
+
+@test "resolve_ship_orchestrator: CONSUMER cache under a NON-default marketplace segment still resolves (glob, #2427)" {
+	# The resolver GLOBs the marketplace path segment ($cache_root/*/claude-...),
+	# so a non-default marketplace dir name still resolves. The happy-path test
+	# uses a literal 'marketplace' segment, which would pass even against a
+	# hardcoded path — this proves the glob's PURPOSE and guards against a future
+	# refactor back to a frozen literal (the #2427 deadlock bug class).
+	REPO="$TEST_TMP/consumer-altmp"
+	mkdir -p "$REPO/.claude/_lib"
+	printf '#!/bin/bash\nresolve_plugin_pin() { echo "0.34.81"; }\n' >"$REPO/.claude/_lib/resolve-plugin-pin.sh"
+	: >"$REPO/.pre-commit-config.yaml"
+	CACHE="$TEST_TMP/cache-altmp"
+	DRIVER="$CACHE/some-other-marketplace/claude-workflow-core/0.34.81/scripts/ship-pr-cycle.sh"
+	mkdir -p "$(dirname "$DRIVER")"
+	printf '#!/bin/bash\n' >"$DRIVER"
+	chmod +x "$DRIVER"
+	export SHIP_CYCLE_CACHE_ROOT="$CACHE"
+	# shellcheck source=/dev/null
+	. "$LIB"
+	run resolve_ship_orchestrator "$REPO"
+	[ "$status" -eq 0 ]
+	[ "$output" = "$DRIVER" ]
+}
+
+@test "resolve_ship_orchestrator: no repo_root arg in a non-git dir → rc 2 (git rev-parse default)" {
+	# With no arg the resolver defaults repo_root via `git rev-parse
+	# --show-toplevel`; outside a git work-tree that fails and the resolver must
+	# rc 2 (never silently resolve the wrong tree). Locks the zero-arg contract
+	# even though both production callers pass repo_root explicitly. The call runs
+	# in a subshell cd'd into a non-git tmp dir (mktemp dirs have no .git ancestor).
+	NONGIT="$TEST_TMP/nongit"
+	mkdir -p "$NONGIT"
+	run bash -c "cd '$NONGIT' && . '$LIB' && resolve_ship_orchestrator"
+	[ "$status" -eq 2 ]
+}

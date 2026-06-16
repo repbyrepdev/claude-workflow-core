@@ -317,3 +317,26 @@ EOF
 	# exactly the one byte-identical _lib mirror excluded ($BASE had no path_filters).
 	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 1 ]
 }
+
+@test "#2427: BOTH canonical hooks AND _lib populated → exclusions from both, joined (the _all_excl accumulation path)" {
+	# The realistic consumer shape: byte-identical hook mirrors AND _lib mirrors
+	# coexist. Every other test populates only ONE of the two canonical dirs, so
+	# the script's _all_excl accumulation+join (hooks list + _lib list → one yq
+	# append) is never exercised with both halves non-empty. A regression in the
+	# join (dropped newline merging two entries, one list clobbering the other,
+	# wrong ordering) would pass every single-dir test. This locks both lists.
+	mkdir -p "$TMP/hooks" "$TMP/consumer-hooks" "$TMP/lib" "$TMP/consumer-lib"
+	printf '#!/bin/bash\n' >"$TMP/hooks/alpha.sh"
+	printf 'echo gamma\n' >"$TMP/lib/gamma.sh"
+	cp "$TMP/hooks/alpha.sh" "$TMP/consumer-hooks/alpha.sh" # byte-identical → excluded
+	cp "$TMP/lib/gamma.sh" "$TMP/consumer-lib/gamma.sh"     # byte-identical → excluded
+	run env COMPOSE_CR_HOOKS_DIR="$TMP/hooks" COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer-hooks" \
+		COMPOSE_CR_LIB_DIR="$TMP/lib" COMPOSE_CR_CONSUMER_LIB_DIR="$TMP/consumer-lib" \
+		"$SCRIPT" --base "$BASE" --out "$TMP/.coderabbit.yaml"
+	[ "$status" -eq 0 ]
+	# BOTH the hook AND the _lib mirror exclusions are present.
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/hooks/alpha.sh" ]
+	[ "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/_lib/gamma.sh")' "$TMP/.coderabbit.yaml")" = "!.claude/_lib/gamma.sh" ]
+	# exactly two exclusions, no dropped/merged/duplicated entry ($BASE had none).
+	[ "$(yq -r '.reviews.auto_review.path_filters | length' "$TMP/.coderabbit.yaml")" -eq 2 ]
+}

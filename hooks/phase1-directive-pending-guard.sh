@@ -166,10 +166,14 @@ while IFS= read -r -d '' f; do
 	# write) is itself blocked by THIS guard → an unrecoverable in-session
 	# deadlock. Such a marker can NEVER be satisfied by firing agents, so
 	# self-clear it; the correct driver re-emits a STAMPED directive on the next
-	# `next`. AGE-GUARDED on the marker mtime (>1 min) to skip the write-order
-	# race: the driver writes the marker, then the state-JSON stamp ms later, so
-	# a sub-minute unstamped marker may be mid-write; unstamped for >1 min is
-	# definitively stale-driver. jq is rc-captured (not `||`-abort under set -e):
+	# `next`. AGE-GUARDED on the marker mtime (>1 min): the correct driver writes
+	# the state JSON (WITH the protocol stamp) FIRST and the marker SECOND
+	# (ship-pr-cycle.sh #92 r2), so a freshly-written marker from a correct driver
+	# already has a stamped state JSON beside it. An unstamped state JSON next to a
+	# marker is the stale-driver signature; the >1 min guard only adds margin
+	# against reading a state JSON whose stamping write is momentarily in flight,
+	# while >1 min unstamped is definitively stale-driver. jq is rc-captured (not
+	# `||`-abort under set -e):
 	# a missing/unreadable/corrupt state JSON yields a non-"absent" verdict →
 	# KEEP the marker (fail-closed; only a READABLE JSON that genuinely lacks the
 	# field self-heals).
