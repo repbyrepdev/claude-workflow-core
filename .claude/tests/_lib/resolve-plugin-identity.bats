@@ -146,6 +146,23 @@ EOF
 	[ -z "$output" ]
 }
 
+@test "resolve_plugin_cache_latest PROPAGATES inner rc 2 (hard error), not collapse to 1 (#2427)" {
+	# Absent manifest → empty PLUGIN_NAME; no PLUGIN_CACHE_BASE override. The inner
+	# resolve_plugin_installed_versions → resolve_plugin_cache_base hard-errors
+	# (rc 2). Before #2427, `|| return 1` masked it as "no versions" (rc 1); the
+	# fix captures rc + propagates so a caller distinguishes broken identity from
+	# no-cache-installed. rc 1 (empty cache, test above) must STILL be 1.
+	export PLUGIN_JSON="$TEST_TMP/nonexistent.json"
+	unset PLUGIN_CACHE_BASE
+	# shellcheck source=/dev/null
+	. "$LIB" 2>/dev/null
+	run resolve_plugin_cache_latest
+	[ "$status" -eq 2 ]
+	# `run` merges stderr: the hard-error diagnostic surfaced, proving the rc-2
+	# (broken-identity) path fired, NOT a silent rc-1 "no versions" collapse.
+	[[ $output == *"PLUGIN_NAME"* ]]
+}
+
 @test "require_plugin_identity passes when identity is complete" {
 	# shellcheck source=/dev/null
 	. "$LIB"

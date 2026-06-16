@@ -9,7 +9,7 @@
 # post-commit sweep half) + the CR-SFH #5 fixes (hex-validate before
 # for-each-ref, and for-each-ref FAILURE = fail-closed keep, never mass-rm).
 #
-# The hook EXITS at line 32 (`[ -x "$SCRIPT" ] || exit 0`) BEFORE the sweep
+# The hook EXITS via the resolver's `[ -x ]` check (#2427) BEFORE the sweep
 # when scripts/ship-pr-cycle.sh is absent, so the fixture ships a no-op stub.
 # The stub also makes the detached `resume` spawn (setsid/nohup) a harmless
 # exit-0.
@@ -29,12 +29,18 @@ setup() {
 		git config user.email t@t.t
 		git config user.name t
 		git commit --allow-empty -q -m init
-		# ship-pr-cycle.sh stub: the hook refuses to proceed past its
-		# `[ -x "$SCRIPT" ]` guard without it, and the detached resume call
-		# must be a harmless no-op under test.
+		# ship-pr-cycle.sh stub: the hook resolves the orchestrator (#2427, via
+		# _lib/resolve-orchestrator.sh) and refuses to proceed past its `[ -x ]`
+		# check without it; the detached resume call must be a harmless no-op.
 		mkdir -p scripts
 		printf '#!/bin/bash\nexit 0\n' >scripts/ship-pr-cycle.sh
 		chmod +x scripts/ship-pr-cycle.sh
+		# #2427: a .claude-plugin/plugin.json makes this a PLUGIN repo, so
+		# resolve_ship_orchestrator returns the LOCAL scripts/ship-pr-cycle.sh stub
+		# above. (A bare synth repo with no plugin.json would be treated as a
+		# consumer with no pin lib → rc 2 → exit 0 before the sweep.)
+		mkdir -p .claude-plugin
+		printf '{}\n' >.claude-plugin/plugin.json
 	) || {
 		echo "FATAL: TEST_TMP fixture init failed" >&2
 		return 1
@@ -159,7 +165,7 @@ _run() {
 	_has "$orphan"
 }
 
-@test "non-executable scripts/ship-pr-cycle.sh → exit 0 before sweep (line 32 -x guard)" {
+@test "non-executable scripts/ship-pr-cycle.sh → exit 0 before sweep (resolver -x check, #2427)" {
 	# `[ -x "$SCRIPT" ]` is false for a present-but-non-executable file just as
 	# for a missing one (chmod -x clears all x bits, so even root's test -x is
 	# false) → exit 0 before the sweep, stale marker untouched.
@@ -172,7 +178,7 @@ _run() {
 	_has "$orphan"
 }
 
-@test "missing scripts/ship-pr-cycle.sh → exit 0 before sweep, marker untouched (line 32 guard)" {
+@test "missing scripts/ship-pr-cycle.sh → exit 0 before sweep, marker untouched (resolver -x check, #2427)" {
 	# Without the orchestrator present the helper has nothing to resume; it
 	# exits 0 at the `[ -x "$SCRIPT" ]` guard BEFORE the sweep, so a stale
 	# marker is left in place (the sweep is coupled to a real resume).

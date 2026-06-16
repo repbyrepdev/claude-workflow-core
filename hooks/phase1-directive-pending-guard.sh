@@ -157,6 +157,37 @@ while IFS= read -r -d '' f; do
 			continue
 		fi
 	fi
+	# Stamp-less self-heal (#2427, the 2026-06-16 deadlock): a marker whose
+	# state JSON EXISTS but lacks phase1_directive_protocol was written by a
+	# STALE driver (a frozen repo-root scripts/ship-pr-cycle.sh predating the
+	# #2237 protocol stamp). The correct (v0.34.32+) driver ALWAYS stamps it, so
+	# ship-cycle-guard REJECTS the pr-review agents for an unstamped directive —
+	# and every mechanical clear (re-drive / rm / the bypass's approval-file
+	# write) is itself blocked by THIS guard → an unrecoverable in-session
+	# deadlock. Such a marker can NEVER be satisfied by firing agents, so
+	# self-clear it; the correct driver re-emits a STAMPED directive on the next
+	# `next`. AGE-GUARDED on the marker mtime (>1 min): the correct driver writes
+	# the state JSON (WITH the protocol stamp) FIRST and the marker SECOND
+	# (ship-pr-cycle.sh #92 r2), so a freshly-written marker from a correct driver
+	# already has a stamped state JSON beside it. An unstamped state JSON next to a
+	# marker is the stale-driver signature; the >1 min guard only adds margin
+	# against reading a state JSON whose stamping write is momentarily in flight,
+	# while >1 min unstamped is definitively stale-driver. jq is rc-captured (not
+	# `||`-abort under set -e):
+	# a missing/unreadable/corrupt state JSON yields a non-"absent" verdict →
+	# KEEP the marker (fail-closed; only a READABLE JSON that genuinely lacks the
+	# field self-heals).
+	_slh_state="$DIRECTIVE_DIR/$sha.json"
+	if [ -f "$_slh_state" ] && _slh_aged=$(find "$f" -mmin +1 -print 2>/dev/null) && [ -n "$_slh_aged" ]; then
+		_slh_proto=$(jq -r '.phase1_directive_protocol // "absent"' "$_slh_state" 2>/dev/null) || _slh_proto="unreadable"
+		if [ "$_slh_proto" = "absent" ]; then
+			if _slh_rm=$(rm -f "$f" 2>&1); then
+				echo "phase1-directive-pending-guard: self-healed stamp-less (stale-driver) marker $sha — state JSON has no phase1_directive_protocol; re-drive via the skill wrapper for a stamped directive (#2427)" >&2
+				continue
+			fi
+			echo "phase1-directive-pending-guard: WARN: stamp-less self-heal rm failed for $sha (continuing): $_slh_rm" >&2
+		fi
+	fi
 	pending_count=$((pending_count + 1))
 	pending_list="${pending_list}  - sha=$sha (directive emitted; agents not yet fired)
 "
