@@ -231,6 +231,7 @@ STUB
 # Builds c1 → c2 (linear) plus c2alt diverging from c1 in $TMP; echoes "c1 c2 c2alt".
 _make_grad_fixture() {
 	(
+		set -e # fail-fast: a failed git step must not yield partial output (CR #2482)
 		cd "$TMP" || exit 1
 		git init -q
 		git config user.email t@t
@@ -255,7 +256,7 @@ _make_grad_fixture() {
 ZERO40="0000000000000000000000000000000000000000"
 
 @test "_grad_invalidate_on_force_push: divergent (rewrite) invalidates + rc 0 (#2295)" {
-	read -r _c1 c2 c2alt < <(_make_grad_fixture "$TMP")
+	read -r _c1 c2 c2alt < <(_make_grad_fixture)
 	cd "$TMP"
 	graduation_invalidate() { echo "INVAL:$1"; }
 	# remote=c2, local=c2alt (diverged from c1) ⇒ c2 is NOT an ancestor of c2alt.
@@ -266,7 +267,7 @@ ZERO40="0000000000000000000000000000000000000000"
 }
 
 @test "_grad_invalidate_on_force_push: fast-forward is not a force-push → rc 1 (#2295)" {
-	read -r c1 c2 _c2alt < <(_make_grad_fixture "$TMP")
+	read -r c1 c2 _c2alt < <(_make_grad_fixture)
 	cd "$TMP"
 	graduation_invalidate() { echo "INVAL:$1"; }
 	# remote=c1, local=c2 ⇒ c1 IS an ancestor of c2 (history extended, not rewritten).
@@ -277,7 +278,7 @@ ZERO40="0000000000000000000000000000000000000000"
 }
 
 @test "_grad_invalidate_on_force_push: all-zeros remote (new branch) → rc 1 (#2295)" {
-	read -r _c1 c2 _c2alt < <(_make_grad_fixture "$TMP")
+	read -r _c1 c2 _c2alt < <(_make_grad_fixture)
 	cd "$TMP"
 	graduation_invalidate() { echo "INVAL:$1"; }
 	run _grad_invalidate_on_force_push "feat/x" "$ZERO40" "$c2" "$ZERO40"
@@ -303,7 +304,7 @@ ZERO40="0000000000000000000000000000000000000000"
 	# "no review log" gate, so asserting that message proves it cleared the
 	# probe. PHASE1_MIN_ROUNDS=1 makes the post-probe path deterministic (skips
 	# CR-CLI delegation) while still exercising the probe (which runs regardless).
-	read -r c1 c2 _c2alt < <(_make_grad_fixture "$TMP")
+	read -r c1 c2 _c2alt < <(_make_grad_fixture)
 	cd "$TMP"
 	run bash -c "printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2' '$c1' | PHASE1_MIN_ROUNDS=1 bash '$HOOK'"
 	[[ $output == *"no review log for"* ]]   # reached the log walk ⇒ survived the probe
