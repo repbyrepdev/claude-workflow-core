@@ -291,3 +291,21 @@ ZERO40="0000000000000000000000000000000000000000"
 	[ "$status" -eq 1 ]
 	[[ $output != *"INVAL"* ]]
 }
+
+@test "real hook on a fast-forward ref does NOT abort at the force-push probe (#2295 set -e regression)" {
+	# pr-test-analyzer #2295 r1: the unit tests above call the fn via `run` (a
+	# subshell — it swallows set -e), so they cannot see that a BARE call at the
+	# real call site would abort the whole gate under `set -euo pipefail` when
+	# the fn returns 1 on a fast-forward. Run the REAL hook NON-sourced with a
+	# fast-forward ref line on stdin: local=c2 (descendant), remote=c1 (its
+	# ancestor). Pre-fix the gate died at the probe (~line 512) before the log
+	# walk; post-fix it proceeds and — with no review-log for c2 — reaches the
+	# "no review log" gate, so asserting that message proves it cleared the
+	# probe. PHASE1_MIN_ROUNDS=1 makes the post-probe path deterministic (skips
+	# CR-CLI delegation) while still exercising the probe (which runs regardless).
+	read -r c1 c2 _c2alt < <(_make_grad_fixture "$TMP")
+	cd "$TMP"
+	run bash -c "printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2' '$c1' | PHASE1_MIN_ROUNDS=1 bash '$HOOK'"
+	[[ $output == *"no review log for"* ]]   # reached the log walk ⇒ survived the probe
+	[[ $output != *"force-push detected"* ]] # fast-forward is NOT a force-push
+}

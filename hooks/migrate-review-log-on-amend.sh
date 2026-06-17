@@ -29,9 +29,14 @@ set -euo pipefail
 #   review-log entries written yet).
 
 # #2296: resolve THIS hook's dir (absolute) so the graduation lib can be
-# sourced after the `cd "$REPO_ROOT"` below. BASH_SOURCE (not $0) survives a
-# symlinked .git/hooks install; `|| true` keeps a resolve failure fail-safe
-# (empty dir → unreadable lib → graduation invalidation simply skipped).
+# sourced after the `cd "$REPO_ROOT"` below. The documented install shape
+# (above) invokes this script by ABSOLUTE path, so ${BASH_SOURCE[0]} is already
+# absolute and `dirname/../_lib` resolves correctly. NOTE: unlike pre-push-
+# pipeline-gate.sh, this hook does NOT defend against a bare `.git/hooks`
+# symlink install — under that shape BASH_SOURCE points at `.git/hooks`, the lib
+# is unreadable, and the empty-dir fallback simply skips invalidation. That is
+# acceptable: the pre-push force-push gate (#2295) re-invalidates a rewritten
+# branch at push time, so this post-commit pass is only a local convenience.
 _MRLOA_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _MRLOA_HOOK_DIR=""
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)

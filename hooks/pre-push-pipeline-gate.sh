@@ -394,10 +394,11 @@ _orphan_hook_advisory() {
 # graduation short-circuit consults it — otherwise a rewritten branch skips the
 # Phase 1 log walk on the strength of a review that no longer describes its code.
 # `graduation_invalidate` must be in scope (caller sources phase-graduation.sh).
-# Returns 0 when a force-push was detected + invalidated, 1 otherwise (fast-
-# forward, brand-new branch, or no branch). Defined above the SOURCED_FOR_TEST
-# early-return so bats can exercise it in isolation (ZERO is passed in, not
-# read from the global, which is set below the early-return).
+# Returns 0 when a force-push was DETECTED (marker invalidation is attempted;
+# the caller forces a full re-review regardless of rm success — see #2295), 1
+# otherwise (fast-forward, brand-new branch, or no branch). Defined above the
+# SOURCED_FOR_TEST early-return so bats can exercise it in isolation (ZERO is
+# passed in, not read from the global, which is set below the early-return).
 _grad_invalidate_on_force_push() {
 	local branch=${1:-} remote_sha=${2:-} local_sha=${3:-} zero=${4:-}
 	[ -n "$branch" ] || return 1
@@ -509,8 +510,17 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 		# short-circuit below reads it. Runs regardless of PHASE1_MIN_ROUNDS so
 		# an override push can't leave a stale marker behind for a later
 		# non-override push to honor (the lib is sourced for this path too).
-		_grad_invalidate_on_force_push "$_grad_branch" "$remote_sha" "$local_sha" "$ZERO"
-		if [ -z "${PHASE1_MIN_ROUNDS:-}" ] && graduation_check "$_grad_branch"; then
+		# The call is in an `if` (NOT bare): rc=1 "not a force-push" is the
+		# COMMON path, and a bare call under `set -e` would abort the whole gate
+		# on every fast-forward push. _grad_forced records detection so a
+		# force-push ALSO bypasses the graduation short-circuit below even if the
+		# marker rm failed — detection must ENFORCE re-review, not just attempt
+		# invalidation and then trust graduation_check to come up empty.
+		_grad_forced=0
+		if _grad_invalidate_on_force_push "$_grad_branch" "$remote_sha" "$local_sha" "$ZERO"; then
+			_grad_forced=1
+		fi
+		if [ "$_grad_forced" = 0 ] && [ -z "${PHASE1_MIN_ROUNDS:-}" ] && graduation_check "$_grad_branch"; then
 			echo "pre-push-pipeline-gate: branch $_grad_branch graduated past Phase 0.5/1 — skipping log walk (Phase 2 still required)" >&2
 			# Still enforce Phase 2 cleanliness for current SHA.
 			if ! _cr_cli_clean_for_sha "$local_sha"; then
