@@ -74,5 +74,6 @@ teardown() {
 	git commit -qm more
 	run bash "$HOOK"
 	[ "$status" -eq 0 ]
-	[ -f "$marker" ] # still present — only amends invalidate
+	[[ $output != *"invalidated stale graduation marker"* ]] # no noisy invalidation on a non-amend
+	[ -f "$marker" ]                                         # still present — only amends invalidate
 }
