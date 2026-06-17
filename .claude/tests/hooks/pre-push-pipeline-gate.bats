@@ -307,6 +307,7 @@ ZERO40="0000000000000000000000000000000000000000"
 	read -r c1 c2 _c2alt < <(_make_grad_fixture)
 	cd "$TMP"
 	run bash -c "printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2' '$c1' | PHASE1_MIN_ROUNDS=1 bash '$HOOK'"
+	[ "$status" -eq 1 ]                      # blocks the push: no review log for c2 ⇒ FAILED=1
 	[[ $output == *"no review log for"* ]]   # reached the log walk ⇒ survived the probe
 	[[ $output != *"force-push detected"* ]] # fast-forward is NOT a force-push
 }

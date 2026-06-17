@@ -70,6 +70,12 @@ if [ -n "$_amend_branch" ] && [ "$_amend_branch" != "HEAD" ] && [ -r "$_grad_lib
 	if graduation_check "$_amend_branch"; then
 		if graduation_invalidate "$_amend_branch"; then
 			echo "migrate-review-log: amend on $_amend_branch — invalidated stale graduation marker (#2296)" >&2
+		else
+			# graduation_invalidate already prints the rm error to stderr;
+			# surface it at the hook level too so a failed removal is not lost
+			# in the post-commit noise. The pre-push force-push gate (#2295)
+			# re-invalidates the rewritten branch at push time as a backstop.
+			echo "migrate-review-log: WARN — amend on $_amend_branch but the stale graduation marker could NOT be removed (see error above); pre-push (#2295) will re-invalidate at push time" >&2
 		fi
 	fi
 fi
