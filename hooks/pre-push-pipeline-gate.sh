@@ -386,6 +386,36 @@ _orphan_hook_advisory() {
 	return 0
 }
 
+# v0.34.84 #2295: force-push / history-rewrite → graduation invalidation.
+# A non-fast-forward push (the remote ref EXISTS and is NOT an ancestor of the
+# pushed SHA) means the branch history was rewritten — rebase, reset, or an
+# amend that was already pushed. Any graduation marker certifies Phase 0.5/1
+# passed at a now-discarded SHA, so it is stale and must be cleared BEFORE the
+# graduation short-circuit consults it — otherwise a rewritten branch skips the
+# Phase 1 log walk on the strength of a review that no longer describes its code.
+# `graduation_invalidate` must be in scope (caller sources phase-graduation.sh).
+# Returns 0 when a force-push was detected + invalidated, 1 otherwise (fast-
+# forward, brand-new branch, or no branch). Defined above the SOURCED_FOR_TEST
+# early-return so bats can exercise it in isolation (ZERO is passed in, not
+# read from the global, which is set below the early-return).
+_grad_invalidate_on_force_push() {
+	local branch=${1:-} remote_sha=${2:-} local_sha=${3:-} zero=${4:-}
+	[ -n "$branch" ] || return 1
+	# All-zeros (or empty) remote ⇒ the remote ref does not exist yet (first
+	# push of this branch) — a create, never a force-push.
+	[ -n "$remote_sha" ] && [ "$remote_sha" != "$zero" ] || return 1
+	# Fast-forward ⇒ remote_sha is an ancestor of local_sha — history extended,
+	# not rewritten. Silent failure on an unresolvable remote_sha is acceptable:
+	# the zero case is already guarded, and an unknown remote falling through to
+	# "force-push" only over-invalidates (fail-safe — re-review, never skip).
+	if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+		return 1
+	fi
+	echo "pre-push-pipeline-gate: force-push detected for $branch — invalidating graduation marker" >&2
+	graduation_invalidate "$branch" || true
+	return 0
+}
+
 # v4.29 #792: hoist MIN_CLEAN_STREAK above SOURCED_FOR_TEST early-return
 # so bats can assert the default behaviorally (was source-grep only).
 MIN_CLEAN_STREAK="${PHASE1_MIN_CLEAN_STREAK:-1}"
@@ -427,7 +457,7 @@ if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 fi
 
 FAILED=0
-while read -r local_ref local_sha _remote_ref _remote_sha; do
+while read -r local_ref local_sha _remote_ref remote_sha; do
 	[ -z "$local_sha" ] && continue
 	[ "$local_sha" = "$ZERO" ] && continue # branch deletion
 	# v4.4.E: tag refs don't go through the review pipeline — they point at
@@ -472,10 +502,15 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
 	_grad_branch="${local_ref#refs/heads/}"
 	[ "$_grad_branch" = "$local_ref" ] && _grad_branch=""
 	_grad_lib="$PPG_DIR/../_lib/phase-graduation.sh"
-	if [ -z "${PHASE1_MIN_ROUNDS:-}" ] && [ -n "$_grad_branch" ] && [ -r "$_grad_lib" ]; then
+	if [ -n "$_grad_branch" ] && [ -r "$_grad_lib" ]; then
 		# shellcheck source=/dev/null
 		. "$_grad_lib"
-		if graduation_check "$_grad_branch"; then
+		# #2295: invalidate a stale graduation marker on force-push BEFORE the
+		# short-circuit below reads it. Runs regardless of PHASE1_MIN_ROUNDS so
+		# an override push can't leave a stale marker behind for a later
+		# non-override push to honor (the lib is sourced for this path too).
+		_grad_invalidate_on_force_push "$_grad_branch" "$remote_sha" "$local_sha" "$ZERO"
+		if [ -z "${PHASE1_MIN_ROUNDS:-}" ] && graduation_check "$_grad_branch"; then
 			echo "pre-push-pipeline-gate: branch $_grad_branch graduated past Phase 0.5/1 — skipping log walk (Phase 2 still required)" >&2
 			# Still enforce Phase 2 cleanliness for current SHA.
 			if ! _cr_cli_clean_for_sha "$local_sha"; then
