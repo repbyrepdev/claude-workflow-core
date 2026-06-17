@@ -28,7 +28,17 @@
 # Resolve plugin.json relative to THIS lib so the caller's cwd is irrelevant;
 # the PLUGIN_JSON env override supports testing against a fixture manifest.
 _RPI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _RPI_LIB_DIR=""
-PLUGIN_JSON="${PLUGIN_JSON:-${_RPI_LIB_DIR}/../.claude-plugin/plugin.json}"
+# #2450: don't build a malformed `/../.claude-plugin/plugin.json` path when
+# _RPI_LIB_DIR is empty (cd-fail) — leave PLUGIN_JSON empty so the downstream
+# absent-manifest error is unambiguous (require_plugin_identity still fails
+# closed, rc 2). An explicit PLUGIN_JSON override always wins.
+if [ -z "${PLUGIN_JSON:-}" ]; then
+	if [ -n "$_RPI_LIB_DIR" ]; then
+		PLUGIN_JSON="${_RPI_LIB_DIR}/../.claude-plugin/plugin.json"
+	else
+		PLUGIN_JSON=""
+	fi
+fi
 
 # Derive identity constants from plugin.json. Each is env-overridable (the
 # `${VAR:-...}` form) so a caller/test can preset it. `jq -er` fails closed on a
@@ -136,11 +146,15 @@ resolve_plugin_cache_latest() {
 	# `latest=$(resolve_plugin_cache_latest)` returns non-zero on the rc-1/rc-2
 	# paths, which aborts the CALLER under set -e before it can read the rc. The
 	# guarded form lets the caller handle the rc instead of aborting.
-	local versions latest rc
+	local versions latest rc base
 	versions="$(resolve_plugin_installed_versions)"
 	rc=$?
 	[ "$rc" -eq 0 ] || return "$rc"
 	latest="$(printf '%s\n' "$versions" | tail -1)"
 	[ -n "$latest" ] || return 1
-	printf '%s' "$(resolve_plugin_cache_base)/$latest"
+	# #2450: guard resolve_plugin_cache_base — an unguarded "$(…)" inside printf
+	# still returns 0 even if base resolution fails, violating the 0/1/2
+	# contract + emitting a malformed `/<version>` path. Capture + propagate.
+	base="$(resolve_plugin_cache_base)" || return "$?"
+	printf '%s' "$base/$latest"
 }
