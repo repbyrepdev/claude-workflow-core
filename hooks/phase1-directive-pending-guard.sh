@@ -178,8 +178,22 @@ while IFS= read -r -d '' f; do
 	# KEEP the marker (fail-closed; only a READABLE JSON that genuinely lacks the
 	# field self-heals).
 	_slh_state="$DIRECTIVE_DIR/$sha.json"
-	if [ -f "$_slh_state" ] && _slh_aged=$(find "$f" -mmin +1 -print 2>/dev/null) && [ -n "$_slh_aged" ]; then
-		_slh_proto=$(jq -r '.phase1_directive_protocol // "absent"' "$_slh_state" 2>/dev/null) || _slh_proto="unreadable"
+	# #2450: rc-capture + log find/jq failures in this stale-marker RECOVERY path
+	# instead of a bare 2>/dev/null swallow — a hidden failure here masks WHY the
+	# deadlock self-heal didn't fire. Behavior stays fail-closed: any failure
+	# (find errors / unreadable-or-corrupt state JSON) → KEEP the marker.
+	_slh_aged=""
+	if [ -f "$_slh_state" ]; then
+		if ! _slh_aged=$(find "$f" -mmin +1 -print 2>/dev/null); then
+			echo "phase1-directive-pending-guard: WARN: find failed probing age of marker $sha — keeping marker (fail-closed)" >&2
+			_slh_aged=""
+		fi
+	fi
+	if [ -n "$_slh_aged" ]; then
+		if ! _slh_proto=$(jq -r '.phase1_directive_protocol // "absent"' "$_slh_state" 2>/dev/null); then
+			_slh_proto="unreadable"
+			echo "phase1-directive-pending-guard: WARN: jq failed reading phase1_directive_protocol from $_slh_state (marker $sha) — treating as unreadable, keeping marker (fail-closed)" >&2
+		fi
 		if [ "$_slh_proto" = "absent" ]; then
 			if _slh_rm=$(rm -f "$f" 2>&1); then
 				echo "phase1-directive-pending-guard: self-healed stamp-less (stale-driver) marker $sha — state JSON has no phase1_directive_protocol; re-drive via the skill wrapper for a stamped directive (#2427)" >&2

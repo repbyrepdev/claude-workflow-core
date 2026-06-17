@@ -51,7 +51,10 @@ fi
 # v4.24-Q (#604) — shared sentinel + deny libs. Resolve via the hook's own
 # install dir (not `git rev-parse`) so the hook works when invoked from an
 # unrelated cwd (test harness tmpdir, arbitrary git repo under the session).
-HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+# #2450: use ${BASH_SOURCE[0]} (the hook's own path), not $0 — $0 is the
+# caller (the shell/wrapper) when the hook is sourced or invoked via a
+# wrapper, which would misresolve ../_lib. Matches every other hook.
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LIB_DENY="${HOOK_DIR}/../_lib/hook-deny.sh"
 LIB_SENTINEL="${HOOK_DIR}/../_lib/hook-inline-sentinel.sh"
 LIB_CONVENTION="${HOOK_DIR}/../_lib/branch-convention.sh"
