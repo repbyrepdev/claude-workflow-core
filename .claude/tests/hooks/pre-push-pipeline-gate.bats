@@ -1,5 +1,8 @@
 #!/usr/bin/env bats
 # covers: hooks/pre-push-pipeline-gate.sh
+# shellcheck disable=SC2317,SC2329  # stub fns (e.g. graduation_invalidate) run
+# indirectly via the sourced hook, so the reachability/invocation checks
+# misfire here (SC2317 + SC2329 differ only by shellcheck version).
 #
 # v0.31 #228: the fail-soft hook-wiring drift advisory. Sourced via
 # SOURCED_FOR_TEST so the function is exercised in isolation. Contract: WARN on
@@ -222,4 +225,89 @@ STUB
 	run bash -c "cd '$TMP' && printf '' | bash '$HOOK'"
 	[ "$status" -eq 1 ]
 	[[ $output == *"failing closed"* ]]
+}
+
+# ---- #2295: force-push detection → graduation invalidation -----------------
+# Builds c1 → c2 (linear) plus c2alt diverging from c1 in $TMP; echoes "c1 c2 c2alt".
+_make_grad_fixture() {
+	(
+		set -e # fail-fast: a failed git step must not yield partial output (CR #2482)
+		cd "$TMP" || exit 1
+		git init -q
+		git config user.email t@t
+		git config user.name t
+		echo a >f
+		git add f
+		git commit -qm c1
+		c1=$(git rev-parse HEAD)
+		echo b >>f
+		git add f
+		git commit -qm c2
+		c2=$(git rev-parse HEAD)
+		git checkout -q -b alt "$c1"
+		echo z >>f
+		git add f
+		git commit -qm c2alt
+		c2alt=$(git rev-parse HEAD)
+		echo "$c1 $c2 $c2alt"
+	)
+}
+
+ZERO40="0000000000000000000000000000000000000000"
+
+@test "_grad_invalidate_on_force_push: divergent (rewrite) invalidates + rc 0 (#2295)" {
+	read -r _c1 c2 c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	graduation_invalidate() { echo "INVAL:$1"; }
+	# remote=c2, local=c2alt (diverged from c1) ⇒ c2 is NOT an ancestor of c2alt.
+	run _grad_invalidate_on_force_push "feat/x" "$c2" "$c2alt" "$ZERO40"
+	[ "$status" -eq 0 ]
+	[[ $output == *"force-push detected for feat/x"* ]]
+	[[ $output == *"INVAL:feat/x"* ]]
+}
+
+@test "_grad_invalidate_on_force_push: fast-forward is not a force-push → rc 1 (#2295)" {
+	read -r c1 c2 _c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	graduation_invalidate() { echo "INVAL:$1"; }
+	# remote=c1, local=c2 ⇒ c1 IS an ancestor of c2 (history extended, not rewritten).
+	run _grad_invalidate_on_force_push "feat/x" "$c1" "$c2" "$ZERO40"
+	[ "$status" -eq 1 ]
+	[[ $output != *"INVAL"* ]]
+	[[ $output != *"force-push"* ]]
+}
+
+@test "_grad_invalidate_on_force_push: all-zeros remote (new branch) → rc 1 (#2295)" {
+	read -r _c1 c2 _c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	graduation_invalidate() { echo "INVAL:$1"; }
+	run _grad_invalidate_on_force_push "feat/x" "$ZERO40" "$c2" "$ZERO40"
+	[ "$status" -eq 1 ]
+	[[ $output != *"INVAL"* ]]
+}
+
+@test "_grad_invalidate_on_force_push: empty branch name → rc 1, no-op (#2295)" {
+	graduation_invalidate() { echo "INVAL:$1"; }
+	run _grad_invalidate_on_force_push "" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "cafebabecafebabecafebabecafebabecafebabe" "$ZERO40"
+	[ "$status" -eq 1 ]
+	[[ $output != *"INVAL"* ]]
+}
+
+@test "real hook on a fast-forward ref does NOT abort at the force-push probe (#2295 set -e regression)" {
+	# pr-test-analyzer #2295 r1: the unit tests above call the fn via `run` (a
+	# subshell — it swallows set -e), so they cannot see that a BARE call at the
+	# real call site would abort the whole gate under `set -euo pipefail` when
+	# the fn returns 1 on a fast-forward. Run the REAL hook NON-sourced with a
+	# fast-forward ref line on stdin: local=c2 (descendant), remote=c1 (its
+	# ancestor). Pre-fix the gate died at the probe (~line 512) before the log
+	# walk; post-fix it proceeds and — with no review-log for c2 — reaches the
+	# "no review log" gate, so asserting that message proves it cleared the
+	# probe. PHASE1_MIN_ROUNDS=1 makes the post-probe path deterministic (skips
+	# CR-CLI delegation) while still exercising the probe (which runs regardless).
+	read -r c1 c2 _c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	run bash -c "printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2' '$c1' | PHASE1_MIN_ROUNDS=1 bash '$HOOK'"
+	[ "$status" -eq 1 ]                      # blocks the push: no review log for c2 ⇒ FAILED=1
+	[[ $output == *"no review log for"* ]]   # reached the log walk ⇒ survived the probe
+	[[ $output != *"force-push detected"* ]] # fast-forward is NOT a force-push
 }

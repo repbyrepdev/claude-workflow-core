@@ -1,5 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+# auto-register: false
+# (Invoked by .git/hooks/post-commit, not a Claude tool-use hook — so it
+# declares no `# event:`; same pattern as pre-push-pipeline-gate.sh.)
 # v4.19 (#512): fix amend-orphan of Phase 1 review-log entries.
 #
 # Problem: `git commit --amend` rotates HEAD's SHA. The Phase 1 gate
@@ -25,6 +28,17 @@ set -euo pipefail
 # - No-op if prior log doesn't exist (first commit on branch, or no
 #   review-log entries written yet).
 
+# #2296: resolve THIS hook's dir (absolute) so the graduation lib can be
+# sourced after the `cd "$REPO_ROOT"` below. The documented install shape
+# (above) invokes this script by ABSOLUTE path, so ${BASH_SOURCE[0]} is already
+# absolute and `dirname/../_lib` resolves correctly. NOTE: unlike pre-push-
+# pipeline-gate.sh, this hook does NOT defend against a bare `.git/hooks`
+# symlink install — under that shape BASH_SOURCE points at `.git/hooks`, the lib
+# is unreadable, and the empty-dir fallback simply skips invalidation. That is
+# acceptable: the pre-push force-push gate (#2295) re-invalidates a rewritten
+# branch at push time, so this post-commit pass is only a local convenience.
+_MRLOA_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _MRLOA_HOOK_DIR=""
+
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 [ -z "$REPO_ROOT" ] && exit 0
 cd "$REPO_ROOT" || exit 0
@@ -40,6 +54,30 @@ PRIOR_SHA=$(git rev-parse "HEAD@{1}" 2>/dev/null || true)
 NEW_SHA=$(git rev-parse HEAD 2>/dev/null || true)
 if [ -z "$PRIOR_SHA" ] || [ -z "$NEW_SHA" ] || [ "$PRIOR_SHA" = "$NEW_SHA" ]; then
 	exit 0
+fi
+
+# #2296: an amend rotated HEAD's SHA, so a graduation marker certifying Phase
+# 0.5/1 at the pre-amend SHA now describes discarded code. Invalidate it
+# immediately (local, before any push) so the amended content is re-reviewed.
+# Independent of the review-log migration below — fires even when there is no
+# prior log to carry forward. Only emits when a marker actually existed, so it
+# stays silent on amends of never-graduated branches.
+_grad_lib="$_MRLOA_HOOK_DIR/../_lib/phase-graduation.sh"
+_amend_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+if [ -n "$_amend_branch" ] && [ "$_amend_branch" != "HEAD" ] && [ -r "$_grad_lib" ]; then
+	# shellcheck source=/dev/null
+	. "$_grad_lib"
+	if graduation_check "$_amend_branch"; then
+		if graduation_invalidate "$_amend_branch"; then
+			echo "migrate-review-log: amend on $_amend_branch — invalidated stale graduation marker (#2296)" >&2
+		else
+			# graduation_invalidate already prints the rm error to stderr;
+			# surface it at the hook level too so a failed removal is not lost
+			# in the post-commit noise. The pre-push force-push gate (#2295)
+			# re-invalidates the rewritten branch at push time as a backstop.
+			echo "migrate-review-log: WARN — amend on $_amend_branch but the stale graduation marker could NOT be removed (see error above); pre-push (#2295) will re-invalidate at push time" >&2
+		fi
+	fi
 fi
 
 PRIOR_LOG="$REPO_ROOT/.claude/review-log/${PRIOR_SHA}.jsonl"
