@@ -367,6 +367,18 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	[ -f "$marker" ]                                # the stuck marker indeed survived
 }
 
+@test "_grad_marker_stale: MISSING marker is fail-closed STALE (rc 0) (#2483 CR)" {
+	# TOCTOU guard: the caller checks graduation_check first, but a marker
+	# invalidated between the two checks must NOT be honored — and the helper
+	# must stay self-contained fail-closed for any future caller.
+	read -r _cb c2 < <(_make_stale_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB" # provides graduation_marker_path (no marker written)
+	run _grad_marker_stale "feat/x" "$c2"
+	[ "$status" -eq 0 ]
+}
+
 @test "_grad_invalidate_on_force_push: WARNs (still rc 0) when marker removal fails (#2483)" {
 	# #2483: a failed graduation_invalidate must be VISIBLE — a persisting
 	# marker would wrongly re-graduate the NEXT fast-forward push. rc stays 0:

@@ -434,18 +434,22 @@ _grad_invalidate_on_force_push() {
 # never a force-push, and a fast-forward push after amending a never-pushed
 # tip keeps the remote an ancestor. Ancestry is the authoritative signal.
 # rc 0 = STALE (caller invalidates + runs the full gate) · rc 1 = the marker
-# still describes an ancestor of the pushed sha, or no marker exists (the
-# caller's graduation_check decides). Fail-safe: an unreadable/unparseable
-# marker or unresolvable graduated_sha counts as STALE — re-review, never
-# skip. `graduation_marker_path` must be in scope (caller sources
-# phase-graduation.sh). Defined above the SOURCED_FOR_TEST early-return so
-# bats can exercise it in isolation.
+# exists and still describes an ancestor of the pushed sha. Fail-closed: a
+# MISSING, unreadable, or unparseable marker and an unresolvable graduated_sha
+# ALL count as STALE — re-review, never skip (the missing case is a TOCTOU
+# guard; the caller checks graduation_check first). `graduation_marker_path`
+# must be in scope (caller sources phase-graduation.sh). Defined above the
+# SOURCED_FOR_TEST early-return so bats can exercise it in isolation.
 _grad_marker_stale() {
 	local branch=${1:-} local_sha=${2:-}
 	{ [ -n "$branch" ] && [ -n "$local_sha" ]; } || return 0 # fail-safe: stale
 	local path gsha
 	path=$(graduation_marker_path "$branch" 2>/dev/null) || return 0
-	[ -f "$path" ] || return 1                # no marker → nothing to be stale
+	# CR #2485: a MISSING marker is fail-closed STALE too. The only caller runs
+	# right after graduation_check confirmed the file exists, so this is a
+	# TOCTOU guard (marker invalidated between the two checks ⇒ re-review) and
+	# keeps the helper self-contained fail-closed for any future caller.
+	[ -f "$path" ] || return 0
 	command -v jq >/dev/null 2>&1 || return 0 # cannot parse → fail-safe stale
 	gsha=$(jq -r '.graduated_sha // empty' "$path" 2>/dev/null) || return 0
 	[ -n "$gsha" ] || return 0 # malformed marker → fail-safe stale
