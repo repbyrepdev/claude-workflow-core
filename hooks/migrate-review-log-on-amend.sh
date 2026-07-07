@@ -38,24 +38,6 @@ set -euo pipefail
 
 _mrloa_rc=0
 
-# #2296: resolve THIS hook's dir (absolute) so the graduation lib can be
-# sourced after the `cd "$REPO_ROOT"` below. The documented install shape
-# (above) invokes this script by ABSOLUTE path, so ${BASH_SOURCE[0]} is
-# already absolute and `dirname/../_lib` resolves correctly. A resolver
-# failure is fail-loud but NON-FATAL: only the invalidation block needs the
-# lib; the review-log migration must still run. NOTE: under a bare
-# `.git/hooks` symlink install BASH_SOURCE resolves (to `.git/hooks`, the
-# wrong depth), the lib is unreadable, and the evidence-gated WARN below
-# fires instead. The pre-push gate is the authoritative backstop either way:
-# its #2483 ancestry check (graduated_sha must be an ancestor of the pushed
-# sha) catches EVERY rewrite shape at push time — force-push, create-push,
-# and fast-forward-after-amending-a-never-pushed-tip.
-if ! _MRLOA_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd); then
-	echo "migrate-review-log: ERROR — cannot resolve this hook's directory; graduation invalidation will be skipped (#2483)" >&2
-	_MRLOA_HOOK_DIR=""
-	_mrloa_rc=1
-fi
-
 if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
 	echo "migrate-review-log: ERROR — not inside a git repository; cannot run amend migration/invalidation (#2483)" >&2
 	exit 1
@@ -97,6 +79,24 @@ fi
 # prior log to carry forward. The happy path only emits when a marker actually
 # existed; the lib-unreadable WARN below is evidence-gated so never-graduated
 # repos stay silent too.
+# #2296: resolve THIS hook's dir (absolute) so the graduation lib can be
+# sourced from its `../_lib` sibling. The documented install shape (above)
+# invokes this script by ABSOLUTE path, so ${BASH_SOURCE[0]} is already
+# absolute and `dirname/../_lib` resolves correctly; under a bare `.git/hooks`
+# symlink install it resolves to the WRONG depth, the lib is unreadable, and
+# the evidence-gated WARN below fires instead. CR #2485: resolved LAZILY —
+# only the invalidation block consumes it, and resolving before the amend gate
+# would (on a resolver failure) ERROR on every commit instead of only on
+# amends, violating the same evidence-gating intent as the WARN. Fail-loud but
+# NON-FATAL: the review-log migration further down does not need the lib. The
+# pre-push gate is the authoritative backstop either way — its #2483 ancestry
+# check (graduated_sha must be an ancestor of the pushed sha) catches every
+# rewrite shape at push time.
+if ! _MRLOA_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd); then
+	echo "migrate-review-log: ERROR — cannot resolve this hook's directory; graduation invalidation will be skipped (#2483)" >&2
+	_MRLOA_HOOK_DIR=""
+	_mrloa_rc=1
+fi
 _grad_lib="$_MRLOA_HOOK_DIR/../_lib/phase-graduation.sh"
 _grad_marker_dir="$REPO_ROOT/.claude/.session-state/phase-graduation"
 # #2483: branch-resolution failure is fail-loud but NON-FATAL — it blocks only
