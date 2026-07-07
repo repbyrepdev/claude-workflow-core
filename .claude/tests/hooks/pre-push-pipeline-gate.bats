@@ -255,6 +255,144 @@ _make_grad_fixture() {
 
 ZERO40="0000000000000000000000000000000000000000"
 
+# Builds main(cb) → feat/x(c2) with the test LEFT ON feat/x; echoes "cb c2".
+# Used by the #2483 ancestry-check tests, which amend/extend feat/x afterwards.
+_make_stale_fixture() {
+	(
+		set -e
+		cd "$TMP" || exit 1
+		git init -q
+		git config user.email t@t
+		git config user.name t
+		git checkout -qb main
+		echo base >f
+		git add f
+		git commit -qm base
+		cb=$(git rev-parse HEAD)
+		git checkout -qb feat/x
+		echo work >g
+		git add g
+		git commit -qm work
+		echo "$cb $(git rev-parse HEAD)"
+	)
+}
+
+_GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
+
+@test "STALE marker on a CREATE-push (graduate then amend then first push) runs the full gate (#2483)" {
+	# The event detectors cannot see this shape: an all-zeros remote is never a
+	# force-push, so pre-#2483 the stale marker short-circuited Phase 1 for
+	# amended, never-re-reviewed code. rc is 1 both pre- and post-fix (pre-fix
+	# it fails later at the Phase 2 check INSIDE the short-circuit), so the
+	# discriminating assertions are the MESSAGES.
+	read -r _cb c2 < <(_make_stale_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB"
+	graduation_mark "feat/x" "$c2" 1
+	marker=$(graduation_marker_path "feat/x")
+	[ -f "$marker" ]
+	git commit -q --amend -m "work amended" # no post-commit hook installed → marker survives
+	c2p=$(git rev-parse HEAD)
+	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2p' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"is STALE"* ]]                   # ancestry check fired
+	[[ $output != *"graduated past Phase 0.5/1"* ]] # short-circuit NOT honored
+	[[ $output == *"no review log for"* ]]          # full log walk ran
+	[ ! -f "$marker" ]                              # stale marker invalidated
+}
+
+@test "STALE marker on a FAST-FORWARD push (amend of a never-pushed tip) runs the full gate (#2483)" {
+	# remote=cb is an ancestor of the amended tip, so the force-push probe
+	# returns 1 (fast-forward) — only the ancestry check catches this shape.
+	read -r cb c2 < <(_make_stale_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB"
+	graduation_mark "feat/x" "$c2" 1
+	git commit -q --amend -m "work amended"
+	c2p=$(git rev-parse HEAD)
+	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2p' '$cb' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
+	[ "$status" -eq 1 ]
+	[[ $output != *"force-push detected"* ]] # took the fast-forward path
+	[[ $output == *"is STALE"* ]]            # ...and ancestry still caught it
+	[[ $output != *"graduated past Phase 0.5/1"* ]]
+	[[ $output == *"no review log for"* ]]
+}
+
+@test "POSITIVE control: graduated branch with a normal child commit keeps the short-circuit (#2483)" {
+	# Locks the ancestry check against over-tightening (an inverted merge-base
+	# or fail-closed parse quirk would silently revert #792 graduation and put
+	# every branch back on the Phase 1 treadmill).
+	read -r _cb c2 < <(_make_stale_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB"
+	graduation_mark "feat/x" "$c2" 1
+	echo more >h
+	git add h
+	git commit -qm more # NORMAL child commit — c2 stays an ancestor
+	c3=$(git rev-parse HEAD)
+	mkdir -p .claude/logs
+	# cr_phase2_clean_for_sha matches .sha against the 7-char short sha exactly.
+	printf '{"sha":"%s","findings":0}\n' "${c3:0:7}" >.claude/logs/cr-local-review.jsonl # Phase 2 clean seed
+	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"graduated past Phase 0.5/1"* ]] # short-circuit survived the ancestry check
+	[[ $output != *"is STALE"* ]]
+	[[ $output == *"accepting"* ]] # Phase 2 clean verdict honored
+}
+
+@test "force-push with a STUCK marker (rm fails) still runs the full gate via _grad_forced (#2483)" {
+	# Locks the operational claim in the WARN text: enforcement does not depend
+	# on the marker actually being removed. Marker graduated at c1 (an ancestor
+	# of the pushed c2alt), so the ancestry check alone would NOT trip — only
+	# _grad_forced blocks the short-circuit here.
+	read -r c1 c2 c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB"
+	graduation_mark "feat/x" "$c1" 1
+	marker=$(graduation_marker_path "feat/x")
+	mdir=$(dirname "$marker")
+	chmod 555 "$mdir" # unlink now fails → graduation_invalidate returns 1
+	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2alt' '$c2' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
+	chmod 755 "$mdir" # restore so teardown's rm -rf succeeds
+	[ "$status" -eq 1 ]
+	[[ $output == *"force-push detected"* ]]
+	[[ $output == *"WARN"* ]]
+	[[ $output == *"graduation_invalidate failed"* ]]
+	[[ $output != *"graduated past Phase 0.5/1"* ]] # _grad_forced bypassed the short-circuit
+	[[ $output == *"no review log for"* ]]          # full walk ran
+	[ -f "$marker" ]                                # the stuck marker indeed survived
+}
+
+@test "_grad_marker_stale: MISSING marker is fail-closed STALE (rc 0) (#2483 CR)" {
+	# TOCTOU guard: the caller checks graduation_check first, but a marker
+	# invalidated between the two checks must NOT be honored — and the helper
+	# must stay self-contained fail-closed for any future caller.
+	read -r _cb c2 < <(_make_stale_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB" # provides graduation_marker_path (no marker written)
+	run _grad_marker_stale "feat/x" "$c2"
+	[ "$status" -eq 0 ]
+}
+
+@test "_grad_invalidate_on_force_push: WARNs (still rc 0) when marker removal fails (#2483)" {
+	# #2483: a failed graduation_invalidate must be VISIBLE — a persisting
+	# marker would wrongly re-graduate the NEXT fast-forward push. rc stays 0:
+	# enforcement for THIS push is the caller's _grad_forced flag.
+	read -r _c1 c2 c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	graduation_invalidate() { return 1; }
+	run _grad_invalidate_on_force_push "feat/x" "$c2" "$c2alt" "$ZERO40"
+	[ "$status" -eq 0 ]
+	[[ $output == *"force-push detected"* ]]
+	[[ $output == *"WARN"* ]]
+	[[ $output == *"graduation_invalidate failed"* ]]
+}
+
 @test "_grad_invalidate_on_force_push: divergent (rewrite) invalidates + rc 0 (#2295)" {
 	read -r _c1 c2 c2alt < <(_make_grad_fixture)
 	cd "$TMP"
