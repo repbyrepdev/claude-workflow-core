@@ -395,8 +395,9 @@ _orphan_hook_advisory() {
 # Phase 1 log walk on the strength of a review that no longer describes its code.
 # `graduation_invalidate` must be in scope (caller sources phase-graduation.sh).
 # Returns 0 when a force-push was DETECTED (marker invalidation is attempted,
-# a failure WARNs to stderr per #2483; the caller forces a full re-review
-# regardless of rm success — see #2295), 1
+# a failure WARNs to stderr per #2483; the caller's _grad_forced then bypasses
+# the graduation short-circuit regardless of rm success, so the push takes the
+# standard non-graduated gate path — see #2295), 1
 # otherwise (fast-forward, brand-new branch, or no branch). Defined above the
 # SOURCED_FOR_TEST early-return so bats can exercise it in isolation (ZERO is
 # passed in, not read from the global, which is set below the early-return).
@@ -415,13 +416,43 @@ _grad_invalidate_on_force_push() {
 	fi
 	echo "pre-push-pipeline-gate: force-push detected for $branch — invalidating graduation marker" >&2
 	# #2483: WARN (don't fail) when marker removal fails — enforcement for THIS
-	# push is already guaranteed by the caller's _grad_forced flag (full Phase 1
-	# log walk), but a persisting marker would silently re-graduate a FUTURE
-	# fast-forward push, so the operator must see it.
+	# push is already guaranteed by the caller's _grad_forced flag (graduation
+	# short-circuit bypassed; the gate then requires the Phase 1 log walk or a
+	# fresh CR-CLI findings=0 verdict for the NEW sha), but a persisting marker
+	# would silently re-graduate a FUTURE fast-forward push, so the operator
+	# must see it.
 	if ! graduation_invalidate "$branch"; then
 		echo "pre-push-pipeline-gate: WARN — graduation_invalidate failed for $branch (re-review IS enforced for this push via _grad_forced; the stale marker persists and will wrongly graduate the next fast-forward push — remove it manually: see _lib/phase-graduation.sh graduation_marker_path)" >&2
 	fi
 	return 0
+}
+
+# #2483: content-based staleness check for the graduation short-circuit. The
+# marker certifies Phase 0.5/1 at graduated_sha; if that sha is no longer an
+# ancestor of the pushed sha, history was REWRITTEN through a path the
+# event-based detectors above cannot see — a create-push (all-zeros remote) is
+# never a force-push, and a fast-forward push after amending a never-pushed
+# tip keeps the remote an ancestor. Ancestry is the authoritative signal.
+# rc 0 = STALE (caller invalidates + runs the full gate) · rc 1 = the marker
+# still describes an ancestor of the pushed sha, or no marker exists (the
+# caller's graduation_check decides). Fail-safe: an unreadable/unparseable
+# marker or unresolvable graduated_sha counts as STALE — re-review, never
+# skip. `graduation_marker_path` must be in scope (caller sources
+# phase-graduation.sh). Defined above the SOURCED_FOR_TEST early-return so
+# bats can exercise it in isolation.
+_grad_marker_stale() {
+	local branch=${1:-} local_sha=${2:-}
+	{ [ -n "$branch" ] && [ -n "$local_sha" ]; } || return 0 # fail-safe: stale
+	local path gsha
+	path=$(graduation_marker_path "$branch" 2>/dev/null) || return 0
+	[ -f "$path" ] || return 1                # no marker → nothing to be stale
+	command -v jq >/dev/null 2>&1 || return 0 # cannot parse → fail-safe stale
+	gsha=$(jq -r '.graduated_sha // empty' "$path" 2>/dev/null) || return 0
+	[ -n "$gsha" ] || return 0 # malformed marker → fail-safe stale
+	if git merge-base --is-ancestor "$gsha" "$local_sha" 2>/dev/null; then
+		return 1 # graduated_sha still in the pushed history → marker valid
+	fi
+	return 0 # rewritten past the graduation point → stale
 }
 
 # v4.29 #792: hoist MIN_CLEAN_STREAK above SOURCED_FOR_TEST early-return
@@ -528,13 +559,26 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 			_grad_forced=1
 		fi
 		if [ "$_grad_forced" = 0 ] && [ -z "${PHASE1_MIN_ROUNDS:-}" ] && graduation_check "$_grad_branch"; then
-			echo "pre-push-pipeline-gate: branch $_grad_branch graduated past Phase 0.5/1 — skipping log walk (Phase 2 still required)" >&2
-			# Still enforce Phase 2 cleanliness for current SHA.
-			if ! _cr_cli_clean_for_sha "$local_sha"; then
-				echo "  Phase 2 not clean for $local_sha — run \`coderabbit review --agent -t committed --base main\` and address findings." >&2
-				FAILED=1
+			# #2483: content-based staleness gate. The event detectors above
+			# miss a create-push (all-zeros remote) and a fast-forward push
+			# after amending a never-pushed tip; in both, a stale marker would
+			# wrongly skip Phase 1 for rewritten, never-re-reviewed code. If
+			# graduated_sha is no longer an ancestor of the pushed sha, the
+			# marker certifies discarded history: invalidate + full gate.
+			if _grad_marker_stale "$_grad_branch" "$local_sha"; then
+				echo "pre-push-pipeline-gate: graduation marker for $_grad_branch is STALE (graduated_sha is not an ancestor of $local_sha — history rewritten); invalidating + running the full gate" >&2
+				if ! graduation_invalidate "$_grad_branch"; then
+					echo "pre-push-pipeline-gate: WARN — graduation_invalidate failed for $_grad_branch (this push still runs the full gate; remove the marker manually — see _lib/phase-graduation.sh graduation_marker_path)" >&2
+				fi
+			else
+				echo "pre-push-pipeline-gate: branch $_grad_branch graduated past Phase 0.5/1 — skipping log walk (Phase 2 still required)" >&2
+				# Still enforce Phase 2 cleanliness for current SHA.
+				if ! _cr_cli_clean_for_sha "$local_sha"; then
+					echo "  Phase 2 not clean for $local_sha — run \`coderabbit review --agent -t committed --base main\` and address findings." >&2
+					FAILED=1
+				fi
+				continue
 			fi
-			continue
 		fi
 	fi
 
