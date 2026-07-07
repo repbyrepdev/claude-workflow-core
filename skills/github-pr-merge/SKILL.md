@@ -15,8 +15,22 @@ so skill-bypass-guard honors the internal `gh pr merge` call.
 ```bash
 .claude/skills/github-pr-merge/run.sh --pr <num> \
   [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] \
-  [--tag vX.Y.Z]
+  [--tag vX.Y.Z] [--auto]
 ```
+
+**`--auto` is the gold-standard default for agent-driven merges (#2487):**
+it ARMS GitHub native auto-merge instead of merging immediately. The
+platform merges only when the branch ruleset is satisfied — an independent
+approving review (CodeRabbit via `request_changes_workflow`, or the
+repin-auto-approve byte-verify bot for consumer re-pins) plus green
+required checks. The author cannot self-approve, so two-party review stays
+mechanically enforced with no human at the merge button. An agent must
+NEVER use the immediate-merge path on its own PR (that is a
+two-party-review bypass and the auto-mode classifier blocks it); arm
+`--auto` and let the platform merge. `--auto` is incompatible with
+`--tag` (tag after the platform merges), skips the immediate-merge
+pre-gates (the platform holds the merge until green), and runs no
+post-merge steps (nothing merged yet).
 
 The inline flow below is the **pre-v4.20 manual path**. Prefer the wrapper
 for routine merges; fall back to inline steps only when debugging or when

@@ -7,11 +7,20 @@ set -euo pipefail
 #
 # Usage:
 #   .claude/skills/github-pr-merge/run.sh --pr <num> \
-#     [--squash|--merge|--rebase] [--delete-branch] [--tag vX.Y.Z]
+#     [--squash|--merge|--rebase] [--delete-branch] [--tag vX.Y.Z] [--auto]
 #
 # Defaults: --squash --delete-branch.
 # If --tag is provided, runs auto-release.sh after merge (respecting
 # ACTIONS_MODE guard via auto-release.sh's own check).
+#
+# --auto (#2487, gold-standard merge model): ARM GitHub native auto-merge
+# instead of merging now. The platform merges only when the branch ruleset
+# is satisfied (independent approving review + green checks); the author
+# cannot self-approve, so two-party review stays mechanically enforced with
+# no human at the merge button. Skips the immediate-merge pre-gates (warn
+# instead of refuse — the platform holds the merge until green) and all
+# post-merge steps (nothing merged yet). Incompatible with --tag (the tag
+# needs the merge commit; tag after the platform merges).
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # v0.6.7 (#15): REPO_ROOT via git rev-parse (works whether the wrapper
@@ -30,6 +39,7 @@ PR=""
 METHOD="--squash"
 DELETE_BRANCH=1
 TAG=""
+AUTO=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -61,6 +71,10 @@ while [ $# -gt 0 ]; do
 		TAG="$2"
 		shift 2
 		;;
+	--auto)
+		AUTO=1
+		shift
+		;;
 	-h | --help)
 		grep '^#' "$0" | sed 's/^# \?//'
 		exit 0
@@ -73,7 +87,12 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$PR" ] || ! [[ $PR =~ ^[0-9]+$ ]]; then
-	echo "Usage: $0 --pr <num> [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] [--tag vX.Y.Z]" >&2
+	echo "Usage: $0 --pr <num> [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] [--tag vX.Y.Z] [--auto]" >&2
+	exit 2
+fi
+
+if [ "$AUTO" = "1" ] && [ -n "$TAG" ]; then
+	echo "error: --tag is incompatible with --auto — the tag needs the merge commit; tag after the platform merges" >&2
 	exit 2
 fi
 
@@ -82,6 +101,24 @@ STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRoll
 	--jq '{state: .state, mergeable: .mergeable, mergeStateStatus: .mergeStateStatus, checks: [(.statusCheckRollup // [])[] | {context: .context, state: .state}]}')
 echo "=== Pre-merge state for PR #$PR ==="
 printf '%s\n' "$STATE" | jq .
+
+# --auto (#2487): ARM platform auto-merge and exit. The immediate-merge
+# pre-gates below (FAILED-check refusal, stranded-thread refusal) do not
+# apply — GitHub holds the merge until the ruleset is satisfied, so arming
+# over pending/red checks is safe (the merge simply waits). Post-merge
+# steps (checkout main, tag, trivy, marker cleanup) run on no machine here
+# because nothing merged yet; the Layer 1/3 marker self-heals cover the
+# branch after the platform merges it.
+if [ "$AUTO" = "1" ]; then
+	skc_approve_or_exit "Arm auto-merge for PR #$PR ($METHOD)? GitHub merges when the ruleset is satisfied (independent review + green checks)"
+	MERGE_ARGS=(pr merge "$PR" "$METHOD" --auto)
+	[ "$DELETE_BRANCH" = "1" ] && MERGE_ARGS+=(--delete-branch)
+	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
+	echo "✓ Auto-merge armed for PR #$PR ($METHOD) — the platform merges when required reviews + checks pass."
+	echo "  The author cannot self-approve, so two-party review is enforced with no human at the merge button."
+	echo "  Poll: gh pr view $PR --json state,autoMergeRequest"
+	exit 0
+fi
 
 # Bail if not mergeable. Note: UNKNOWN (GitHub still computing mergeable
 # state) is treated the same as CONFLICTING here — if you hit UNKNOWN
