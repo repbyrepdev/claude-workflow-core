@@ -77,3 +77,15 @@ teardown() {
 	[[ $output != *"invalidated stale graduation marker"* ]] # no noisy invalidation on a non-amend
 	[ -f "$marker" ]                                         # still present — only amends invalidate
 }
+
+@test "hook FAILS CLOSED (exit 1 + ERROR) outside a git repository (#2483)" {
+	# #2483: resolver failures were silent exit-0 no-ops; they must now surface.
+	# The post-commit caller wraps the hook in `|| true`, so fail-closed here
+	# never blocks a commit — it only makes the failure visible.
+	NOGIT=$(mktemp -d -t mrloa-nogit.XXXXXX)
+	run bash -c "cd '$NOGIT' && bash '$HOOK'"
+	rm -rf "$NOGIT"
+	[ "$status" -eq 1 ]
+	[[ $output == *"ERROR"* ]]
+	[[ $output == *"not inside a git repository"* ]]
+}

@@ -31,17 +31,28 @@ set -euo pipefail
 # #2296: resolve THIS hook's dir (absolute) so the graduation lib can be
 # sourced after the `cd "$REPO_ROOT"` below. The documented install shape
 # (above) invokes this script by ABSOLUTE path, so ${BASH_SOURCE[0]} is already
-# absolute and `dirname/../_lib` resolves correctly. NOTE: unlike pre-push-
-# pipeline-gate.sh, this hook does NOT defend against a bare `.git/hooks`
-# symlink install — under that shape BASH_SOURCE points at `.git/hooks`, the lib
-# is unreadable, and the empty-dir fallback simply skips invalidation. That is
+# absolute and `dirname/../_lib` resolves correctly. #2483: resolver failures
+# are now FAIL-CLOSED (error + exit 1, never a silent no-op) — the post-commit
+# caller wraps this hook in `|| true`, so a failure surfaces on stderr without
+# ever blocking the commit. NOTE: unlike pre-push-pipeline-gate.sh, this hook
+# does NOT defend against a bare `.git/hooks` symlink install — under that
+# shape BASH_SOURCE resolves (to `.git/hooks`, the wrong depth), the lib is
+# unreadable, and the `[ -r ]` guard below WARNs + skips invalidation. That is
 # acceptable: the pre-push force-push gate (#2295) re-invalidates a rewritten
 # branch at push time, so this post-commit pass is only a local convenience.
-_MRLOA_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _MRLOA_HOOK_DIR=""
+if ! _MRLOA_HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd); then
+	echo "migrate-review-log: ERROR — cannot resolve this hook's directory; graduation lib unreachable (#2483)" >&2
+	exit 1
+fi
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
-[ -z "$REPO_ROOT" ] && exit 0
-cd "$REPO_ROOT" || exit 0
+if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
+	echo "migrate-review-log: ERROR — not inside a git repository; cannot run amend migration/invalidation (#2483)" >&2
+	exit 1
+fi
+if ! cd "$REPO_ROOT"; then
+	echo "migrate-review-log: ERROR — cd '$REPO_ROOT' failed (#2483)" >&2
+	exit 1
+fi
 
 # Detect amend via reflog. Anchored to the reflog-subject format
 # (`commit (amend): <message>`) so a REGULAR commit whose message
@@ -63,7 +74,20 @@ fi
 # prior log to carry forward. Only emits when a marker actually existed, so it
 # stays silent on amends of never-graduated branches.
 _grad_lib="$_MRLOA_HOOK_DIR/../_lib/phase-graduation.sh"
-_amend_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+# #2483: branch resolution is FAIL-CLOSED — a rev-parse failure must not
+# silently skip the invalidation block (the caller's `|| true` keeps commits
+# unblocked). Detached HEAD ("HEAD") stays a LEGITIMATE skip, not an error:
+# there is no branch marker to invalidate.
+if ! _amend_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); then
+	echo "migrate-review-log: ERROR — cannot resolve the current branch; graduation invalidation cannot run (#2483)" >&2
+	exit 1
+fi
+if [ ! -r "$_grad_lib" ]; then
+	# Symlink-install shape (see resolver comment above): dir resolves to the
+	# wrong depth, lib unreadable. WARN — pre-push (#2295) is the backstop —
+	# and continue to the review-log migration below, which needs no lib.
+	echo "migrate-review-log: WARN — graduation lib unreadable at $_grad_lib; skipping amend invalidation (pre-push #2295 re-invalidates at push time)" >&2
+fi
 if [ -n "$_amend_branch" ] && [ "$_amend_branch" != "HEAD" ] && [ -r "$_grad_lib" ]; then
 	# shellcheck source=/dev/null
 	. "$_grad_lib"

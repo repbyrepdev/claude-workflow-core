@@ -394,8 +394,9 @@ _orphan_hook_advisory() {
 # graduation short-circuit consults it — otherwise a rewritten branch skips the
 # Phase 1 log walk on the strength of a review that no longer describes its code.
 # `graduation_invalidate` must be in scope (caller sources phase-graduation.sh).
-# Returns 0 when a force-push was DETECTED (marker invalidation is attempted;
-# the caller forces a full re-review regardless of rm success — see #2295), 1
+# Returns 0 when a force-push was DETECTED (marker invalidation is attempted,
+# a failure WARNs to stderr per #2483; the caller forces a full re-review
+# regardless of rm success — see #2295), 1
 # otherwise (fast-forward, brand-new branch, or no branch). Defined above the
 # SOURCED_FOR_TEST early-return so bats can exercise it in isolation (ZERO is
 # passed in, not read from the global, which is set below the early-return).
@@ -413,7 +414,13 @@ _grad_invalidate_on_force_push() {
 		return 1
 	fi
 	echo "pre-push-pipeline-gate: force-push detected for $branch — invalidating graduation marker" >&2
-	graduation_invalidate "$branch" || true
+	# #2483: WARN (don't fail) when marker removal fails — enforcement for THIS
+	# push is already guaranteed by the caller's _grad_forced flag (full Phase 1
+	# log walk), but a persisting marker would silently re-graduate a FUTURE
+	# fast-forward push, so the operator must see it.
+	if ! graduation_invalidate "$branch"; then
+		echo "pre-push-pipeline-gate: WARN — graduation_invalidate failed for $branch (re-review IS enforced for this push via _grad_forced; the stale marker persists and will wrongly graduate the next fast-forward push — remove it manually: see _lib/phase-graduation.sh graduation_marker_path)" >&2
+	fi
 	return 0
 }
 

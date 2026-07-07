@@ -255,6 +255,20 @@ _make_grad_fixture() {
 
 ZERO40="0000000000000000000000000000000000000000"
 
+@test "_grad_invalidate_on_force_push: WARNs (still rc 0) when marker removal fails (#2483)" {
+	# #2483: a failed graduation_invalidate must be VISIBLE — a persisting
+	# marker would wrongly re-graduate the NEXT fast-forward push. rc stays 0:
+	# enforcement for THIS push is the caller's _grad_forced flag.
+	read -r _c1 c2 c2alt < <(_make_grad_fixture)
+	cd "$TMP"
+	graduation_invalidate() { return 1; }
+	run _grad_invalidate_on_force_push "feat/x" "$c2" "$c2alt" "$ZERO40"
+	[ "$status" -eq 0 ]
+	[[ $output == *"force-push detected"* ]]
+	[[ $output == *"WARN"* ]]
+	[[ $output == *"graduation_invalidate failed"* ]]
+}
+
 @test "_grad_invalidate_on_force_push: divergent (rewrite) invalidates + rc 0 (#2295)" {
 	read -r _c1 c2 c2alt < <(_make_grad_fixture)
 	cd "$TMP"
