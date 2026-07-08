@@ -321,16 +321,29 @@ if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
 	# a prior complete one) — partial detail parsed as truth is worse than
 	# the missing-detail problem this block fixes. Stderr is captured so the
 	# WARN states the actual cause.
+	# The subshell's ENTIRE stderr is captured (mkdir/mktemp/cp/mv — not just
+	# the final mv), and the temp path is exported through so the failure
+	# branch removes ONLY this invocation's temp (a glob would nuke a
+	# concurrent run's in-flight temp).
 	_detail_err=""
+	_dtmp_file="$_detail_dir/.cr-detail.pid$$"
 	if _detail_err=$(
-		mkdir -p "$_detail_dir" &&
-			_dtmp=$(mktemp "$_detail_dir/.cr-detail.XXXXXX") &&
-			cp "$TEE_OUT" "$_dtmp" &&
-			mv -f "$_dtmp" "$_detail_file" 2>&1
+		{
+			mkdir -p "$_detail_dir" &&
+				_dtmp=$(mktemp "$_detail_dir/.cr-detail.XXXXXX") &&
+				printf '%s\n' "$_dtmp" >"$_dtmp_file" &&
+				cp "$TEE_OUT" "$_dtmp" &&
+				mv -f "$_dtmp" "$_detail_file"
+		} 2>&1
 	); then
+		rm -f "$_dtmp_file" 2>/dev/null || true
 		echo "local-review: findings detail persisted to $_detail_file (#2484)" >&2
 	else
-		rm -f "$_detail_dir"/.cr-detail.?????? 2>/dev/null || true
+		if [ -f "$_dtmp_file" ]; then
+			_dtmp_recorded=$(cat "$_dtmp_file" 2>/dev/null || true)
+			[ -n "$_dtmp_recorded" ] && rm -f "$_dtmp_recorded" 2>/dev/null
+			rm -f "$_dtmp_file" 2>/dev/null || true
+		fi
 		echo "local-review: WARN — could not persist findings detail to $_detail_file (${_detail_err:-no stderr}); the tee tmpfile dies with this process (#2484)" >&2
 	fi
 fi

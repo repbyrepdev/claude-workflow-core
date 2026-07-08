@@ -172,8 +172,11 @@ if [ "$AUTO" = "1" ]; then
 	# escalate a successful enqueue into the exit-2 branch below).
 	probe_rc=0
 	_qq_owner_name=$(skc_repo_owner_name 2>/dev/null) || _qq_owner_name=""
+	# -f (raw string) for the String! vars — -F would type-coerce a numeric-
+	# looking owner/name into an Int and fail GraphQL validation; -F stays
+	# correct for the Int! PR number.
 	post_queued=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeQueueEntry{position}}}}' \
-		-F o="${_qq_owner_name%%/*}" -F r="${_qq_owner_name##*/}" \
+		-f o="${_qq_owner_name%%/*}" -f r="${_qq_owner_name##*/}" \
 		-F n="$PR" --jq '(.data.repository.pullRequest.mergeQueueEntry != null)' 2>&1) || probe_rc=$?
 	if [ "$probe_rc" -ne 0 ] || [ -z "$_qq_owner_name" ]; then
 		echo "⚠ merge-queue probe unavailable (rc=$probe_rc): $post_queued" >&2
