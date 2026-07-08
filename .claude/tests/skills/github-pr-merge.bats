@@ -82,7 +82,7 @@ _state() { # $1=state $2=failed_count
 	_install_gh_shim
 	export FAKE_STATE FAKE_POST FAKE_DEL
 	FAKE_STATE=$(_state OPEN 0)
-	FAKE_POST='{"state":"OPEN","armed":true,"head":"abc1234"}'
+	FAKE_POST='{"state":"OPEN","armed":true,"queued":false,"head":"abc1234"}'
 	FAKE_DEL=true
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
@@ -94,7 +94,7 @@ _state() { # $1=state $2=failed_count
 	_install_gh_shim
 	export FAKE_STATE FAKE_POST
 	FAKE_STATE=$(_state OPEN 0)
-	FAKE_POST='{"state":"OPEN","armed":true,"head":"abc1234"}'
+	FAKE_POST='{"state":"OPEN","armed":true,"queued":false,"head":"abc1234"}'
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto --no-delete-branch </dev/null"
 	[ "$status" -eq 0 ]
 	grep -qx "pr merge 55 --squash --auto" "$GH_ARGS_LOG"
@@ -104,28 +104,38 @@ _state() { # $1=state $2=failed_count
 	_install_gh_shim
 	export FAKE_STATE FAKE_POST
 	FAKE_STATE=$(_state OPEN 0)
-	FAKE_POST='{"state":"MERGED","armed":false,"head":"abc1234"}'
+	FAKE_POST='{"state":"MERGED","armed":false,"queued":false,"head":"abc1234"}'
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"merged it IMMEDIATELY"* ]]
 	[[ $output != *"Auto-merge armed"* ]]
 }
 
-@test "--auto neither-armed-nor-merged is a hard error (rc 2)" {
+@test "--auto neither-armed-merged-nor-queued is a hard error (rc 2)" {
 	_install_gh_shim
 	export FAKE_STATE FAKE_POST
 	FAKE_STATE=$(_state OPEN 0)
-	FAKE_POST='{"state":"OPEN","armed":false,"head":"abc1234"}'
+	FAKE_POST='{"state":"OPEN","armed":false,"queued":false,"head":"abc1234"}'
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 2 ]
-	[[ $output == *"neither merged nor armed"* ]]
+	[[ $output == *"neither merged, armed, nor queued"* ]]
+}
+
+@test "--auto merge-queue membership is a success outcome (rc 0)" {
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST='{"state":"OPEN","armed":false,"queued":true,"head":"abc1234"}'
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"entered the merge queue"* ]]
 }
 
 @test "--auto warns on currently-FAILED checks before arming" {
 	_install_gh_shim
 	export FAKE_STATE FAKE_POST
 	FAKE_STATE=$(_state OPEN 1)
-	FAKE_POST='{"state":"OPEN","armed":true,"head":"abc1234"}'
+	FAKE_POST='{"state":"OPEN","armed":true,"queued":false,"head":"abc1234"}'
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"currently FAILED"* ]]

@@ -129,7 +129,7 @@ if [ "$AUTO" = "1" ]; then
 	# Warn (not refuse) on currently-FAILED checks: the ruleset holds the
 	# merge only on REQUIRED checks, so a red non-required check would ride
 	# through — make it visible before the approval.
-	failed_now=$(printf '%s' "$STATE" | jq -r '[.checks[] | select(.state == "FAILURE" or .state == "ERROR")] | length')
+	failed_now=$(printf '%s' "$STATE" | jq -r '[.checks[] | select(.state == "FAILURE" or .state == "ERROR" or .state == "CANCELLED" or .state == "TIMED_OUT")] | length')
 	if [ "$failed_now" -gt 0 ]; then
 		echo "⚠ $failed_now check(s) currently FAILED. The ruleset blocks the merge only on REQUIRED checks — a red non-required check will NOT stop the platform merge." >&2
 	fi
@@ -143,10 +143,11 @@ if [ "$AUTO" = "1" ]; then
 	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
 	# Verify the outcome instead of asserting it: gh rc 0 covers BOTH
 	# "armed" and "merged immediately" (clean-status fallback).
-	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid \
-		--jq '{state: .state, armed: (.autoMergeRequest != null), head: .headRefOid}')
+	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid,mergeQueueEntry \
+		--jq '{state: .state, armed: (.autoMergeRequest != null), queued: (.mergeQueueEntry != null), head: .headRefOid}')
 	post_state=$(printf '%s' "$POST" | jq -r '.state')
 	post_armed=$(printf '%s' "$POST" | jq -r '.armed')
+	post_queued=$(printf '%s' "$POST" | jq -r '.queued')
 	post_head=$(printf '%s' "$POST" | jq -r '.head')
 	if [ "$post_state" = "MERGED" ]; then
 		echo "⚠ PR #$PR already satisfied the ruleset — gh merged it IMMEDIATELY (clean-status fallback); auto-merge was NOT armed."
@@ -164,8 +165,11 @@ if [ "$AUTO" = "1" ]; then
 			fi
 		fi
 		echo "  Poll: gh pr view $PR --json state,autoMergeRequest"
+	elif [ "$post_state" = "OPEN" ] && [ "$post_queued" = "true" ]; then
+		echo "✓ PR #$PR entered the merge queue ($METHOD) — the platform merges when the queue processes it."
+		echo "  Poll: gh pr view $PR --json state,mergeQueueEntry"
 	else
-		echo "gh exited 0 but PR #$PR is $post_state and auto-merge armed=$post_armed — neither merged nor armed; investigate" >&2
+		echo "gh exited 0 but PR #$PR is $post_state, armed=$post_armed, queued=$post_queued — neither merged, armed, nor queued; investigate" >&2
 		exit 2
 	fi
 	exit 0
