@@ -63,9 +63,11 @@ fi
 [ -z "$CMD" ] && exit 0
 
 # Scope: fire ONLY when `gh pr merge` is invoked at a COMMAND position. Reuse the
-# canonical command-anchor SSOT (_lib/cmd-anchor.sh, #677) + the CR-hardened
-# ENV_PREFIX byte-copied from skill-bypass-guard.sh — the SAME detection that
-# guard uses for `gh pr merge`, so the two gates cannot drift. #2393: the prior
+# canonical command-anchor SSOT (_lib/cmd-anchor.sh, #677); the detection prefix
+# was ORIGINALLY (#2393-era) byte-copied from skill-bypass-guard.sh to keep the
+# two gates in lockstep — post-#2396 both consume the lib's CMD_HARDENED_PREFIX
+# instead (the byte-copy survives only in the degraded-mode else-branch below).
+# #2393: the prior
 # glob `*\ gh\ pr\ merge\ *` matched the phrase ANYWHERE, including inside a
 # quoted `-m "... gh pr merge ..."` commit message, so a benign commit that
 # merely mentioned the phrase false-fired the gate (it even false-fired the
@@ -74,10 +76,11 @@ fi
 # ENV_PREFIX peels a leading `VAR=val` preamble incl. quoted values (`X="a b"`);
 # a `bash -c '...'` wrapper's inner command is also checked.
 #
-# Out of scope HERE (matching skill-bypass-guard.sh): `sudo`/`command`/`env`
-# wrappers and `{ }`/`( )` grouping. Extending coverage belongs in the shared
-# _lib/cmd-anchor.sh so every gate benefits in ONE place — adding it bespoke here
-# is the exact regex drift #677 created the lib to prevent.
+# #2396: `sudo`/`command`/`builtin`/`env` wrappers and `{ }`/`( )` grouping are
+# now IN scope — the shared lib's CMD_HARDENED_PREFIX owns the whole
+# between-anchor-and-verb grammar, so this gate and skill-bypass-guard.sh get
+# the coverage from ONE place (a bespoke copy here was the exact regex drift
+# #677 created the lib to prevent).
 ANCHOR_LIB="${HOOK_DIR}/../_lib/cmd-anchor.sh"
 if [ -f "$ANCHOR_LIB" ]; then
 	# shellcheck source=../_lib/cmd-anchor.sh
@@ -87,10 +90,15 @@ else
 	CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
 	CMD_SEGMENT_END='([[:space:]]|$)'
 fi
-# CR-hardened env-assignment prefix — byte-identical to skill-bypass-guard.sh so
-# the two gates stay in lockstep (unquoted values must NOT start with a quote,
-# forcing the quoted alternations to own quoted values; CR #634 finding 136).
-ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+# Prefix from the lib (#2396). The else-branch keeps the prior env-only
+# prefix (byte-identical to skill-bypass-guard.sh's fallback; unquoted values
+# must NOT start with a quote — the #858 fix) so a pre-#2396 lib or the
+# lib-absent inline path degrades coverage without aborting under set -u.
+if [ -n "${CMD_HARDENED_PREFIX:-}" ]; then
+	ENV_PREFIX="$CMD_HARDENED_PREFIX"
+else
+	ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+fi
 GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge${CMD_SEGMENT_END}"
 # Inner command of a `bash -c '...'` or `bash -c "..."` wrapper (CR #634
 # finding 177). TWO passes, one per quote style, so the closing quote must
@@ -100,9 +108,10 @@ GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge
 # #2397's backreference suggestion extracts nothing there — verified on BSD.
 # `#` is the sed delimiter so the `bash|sh|zsh` alternation isn't parsed
 # against a `|` delimiter (where `\|` is a literal pipe on GNU sed, silently
-# breaking the alternation — also #2397). skill-bypass-guard.sh still uses the
-# older single-pattern form; unifying both into the shared _lib/cmd-anchor.sh
-# is tracked in #2396.
+# breaking the alternation — also #2397). #2396 unified the PREFIX grammar
+# into _lib/cmd-anchor.sh; this WRAPPED_CMD sed extraction stays per-hook by
+# design (skill-bypass-guard.sh keeps its older single-pattern form — the two
+# extract different things and a shared sed would couple unrelated contracts).
 _ws_sq="s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*'([^']*)'.*#\3#p"
 _ws_dq='s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*"([^"]*)".*#\3#p'
 WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "$_ws_sq" | head -1)

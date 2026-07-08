@@ -16,7 +16,10 @@ set -euo pipefail
 #
 # The BASE is byte-SSOT (hashed: true in scripts/bootstrap-manifest.yml →
 # Wave G hash-drift gates + propagates it). The OVERLAY and the COMPOSED
-# .coderabbit.yaml are per-repo (NOT gated): a repo owns its domain bits.
+# .coderabbit.yaml are per-repo (NOT hash-gated/propagated; commit-time
+# drift of the composed artifact IS gated by
+# pre-commit-hooks/compose-coderabbit-regen.sh, #2402): a repo owns its
+# domain bits.
 #
 # Usage:
 #   scripts/compose-coderabbit.sh --base <path> [--overlay <path>] [--out <path>]

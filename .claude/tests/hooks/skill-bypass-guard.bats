@@ -8,6 +8,10 @@
 # (skill + bats) while proving (a) the legitimate GH_SKILL_BYPASS_SKIP emergency
 # escape is still offered and (b) the SKILL_WRAPPER matcher itself is untouched
 # (wrappers + shared hooks depend on it).
+#
+# #2396: plus coverage that wrapper/grouping/env prefixes (CMD_HARDENED_PREFIX)
+# no longer slip the guard, a quoted-mid-string no-false-fire regression, and
+# the documented widened bound for quoted "separator + wrapper + verb" text.
 
 setup() {
 	GUARD="${BATS_TEST_DIRNAME}/../../../hooks/skill-bypass-guard.sh"
@@ -69,4 +73,74 @@ _run_guard() {
 	_run_guard "SKILL_WRAPPER=1 gh issue create --title x"
 	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "wrapper/grouping prefixes no longer slip the guard (#2396)" {
+	# Pre-#2396 these all failed OPEN: the anchor accepted only the bare form
+	# (plus env assignments), so grouping/wrapper prefixes hid the verb.
+	_run_guard "{ gh issue create --title x; }"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "(gh pr create --title x)"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "command gh release create v1.0.0"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "sudo -E gh pr merge 5"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "env X=1 bats foo.bats"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "quoted mid-string verbs still pass after #2396 (no new false fires)" {
+	_run_guard 'git log --grep "gh issue create" --oneline'
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "mixed-version degradation: pre-#2396 lib still DENIES bare + env-prefixed verbs (phase2 r2)" {
+	# Sandbox layout: copy the guard into .claude/hooks + stub a pre-#2396
+	# cmd-anchor (no CMD_HARDENED_PREFIX) into .claude/_lib, symlinking the
+	# other real libs the guard sources. The else-branch ENV_PREFIX fallback
+	# must keep the deny working (an aborting PreToolUse hook is non-blocking
+	# = fail-open).
+	local real_hooks real_libs
+	real_hooks="${BATS_TEST_DIRNAME}/../../../hooks"
+	real_libs="${BATS_TEST_DIRNAME}/../../../_lib"
+	mkdir -p "$TEST_TMP/.claude/hooks" "$TEST_TMP/.claude/_lib"
+	cp "$real_hooks/skill-bypass-guard.sh" "$TEST_TMP/.claude/hooks/"
+	for lib in "$real_libs"/*.sh; do
+		base=$(basename "$lib")
+		[ "$base" = "cmd-anchor.sh" ] && continue
+		ln -s "$lib" "$TEST_TMP/.claude/_lib/$base"
+	done
+	cat >"$TEST_TMP/.claude/_lib/cmd-anchor.sh" <<'EOF'
+#!/bin/bash
+CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
+CMD_SEGMENT_END='([[:space:]]|$)'
+EOF
+	jq -nc --arg c "gh issue create --title x" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
+	run bash -c "cd '$TEST_TMP' && bash '$TEST_TMP/.claude/hooks/skill-bypass-guard.sh' < '$TEST_TMP/payload.json'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	jq -nc --arg c "FOO=bar gh pr merge 5" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
+	run bash -c "cd '$TEST_TMP' && bash '$TEST_TMP/.claude/hooks/skill-bypass-guard.sh' < '$TEST_TMP/payload.json'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "documented bound: quoted 'separator + wrapper + verb' text false-fires by design (#2396)" {
+	# The hardened prefix cannot see quote context, so a quoted string that
+	# contains a separator followed by a grouping/wrapper token and a guarded
+	# verb now DENIES even when the OUTER command is benign — an accepted
+	# fail-toward-deny trade-off (pre-#2396 the `{ ` after the quoted `;`
+	# broke the env-only prefix and it passed). Pinned so a future false-deny
+	# report is triaged as known-bound, and a deliberate fix must consciously
+	# rewrite this test.
+	_run_guard 'echo "fix; { gh pr merge 1; } later"'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
