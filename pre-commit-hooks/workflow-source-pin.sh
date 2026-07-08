@@ -4,16 +4,16 @@ set -euo pipefail
 #
 # The plugin owns two parallel directories:
 #   * .github/workflows-source/ — SSOT directory; canonical versions
-#     of every cascadable workflow.
+#     of every workflow hash-pinned under `cascade:`.
 #   * .github/workflows/        — live directory GitHub Actions reads.
 #
 # These must stay byte-identical for any workflow listed in
 # .github/workflows-cascade.yml under `cascade:`. Drift between them
 # would mean either (a) operator edited workflows/ but forgot to
-# update workflows-source/ (consumers will then receive the stale
-# SSOT on next refresh), or (b) operator edited workflows-source/
-# but forgot to mirror to workflows/ (plugin's own CI uses the stale
-# version).
+# update workflows-source/ (the SSOT directory goes stale, and any
+# future copy or promotion from it ships the wrong version), or (b)
+# operator edited workflows-source/ but forgot to mirror to workflows/
+# (plugin's own CI uses the stale version).
 #
 # This hook detects drift in BOTH directions and blocks the commit.
 #
@@ -54,7 +54,7 @@ fi
 
 if [ ! -f "$CASCADE_FILE" ]; then
 	echo "workflow-source-pin: cascade file missing: $CASCADE_FILE" >&2
-	echo "  This file declares which workflows propagate to consumers." >&2
+	echo "  This file declares the plugin-side source↔live workflow pin." >&2
 	exit 2
 fi
 
