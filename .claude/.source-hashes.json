@@ -20,7 +20,7 @@
     "_lib/branch-convention.sh": "33888bc01b55ef03977857de076b3548583fb574e158cd43e2401a47725292da",
     "_lib/canonical-consumer-skip.sh": "020d05b3ee1578456219c25d907a880f6830dc069d790c72f4404831b0649901",
     "_lib/canonical-review-exclude.sh": "c49d0c4bd4b822d9534884e5363a5489ec6e2b77ee8d10be679661377c69cae1",
-    "_lib/cmd-anchor.sh": "7e287c60cade3d28908d810e79745fba26fb12b37a98a98ca64396087314d8ce",
+    "_lib/cmd-anchor.sh": "482a1b171112d1b27db982b82e8e4e6ea1dd3f4f5e19579117ca82b214ccdca3",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
     "_lib/content-hash-cache.sh": "58370546a2e3be3ec0629d7b89796b1b7976a3f9d96022496bf7b28d9ba96e6e",
     "_lib/cr-phase2-coverage.sh": "b264646b81e07c18ec5eb01f10316a7b867c562b5f2e99ae5196d70772a85cd4",

@@ -106,8 +106,15 @@ if ! git show ":$BASE_F" >"$WORK/base.yaml" 2>/dev/null; then
 	exit 1
 fi
 
+# Overlay: absence and failure are DIFFERENT (CR-in-CI #2506). Index
+# membership decides presence; a git show failure on a PRESENT overlay is
+# a real error and must refuse, not silently degrade to base-only.
 OVERLAY_ARGS=()
-if git show ":$OVERLAY_F" >"$WORK/overlay.yaml" 2>/dev/null; then
+if git ls-files --cached --error-unmatch "$OVERLAY_F" >/dev/null 2>&1; then
+	if ! git show ":$OVERLAY_F" >"$WORK/overlay.yaml" 2>/dev/null; then
+		echo "compose-coderabbit-regen: $OVERLAY_F is in the index but could not be materialized (git show failed) — refusing (fail-closed)" >&2
+		exit 2
+	fi
 	OVERLAY_ARGS=(--overlay "$WORK/overlay.yaml")
 fi
 

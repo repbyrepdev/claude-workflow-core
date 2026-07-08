@@ -63,7 +63,8 @@ setup() {
 	# phase2: command/builtin take dash-flags too (command -p, env -i).
 	match_cmd_at_anchor_hardened "$GPM" "command -p gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "env -i gh pr merge 5"
-	# phase2 r4: nohup/nice/time/stdbuf wrappers.
+	# phase2 r4 + CR-in-CI: nohup/nice/time/stdbuf/exec wrappers.
+	match_cmd_at_anchor_hardened "$GPM" "exec gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "nohup gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "time gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "stdbuf -oL gh pr merge 5"
