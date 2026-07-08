@@ -61,10 +61,10 @@ SHIM
 	export PATH="$TEST_TMP/bin:$PATH"
 }
 
-_state() { # $1=state $2=failed_count
+_state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	local failed=""
 	[ "${2:-0}" -gt 0 ] && failed='{"context":"ci","state":"FAILURE"}'
-	printf '{"state":"%s","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","head":"headsha1","checks":[%s]}' "$1" "$failed"
+	printf '{"state":"%s","mergeable":"%s","mergeStateStatus":"BLOCKED","head":"headsha1","checks":[%s]}' "$1" "${3:-MERGEABLE}" "$failed"
 }
 
 @test "--auto with --tag refuses (rc 2) before any gh call" {
@@ -134,6 +134,29 @@ _state() { # $1=state $2=failed_count
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"entered the merge queue"* ]]
+}
+
+@test "--auto arms even when mergeable=CONFLICTING (skips the immediate-path gate)" {
+	# The immediate path refuses non-MERGEABLE PRs; --auto deliberately does
+	# not (the platform holds the merge until the ruleset is satisfied).
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST
+	FAKE_STATE=$(_state OPEN 0 CONFLICTING)
+	FAKE_POST='{"state":"OPEN","armed":true,"queued":false,"head":"abc1234"}'
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"Auto-merge armed for PR #55"* ]]
+}
+
+@test "--auto warns when --delete-branch is armed but repo auto-delete is OFF" {
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST FAKE_DEL
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST='{"state":"OPEN","armed":true,"queued":false,"head":"abc1234"}'
+	FAKE_DEL=false
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"--delete-branch has no effect on an ARMED merge"* ]]
 }
 
 @test "--auto warns on currently-FAILED checks before arming" {
