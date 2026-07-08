@@ -157,10 +157,21 @@ if [ "$AUTO" = "1" ]; then
 	# query (gh's --json export-field allowlist has no queue field on this
 	# gh version).
 	post_rc=0
+	# stderr captured SEPARATELY from stdout (one temp file reused by both
+	# probes): a stray gh notice on stderr would otherwise pollute the
+	# jq-parsed payloads (POST JSON / post_queued boolean). mktemp failure
+	# degrades to /dev/null — payloads stay clean, diagnostics reduce to rc.
+	_verr=$(mktemp "${TMPDIR:-/tmp}/ghpm-verr.XXXXXX" 2>/dev/null) || _verr=""
 	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid \
-		--jq '{state: .state, armed: (.autoMergeRequest != null), head: .headRefOid}' 2>&1) || post_rc=$?
+		--jq '{state: .state, armed: (.autoMergeRequest != null), head: .headRefOid}' \
+		2>"${_verr:-/dev/null}") || post_rc=$?
 	if [ "$post_rc" -ne 0 ]; then
-		echo "⚠ outcome verification unavailable (gh pr view failed rc=$post_rc): $POST" >&2
+		post_err=""
+		[ -n "$_verr" ] && {
+			post_err=$(cat "$_verr" 2>/dev/null)
+			rm -f "$_verr"
+		}
+		echo "⚠ outcome verification unavailable (gh pr view failed rc=$post_rc): ${post_err:-no stderr}" >&2
 		echo "  The merge/arm call itself exited 0 — verify manually: gh pr view $PR --json state,autoMergeRequest" >&2
 		exit 0
 	fi
@@ -177,9 +188,15 @@ if [ "$AUTO" = "1" ]; then
 	# correct for the Int! PR number.
 	post_queued=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeQueueEntry{position}}}}' \
 		-f o="${_qq_owner_name%%/*}" -f r="${_qq_owner_name##*/}" \
-		-F n="$PR" --jq '(.data.repository.pullRequest.mergeQueueEntry != null)' 2>&1) || probe_rc=$?
+		-F n="$PR" --jq '(.data.repository.pullRequest.mergeQueueEntry != null)' \
+		2>"${_verr:-/dev/null}") || probe_rc=$?
+	probe_err=""
+	[ -n "$_verr" ] && {
+		probe_err=$(cat "$_verr" 2>/dev/null)
+		rm -f "$_verr"
+	}
 	if [ "$probe_rc" -ne 0 ] || [ -z "$_qq_owner_name" ]; then
-		echo "⚠ merge-queue probe unavailable (rc=$probe_rc): $post_queued" >&2
+		echo "⚠ merge-queue probe unavailable (rc=$probe_rc): ${probe_err:-no stderr}" >&2
 		post_queued="unknown"
 	elif [ "$post_queued" != "true" ]; then
 		post_queued="false"
@@ -202,11 +219,11 @@ if [ "$AUTO" = "1" ]; then
 		echo "  Poll: gh pr view $PR --json state,autoMergeRequest"
 	elif [ "$post_state" = "OPEN" ] && [ "$post_queued" = "true" ]; then
 		echo "✓ PR #$PR entered the merge queue ($METHOD) — the platform merges when the queue processes it."
-		echo "  Poll: gh pr view $PR --json state,autoMergeRequest"
+		echo "  Watch the queue on the PR page (gh pr view has no queue field on this gh version); merged-state poll: gh pr view $PR --json state"
 	elif [ "$post_queued" = "unknown" ]; then
 		# The merge/arm side effect already happened; a failed PROBE must not
 		# report failure (same posture as the POST-failure WARN above).
-		echo "⚠ PR #$PR is $post_state, armed=$post_armed, queue state UNKNOWN (probe failed) — verify manually: gh pr view $PR --json state,autoMergeRequest" >&2
+		echo "⚠ PR #$PR is $post_state, armed=$post_armed, queue state UNKNOWN (probe failed) — check queue membership on the PR page (not visible to gh pr view); state/armed: gh pr view $PR --json state,autoMergeRequest" >&2
 		exit 0
 	else
 		echo "gh exited 0 but PR #$PR is $post_state, armed=$post_armed, queued=$post_queued — neither merged, armed, nor queued; investigate" >&2

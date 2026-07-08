@@ -46,6 +46,7 @@ case "$1 $2" in
 			echo "Unknown JSON field: \"bogus\"" >&2
 			exit 1
 		fi
+		[ "${FAKE_STDERR_NOISE:-0}" = "1" ] && echo "! gh update available" >&2
 		printf '%s\n' "$FAKE_POST"
 		;;
 	*) echo "{}" ;;
@@ -63,6 +64,7 @@ case "$1 $2" in
 		echo "GraphQL: Could not resolve to a Repository" >&2
 		exit 1
 	fi
+	[ "${FAKE_STDERR_NOISE:-0}" = "1" ] && echo "! gh update available" >&2
 	printf '%s\n' "${FAKE_QUEUED:-false}"
 	;;
 *)
@@ -161,7 +163,26 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"queue state UNKNOWN"* ]]
+	# The probe's stderr must surface in the WARN (captured separately, not
+	# discarded and not mixed into the parsed payload).
+	[[ $output == *"Could not resolve to a Repository"* ]]
 	[[ $output != *"neither merged, armed, nor queued"* ]]
+}
+
+@test "--auto stderr noise on SUCCESS does not pollute the parsed payloads" {
+	# A stray gh notice on stderr (update nag, deprecation warning) used to be
+	# 2>&1-merged into POST/post_queued, corrupting the jq parse / the string
+	# compare. With stderr captured separately, a noisy-but-successful gh must
+	# still land in the armed-outcome branch.
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST FAKE_STDERR_NOISE
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST='{"state":"OPEN","armed":true,"head":"abc1234"}'
+	FAKE_STDERR_NOISE=1
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"Auto-merge armed for PR #55"* ]]
+	[[ $output != *"queue state UNKNOWN"* ]]
 }
 
 @test "--auto POST verification failure degrades to WARN, never dies post-merge (rc 0)" {
@@ -174,6 +195,8 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"outcome verification unavailable"* ]]
+	# The failed query's stderr must surface in the WARN (separate capture).
+	[[ $output == *"Unknown JSON field"* ]]
 }
 
 @test "--auto arms even when mergeable=CONFLICTING (skips the immediate-path gate)" {
