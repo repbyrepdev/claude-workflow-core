@@ -254,6 +254,9 @@ _scaler() {
 		>"$WORK/.claude/logs/phase0.5-run.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"ROUNDS="* ]]
+	# The documented sane decision: null findings dropped by the type
+	# filter -> count 0 with the ok-entry signal intact -> all-clean.
+	[[ $output == *"ROUNDS=1"* ]]
+	[[ $output == *"tier=all-clean"* ]]
 	[[ $output == *"p05_ran=1"* ]]
 }

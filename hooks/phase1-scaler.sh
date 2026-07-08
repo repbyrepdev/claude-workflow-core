@@ -94,24 +94,33 @@ if [ -f "$p05_log" ] && command -v jq >/dev/null 2>&1; then
 			# could land a diff with real Phase 0.5 findings in the
 			# 1-round all-clean tier. Non-numeric findings values are
 			# dropped defensively; the bash guard below catches the rest.
+			# Fail CLOSED: a count we cannot read must also clear the
+			# ran-signal, else corrupt data lands in the 1-round
+			# all-clean tier (count=0 with p05_ran>0 reads as vouched).
 			if ! p05_count=$(jq -rs --arg s "$_scaler_sha" '[.[] | select(.sha==$s and .status=="ok")] | group_by(.ts) | max_by(.[0].ts) | map(.findings) | map(select(type=="number")) | add // 0' "$p05_log" 2>/dev/null); then
-				echo "phase1-scaler: WARN — jq failed summing findings in $p05_log (corrupt log?); using 0" >&2
+				echo "phase1-scaler: WARN — jq failed summing findings in $p05_log (corrupt log?); treating as no pre-filter signal" >&2
 				p05_count=0
+				p05_ran=0
 			fi
-			[[ $p05_count =~ ^[0-9]+$ ]] || p05_count=0
+			[[ $p05_count =~ ^[0-9]+$ ]] || {
+				p05_count=0
+				p05_ran=0
+			}
 		fi
 	fi
 fi
 
-# Count CR CLI findings (latest run). rc-guarded like the p05 pipelines.
+# Count CR CLI findings (latest run). Fail CLOSED like the p05 pipelines:
+# an unreadable/non-numeric CR log must not read as "clean" — force at
+# least the minimal tier instead of silently vouching 0.
 cr_count=0
 cr_log="$REPO_ROOT/.claude/logs/cr-local-review.jsonl"
 if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	if ! cr_count=$(jq -r '.findings // 0' "$cr_log" 2>/dev/null | tail -1); then
-		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); using 0" >&2
-		cr_count=0
+		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
+		cr_count=1
 	fi
-	[[ $cr_count =~ ^[0-9]+$ ]] || cr_count=0
+	[[ $cr_count =~ ^[0-9]+$ ]] || cr_count=1
 fi
 
 total=$((p05_count + cr_count))

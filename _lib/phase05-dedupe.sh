@@ -54,3 +54,24 @@ phase05_emit_findings() {
 		echo "[]"
 	fi
 }
+
+# Absent-CLI graceful skip (#2259, CR r2 dedup): shared by the codex +
+# gemini prefilters (copilot has its own resolver-aware variant). Logs a
+# cli-tagged skipped-* entry, emits [], exits 0. The skip itself must
+# stay exit-0 (optional pre-filter), but a failed skip-log write WARNs
+# loudly - the scaler then treats the sha as no-prefilter-signal, which
+# is the safe direction (more review rounds, not fewer).
+# Args: $1=cli name  $2=LOG_DIR  $3=LOG path  $4=status string  $5=install hint
+phase05_emit_skip_and_exit() {
+	local _cli="$1" _log_dir="$2" _log="$3" _status="$4" _hint="$5" _skip_sha
+	echo "phase0.5-${_cli}: ${_cli} CLI absent - skipping optional pre-filter; Phase 1 Claude agents proceed. ${_hint}" >&2
+	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	mkdir -p "$_log_dir" 2>/dev/null || true
+	if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" --arg cli "$_cli" --arg st "$_status" \
+		'{ts:$ts, sha:$sha, phase:"0.5", cli:$cli, agent:"<all>", findings:0, status:$st}' \
+		>>"$_log" 2>/dev/null; then
+		echo "phase0.5-${_cli}: WARN - could not append skip entry to ${_log}; the scaler will treat this sha as no-prefilter-signal" >&2
+	fi
+	echo "[]"
+	exit 0
+}

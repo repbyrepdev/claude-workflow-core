@@ -155,10 +155,9 @@ _stub_coderabbit() {
 }
 
 @test "local-review: mark-exhausted resolves rate-budget.sh next to ITSELF (#2519)" {
-	# The old $REPO_ROOT/.claude/scripts/cr/rate-budget.sh form broke in
-	# consumers without the mirror (mark-exhausted WARN, budget tracker
-	# drift). Every mark-exhausted call site must use the SCRIPT_DIR
-	# sibling — same resolution as the --check preflight.
+	# Static companion to the behavior test below (CR r2 asked for the
+	# behavior test as the primary coverage; this pin stays as a cheap
+	# guard against a path-form regression that compiles but misresolves).
 	run grep -c 'SCRIPT_DIR/rate-budget.sh' "$LR"
 	[ "$status" -eq 0 ]
 	[ "$output" -ge 3 ]
@@ -167,11 +166,12 @@ _stub_coderabbit() {
 }
 
 @test "local-review: rate_limit event marks budget exhausted via SIBLING path -> exit 3 (#2519)" {
-	# Behavior companion to the text-pin above: a JSON rate_limit event
-	# must (a) exit 3 per the SSOT contract, (b) append the exhausted
-	# marker to THIS repo's ledger via the script-sibling rate-budget.sh,
-	# (c) emit no mark-exhausted WARN. Pre-fix code in a consumer without
-	# the .claude/scripts/cr mirror hit rc=127 + WARN and wrote no marker.
+	# Primary coverage (CR r2): a JSON
+	# rate_limit event must (a) exit 3 per the SSOT contract, (b) append
+	# the exhausted marker to THIS repo's ledger via the script-sibling
+	# rate-budget.sh, (c) emit no mark-exhausted WARN. Pre-fix code in a
+	# consumer without the .claude/scripts/cr mirror hit rc=127 + WARN
+	# and wrote no marker.
 	_stub_coderabbit '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}' 1
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main

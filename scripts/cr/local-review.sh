@@ -169,22 +169,24 @@ fi
 # review.sh is the SSOT for budget state updates (#830) — either signal
 # triggers `rate-budget.sh mark-exhausted` exactly once per run via the
 # `_rate_limit_handled` dedup flag.
+#
+# Shared wrapper (CR r2): sibling-path call + rc capture + WARN with
+# remediation, labeled per detection path. Sibling resolution (#2519):
+# rate-budget.sh lives next to THIS script — resolves in the plugin repo,
+# the plugin cache, and consumer mirrors alike; the ledger stays per-repo
+# because rate-budget.sh resolves it from CWD via git rev-parse.
+_mark_budget_exhausted() {
+	local _label="$1" _me_rc=0
+	"$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2 || _me_rc=$?
+	if [ "$_me_rc" -ne 0 ]; then
+		echo "local-review: WARN: rate-budget mark-exhausted failed (${_label}, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
+	fi
+}
 _rate_limit_handled=0
 if [ -f "$TEE_OUT" ] && grep -qE "ERROR:.*[Yy]ou'?ve run out of usage credits" "$TEE_OUT"; then
 	echo "" >&2
 	echo "local-review: CR rate_limit (text-detect: out-of-credits page) — marking budget exhausted" >&2
-	# Sibling copy next to THIS script (mirrors the --check preflight above):
-	# resolves in the plugin repo, the plugin cache, and consumer mirrors
-	# alike. The old $REPO_ROOT/.claude/scripts/cr/ path broke in consumers
-	# without the mirror (#2519) — the ledger stays per-repo either way
-	# because rate-budget.sh resolves it from CWD via git rev-parse.
-	# rc-capture via `|| _me_rc=$?` — `_me_rc=$?` inside an `if !` branch
-	# reads the NEGATED condition's status (always 0), not the failure.
-	_me_rc=0
-	"$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2 || _me_rc=$?
-	if [ "$_me_rc" -ne 0 ]; then
-		echo "local-review: WARN: rate-budget mark-exhausted failed (text-path, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
-	fi
+	_mark_budget_exhausted "text-path"
 	_rate_limit_handled=1
 fi
 # JSON event detection — CR CLI emits `{"type":"error","errorType":
@@ -243,17 +245,7 @@ if [ "$_rate_limit_handled" -eq 0 ] && [ -f "$TEE_OUT" ]; then
 			if [ -n "${rl_count:-}" ] && [ "$rl_count" != "0" ]; then
 				echo "" >&2
 				echo "local-review: CR rate_limit (json-detect: ${rl_count} event(s)) — marking budget exhausted" >&2
-				# Sibling copy next to THIS script (mirrors the --check preflight above):
-				# resolves in the plugin repo, the plugin cache, and consumer mirrors
-				# alike. The old $REPO_ROOT/.claude/scripts/cr/ path broke in consumers
-				# without the mirror (#2519) — the ledger stays per-repo either way
-				# because rate-budget.sh resolves it from CWD via git rev-parse.
-				# rc-capture via `|| _me_rc=$?` (see text-path note above).
-				_me_rc=0
-				"$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2 || _me_rc=$?
-				if [ "$_me_rc" -ne 0 ]; then
-					echo "local-review: WARN: rate-budget mark-exhausted failed (json-path, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
-				fi
+				_mark_budget_exhausted "json-path"
 				_rate_limit_handled=1
 			fi
 		fi

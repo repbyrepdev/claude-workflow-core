@@ -66,29 +66,22 @@ LOG="$LOG_DIR/phase0.5-run.jsonl"
 GEMINI_POLICY="$REPO_ROOT/.gemini/policy.toml"
 
 if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
-	echo 'phase0.5-gemini: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)' >&2
+	echo "phase0.5-gemini: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
 fi
+# Sourced BEFORE the CLI check so the shared graceful-skip helper is
+# available (function definitions only — no side effects beyond the
+# audit-dedup path var). Preflight still runs later, pre-invocation.
+# shellcheck source=../_lib/phase05-dedupe.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/phase05-dedupe.sh"
 command -v gemini >/dev/null 2>&1 || {
 	# Absent CLI = graceful skip (#2259): parity with the copilot
 	# pre-filter's absent-helper path. An OPTIONAL pre-filter that is not
-	# installed must not hard-fail the walk; the skip status is logged so
-	# phase1-scaler treats it as "no pre-filter signal", not "ran clean".
-	# (Present-but-broken preconditions below still hard-fail.)
-	echo "phase0.5-gemini: gemini CLI absent — skipping optional pre-filter; Phase 1 Claude agents proceed. Install via npm + run 'gemini' once to auth to enable" >&2
-	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-	# Guarded append: the skip itself must stay exit-0 (optional
-	# pre-filter), but a failed skip-log write is WARNED loudly — the
-	# scaler then treats this sha as no-prefilter-signal, which is the
-	# safe direction (more review rounds, not fewer).
-	mkdir -p "$LOG_DIR" 2>/dev/null || true
-	if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
-		'{ts:$ts, sha:$sha, phase:"0.5", cli:"gemini", agent:"<all>", findings:0, status:"skipped-no-gemini-cli"}' \
-		>>"$LOG" 2>/dev/null; then
-		echo "phase0.5-gemini: WARN — could not append skip entry to $LOG; the scaler will treat this sha as no-prefilter-signal" >&2
-	fi
-	echo "[]"
-	exit 0
+	# installed must not hard-fail the walk; the cli-tagged skip status is
+	# logged so phase1-scaler treats it as "no pre-filter signal", not
+	# "ran clean". (Present-but-broken preconditions below still
+	# hard-fail.) Shared helper: logs, emits [], exits 0.
+	phase05_emit_skip_and_exit gemini "$LOG_DIR" "$LOG" "skipped-no-gemini-cli" "Install via npm + run 'gemini' once to auth to enable"
 }
 # CR Phase 3 Major: refuse to run without the policy.toml deny block.
 # Phase 0.5 reviewer must be read-only — running Gemini without the policy
@@ -103,13 +96,9 @@ command -v gemini >/dev/null 2>&1 || {
 	echo "phase0.5: phase1-dedup.sh missing at $DEDUP_HOOK" >&2
 	exit 1
 }
-# v4.28-W5 #827: 2-stage dedup wiring extracted to shared lib.
-# Preflight runs BEFORE invoking Gemini so a missing audit-dedup hook
-# fails-loud instead of wasting CLI quota.
-# CR-in-CI Phase 2 r3: source script-relative (dirname BASH_SOURCE) to
-# match hook path-resolution contract (independent of REPO_ROOT detection).
-# shellcheck source=../_lib/phase05-dedupe.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/phase05-dedupe.sh"
+# v4.28-W5 #827: 2-stage dedup wiring extracted to shared lib (sourced
+# above, before the CLI check). Preflight runs BEFORE invoking Gemini so a
+# missing audit-dedup hook fails-loud instead of wasting CLI quota.
 phase05_preflight_audit_dedup_hook
 command -v yq >/dev/null 2>&1 || {
 	echo "phase0.5: yq required" >&2
