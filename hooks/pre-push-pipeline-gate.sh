@@ -13,7 +13,9 @@
 #   - 0000...0000 local_sha → branch deletion, allow
 #   - Log file missing for local_sha → refuse (pipeline never ran)
 #   - No phase:2 entry in log → refuse (Phase 2 CR CLI never ran)
-#   - Fewer than MIN_ROUNDS (default 5) Phase 1 rounds → refuse
+#   - Fewer than MIN_ROUNDS Phase 1 rounds → refuse (MIN_ROUNDS =
+#     PHASE1_MIN_ROUNDS override, else auto-scaled per diff via
+#     _auto_scale_min_rounds — LOC tiers 0-6, sensitive-path floor 3)
 #   - Last MIN_CLEAN_STREAK (default 1; PHASE1_MIN_CLEAN_STREAK to raise)
 #     rounds not all-agents-clean → refuse
 #   - Any round is missing an expected agent per list-phase1-agents.sh → refuse
