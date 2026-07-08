@@ -33,6 +33,7 @@ setup() {
 	match_cmd_at_anchor "$GPM" "true && gh pr merge 5"
 	run match_cmd_at_anchor "$GPM" 'git commit -m "mention gh pr merge here"'
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }
 
 @test "match_cmd_at_anchor: empty pattern returns 1 (guarded)" {
@@ -44,6 +45,13 @@ setup() {
 	match_cmd_at_anchor_hardened "$GPM" "{ gh pr merge 5; }"
 	match_cmd_at_anchor_hardened "$GPM" "( gh pr merge 5 )"
 	match_cmd_at_anchor_hardened "$GPM" "(gh pr merge 5)"
+	# phase2 r2: verb GLUED to the closing token (no trailing space/arg).
+	match_cmd_at_anchor_hardened "$GPM" "(gh pr merge)"
+	match_cmd_at_anchor_hardened "bats" "{ bats;}"
+	# The strict matcher keeps the tight boundary (documented bound).
+	run match_cmd_at_anchor "$GPM" "(gh pr merge)"
+	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }
 
 @test "hardened: command/builtin/sudo/env wrappers hit (#2396)" {
@@ -68,6 +76,7 @@ setup() {
 	match_cmd_at_anchor_hardened "$GC" "FOO= git commit -m x"
 	run match_cmd_at_anchor_hardened "bats" 'CMD="Updated bats test 6"'
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }
 
 @test "hardened: stacked prefixes after a separator hit (#2396)" {
@@ -77,12 +86,16 @@ setup() {
 @test "hardened: mid-args / quoted / lookalike verbs still miss (#2396)" {
 	run match_cmd_at_anchor_hardened "$GPM" "echo gh pr merge"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 	run match_cmd_at_anchor_hardened "$GPM" 'git commit -m "mention gh pr merge here"'
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 	run match_cmd_at_anchor_hardened "$GC" "foosudo git-commit-ish"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 	run match_cmd_at_anchor_hardened "$GPM" 'grep "(gh pr merge)" file'
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }
 
 @test "hardened: documented bound — sudo flag ARGUMENTS are not consumed" {
@@ -92,6 +105,7 @@ setup() {
 	# this test consciously.
 	run match_cmd_at_anchor_hardened "$GC" "sudo -u admin git commit"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }
 
 @test "match_git_commit_or_wrapper: bare, env-prefixed, and wrapper-path forms" {
@@ -101,4 +115,5 @@ setup() {
 	match_git_commit_or_wrapper "bash .claude/skills/git-commit/run.sh"
 	run match_git_commit_or_wrapper "git committee"
 	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }

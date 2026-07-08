@@ -101,6 +101,37 @@ _run_guard() {
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
+@test "mixed-version degradation: pre-#2396 lib still DENIES bare + env-prefixed verbs (phase2 r2)" {
+	# Sandbox layout: copy the guard into .claude/hooks + stub a pre-#2396
+	# cmd-anchor (no CMD_HARDENED_PREFIX) into .claude/_lib, symlinking the
+	# other real libs the guard sources. The else-branch ENV_PREFIX fallback
+	# must keep the deny working (an aborting PreToolUse hook is non-blocking
+	# = fail-open).
+	local real_hooks real_libs
+	real_hooks="${BATS_TEST_DIRNAME}/../../../hooks"
+	real_libs="${BATS_TEST_DIRNAME}/../../../_lib"
+	mkdir -p "$TEST_TMP/.claude/hooks" "$TEST_TMP/.claude/_lib"
+	cp "$real_hooks/skill-bypass-guard.sh" "$TEST_TMP/.claude/hooks/"
+	for lib in "$real_libs"/*.sh; do
+		base=$(basename "$lib")
+		[ "$base" = "cmd-anchor.sh" ] && continue
+		ln -s "$lib" "$TEST_TMP/.claude/_lib/$base"
+	done
+	cat >"$TEST_TMP/.claude/_lib/cmd-anchor.sh" <<'EOF'
+#!/bin/bash
+CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
+CMD_SEGMENT_END='([[:space:]]|$)'
+EOF
+	jq -nc --arg c "gh issue create --title x" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
+	run bash -c "cd '$TEST_TMP' && bash '$TEST_TMP/.claude/hooks/skill-bypass-guard.sh' < '$TEST_TMP/payload.json'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	jq -nc --arg c "FOO=bar gh pr merge 5" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
+	run bash -c "cd '$TEST_TMP' && bash '$TEST_TMP/.claude/hooks/skill-bypass-guard.sh' < '$TEST_TMP/payload.json'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
 @test "documented bound: quoted 'separator + wrapper + verb' text false-fires by design (#2396)" {
 	# The hardened prefix cannot see quote context, so a quoted string that
 	# contains a separator followed by a grouping/wrapper token and a guarded

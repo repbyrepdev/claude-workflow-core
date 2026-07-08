@@ -33,8 +33,11 @@
 #                      — convenience: emit "$CMD_SEGMENT_ANCHOR<pattern>$CMD_SEGMENT_END"
 #                        and grep -qE against the cmd string. Returns 0 on
 #                        match, non-zero otherwise.
+#   CMD_SEGMENT_END_GROUPED — END superset also accepting a closing
+#                        group/separator glued to the verb (hardened path)
 #   match_cmd_at_anchor_hardened <verb_pattern> <cmd>
-#                      — same, with CMD_HARDENED_PREFIX between anchor + verb
+#                      — CMD_HARDENED_PREFIX between anchor + verb, with
+#                        the grouped end boundary
 #   match_git_commit_or_wrapper <cmd>
 #                      — #748: bare `git commit` (env-prefix allowed) OR the
 #                        git-commit skill-wrapper path
@@ -56,6 +59,12 @@
 
 CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
 CMD_SEGMENT_END='([[:space:]]|$)'
+# Grouped-end variant (phase2 #2396 r2): inside `( verb )` / `{ verb; }` the
+# verb may be GLUED to the closing token (`(gh pr merge)`, `{ bats;}`) —
+# CMD_SEGMENT_END's space|EOL misses those. The hardened matcher uses this
+# superset; plain match_cmd_at_anchor keeps the strict boundary (its callers
+# never accept grouping, so widening them would only add false-fire surface).
+CMD_SEGMENT_END_GROUPED='([[:space:]]|$|[;&|)}])'
 
 # #2396: everything that may legally sit between the anchor and the verb,
 # any number of times, in any order:
@@ -89,8 +98,10 @@ match_cmd_at_anchor_hardened() {
 	local pattern=$1
 	local cmd=$2
 	[ -n "$pattern" ] || return 1
-	# Delegate so the grep invocation mechanics live in ONE place.
-	match_cmd_at_anchor "${CMD_HARDENED_PREFIX}(${pattern})" "$cmd"
+	# Grouped-end boundary: the hardened matcher accepts grouping openers, so
+	# it must also accept the verb GLUED to the closing token. Not delegated
+	# to match_cmd_at_anchor — that helper appends the strict CMD_SEGMENT_END.
+	printf '%s' "$cmd" | grep -qE "${CMD_SEGMENT_ANCHOR}${CMD_HARDENED_PREFIX}(${pattern})${CMD_SEGMENT_END_GROUPED}"
 }
 
 # v4.28-W4 #748: match either `git commit ...` directly OR
