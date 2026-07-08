@@ -192,4 +192,27 @@ _run_compose_fixture() {
 	[ "$status" -eq 0 ]
 	run grep -c "canonical-mirror exclusions auto-appended by compose-coderabbit.sh" "$TMP/composed.yaml"
 	[ "$output" -ge 1 ]
+	# Fixture determinism (r2 pr-test-analyzer): the EMPTY _lib fixture must
+	# yield ZERO per-file _lib exclusions — a renamed/typo'd COMPOSE_CR_LIB_DIR
+	# override would silently leak the REAL plugin _lib into the composed
+	# output and every positive assert above would still pass. Line-scoped
+	# grep: the base's own '!.claude/_lib/**' DIR-glob is expected (and a
+	# whole-string [[ glob ]] would false-match it against a later hooks .sh
+	# line), so require a per-FILE '.sh' entry on ONE line to count.
+	yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml" >"$TMP/filters.txt"
+	run grep -E '^!\.claude/_lib/.+\.sh$' "$TMP/filters.txt"
+	[ "$status" -eq 1 ]
+}
+
+@test "exclusion: _lib arm emits '!.claude/_lib/<name>' for a byte-identical mirror (#2400 r2)" {
+	# The 5 cases above drive only the hooks arm; this pins the parallel _lib
+	# arm (COMPOSE_CR_LIB_DIR + COMPOSE_CR_CONSUMER_LIB_DIR + the
+	# '.claude/_lib/' prefix) with content.
+	_mk_excl_fixture
+	printf '#!/bin/bash\necho lib\n' >"$TMP/libcanon/z.sh"
+	cp "$TMP/libcanon/z.sh" "$TMP/libconsumer/z.sh"
+	_run_compose_fixture
+	[ "$status" -eq 0 ]
+	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
+	[[ $output == *'!.claude/_lib/z.sh'* ]]
 }

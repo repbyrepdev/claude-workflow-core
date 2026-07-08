@@ -8,6 +8,10 @@
 # (skill + bats) while proving (a) the legitimate GH_SKILL_BYPASS_SKIP emergency
 # escape is still offered and (b) the SKILL_WRAPPER matcher itself is untouched
 # (wrappers + shared hooks depend on it).
+#
+# #2396: plus coverage that wrapper/grouping/env prefixes (CMD_HARDENED_PREFIX)
+# no longer slip the guard, a quoted-mid-string no-false-fire regression, and
+# the documented widened bound for quoted "separator + wrapper + verb" text.
 
 setup() {
 	GUARD="${BATS_TEST_DIRNAME}/../../../hooks/skill-bypass-guard.sh"
@@ -95,4 +99,17 @@ _run_guard() {
 	_run_guard 'git log --grep "gh issue create" --oneline'
 	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "documented bound: quoted 'separator + wrapper + verb' text false-fires by design (#2396)" {
+	# The hardened prefix cannot see quote context, so a quoted string that
+	# contains a separator followed by a grouping/wrapper token and a guarded
+	# verb now DENIES even when the OUTER command is benign — an accepted
+	# fail-toward-deny trade-off (pre-#2396 the `{ ` after the quoted `;`
+	# broke the env-only prefix and it passed). Pinned so a future false-deny
+	# report is triaged as known-bound, and a deliberate fix must consciously
+	# rewrite this test.
+	_run_guard 'echo "fix; { gh pr merge 1; } later"'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
 }

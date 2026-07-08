@@ -9,8 +9,9 @@
 # overlay -> composed divergence). This asserts the committed .coderabbit.yaml is
 # byte-in-sync with a fresh compose(base, overlay), and pins the #2297
 # code_generation block's CORRECT nesting (CR silently ignores a flat
-# code_generation.path_instructions). A full pre-commit gate (catching drift at
-# the overlay-edit commit, not just the test run) is the follow-up — #2402.
+# code_generation.path_instructions). The pre-commit gate catching drift AT
+# the overlay-edit commit is pre-commit-hooks/compose-coderabbit-regen.sh
+# (#2402, shipped); this suite remains the full-tree CI/backstop check.
 
 setup() {
 	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
@@ -28,10 +29,14 @@ teardown() {
 
 @test "committed .coderabbit.yaml is byte-in-sync with compose(base, overlay)" {
 	# Recompose from the committed inputs. The real regen runs from the repo root
-	# (`--out .coderabbit.yaml` -> dirname=repo -> consumer hooks = repo/.claude/
-	# hooks); --out here lands in a tmp dir, so pin that consumer-hooks dir
-	# explicitly to reproduce the same #2254 canonical-mirror exclusion set.
+	# (`--out .coderabbit.yaml` -> dirname=repo -> consumer dirs = repo/.claude/
+	# {hooks,_lib}); --out here lands in a tmp dir, so pin BOTH consumer dirs
+	# explicitly to reproduce the same #2254/#2241 canonical-mirror exclusion
+	# set (hooks AND _lib — matching compose-coderabbit-regen.sh's pins; an
+	# unpinned _lib would resolve to $TEST_TMP/.claude/_lib and match only via
+	# the byte-identical-mirror invariant, not by construction).
 	run env COMPOSE_CR_CONSUMER_HOOKS_DIR="$REPO_ROOT/.claude/hooks" \
+		COMPOSE_CR_CONSUMER_LIB_DIR="$REPO_ROOT/.claude/_lib" \
 		"$REPO_ROOT/scripts/compose-coderabbit.sh" \
 		--base "$REPO_ROOT/.coderabbit.base.yaml" \
 		--overlay "$REPO_ROOT/.coderabbit.overlay.yaml" \

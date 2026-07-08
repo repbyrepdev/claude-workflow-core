@@ -24,12 +24,20 @@
 # This file is sourced, not executed. Exposed:
 #   CMD_SEGMENT_ANCHOR — extended-regex prefix matching command-start OR
 #                        a shell separator followed by optional whitespace
-#   CMD_SEGMENT_END    — extended-regex suffix matching whitespace, EOL,
-#                        or another shell separator (for verb boundary)
+#   CMD_SEGMENT_END    — extended-regex suffix matching whitespace or EOL
+#                        (NOT a shell separator: a verb glued to `;`/`&`/`|`
+#                        with no space does not match — documented bound)
+#   CMD_HARDENED_PREFIX — #2396: grouping/wrapper/env-assignment grammar
+#                        allowed between the anchor and the verb (see below)
 #   match_cmd_at_anchor <verb_pattern> <cmd>
 #                      — convenience: emit "$CMD_SEGMENT_ANCHOR<pattern>$CMD_SEGMENT_END"
 #                        and grep -qE against the cmd string. Returns 0 on
 #                        match, non-zero otherwise.
+#   match_cmd_at_anchor_hardened <verb_pattern> <cmd>
+#                      — same, with CMD_HARDENED_PREFIX between anchor + verb
+#   match_git_commit_or_wrapper <cmd>
+#                      — #748: bare `git commit` (env-prefix allowed) OR the
+#                        git-commit skill-wrapper path
 #
 # Usage from a hook:
 #   source "$(dirname "${BASH_SOURCE[0]}")/../_lib/cmd-anchor.sh"
@@ -58,9 +66,11 @@ CMD_SEGMENT_END='([[:space:]]|$)'
 #     swallow anything and match the verb mid-command)
 #   - env assignments: `VAR=val` with the CR-hardened value alternation
 #     (single-quoted | double-quoted | unquoted-not-starting-with-a-quote;
-#     CR #634 finding 136) — byte-equivalent to the ENV_PREFIX the gate
-#     hooks previously carried inline.
-CMD_HARDENED_PREFIX='([{(][[:space:]]*|(command|builtin)[[:space:]]+|(sudo|env)([[:space:]]+-[^[:space:]]+)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+#     the leading-quote exclusion is the #858 fix) — the value is OPTIONAL
+#     (`?`) so a bare `FOO= verb` (valid bash) is consumed too; phase1 r2
+#     silent-failure: a required value let `FOO= gh pr merge` slip both
+#     gates.
+CMD_HARDENED_PREFIX='([{(][[:space:]]*|(command|builtin)[[:space:]]+|(sudo|env)([[:space:]]+-[^[:space:]]+)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)?[[:space:]]+)*'
 
 match_cmd_at_anchor() {
 	local pattern=$1
@@ -78,7 +88,8 @@ match_cmd_at_anchor_hardened() {
 	local pattern=$1
 	local cmd=$2
 	[ -n "$pattern" ] || return 1
-	printf '%s' "$cmd" | grep -qE "${CMD_SEGMENT_ANCHOR}${CMD_HARDENED_PREFIX}(${pattern})${CMD_SEGMENT_END}"
+	# Delegate so the grep invocation mechanics live in ONE place.
+	match_cmd_at_anchor "${CMD_HARDENED_PREFIX}(${pattern})" "$cmd"
 }
 
 # v4.28-W4 #748: match either `git commit ...` directly OR

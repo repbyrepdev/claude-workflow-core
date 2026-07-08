@@ -59,13 +59,12 @@ TRIO_STAGED=$(printf '%s\n' "$STAGED_ALL" |
 	grep -Ex '\.coderabbit(\.base|\.overlay)?\.yaml' || true)
 [ -z "$TRIO_STAGED" ] && exit 0
 
-# A repo without a composed config (base-only starter) has nothing to gate
-# UNTIL it composes one; but base/overlay staged while the composed file is
-# absent from BOTH index and tree means the operator forgot the compose step
-# entirely — treat as drift, not as a starter.
-if ! git ls-files --error-unmatch "$COMPOSED_F" >/dev/null 2>&1 &&
-	[ ! -f "$COMPOSED_F" ]; then
-	echo "compose-coderabbit-regen: $TRIO_STAGED staged but $COMPOSED_F does not exist (tree or index)" >&2
+# The commit ships INDEX state, so every trio input is judged by the INDEX
+# alone — a worktree-only composed file (present but never staged) still
+# means the commit ships base/overlay WITHOUT it (phase1 r2: the old
+# tree-fallback here let exactly that false-pass).
+if ! git show ":$COMPOSED_F" >"/dev/null" 2>&1; then
+	echo "compose-coderabbit-regen: $TRIO_STAGED staged but $COMPOSED_F is not in the index — the commit would ship base/overlay without their composed artifact" >&2
 	echo "  Fix: scripts/compose-coderabbit.sh --base $BASE_F --overlay $OVERLAY_F --out $COMPOSED_F && git add $COMPOSED_F" >&2
 	exit 1
 fi
@@ -92,49 +91,51 @@ WORK=$(mktemp -d -t cr-regen.XXXXXX) || {
 _cleanup_work() { rm -rf "$WORK" 2>/dev/null || true; }
 trap _cleanup_work EXIT INT TERM HUP
 
-# 2. Staged blobs. Base: index version, else tree version (base not staged
-# in this commit but present). Overlay: optional — absent from index AND
-# tree means compose runs base-only.
-if git ls-files --error-unmatch "$BASE_F" >/dev/null 2>&1 || git diff --cached --name-only | grep -qFx "$BASE_F"; then
-	if ! git show ":$BASE_F" >"$WORK/base.yaml" 2>/dev/null; then
-		# Not in index (e.g. tracked-but-renamed edge) — fall back to the tree.
-		cp "$BASE_F" "$WORK/base.yaml" 2>/dev/null || {
-			echo "compose-coderabbit-regen: cannot materialize $BASE_F (index or tree) — refusing" >&2
-			exit 2
-		}
-	fi
-else
-	echo "compose-coderabbit-regen: $BASE_F not tracked — cannot recompose; refusing (fail-closed)" >&2
-	exit 2
+# 2. Materialize the trio from the INDEX ONLY (git show :path). No worktree
+# fallbacks: the commit ships index state, and a tree fallback silently
+# validates content the commit does not contain (phase1 r2 silent-failure:
+# a staged-DELETE of base/overlay used to recompose from the file being
+# removed). Base absent from the index = refuse; overlay absent from the
+# index = compose base-only (the correct post-commit semantics for a
+# staged overlay deletion).
+if ! git show ":$BASE_F" >"$WORK/base.yaml" 2>/dev/null; then
+	echo "compose-coderabbit-regen: $BASE_F is not in the index (untracked, or staged for deletion while $COMPOSED_F is retained) — cannot recompose; refusing (fail-closed)" >&2
+	exit 1
 fi
 
 OVERLAY_ARGS=()
 if git show ":$OVERLAY_F" >"$WORK/overlay.yaml" 2>/dev/null; then
 	OVERLAY_ARGS=(--overlay "$WORK/overlay.yaml")
-elif [ -f "$OVERLAY_F" ]; then
-	cp "$OVERLAY_F" "$WORK/overlay.yaml"
-	OVERLAY_ARGS=(--overlay "$WORK/overlay.yaml")
 fi
 
-# Recompose with exclusion-input parity (see header).
+# Recompose with exclusion-input parity (see header). Empty-array expansion
+# under set -u aborts on bash 3.2 (macOS /bin/bash; fixed only in 4.4), so
+# the base-only path uses the ${arr[@]+...} guard idiom.
 if ! COMPOSE_CR_CONSUMER_HOOKS_DIR="$REPO_ROOT/.claude/hooks" \
 	COMPOSE_CR_CONSUMER_LIB_DIR="$REPO_ROOT/.claude/_lib" \
-	bash "$COMPOSE_SH" --base "$WORK/base.yaml" "${OVERLAY_ARGS[@]}" \
+	bash "$COMPOSE_SH" --base "$WORK/base.yaml" ${OVERLAY_ARGS[@]+"${OVERLAY_ARGS[@]}"} \
 	--out "$WORK/composed.yaml" >"$WORK/compose.log" 2>&1; then
 	echo "compose-coderabbit-regen: recompose FAILED — the staged base/overlay do not compose:" >&2
 	cat "$WORK/compose.log" >&2
 	exit 2
 fi
 
-# 3. Staged composed vs fresh recompose.
-STAGED_COMPOSED=$(git show ":$COMPOSED_F" 2>/dev/null || cat "$COMPOSED_F" 2>/dev/null || echo "")
-FRESH_COMPOSED=$(cat "$WORK/composed.yaml")
-
-if [ "$STAGED_COMPOSED" != "$FRESH_COMPOSED" ]; then
+# 3. Staged composed vs fresh recompose — BYTE-exact via cmp (a $(...)
+# capture strips trailing newlines on both sides, masking a trailing-
+# whitespace hand-edit; phase1 r2 silent-failure).
+if ! git show ":$COMPOSED_F" >"$WORK/staged-composed.yaml" 2>/dev/null; then
+	# Unreachable in practice (step-1 guard already required it) — belt and
+	# suspenders for a mid-run index mutation.
+	echo "compose-coderabbit-regen: $COMPOSED_F vanished from the index mid-run — refusing" >&2
+	exit 2
+fi
+if ! cmp -s "$WORK/staged-composed.yaml" "$WORK/composed.yaml"; then
 	echo "compose-coderabbit-regen: $COMPOSED_F drifts from compose($BASE_F, $OVERLAY_F)" >&2
 	echo "  (stale composed after a base/overlay edit, or a hand-edit to the composed artifact)" >&2
 	echo "" >&2
-	echo "  Fix: scripts/compose-coderabbit.sh --base $BASE_F${OVERLAY_ARGS:+ --overlay $OVERLAY_F} --out $COMPOSED_F && git add $COMPOSED_F" >&2
+	_ovl_hint=""
+	[ "${#OVERLAY_ARGS[@]}" -gt 0 ] && _ovl_hint=" --overlay $OVERLAY_F"
+	echo "  Fix: scripts/compose-coderabbit.sh --base $BASE_F$_ovl_hint --out $COMPOSED_F && git add $COMPOSED_F" >&2
 	echo "  Bypass (audit-log): COMPOSE_CR_REGEN_SKIP=1 git commit ..." >&2
 	exit 1
 fi

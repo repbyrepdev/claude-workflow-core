@@ -7,7 +7,8 @@
 # pins the exported regex fragments + helpers, most importantly the new
 # CMD_HARDENED_PREFIX wrapper/grouping/env grammar: gate hooks previously
 # failed OPEN on `{ verb; }` / `( verb )` / `command|builtin|sudo|env`
-# prefixed invocations because the anchor only accepted the bare form.
+# prefixed invocations because the anchor accepted only the bare form (plus
+# env assignments via the hooks' inline ENV_PREFIX).
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/cmd-anchor.sh"
@@ -55,6 +56,15 @@ setup() {
 @test "hardened: env assignments with quoted values hit (#2396)" {
 	match_cmd_at_anchor_hardened "$GC" 'FOO="a b" git commit -m x'
 	match_cmd_at_anchor_hardened "$GC" "X='a; b' git commit"
+}
+
+@test "hardened: EMPTY-value env assignment is consumed (FOO= verb; r2 silent-failure)" {
+	# `FOO= git commit` is valid bash; a required-value alternation let it slip
+	# both gates. The #858 leading-quote protection must survive the optional
+	# value: a quoted string containing a verb name still misses.
+	match_cmd_at_anchor_hardened "$GC" "FOO= git commit -m x"
+	run match_cmd_at_anchor_hardened "bats" 'CMD="Updated bats test 6"'
+	[ "$status" -ne 0 ]
 }
 
 @test "hardened: stacked prefixes after a separator hit (#2396)" {

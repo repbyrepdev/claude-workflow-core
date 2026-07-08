@@ -63,9 +63,11 @@ fi
 [ -z "$CMD" ] && exit 0
 
 # Scope: fire ONLY when `gh pr merge` is invoked at a COMMAND position. Reuse the
-# canonical command-anchor SSOT (_lib/cmd-anchor.sh, #677) + the CR-hardened
-# ENV_PREFIX byte-copied from skill-bypass-guard.sh — the SAME detection that
-# guard uses for `gh pr merge`, so the two gates cannot drift. #2393: the prior
+# canonical command-anchor SSOT (_lib/cmd-anchor.sh, #677); the detection prefix
+# was ORIGINALLY (#2393-era) byte-copied from skill-bypass-guard.sh to keep the
+# two gates in lockstep — post-#2396 both consume the lib's CMD_HARDENED_PREFIX
+# instead (the byte-copy survives only in the degraded-mode else-branch below).
+# #2393: the prior
 # glob `*\ gh\ pr\ merge\ *` matched the phrase ANYWHERE, including inside a
 # quoted `-m "... gh pr merge ..."` commit message, so a benign commit that
 # merely mentioned the phrase false-fired the gate (it even false-fired the
@@ -90,7 +92,7 @@ else
 fi
 # Prefix from the lib (#2396). The else-branch keeps the prior env-only
 # prefix (byte-identical to skill-bypass-guard.sh's fallback; unquoted values
-# must NOT start with a quote — CR #634 finding 136) so a pre-#2396 lib or the
+# must NOT start with a quote — the #858 fix) so a pre-#2396 lib or the
 # lib-absent inline path degrades coverage without aborting under set -u.
 if [ -n "${CMD_HARDENED_PREFIX:-}" ]; then
 	ENV_PREFIX="$CMD_HARDENED_PREFIX"
@@ -106,9 +108,10 @@ GHM_PATTERN="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}gh[[:space:]]+pr[[:space:]]+merge
 # #2397's backreference suggestion extracts nothing there — verified on BSD.
 # `#` is the sed delimiter so the `bash|sh|zsh` alternation isn't parsed
 # against a `|` delimiter (where `\|` is a literal pipe on GNU sed, silently
-# breaking the alternation — also #2397). skill-bypass-guard.sh still uses the
-# older single-pattern form; unifying both into the shared _lib/cmd-anchor.sh
-# is tracked in #2396.
+# breaking the alternation — also #2397). #2396 unified the PREFIX grammar
+# into _lib/cmd-anchor.sh; this WRAPPED_CMD sed extraction stays per-hook by
+# design (skill-bypass-guard.sh keeps its older single-pattern form — the two
+# extract different things and a shared sed would couple unrelated contracts).
 _ws_sq="s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*'([^']*)'.*#\3#p"
 _ws_dq='s#.*(bash|sh|zsh|/bin/bash|/bin/sh|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*"([^"]*)".*#\3#p'
 WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "$_ws_sq" | head -1)
