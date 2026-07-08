@@ -41,7 +41,14 @@ case "$1 $2" in
 "pr view")
 	case "$*" in
 	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
-	*autoMergeRequest*) printf '%s\n' "$FAKE_POST" ;;
+	*autoMergeRequest*)
+		if [ "${FAKE_POST_FAIL:-0}" = "1" ]; then
+			echo "Unknown JSON field: \"bogus\"" >&2
+			exit 1
+		fi
+		[ "${FAKE_STDERR_NOISE:-0}" = "1" ] && echo "! gh update available" >&2
+		printf '%s\n' "$FAKE_POST"
+		;;
 	*) echo "{}" ;;
 	esac
 	;;
@@ -51,6 +58,14 @@ case "$1 $2" in
 	;;
 "repo view")
 	printf '%s\n' "${FAKE_DEL:-false}"
+	;;
+"api graphql")
+	if [ "${FAKE_QUEUE_FAIL:-0}" = "1" ]; then
+		echo "GraphQL: Could not resolve to a Repository" >&2
+		exit 1
+	fi
+	[ "${FAKE_STDERR_NOISE:-0}" = "1" ] && echo "! gh update available" >&2
+	printf '%s\n' "${FAKE_QUEUED:-false}"
 	;;
 *)
 	exit 0
@@ -128,12 +143,60 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 
 @test "--auto merge-queue membership is a success outcome (rc 0)" {
 	_install_gh_shim
-	export FAKE_STATE FAKE_POST
+	export FAKE_STATE FAKE_POST FAKE_QUEUED
 	FAKE_STATE=$(_state OPEN 0)
-	FAKE_POST='{"state":"OPEN","armed":false,"queued":true,"head":"abc1234"}'
+	FAKE_POST='{"state":"OPEN","armed":false,"head":"abc1234"}'
+	FAKE_QUEUED=true
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"entered the merge queue"* ]]
+}
+
+@test "--auto queue-probe failure yields UNKNOWN + WARN exit 0, not the exit-2 hard error" {
+	# A probe blip after a successful enqueue must not report failure — the
+	# side effect already happened (same posture as the POST-failure WARN).
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST FAKE_QUEUE_FAIL
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST='{"state":"OPEN","armed":false,"head":"abc1234"}'
+	FAKE_QUEUE_FAIL=1
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"queue state UNKNOWN"* ]]
+	# The probe's stderr must surface in the WARN (captured separately, not
+	# discarded and not mixed into the parsed payload).
+	[[ $output == *"Could not resolve to a Repository"* ]]
+	[[ $output != *"neither merged, armed, nor queued"* ]]
+}
+
+@test "--auto stderr noise on SUCCESS does not pollute the parsed payloads" {
+	# A stray gh notice on stderr (update nag, deprecation warning) used to be
+	# 2>&1-merged into POST/post_queued, corrupting the jq parse / the string
+	# compare. With stderr captured separately, a noisy-but-successful gh must
+	# still land in the armed-outcome branch.
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST FAKE_STDERR_NOISE
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST='{"state":"OPEN","armed":true,"head":"abc1234"}'
+	FAKE_STDERR_NOISE=1
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"Auto-merge armed for PR #55"* ]]
+	[[ $output != *"queue state UNKNOWN"* ]]
+}
+
+@test "--auto POST verification failure degrades to WARN, never dies post-merge (rc 0)" {
+	# #2489: the merge/arm side effect already happened - a failing verify
+	# query must not kill the wrapper (observed live: invalid --json field).
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST_FAIL
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST_FAIL=1
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"outcome verification unavailable"* ]]
+	# The failed query's stderr must surface in the WARN (separate capture).
+	[[ $output == *"Unknown JSON field"* ]]
 }
 
 @test "--auto arms even when mergeable=CONFLICTING (skips the immediate-path gate)" {

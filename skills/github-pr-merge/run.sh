@@ -148,12 +148,59 @@ if [ "$AUTO" = "1" ]; then
 	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
 	# Verify the outcome instead of asserting it: gh rc 0 covers BOTH
 	# "armed" and "merged immediately" (clean-status fallback).
-	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid,mergeQueueEntry \
-		--jq '{state: .state, armed: (.autoMergeRequest != null), queued: (.mergeQueueEntry != null), head: .headRefOid}')
+	# #2489: rc-capture — the merge/arm side effect ALREADY HAPPENED, so a
+	# failing verification query (network blip, gh version lacking a field)
+	# must degrade to a WARN + exit 0, never a set -e death that eats the
+	# outcome report (observed live on #2488: mergeQueueEntry was not a
+	# valid gh --json field and the wrapper died post-merge). Merge-queue
+	# membership is therefore probed via a separate rc-captured GraphQL
+	# query (gh's --json export-field allowlist has no queue field on this
+	# gh version).
+	post_rc=0
+	# stderr captured SEPARATELY from stdout (one temp file reused by both
+	# probes): a stray gh notice on stderr would otherwise pollute the
+	# jq-parsed payloads (POST JSON / post_queued boolean). mktemp failure
+	# degrades to /dev/null — payloads stay clean, diagnostics reduce to rc.
+	_verr=$(mktemp "${TMPDIR:-/tmp}/ghpm-verr.XXXXXX" 2>/dev/null) || _verr=""
+	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid \
+		--jq '{state: .state, armed: (.autoMergeRequest != null), head: .headRefOid}' \
+		2>"${_verr:-/dev/null}") || post_rc=$?
+	if [ "$post_rc" -ne 0 ]; then
+		post_err=""
+		[ -n "$_verr" ] && {
+			post_err=$(cat "$_verr" 2>/dev/null)
+			rm -f "$_verr"
+		}
+		echo "⚠ outcome verification unavailable (gh pr view failed rc=$post_rc): ${post_err:-no stderr}" >&2
+		echo "  The merge/arm call itself exited 0 — verify manually: gh pr view $PR --json state,autoMergeRequest" >&2
+		exit 0
+	fi
 	post_state=$(printf '%s' "$POST" | jq -r '.state')
 	post_armed=$(printf '%s' "$POST" | jq -r '.armed')
-	post_queued=$(printf '%s' "$POST" | jq -r '.queued')
 	post_head=$(printf '%s' "$POST" | jq -r '.head')
+	# Queue probe (probe_rc-captured; queue-less repos yield false, a FAILED
+	# probe yields "unknown" + WARN — never coerced to false, which would
+	# escalate a successful enqueue into the exit-2 branch below).
+	probe_rc=0
+	_qq_owner_name=$(skc_repo_owner_name 2>/dev/null) || _qq_owner_name=""
+	# -f (raw string) for the String! vars — -F would type-coerce a numeric-
+	# looking owner/name into an Int and fail GraphQL validation; -F stays
+	# correct for the Int! PR number.
+	post_queued=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeQueueEntry{position}}}}' \
+		-f o="${_qq_owner_name%%/*}" -f r="${_qq_owner_name##*/}" \
+		-F n="$PR" --jq '(.data.repository.pullRequest.mergeQueueEntry != null)' \
+		2>"${_verr:-/dev/null}") || probe_rc=$?
+	probe_err=""
+	[ -n "$_verr" ] && {
+		probe_err=$(cat "$_verr" 2>/dev/null)
+		rm -f "$_verr"
+	}
+	if [ "$probe_rc" -ne 0 ] || [ -z "$_qq_owner_name" ]; then
+		echo "⚠ merge-queue probe unavailable (rc=$probe_rc): ${probe_err:-no stderr}" >&2
+		post_queued="unknown"
+	elif [ "$post_queued" != "true" ]; then
+		post_queued="false"
+	fi
 	if [ "$post_state" = "MERGED" ]; then
 		echo "⚠ PR #$PR already satisfied the ruleset — gh merged it IMMEDIATELY (clean-status fallback); auto-merge was NOT armed."
 		echo "  Post-merge steps did NOT run in this path: checkout main + pull, auto-close-parent, trivy, tag."
@@ -172,7 +219,12 @@ if [ "$AUTO" = "1" ]; then
 		echo "  Poll: gh pr view $PR --json state,autoMergeRequest"
 	elif [ "$post_state" = "OPEN" ] && [ "$post_queued" = "true" ]; then
 		echo "✓ PR #$PR entered the merge queue ($METHOD) — the platform merges when the queue processes it."
-		echo "  Poll: gh pr view $PR --json state,mergeQueueEntry"
+		echo "  Watch the queue on the PR page (gh pr view has no queue field on this gh version); merged-state poll: gh pr view $PR --json state"
+	elif [ "$post_queued" = "unknown" ]; then
+		# The merge/arm side effect already happened; a failed PROBE must not
+		# report failure (same posture as the POST-failure WARN above).
+		echo "⚠ PR #$PR is $post_state, armed=$post_armed, queue state UNKNOWN (probe failed) — check queue membership on the PR page (not visible to gh pr view); state/armed: gh pr view $PR --json state,autoMergeRequest" >&2
+		exit 0
 	else
 		echo "gh exited 0 but PR #$PR is $post_state, armed=$post_armed, queued=$post_queued — neither merged, armed, nor queued; investigate" >&2
 		exit 2

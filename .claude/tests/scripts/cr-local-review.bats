@@ -126,3 +126,30 @@ _stub_coderabbit() {
 	logged=$(jq -rs 'map(select(.findings != null)) | .[-1].findings' "$TEST_TMP/.claude/logs/cr-local-review.jsonl" 2>/dev/null || echo "")
 	[ "$logged" = "2" ]
 }
+
+@test "local-review: findings>0 persists detail JSONL per sha (#2484)" {
+	# The tee tmpfile dies with the process and the orchestrator truncates
+	# stdout, so findings detail repeatedly evaporated (6 occurrences). The
+	# script must copy the tee to .claude/logs/cr-local-review-<sha7>-detail
+	# .jsonl BEFORE exit when findings>0.
+	{
+		echo '#!/usr/bin/env bash'
+		printf 'printf "%%s\\n" %q\n' '{"type":"finding","fileName":"a.sh","severity":"minor"}'
+		printf 'printf "%%s\\n" %q\n' '{"type":"complete","findings":1}'
+		echo 'exit 1'
+	} >"$TEST_TMP/bin/coderabbit"
+	chmod +x "$TEST_TMP/bin/coderabbit"
+	cd "$TEST_TMP" || return 1
+	# core.abbrev=12 makes bare --short diverge from --short=7 here, so this
+	# test DISCRIMINATES: the detail filename must use the same bare --short
+	# derivation scm_log keys the jsonl on, or the per-sha join breaks.
+	git config core.abbrev 12
+	sha_key=$(git rev-parse --short HEAD)
+	[ "${#sha_key}" -eq 12 ]
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 1 ]
+	detail="$TEST_TMP/.claude/logs/cr-local-review-${sha_key}-detail.jsonl"
+	[ -f "$detail" ]
+	grep -q '"type":"finding"' "$detail"
+	[[ $output == *"findings detail persisted"* ]]
+}

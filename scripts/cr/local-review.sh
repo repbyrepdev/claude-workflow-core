@@ -303,7 +303,55 @@ else
 fi
 [[ $findings =~ ^[0-9]+$ ]] || findings=0
 
-# scm_log injects `sha` (short 7-char HEAD) into the log line — that's the
+# #2484: persist the review detail BEFORE the tee tmpfile is trap-removed.
+# The orchestrator's bg wrapper truncates stdout to a tail and the tmpfile
+# evaporates with the process, so findings>0 repeatedly became "count with
+# no detail" (6 occurrences on 2026-07-07/08) — forcing budget-burning
+# re-runs or blind converge-rejections. Keep the full JSONL per sha; loud
+# WARN (not fatal) if the copy fails.
+if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
+	# Bare --short (NOT --short=7): scm_log keys its jsonl line on bare
+	# --short (auto-abbrev), and consumers reconstruct this path from that
+	# sha — the two derivations must stay byte-identical at any repo size.
+	_detail_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+	_detail_dir="$REPO_ROOT/.claude/logs"
+	_detail_file="$_detail_dir/cr-local-review-${_detail_sha}-detail.jsonl"
+	# Retention: best-effort prune of stale detail files (>30d) so the
+	# gitignored logs dir stays bounded — one file lands per findings>0 run.
+	find "$_detail_dir" -maxdepth 1 -name 'cr-local-review-*-detail.jsonl' -mtime +30 -delete 2>/dev/null || true
+	# Atomic write (temp in the SAME dir + mv): a mid-write failure must
+	# never leave a TRUNCATED detail file at the advertised path (or destroy
+	# a prior complete one) — partial detail parsed as truth is worse than
+	# the missing-detail problem this block fixes. Stderr is captured so the
+	# WARN states the actual cause.
+	# The subshell's ENTIRE stderr is captured (mkdir/mktemp/cp/mv — not just
+	# the final mv), and the temp path is exported through so the failure
+	# branch removes ONLY this invocation's temp (a glob would nuke a
+	# concurrent run's in-flight temp).
+	_detail_err=""
+	_dtmp_file="$_detail_dir/.cr-detail.pid$$"
+	if _detail_err=$(
+		{
+			mkdir -p "$_detail_dir" &&
+				_dtmp=$(mktemp "$_detail_dir/.cr-detail.XXXXXX") &&
+				printf '%s\n' "$_dtmp" >"$_dtmp_file" &&
+				cp "$TEE_OUT" "$_dtmp" &&
+				mv -f "$_dtmp" "$_detail_file"
+		} 2>&1
+	); then
+		rm -f "$_dtmp_file" 2>/dev/null || true
+		echo "local-review: findings detail persisted to $_detail_file (#2484)" >&2
+	else
+		if [ -f "$_dtmp_file" ]; then
+			_dtmp_recorded=$(cat "$_dtmp_file" 2>/dev/null || true)
+			[ -n "$_dtmp_recorded" ] && rm -f "$_dtmp_recorded" 2>/dev/null
+			rm -f "$_dtmp_file" 2>/dev/null || true
+		fi
+		echo "local-review: WARN — could not persist findings detail to $_detail_file (${_detail_err:-no stderr}); the tee tmpfile dies with this process (#2484)" >&2
+	fi
+fi
+
+# scm_log injects `sha` (bare --short HEAD, auto-abbrev) into the log line — that's the
 # key the pre-push gate matches against. This fields object provides the
 # NEW fields: base/force/rc (pre-existing) + findings (v4.24-Q2 #609 addition).
 scm_log cr-local-review "$(jq -nc --arg base "$BASE" \
