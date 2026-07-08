@@ -186,6 +186,7 @@ _stub_coderabbit() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 3 ]
+	[[ $output == *"rate_limit"* ]]
 	[[ $output != *"mark-exhausted failed"* ]]
 	[ -f "$TEST_TMP/.claude/review-log/cr-budget.jsonl" ]
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"

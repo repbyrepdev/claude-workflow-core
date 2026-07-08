@@ -38,6 +38,8 @@ _mk_fixture() {
 	cp "$REPO_ROOT/hooks/phase0.5-gemini-prefilter.sh" "$TREE/hooks/" || return 1
 	cp "$REPO_ROOT/_lib/resolve-plugin-helper.sh" "$TREE/_lib/" || return 1
 	cp "$REPO_ROOT/_lib/phase05-dedupe.sh" "$TREE/_lib/" || return 1
+	# Sourced at end-of-run by the gemini happy path (CR r4 --policy test).
+	cp "$REPO_ROOT/_lib/phase05-auth-summary.sh" "$TREE/_lib/" || return 1
 	# Sibling helpers the hooks preflight (stubs; never invoked on skip paths).
 	printf '#!/bin/bash\ncat\n' >"$TREE/hooks/phase1-dedup.sh" || return 1
 	printf '#!/bin/bash\ncat\n' >"$TREE/hooks/phase0.5-dedupe-against-audit.sh" || return 1
@@ -132,6 +134,30 @@ _assert_skip_logged() { # $1 = status string, $2 = cli name
 	_run_hook phase0.5-gemini-prefilter.sh ""
 	[ "$status" -eq 1 ]
 	[[ $output == *"policy.toml"* ]]
+}
+
+@test "gemini: happy path passes --policy <policy.toml> at invocation (#643 end-to-end)" {
+	# CR r4: the deny-block flag was only preflight-checked ([ -f ] on the
+	# file); an arg-capturing stub proves the CLI is actually INVOKED with
+	# --policy. Stub records "$@" one-arg-per-line, then emits [].
+	printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/gemini-args.txt"\necho "[]"\n' "$TEST_TMP" >"$BIN/gemini"
+	chmod +x "$BIN/gemini"
+	# macOS ships no `timeout`; shim drops the duration arg and execs the
+	# command so the hook's wrapped invocation runs unmodified on any host.
+	printf '#!/bin/sh\nshift\nexec "$@"\n' >"$BIN/timeout"
+	chmod +x "$BIN/timeout"
+	mkdir -p "$WORK/.gemini"
+	printf '[deny]\n' >"$WORK/.gemini/policy.toml"
+	# One gemini-callable agent so the per-agent loop actually invokes the CLI.
+	printf '#!/bin/sh\necho code-reviewer\n' >"$TREE/hooks/list-phase1-agents.sh"
+	chmod +x "$TREE/hooks/list-phase1-agents.sh"
+	_run_hook phase0.5-gemini-prefilter.sh ""
+	[ "$status" -eq 0 ]
+	[[ $output == *"[]"* ]]
+	[ -f "$TEST_TMP/gemini-args.txt" ]
+	grep -qx -- "--policy" "$TEST_TMP/gemini-args.txt"
+	grep -q "policy.toml" "$TEST_TMP/gemini-args.txt"
+	_assert_skip_logged ok gemini
 }
 
 @test "codex: oversized diff -> skip rc=0 with skipped-diff-too-large logged" {

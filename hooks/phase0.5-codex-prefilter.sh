@@ -82,7 +82,7 @@ command -v codex >/dev/null 2>&1 || {
 	# logged so phase1-scaler treats it as "no pre-filter signal", not
 	# "ran clean". (Present-but-broken preconditions below still
 	# hard-fail.) Shared helper: logs, emits [], exits 0.
-	phase05_emit_skip_and_exit codex "$LOG_DIR" "$LOG" "skipped-no-codex-cli" "Install via brew + 'codex login' to enable"
+	phase05_emit_skip_and_exit codex "$LOG" "skipped-no-codex-cli" "Install via brew + 'codex login' to enable"
 }
 [ -d "$CODEX_HOME_REPO" ] || {
 	echo "phase0.5-codex: $CODEX_HOME_REPO missing — Codex 0.125 needs project-level config" >&2

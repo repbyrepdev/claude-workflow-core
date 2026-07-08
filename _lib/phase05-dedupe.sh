@@ -61,9 +61,11 @@ phase05_emit_findings() {
 # stay exit-0 (optional pre-filter), but a failed skip-log write WARNs
 # loudly - the scaler then treats the sha as no-prefilter-signal, which
 # is the safe direction (more review rounds, not fewer).
-# Args: $1=cli name  $2=LOG_DIR  $3=LOG path  $4=status string  $5=install hint
+# Args: $1=cli name  $2=LOG path  $3=status string  $4=install hint
+# (the log dir is derived from the LOG path - single source of truth)
 phase05_emit_skip_and_exit() {
-	local _cli="$1" _log_dir="$2" _log="$3" _status="$4" _hint="$5" _skip_sha
+	local _cli="$1" _log="$2" _status="$3" _hint="$4" _skip_sha _log_dir
+	_log_dir=$(dirname "$_log")
 	echo "phase0.5-${_cli}: ${_cli} CLI absent - skipping optional pre-filter; Phase 1 Claude agents proceed. ${_hint}" >&2
 	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
 	mkdir -p "$_log_dir" 2>/dev/null || true

@@ -81,7 +81,7 @@ command -v gemini >/dev/null 2>&1 || {
 	# logged so phase1-scaler treats it as "no pre-filter signal", not
 	# "ran clean". (Present-but-broken preconditions below still
 	# hard-fail.) Shared helper: logs, emits [], exits 0.
-	phase05_emit_skip_and_exit gemini "$LOG_DIR" "$LOG" "skipped-no-gemini-cli" "Install via npm + run 'gemini' once to auth to enable"
+	phase05_emit_skip_and_exit gemini "$LOG" "skipped-no-gemini-cli" "Install via npm + run 'gemini' once to auth to enable"
 }
 # CR Phase 3 Major: refuse to run without the policy.toml deny block.
 # Phase 0.5 reviewer must be read-only — running Gemini without the policy
