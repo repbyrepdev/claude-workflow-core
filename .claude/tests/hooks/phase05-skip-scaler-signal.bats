@@ -69,9 +69,10 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	run bash -c "cd '$WORK' && PATH='$BIN:/usr/bin:/bin' $2 bash '$TREE/hooks/$1'"
 }
 
-# Assert a skip entry with BOTH the status and the per-cli attribution
-# on the same log line (CR r3: centralizes the repeated two-grep pattern).
-_assert_skip_logged() { # $1 = status string, $2 = cli name
+# Assert a log entry with BOTH the status and the per-cli attribution
+# on the same log line (CR r3: centralizes the repeated two-grep pattern;
+# CR r5: status-neutral name - it asserts skipped-* AND ok entries).
+_assert_status_logged() { # $1 = status string, $2 = cli name
 	grep "\"$1\"" "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q "\"cli\":\"$2\""
 }
 
@@ -108,7 +109,7 @@ _assert_skip_logged() { # $1 = status string, $2 = cli name
 	grep -q '"status":"skipped-no-codex-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl"
 	# per-cli attribution: the skip entry carries cli:"codex" like every
 	# other codex log line
-	_assert_skip_logged skipped-no-codex-cli codex
+	_assert_status_logged skipped-no-codex-cli codex
 }
 
 @test "gemini: CLI absent -> graceful skip rc=0, [], logged with cli field (#2259 parity)" {
@@ -116,7 +117,7 @@ _assert_skip_logged() { # $1 = status string, $2 = cli name
 	[ "$status" -eq 0 ]
 	[[ $output == *"[]"* ]]
 	grep -q '"status":"skipped-no-gemini-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl"
-	_assert_skip_logged skipped-no-gemini-cli gemini
+	_assert_status_logged skipped-no-gemini-cli gemini
 }
 
 @test "codex: CLI present but repo config BROKEN -> hard-fail rc=1 (no silent skip)" {
@@ -157,7 +158,7 @@ _assert_skip_logged() { # $1 = status string, $2 = cli name
 	[ -f "$TEST_TMP/gemini-args.txt" ]
 	grep -qx -- "--policy" "$TEST_TMP/gemini-args.txt"
 	grep -q "policy.toml" "$TEST_TMP/gemini-args.txt"
-	_assert_skip_logged ok gemini
+	_assert_status_logged ok gemini
 }
 
 @test "codex: oversized diff -> skip rc=0 with skipped-diff-too-large logged" {
@@ -168,7 +169,7 @@ _assert_skip_logged() { # $1 = status string, $2 = cli name
 	_run_hook phase0.5-codex-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
 	[[ $output == *"[]"* ]]
-	_assert_skip_logged skipped-diff-too-large codex
+	_assert_status_logged skipped-diff-too-large codex
 }
 
 @test "gemini: oversized diff -> skip rc=0 with skipped-diff-too-large logged" {
@@ -179,7 +180,7 @@ _assert_skip_logged() { # $1 = status string, $2 = cli name
 	_run_hook phase0.5-gemini-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
 	[[ $output == *"[]"* ]]
-	_assert_skip_logged skipped-diff-too-large gemini
+	_assert_status_logged skipped-diff-too-large gemini
 }
 
 # ---- phase1-scaler signal tiers (#2259 item 2) ----
