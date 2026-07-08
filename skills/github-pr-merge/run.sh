@@ -103,8 +103,8 @@ if [ "$AUTO" = "1" ] && [ -n "$TAG" ]; then
 fi
 
 # Pre-merge state check.
-STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRollup \
-	--jq '{state: .state, mergeable: .mergeable, mergeStateStatus: .mergeStateStatus, checks: [(.statusCheckRollup // [])[] | {context: .context, state: .state}]}')
+STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRollup,headRefOid \
+	--jq '{state: .state, mergeable: .mergeable, mergeStateStatus: .mergeStateStatus, head: .headRefOid, checks: [(.statusCheckRollup // [])[] | {context: .context, state: .state}]}')
 echo "=== Pre-merge state for PR #$PR ==="
 printf '%s\n' "$STATE" | jq .
 
@@ -134,7 +134,12 @@ if [ "$AUTO" = "1" ]; then
 		echo "⚠ $failed_now check(s) currently FAILED. The ruleset blocks the merge only on REQUIRED checks — a red non-required check will NOT stop the platform merge." >&2
 	fi
 	skc_approve_or_exit "Arm auto-merge for PR #$PR ($METHOD)? The platform merges when the branch ruleset is satisfied (whatever it requires)"
-	MERGE_ARGS=(pr merge "$PR" "$METHOD" --auto)
+	# Pin the merge to the head the operator just approved: a push between
+	# this approval and the platform merge would otherwise merge a commit
+	# nobody reviewed (arm-time TOCTOU). --match-head-commit makes GitHub
+	# refuse the merge if the head has moved past the approved sha.
+	arm_head=$(printf '%s' "$STATE" | jq -r '.head')
+	MERGE_ARGS=(pr merge "$PR" "$METHOD" --auto --match-head-commit "$arm_head")
 	# Kept for the clean-status fallback (an immediate merge DOES honor it).
 	# On a genuinely armed PR gh exits before any merge, so deletion is
 	# governed solely by the repo's delete-branch-on-merge setting — the
