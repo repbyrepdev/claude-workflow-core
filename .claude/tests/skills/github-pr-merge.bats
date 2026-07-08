@@ -41,7 +41,13 @@ case "$1 $2" in
 "pr view")
 	case "$*" in
 	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
-	*autoMergeRequest*) printf '%s\n' "$FAKE_POST" ;;
+	*autoMergeRequest*)
+		if [ "${FAKE_POST_FAIL:-0}" = "1" ]; then
+			echo "Unknown JSON field: \"bogus\"" >&2
+			exit 1
+		fi
+		printf '%s\n' "$FAKE_POST"
+		;;
 	*) echo "{}" ;;
 	esac
 	;;
@@ -51,6 +57,9 @@ case "$1 $2" in
 	;;
 "repo view")
 	printf '%s\n' "${FAKE_DEL:-false}"
+	;;
+"api graphql")
+	printf '%s\n' "${FAKE_QUEUED:-false}"
 	;;
 *)
 	exit 0
@@ -128,12 +137,25 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 
 @test "--auto merge-queue membership is a success outcome (rc 0)" {
 	_install_gh_shim
-	export FAKE_STATE FAKE_POST
+	export FAKE_STATE FAKE_POST FAKE_QUEUED
 	FAKE_STATE=$(_state OPEN 0)
-	FAKE_POST='{"state":"OPEN","armed":false,"queued":true,"head":"abc1234"}'
+	FAKE_POST='{"state":"OPEN","armed":false,"head":"abc1234"}'
+	FAKE_QUEUED=true
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"entered the merge queue"* ]]
+}
+
+@test "--auto POST verification failure degrades to WARN, never dies post-merge (rc 0)" {
+	# #2489: the merge/arm side effect already happened - a failing verify
+	# query must not kill the wrapper (observed live: invalid --json field).
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST_FAIL
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST_FAIL=1
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"outcome verification unavailable"* ]]
 }
 
 @test "--auto arms even when mergeable=CONFLICTING (skips the immediate-path gate)" {

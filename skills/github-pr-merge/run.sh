@@ -148,12 +148,30 @@ if [ "$AUTO" = "1" ]; then
 	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
 	# Verify the outcome instead of asserting it: gh rc 0 covers BOTH
 	# "armed" and "merged immediately" (clean-status fallback).
-	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid,mergeQueueEntry \
-		--jq '{state: .state, armed: (.autoMergeRequest != null), queued: (.mergeQueueEntry != null), head: .headRefOid}')
+	# #2489: rc-capture — the merge/arm side effect ALREADY HAPPENED, so a
+	# failing verification query (network blip, gh version lacking a field)
+	# must degrade to a WARN + exit 0, never a set -e death that eats the
+	# outcome report (observed live on #2488: mergeQueueEntry was not a
+	# valid gh --json field and the wrapper died post-merge). Merge-queue
+	# membership is therefore probed via a separate rc-captured GraphQL
+	# query (the REST field list has no queue field on this gh version).
+	post_rc=0
+	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid \
+		--jq '{state: .state, armed: (.autoMergeRequest != null), head: .headRefOid}' 2>&1) || post_rc=$?
+	if [ "$post_rc" -ne 0 ]; then
+		echo "⚠ outcome verification unavailable (gh pr view failed rc=$post_rc): $POST" >&2
+		echo "  The merge/arm call itself exited 0 — verify manually: gh pr view $PR --json state,autoMergeRequest" >&2
+		exit 0
+	fi
 	post_state=$(printf '%s' "$POST" | jq -r '.state')
 	post_armed=$(printf '%s' "$POST" | jq -r '.armed')
-	post_queued=$(printf '%s' "$POST" | jq -r '.queued')
 	post_head=$(printf '%s' "$POST" | jq -r '.head')
+	# Queue probe (rc-captured; queue-less repos/gh just yield "false").
+	post_queued=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeQueueEntry{position}}}}' \
+		-F o="$(gh repo view --json owner --jq '.owner.login' 2>/dev/null)" \
+		-F r="$(gh repo view --json name --jq '.name' 2>/dev/null)" \
+		-F n="$PR" --jq '(.data.repository.pullRequest.mergeQueueEntry != null)' 2>/dev/null) || post_queued="false"
+	[ "$post_queued" = "true" ] || post_queued="false"
 	if [ "$post_state" = "MERGED" ]; then
 		echo "⚠ PR #$PR already satisfied the ruleset — gh merged it IMMEDIATELY (clean-status fallback); auto-merge was NOT armed."
 		echo "  Post-merge steps did NOT run in this path: checkout main + pull, auto-close-parent, trivy, tag."

@@ -303,6 +303,23 @@ else
 fi
 [[ $findings =~ ^[0-9]+$ ]] || findings=0
 
+# #2484: persist the review detail BEFORE the tee tmpfile is trap-removed.
+# The orchestrator's bg wrapper truncates stdout to a tail and the tmpfile
+# evaporates with the process, so findings>0 repeatedly became "count with
+# no detail" (6 occurrences on 2026-07-07/08) — forcing budget-burning
+# re-runs or blind converge-rejections. Keep the full JSONL per sha; loud
+# WARN (not fatal) if the copy fails.
+if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
+	_detail_sha=$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
+	_detail_dir="$REPO_ROOT/.claude/logs"
+	_detail_file="$_detail_dir/cr-local-review-${_detail_sha}-detail.jsonl"
+	if mkdir -p "$_detail_dir" 2>/dev/null && cp "$TEE_OUT" "$_detail_file" 2>/dev/null; then
+		echo "local-review: findings detail persisted to $_detail_file (#2484)" >&2
+	else
+		echo "local-review: WARN — could not persist findings detail to $_detail_file; the tee tmpfile dies with this process (#2484)" >&2
+	fi
+fi
+
 # scm_log injects `sha` (short 7-char HEAD) into the log line — that's the
 # key the pre-push gate matches against. This fields object provides the
 # NEW fields: base/force/rc (pre-existing) + findings (v4.24-Q2 #609 addition).
