@@ -35,7 +35,7 @@
     "_lib/lint-log.sh": "23060525ef8e5445803b46fc0933ee1211b3bde5895d8a6fc1ea3f6bbceca7b9",
     "_lib/phase-graduation.sh": "4fac4b2f11e18b44d0504c96eb54592072f897956472775a21b38154088449e0",
     "_lib/phase05-auth-summary.sh": "5807f547ca81ce1b2cce56a0ac36c4652a11af89d409e55411be21ae1027c97a",
-    "_lib/phase05-dedupe.sh": "6e04460885def059f1172b8e40ab8dee5a879cbd17ed8bec9de9ecbe6cc38007",
+    "_lib/phase05-dedupe.sh": "a47ccecf75ee51c2b2eba137fa1559d5347f939264201caae4fe76c98516940b",
     "_lib/phase1-agent-prompt.sh": "13408a8e02a048f4d8ab9de45f8ef41efa81105db8a4bf8031c1852db1f86aad",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",

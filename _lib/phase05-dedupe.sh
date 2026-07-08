@@ -68,6 +68,9 @@ phase05_emit_skip_and_exit() {
 	_log_dir=$(dirname "$_log")
 	echo "phase0.5-${_cli}: ${_cli} CLI absent - skipping optional pre-filter; Phase 1 Claude agents proceed. ${_hint}" >&2
 	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	if [ -z "$_skip_sha" ]; then
+		echo "phase0.5-${_cli}: WARN - could not resolve HEAD sha; skip entry will not match the scaler's HEAD-scoped lookup" >&2
+	fi
 	mkdir -p "$_log_dir" 2>/dev/null || true
 	if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" --arg cli "$_cli" --arg st "$_status" \
 		'{ts:$ts, sha:$sha, phase:"0.5", cli:$cli, agent:"<all>", findings:0, status:$st}' \
