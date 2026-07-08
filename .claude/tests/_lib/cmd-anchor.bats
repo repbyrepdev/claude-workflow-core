@@ -42,6 +42,12 @@ setup() {
 	[ "$status" -eq 1 ]
 }
 
+@test "match_cmd_at_anchor_hardened: empty pattern returns 1 (guarded)" {
+	run match_cmd_at_anchor_hardened "" "git commit"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
+}
+
 @test "hardened: brace group and subshell prefixes hit (#2396)" {
 	match_cmd_at_anchor_hardened "$GPM" "{ gh pr merge 5; }"
 	match_cmd_at_anchor_hardened "$GPM" "( gh pr merge 5 )"
