@@ -153,3 +153,15 @@ _stub_coderabbit() {
 	grep -q '"type":"finding"' "$detail"
 	[[ $output == *"findings detail persisted"* ]]
 }
+
+@test "local-review: mark-exhausted resolves rate-budget.sh next to ITSELF (#2519)" {
+	# The old $REPO_ROOT/.claude/scripts/cr/rate-budget.sh form broke in
+	# consumers without the mirror (mark-exhausted WARN, budget tracker
+	# drift). Every mark-exhausted call site must use the SCRIPT_DIR
+	# sibling — same resolution as the --check preflight.
+	run grep -c 'SCRIPT_DIR/rate-budget.sh' "$LR"
+	[ "$status" -eq 0 ]
+	[ "$output" -ge 3 ]
+	run grep -c 'REPO_ROOT/.claude/scripts/cr/rate-budget.sh' "$LR"
+	[ "$output" -eq 0 ]
+}

@@ -72,6 +72,29 @@ EOF
 	[[ $output == *drift* ]]
 }
 
+@test "multi-digit claim extracts in full (10 == 10; greedy-prefix regression #2387)" {
+	# Old single-pass sed let the greedy .* prefix eat the leading "1",
+	# extracting "0" and false-BLOCKing. 10 claimed vs 10 actual must pass.
+	printf 'There are 10 required status checks.\n' >"$TEST_TMP/claim.md"
+	printf 'required:\n%s' "$(for i in 0 1 2 3 4 5 6 7 8 9; do printf '  - check_name: c%s\n' "$i"; done)" >"$TEST_TMP/required.yml"
+	write_config
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output != *skipping* ]]
+	[[ $output != *drift* ]]
+}
+
+@test "multi-digit claim still BLOCKS on real divergence (claim 10 vs SSOT 3)" {
+	# Companion to the regression test: the two-step extraction must not
+	# weaken detection — a genuinely wrong multi-digit claim still blocks.
+	printf 'There are 10 required status checks.\n' >"$TEST_TMP/claim.md"
+	write_config
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -ne 0 ]
+	[[ $output == *drift* ]]
+	[[ $output == *10* ]]
+}
+
 @test "shipped .claude/ssot-checks.yml is loadable with at least one check" {
 	run yq -r '.checks | length' "$REPO_ROOT/.claude/ssot-checks.yml"
 	[ "$status" -eq 0 ]

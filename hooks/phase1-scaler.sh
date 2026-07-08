@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+# auto-register: false
 # v4.24-R (#605) — smart scaler for Phase 1 Claude round count.
 #
 # Reads upstream phase signals (Phase 0.5 Copilot findings + CR CLI
@@ -50,7 +51,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 # Override wins.
-if [ -n "${PHASE1_ROUNDS:-}" ] && [[ "$PHASE1_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
+if [ -n "${PHASE1_ROUNDS:-}" ] && [[ $PHASE1_ROUNDS =~ ^[1-9][0-9]*$ ]]; then
 	if [ "$EXPLAIN" = "1" ]; then
 		echo "ROUNDS=$PHASE1_ROUNDS"
 		echo "REASON=PHASE1_ROUNDS env override"
@@ -61,7 +62,14 @@ if [ -n "${PHASE1_ROUNDS:-}" ] && [[ "$PHASE1_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # Count Phase 0.5 findings (latest run only, not aggregated across reruns).
+# p05_ran distinguishes "pre-filter RAN and found N" from "pre-filter was
+# SKIPPED" (#2259): a skipped-* status entry (e.g. skipped-no-copilot-helper)
+# used to yield p05_count=0, indistinguishable from a clean run, letting the
+# skip lower the Claude round count as if the pre-filter had vouched for the
+# diff. Live counter-example: a consumer skip scaled a branch to 1 round that
+# round 1 then hit with 20 findings.
 p05_count=0
+p05_ran=0
 p05_log="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
 if [ -f "$p05_log" ] && command -v jq >/dev/null 2>&1; then
 	# Pull findings from the most recent entry for the current SHA.
@@ -69,6 +77,8 @@ if [ -f "$p05_log" ] && command -v jq >/dev/null 2>&1; then
 	latest_sha=$(jq -r '.sha' "$p05_log" 2>/dev/null | tail -1)
 	if [ -n "$latest_sha" ]; then
 		p05_count=$(jq -rs --arg s "$latest_sha" '[.[] | select(.sha==$s and .status=="ok")] | if length > 0 then max_by(.ts).findings else 0 end' "$p05_log" 2>/dev/null || echo 0)
+		p05_ran=$(jq -rs --arg s "$latest_sha" '[.[] | select(.sha==$s and .status=="ok")] | length' "$p05_log" 2>/dev/null || echo 0)
+		[[ $p05_ran =~ ^[0-9]+$ ]] || p05_ran=0
 	fi
 fi
 
@@ -77,13 +87,18 @@ cr_count=0
 cr_log="$REPO_ROOT/.claude/logs/cr-local-review.jsonl"
 if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	cr_count=$(jq -r '.findings // 0' "$cr_log" 2>/dev/null | tail -1)
-	[[ "$cr_count" =~ ^[0-9]+$ ]] || cr_count=0
+	[[ $cr_count =~ ^[0-9]+$ ]] || cr_count=0
 fi
 
 total=$((p05_count + cr_count))
 
-# Tier decision.
-if [ "$total" -eq 0 ]; then
+# Tier decision. The 1-round all-clean tier requires the pre-filter to have
+# ACTUALLY RUN (#2259): with no pre-filter signal (skipped or never logged),
+# zero findings proves nothing — floor at the minimal tier instead.
+if [ "$total" -eq 0 ] && [ "$p05_ran" -eq 0 ]; then
+	rounds=2
+	tier="no-prefilter-signal"
+elif [ "$total" -eq 0 ]; then
 	rounds=1
 	tier="all-clean"
 elif [ "$total" -lt 3 ]; then
@@ -114,14 +129,14 @@ fi
 # round count never drops below it. Defaults to 0 so the scaler tier
 # decision is authoritative when the env var is unset.
 min_rounds="${PHASE1_MIN_ROUNDS:-0}"
-if [[ "$min_rounds" =~ ^[0-9]+$ ]] && [ "$rounds" -lt "$min_rounds" ]; then
+if [[ $min_rounds =~ ^[0-9]+$ ]] && [ "$rounds" -lt "$min_rounds" ]; then
 	rounds="$min_rounds"
 	tier="${tier}+min=$min_rounds"
 fi
 
 if [ "$EXPLAIN" = "1" ]; then
 	echo "ROUNDS=$rounds"
-	echo "REASON=tier=$tier phase0.5=$p05_count cr=$cr_count sensitive=$sensitive"
+	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive"
 else
 	printf '%s' "$rounds"
 fi

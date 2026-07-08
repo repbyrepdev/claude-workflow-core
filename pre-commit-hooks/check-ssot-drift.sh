@@ -91,18 +91,37 @@ _check_count() {
 	sed_err=$(mktemp)
 	yq_err=$(mktemp)
 
-	# Use sed to extract capture group 1. sed_err non-empty + non-zero rc
-	# = real sed failure (e.g., bad regex). Empty + rc=1 = "no match" (normal).
-	if ! claimed=$(sed -nE "s|.*${claim_regex}.*|\1|p" "$claim_abs" 2>"$sed_err" | head -1); then
+	# Two-step extraction (#2387): grep -o isolates the FULL regex match
+	# first, then an ^anchored$ sed pulls capture group 1 out of that
+	# exact substring. The old single-pass `s|.*${claim_regex}.*|\1|p`
+	# let the greedy `.*` prefix eat leading digits of the capture (a
+	# claim of "10" extracted as "0" -> false drift BLOCK on any
+	# multi-digit count). stderr non-empty = real failure (bad regex);
+	# empty + rc=1 = "no match" (normal).
+	matched=""
+	if ! matched=$(grep -oE "${claim_regex}" "$claim_abs" 2>"$sed_err" | head -1); then
 		if [ -s "$sed_err" ]; then
-			echo "BLOCK: SSOT drift check '${name}' — sed regex extraction failed:" >&2
+			echo "BLOCK: SSOT drift check '${name}' — regex match extraction failed:" >&2
 			cat "$sed_err" >&2
 			echo "  Bad regex in .claude/ssot-checks.yml? claim_regex=$claim_regex" >&2
 			rm -f "$sed_err" "$yq_err"
 			return 2
 		fi
-		# Empty result without sed stderr = no matches (normal).
-		claimed=""
+		# Empty result without stderr = no matches (normal).
+		matched=""
+	fi
+	claimed=""
+	if [ -n "$matched" ]; then
+		if ! claimed=$(printf '%s\n' "$matched" | sed -nE "s|^${claim_regex}\$|\1|p" 2>"$sed_err"); then
+			if [ -s "$sed_err" ]; then
+				echo "BLOCK: SSOT drift check '${name}' — sed capture extraction failed:" >&2
+				cat "$sed_err" >&2
+				echo "  Bad regex in .claude/ssot-checks.yml? claim_regex=$claim_regex" >&2
+				rm -f "$sed_err" "$yq_err"
+				return 2
+			fi
+			claimed=""
+		fi
 	fi
 	rm -f "$sed_err"
 
@@ -239,14 +258,18 @@ _check_list() {
 		echo "BLOCK: SSOT list-drift — ${name}" >&2
 		echo "  Claim file: $claim_file" >&2
 		echo "  SSOT file:  $ssot_file" >&2
-		[ -n "$only_in_claim" ] && {
+		if [ -n "$only_in_claim" ]; then
 			echo "  Items in claim NOT in SSOT (orphans — drift candidates):" >&2
-			echo "$only_in_claim" | sed 's/^/    - /' >&2
-		}
-		[ -n "$only_in_ssot" ] && {
+			while IFS= read -r _item; do
+				printf '    - %s\n' "$_item" >&2
+			done <<<"$only_in_claim"
+		fi
+		if [ -n "$only_in_ssot" ]; then
 			echo "  Items in SSOT NOT in claim (missing from inline list):" >&2
-			echo "$only_in_ssot" | sed 's/^/    - /' >&2
-		}
+			while IFS= read -r _item; do
+				printf '    - %s\n' "$_item" >&2
+			done <<<"$only_in_ssot"
+		fi
 		echo "  $desc" >&2
 		echo "  Fix: update $claim_file to match SSOT, or rewrite to reference $ssot_file by path." >&2
 		return 1

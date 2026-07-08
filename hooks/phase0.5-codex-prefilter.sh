@@ -19,8 +19,10 @@ set -euo pipefail
 #   stdout: JSON array of dedup'd findings (may be [])
 #   .claude/logs/phase0.5-run.jsonl: per-agent entry with cli=codex
 # Exit:
-#   0 = ran successfully (findings may be present; caller decides)
-#   1 = tooling error (codex missing / yq missing / config missing)
+#   0 = ran successfully (findings may be present; caller decides), OR
+#       codex CLI genuinely absent (graceful skip, logged skipped-no-codex-cli
+#       — parity with the copilot pre-filter, #2259)
+#   1 = tooling error (yq missing / config missing / codex present but broken)
 #   2 = arg error
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -63,13 +65,24 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 CODEX_HOME_REPO="$REPO_ROOT/.codex"
 
-[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
-	echo "phase0.5-codex: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
+if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
+	echo 'phase0.5-codex: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)' >&2
 	exit 1
-}
+fi
 command -v codex >/dev/null 2>&1 || {
-	echo "phase0.5-codex: codex CLI missing — install via brew + run 'codex login' first" >&2
-	exit 1
+	# Absent CLI = graceful skip (#2259): parity with the copilot
+	# pre-filter's absent-helper path. An OPTIONAL pre-filter that is not
+	# installed must not hard-fail the walk; the skip status is logged so
+	# phase1-scaler treats it as "no pre-filter signal", not "ran clean".
+	# (Present-but-broken preconditions below still hard-fail.)
+	echo "phase0.5-codex: codex CLI absent — skipping optional pre-filter; Phase 1 Claude agents proceed. Install via brew + 'codex login' to enable" >&2
+	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	mkdir -p "$LOG_DIR" 2>/dev/null || true
+	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
+		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-codex-cli"}' \
+		>>"$LOG"
+	echo "[]"
+	exit 0
 }
 [ -d "$CODEX_HOME_REPO" ] || {
 	echo "phase0.5-codex: $CODEX_HOME_REPO missing — Codex 0.125 needs project-level config" >&2

@@ -18,8 +18,10 @@ set -euo pipefail
 #   stdout: JSON array of dedup'd findings (may be [])
 #   .claude/logs/phase0.5-run.jsonl: per-agent entry with cli=gemini
 # Exit:
-#   0 = ran successfully (findings may be present; caller decides)
-#   1 = tooling error (gemini missing / yq missing / config missing)
+#   0 = ran successfully (findings may be present; caller decides), OR
+#       gemini CLI genuinely absent (graceful skip, logged
+#       skipped-no-gemini-cli — parity with the copilot pre-filter, #2259)
+#   1 = tooling error (yq missing / config missing / gemini present but broken)
 #   2 = arg error
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -62,13 +64,24 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 GEMINI_POLICY="$REPO_ROOT/.gemini/policy.toml"
 
-[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
-	echo "phase0.5-gemini: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
+if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
+	echo 'phase0.5-gemini: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)' >&2
 	exit 1
-}
+fi
 command -v gemini >/dev/null 2>&1 || {
-	echo "phase0.5-gemini: gemini CLI missing — install via npm + run 'gemini' once to auth" >&2
-	exit 1
+	# Absent CLI = graceful skip (#2259): parity with the copilot
+	# pre-filter's absent-helper path. An OPTIONAL pre-filter that is not
+	# installed must not hard-fail the walk; the skip status is logged so
+	# phase1-scaler treats it as "no pre-filter signal", not "ran clean".
+	# (Present-but-broken preconditions below still hard-fail.)
+	echo "phase0.5-gemini: gemini CLI absent — skipping optional pre-filter; Phase 1 Claude agents proceed. Install via npm + run 'gemini' once to auth to enable" >&2
+	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	mkdir -p "$LOG_DIR" 2>/dev/null || true
+	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
+		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-gemini-cli"}' \
+		>>"$LOG"
+	echo "[]"
+	exit 0
 }
 # CR Phase 3 Major: refuse to run without the policy.toml deny block.
 # Phase 0.5 reviewer must be read-only — running Gemini without the policy
