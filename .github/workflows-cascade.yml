@@ -1,32 +1,46 @@
-# Workflows-cascade SSOT — declares which workflows in
-# `.github/workflows-source/` propagate to consumer repos, and which are
-# plugin-only meta workflows that should NOT cascade.
+# Workflows-cascade SSOT — declares which workflows must stay
+# hash-identical between `.github/workflows-source/` and
+# `.github/workflows/` on the plugin side, and which plugin-only meta
+# workflows are exempt from that pin. Nothing in this file propagates
+# to consumers (see Consumer propagation below).
 #
 # Consumed by:
 #   * pre-commit-hooks/workflow-source-pin.sh — enforces hash-equivalence
 #     between workflows-source/X.yml and workflows/X.yml for every
 #     cascade entry on the plugin side.
-#   * scripts/refresh-from-source.sh (#151, not yet shipped) — iterates
-#     cascade[] and copies into each consumer's `.github/workflows/`.
+#
+# Consumer propagation (settled by the #2289/#2323 normalization audit,
+# 2026-07-08): workflows are TEMPLATE-WITH-OVERRIDES, not byte-SSOT.
+# bootstrap-repo.sh seeds gitleaks/pr-lint/pr-labeler ONCE via heredocs;
+# each repo then owns its copy (bootstrap-manifest.yml declares them
+# non-hashed — "workflows legitimately vary per repo"). The shipped
+# refresh-from-source.sh (#151) copies ONLY hashed .source-hashes.json
+# paths and deliberately does NOT iterate cascade[] into consumers; the
+# earlier plan to do so was superseded by this model. cascade[] therefore
+# governs ONLY the plugin-side source↔live pin above.
 #
 # Plugin design (Sub 6 #144 of #138):
 #   - workflows-source/ is the SSOT directory the plugin owns
 #   - workflows/ is the live directory GitHub Actions reads from
 #     (symlinks across `.github/workflows/` don't work — GitHub
 #     resolves the literal directory; must be content-replicated)
-#   - cascade: workflows that propagate to every consumer
-#   - no_cascade: plugin-only (meta workflows that exist to validate the
-#     plugin itself; cascading them to consumers would be wrong)
+#   - cascade: workflows whose source↔live copies are hash-pinned
+#     plugin-side; seeded into consumers once at bootstrap, not
+#     continuously propagated
+#   - no_cascade: classified (passes the orphan check) but EXEMPT from
+#     the source↔live hash pin — plugin-only meta workflows validating
+#     the plugin itself, with no meaning in consumer context
 #   - planned: workflows we WANT to promote from consumers but haven't
-#     yet shipped a canonical plugin version of (informational; not
-#     enforced by the hook)
+#     yet shipped a canonical plugin version of (no hash pin — the hook
+#     only shape-validates entries and counts them as classified for
+#     the orphan check)
 
 schema_version: 1
 
 cascade:
   - pr-lint.yml          # Conventional Commits PR title check
   - gitleaks.yml         # secret scan
-  - pr-labeler.yml       # path-based PR labels (consumer's labeler.yml)
+  - pr-labeler.yml       # PR labels from the repo's .github/labeler.yml
   - label-sync.yml       # sync .github/labels.yml to GitHub label set
 
 no_cascade:
@@ -36,10 +50,11 @@ no_cascade:
 
 # Workflows known to be duplicated in consumer repos that the plugin
 # doesn't yet ship canonical versions of. Listed here as a backlog
-# pointer; promotion happens in follow-up subs (likely under #138's
-# remaining sub-issues or a separate v0.20 epic). NOT enforced by the
-# hook — they'd be flagged as drift in consumers but the plugin has
-# nothing to enforce against yet.
+# pointer. Shipping a canonical version would add it to the plugin-side
+# pin above (and optionally to bootstrap seeding); consumer copies
+# remain per-repo-owned and are not drift-checked. Until then the hook
+# only shape-validates these entries and counts them as classified for
+# the orphan check.
 planned:
   - ai-triage.yml
   - auto-close-parent.yml
