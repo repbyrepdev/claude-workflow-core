@@ -97,15 +97,28 @@ if [ -f "$p05_log" ] && command -v jq >/dev/null 2>&1; then
 			# Fail CLOSED: a count we cannot read must also clear the
 			# ran-signal, else corrupt data lands in the 1-round
 			# all-clean tier (count=0 with p05_ran>0 reads as vouched).
-			if ! p05_count=$(jq -rs --arg s "$_scaler_sha" '[.[] | select(.sha==$s and .status=="ok")] | group_by(.ts) | max_by(.[0].ts) | map(.findings) | map(select(type=="number")) | add // 0' "$p05_log" 2>/dev/null); then
+			_p05_pair=""
+			if ! _p05_pair=$(jq -rs --arg s "$_scaler_sha" '[.[] | select(.sha==$s and .status=="ok")] | group_by(.ts) | max_by(.[0].ts) | map(.findings) | map(select(type=="number")) | "\(add // 0) \(length)"' "$p05_log" 2>/dev/null); then
 				echo "phase1-scaler: WARN — jq failed summing findings in $p05_log (corrupt log?); treating as no pre-filter signal" >&2
+				_p05_pair="0 0"
+			fi
+			p05_count=${_p05_pair% *}
+			_p05_valid=${_p05_pair#* }
+			[[ $p05_count =~ ^[0-9]+$ ]] || {
+				p05_count=0
+				_p05_valid=0
+			}
+			[[ $_p05_valid =~ ^[0-9]+$ ]] || _p05_valid=0
+			# CR r8 Major: an ok batch whose findings values are ALL
+			# malformed (every one dropped by the type filter) must not
+			# vouch — count=0 with the ran-signal intact reads as
+			# all-clean. A sum built from ZERO numeric values clears the
+			# signal; mixed batches still sum their readable values.
+			if [ "$_p05_valid" -eq 0 ]; then
+				echo "phase1-scaler: WARN — latest ok batch in $p05_log has no numeric findings values (malformed); treating as no pre-filter signal" >&2
 				p05_count=0
 				p05_ran=0
 			fi
-			[[ $p05_count =~ ^[0-9]+$ ]] || {
-				p05_count=0
-				p05_ran=0
-			}
 		fi
 	fi
 fi

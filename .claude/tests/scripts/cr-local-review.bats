@@ -175,6 +175,20 @@ _stub_coderabbit() {
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
 }
 
+@test "local-review: TEXT out-of-credits page hits the same exhausted contract -> exit 3 (#837)" {
+	# The dual-path detection's OTHER branch (CR r8): no structured JSON
+	# errorType event, just CR's server-side out-of-credits text page. The
+	# text grep must trigger the identical SSOT contract as the JSON path:
+	# exit 3, exhausted marker via the sibling rate-budget.sh, no WARN.
+	_stub_coderabbit "ERROR: You've run out of usage credits" 1
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 3 ]
+	[[ $output == *"text-detect"* ]]
+	[[ $output != *"mark-exhausted failed"* ]]
+	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
+}
+
 @test "local-review: rate_limit event marks budget exhausted via SIBLING path -> exit 3 (#2519)" {
 	# Primary coverage (CR r2): a JSON
 	# rate_limit event must (a) exit 3 per the SSOT contract, (b) append

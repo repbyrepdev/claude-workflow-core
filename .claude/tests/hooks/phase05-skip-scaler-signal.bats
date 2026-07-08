@@ -287,15 +287,27 @@ _log_cr() { # $1=findings count for the latest CR entry
 	[[ $output == *"tier=high"* ]]
 }
 
-@test "scaler: malformed findings value degrades sanely, no crash" {
-	# findings:null is dropped by the type filter; the scaler must still
-	# emit a sane decision (ok entry present -> signal, count 0 -> clean).
+@test "scaler: ALL-malformed findings batch clears the vouch -> no-prefilter-signal" {
+	# CR r8 Major (spec change from the earlier drop-and-vouch behavior):
+	# an ok batch where EVERY findings value is non-numeric proves nothing
+	# - a count built from zero readable values must clear the ran-signal
+	# instead of landing in the 1-round all-clean tier.
 	_log_p05 HEAD "<all>" null ok
 	_scaler
 	[ "$status" -eq 0 ]
-	# The documented sane decision: null findings dropped by the type
-	# filter -> count 0 with the ok-entry signal intact -> all-clean.
-	[[ $output == *"ROUNDS=1"* ]]
-	[[ $output == *"tier=all-clean"* ]]
-	[[ $output == *"p05_ran=1"* ]]
+	[[ $output == *"no numeric findings values"* ]]
+	[[ $output == *"ROUNDS=2"* ]]
+	[[ $output == *"tier=no-prefilter-signal"* ]]
+}
+
+@test "scaler: MIXED malformed batch still sums the readable values" {
+	# The type filter stays defensive for partial corruption: one null +
+	# one numeric 4 -> sum 4, signal intact -> moderate tier.
+	_log_p05 HEAD comment-analyzer null ok
+	_log_p05 HEAD pr-test-analyzer 4 ok
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"phase0.5=4"* ]]
+	[[ $output == *"ROUNDS=3"* ]]
+	[[ $output == *"tier=moderate"* ]]
 }
