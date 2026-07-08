@@ -172,12 +172,7 @@ _stub_coderabbit() {
 	# marker to THIS repo's ledger via the script-sibling rate-budget.sh,
 	# (c) emit no mark-exhausted WARN. Pre-fix code in a consumer without
 	# the .claude/scripts/cr mirror hit rc=127 + WARN and wrote no marker.
-	{
-		echo '#!/usr/bin/env bash'
-		printf 'printf "%%s\\n" %q\n' '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}'
-		echo 'exit 1'
-	} >"$TEST_TMP/bin/coderabbit"
-	chmod +x "$TEST_TMP/bin/coderabbit"
+	_stub_coderabbit '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}' 1
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 3 ]

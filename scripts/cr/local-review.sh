@@ -178,8 +178,11 @@ if [ -f "$TEE_OUT" ] && grep -qE "ERROR:.*[Yy]ou'?ve run out of usage credits" "
 	# alike. The old $REPO_ROOT/.claude/scripts/cr/ path broke in consumers
 	# without the mirror (#2519) — the ledger stays per-repo either way
 	# because rate-budget.sh resolves it from CWD via git rev-parse.
-	if ! "$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2; then
-		_me_rc=$?
+	# rc-capture via `|| _me_rc=$?` — `_me_rc=$?` inside an `if !` branch
+	# reads the NEGATED condition's status (always 0), not the failure.
+	_me_rc=0
+	"$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2 || _me_rc=$?
+	if [ "$_me_rc" -ne 0 ]; then
 		echo "local-review: WARN: rate-budget mark-exhausted failed (text-path, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
 	fi
 	_rate_limit_handled=1
@@ -245,8 +248,10 @@ if [ "$_rate_limit_handled" -eq 0 ] && [ -f "$TEE_OUT" ]; then
 				# alike. The old $REPO_ROOT/.claude/scripts/cr/ path broke in consumers
 				# without the mirror (#2519) — the ledger stays per-repo either way
 				# because rate-budget.sh resolves it from CWD via git rev-parse.
-				if ! "$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2; then
-					_me_rc=$?
+				# rc-capture via `|| _me_rc=$?` (see text-path note above).
+				_me_rc=0
+				"$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2 || _me_rc=$?
+				if [ "$_me_rc" -ne 0 ]; then
 					echo "local-review: WARN: rate-budget mark-exhausted failed (json-path, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
 				fi
 				_rate_limit_handled=1

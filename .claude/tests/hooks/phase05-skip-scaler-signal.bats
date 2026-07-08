@@ -111,6 +111,45 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	grep '"skipped-no-gemini-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"gemini"'
 }
 
+@test "codex: CLI present but repo config BROKEN -> hard-fail rc=1 (no silent skip)" {
+	printf '#!/bin/sh\nexit 0\n' >"$BIN/codex"
+	chmod +x "$BIN/codex"
+	# no .codex/ dir in the work repo — present-but-broken must stay loud
+	_run_hook phase0.5-codex-prefilter.sh ""
+	[ "$status" -eq 1 ]
+	[[ $output == *".codex"* ]]
+}
+
+@test "gemini: CLI present but policy.toml MISSING -> hard-fail rc=1 (#643 stays loud)" {
+	printf '#!/bin/sh\nexit 0\n' >"$BIN/gemini"
+	chmod +x "$BIN/gemini"
+	_run_hook phase0.5-gemini-prefilter.sh ""
+	[ "$status" -eq 1 ]
+	[[ $output == *"policy.toml"* ]]
+}
+
+@test "codex: oversized diff -> skip rc=0 with skipped-diff-too-large logged" {
+	printf '#!/bin/sh\nexit 0\n' >"$BIN/codex"
+	chmod +x "$BIN/codex"
+	mkdir -p "$WORK/.codex"
+	printf '# stub codex config\n' >"$WORK/.codex/config.toml"
+	_run_hook phase0.5-codex-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
+	[ "$status" -eq 0 ]
+	[[ $output == *"[]"* ]]
+	grep '"skipped-diff-too-large"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"codex"'
+}
+
+@test "gemini: oversized diff -> skip rc=0 with skipped-diff-too-large logged" {
+	printf '#!/bin/sh\nexit 0\n' >"$BIN/gemini"
+	chmod +x "$BIN/gemini"
+	mkdir -p "$WORK/.gemini"
+	printf '# stub deny policy\n' >"$WORK/.gemini/policy.toml"
+	_run_hook phase0.5-gemini-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
+	[ "$status" -eq 0 ]
+	[[ $output == *"[]"* ]]
+	grep '"skipped-diff-too-large"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"gemini"'
+}
+
 # ---- phase1-scaler signal tiers (#2259 item 2) ----
 
 _scaler() {
