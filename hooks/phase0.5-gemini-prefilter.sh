@@ -304,7 +304,10 @@ No prose. No markdown fence. Just the array."
 	# Gemini is fast for review prompts.
 	_helper_err=$(mktemp)
 	_helper_rc=0
-	raw=$(timeout 60 gemini --approval-mode plan --skip-trust --policy "$GEMINI_POLICY" -p "$full_prompt" 2>"$_helper_err") || _helper_rc=$?
+	# CR-in-CI #2524: stdin from /dev/null — gemini -p still reads inherited
+	# tty stdin in headless mode and can stall until the 60s timeout
+	# (same guard as the codex prefilter's verified stdin-block).
+	raw=$(timeout 60 gemini --approval-mode plan --skip-trust --policy "$GEMINI_POLICY" -p "$full_prompt" 2>"$_helper_err" </dev/null) || _helper_rc=$?
 	if [ "$_helper_rc" -ne 0 ]; then
 		_err_excerpt=$(head -c 500 "$_helper_err" | tr '\n' ' ' | tr -d '"')
 		_failure_mode=other

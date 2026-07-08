@@ -203,12 +203,12 @@ _scaler() {
 # Shared log-fixture writers (CR r6): the mkdir + rev-parse + printf JSONL
 # construction was repeated in every scaler case. Appends are safe - each
 # test gets a fresh TEST_TMP from setup().
-_log_p05() { # $1=git rev (HEAD/HEAD~1)  $2=agent  $3=findings (raw JSON)  $4=status
+_log_p05() { # $1=git rev (HEAD/HEAD~1)  $2=agent  $3=findings (raw JSON)  $4=status  [$5=ts]
 	local _sha
 	_sha=$(cd "$WORK" && git rev-parse "$1") || return 1
 	mkdir -p "$WORK/.claude/logs"
-	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"%s","findings":%s,"status":"%s"}\n' \
-		"$_sha" "$2" "$3" "$4" >>"$WORK/.claude/logs/phase0.5-run.jsonl"
+	printf '{"ts":"%s","sha":"%s","phase":"0.5","agent":"%s","findings":%s,"status":"%s"}\n' \
+		"${5:-2026-07-08T00:00:00Z}" "$_sha" "$2" "$3" "$4" >>"$WORK/.claude/logs/phase0.5-run.jsonl"
 }
 _log_cr() { # $1=findings count for the latest CR entry
 	mkdir -p "$WORK/.claude/logs"
@@ -298,6 +298,34 @@ _log_cr() { # $1=findings count for the latest CR entry
 	[[ $output == *"no numeric findings values"* ]]
 	[[ $output == *"ROUNDS=2"* ]]
 	[[ $output == *"tier=no-prefilter-signal"* ]]
+}
+
+@test "scaler: later 0-finding CLI batch does not hide an earlier CLI's findings" {
+	# CR-in-CI #2524 Major: copilot logs 5 findings, a LATER gemini run
+	# logs 0 for the same sha. The old single global max_by(.ts) took only
+	# the newest bucket -> 0 -> false all-clean. Per-cli latest + sum
+	# across CLIs must keep the 5 -> moderate tier.
+	_log_p05 HEAD code-reviewer 5 ok
+	sha=$(cd "$WORK" && git rev-parse HEAD)
+	printf '{"ts":"2026-07-08T00:00:10Z","sha":"%s","phase":"0.5","cli":"gemini","agent":"code-reviewer","findings":0,"status":"ok"}\n' "$sha" \
+		>>"$WORK/.claude/logs/phase0.5-run.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"phase0.5=5"* ]]
+	[[ $output == *"ROUNDS=3"* ]]
+	[[ $output == *"tier=moderate"* ]]
+}
+
+@test "scaler: same-CLI re-run takes only its LATEST batch (no double-count)" {
+	# Re-running one prefilter on the same sha (amend / post-commit rerun)
+	# must supersede its earlier batch, not sum both: copilot 3 at
+	# 00:00:00 then copilot 1 at 00:00:20 -> count 1 (minimal), not 4.
+	_log_p05 HEAD code-reviewer 3 ok
+	_log_p05 HEAD code-reviewer 1 ok "2026-07-08T00:00:20Z"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"phase0.5=1"* ]]
+	[[ $output == *"tier=minimal"* ]]
 }
 
 @test "scaler: MIXED malformed batch still sums the readable values" {

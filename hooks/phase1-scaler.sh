@@ -87,18 +87,21 @@ if [ -f "$p05_log" ] && command -v jq >/dev/null 2>&1; then
 		fi
 		[[ $p05_ran =~ ^[0-9]+$ ]] || p05_ran=0
 		if [ "$p05_ran" -gt 0 ]; then
-			# Latest RUN = the ok-entry group sharing the newest timestamp
-			# (one prefilter run logs one entry PER AGENT, all with one
-			# ts). SUM that group's findings: a single max_by(.ts) returned
-			# only the last-logged agent's count — frequently 0 — which
-			# could land a diff with real Phase 0.5 findings in the
-			# 1-round all-clean tier. Non-numeric findings values are
-			# dropped defensively; the bash guard below catches the rest.
-			# Fail CLOSED: a count we cannot read must also clear the
-			# ran-signal, else corrupt data lands in the 1-round
-			# all-clean tier (count=0 with p05_ran>0 reads as vouched).
+			# Latest run PER CLI, summed across CLIs (CR-in-CI #2524
+			# Major): each prefilter (copilot/codex/gemini) appends its
+			# own ok batch — one entry PER AGENT sharing one ts, copilot
+			# rows carry no cli field (defaulted). A single global
+			# max_by(.ts) took only the NEWEST batch, so a later
+			# 0-finding CLI hid an earlier CLI's findings (under-scale);
+			# per-cli latest still keeps a re-run of one CLI from
+			# double-counting its earlier batch. Non-numeric findings
+			# values are dropped defensively; the bash guard below
+			# catches the rest. Fail CLOSED: a count we cannot read must
+			# also clear the ran-signal, else corrupt data lands in the
+			# 1-round all-clean tier (count=0 with p05_ran>0 reads as
+			# vouched).
 			_p05_pair=""
-			if ! _p05_pair=$(jq -rs --arg s "$_scaler_sha" '[.[] | select(.sha==$s and .status=="ok")] | group_by(.ts) | max_by(.[0].ts) | map(.findings) | map(select(type=="number")) | "\(add // 0) \(length)"' "$p05_log" 2>/dev/null); then
+			if ! _p05_pair=$(jq -rs --arg s "$_scaler_sha" '[.[] | select(.sha==$s and .status=="ok")] | group_by(.cli // "copilot") | map(group_by(.ts) | max_by(.[0].ts) | map(.findings) | map(select(type=="number"))) | flatten | "\(add // 0) \(length)"' "$p05_log" 2>/dev/null); then
 				echo "phase1-scaler: WARN — jq failed summing findings in $p05_log (corrupt log?); treating as no pre-filter signal" >&2
 				_p05_pair="0 0"
 			fi
