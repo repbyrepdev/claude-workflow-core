@@ -13,8 +13,11 @@
 #   - 0000...0000 local_sha → branch deletion, allow
 #   - Log file missing for local_sha → refuse (pipeline never ran)
 #   - No phase:2 entry in log → refuse (Phase 2 CR CLI never ran)
-#   - Fewer than MIN_ROUNDS (default 5) Phase 1 rounds → refuse
-#   - Last MIN_CLEAN_STREAK (default 2) rounds not all-agents-clean → refuse
+#   - Fewer than MIN_ROUNDS Phase 1 rounds → refuse (MIN_ROUNDS =
+#     PHASE1_MIN_ROUNDS override, else auto-scaled per diff via
+#     _auto_scale_min_rounds — LOC tiers 0-6, sensitive-path floor 3)
+#   - Last MIN_CLEAN_STREAK (default 1; PHASE1_MIN_CLEAN_STREAK to raise)
+#     rounds not all-agents-clean → refuse
 #   - Any round is missing an expected agent per list-phase1-agents.sh → refuse
 #     (prior version only checked "round where agents-that-ran are clean" —
 #     fabricatable by logging 1 fake agent; now requires every expected
@@ -603,10 +606,11 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 		continue
 	fi
 
-	# v4.24-Q3: cap MIN_CLEAN_STREAK at MIN_ROUNDS. When scaler says 1
-	# round is enough but the default streak=2, that's contradictory —
-	# you can't have 2 consecutive clean rounds in 1 total round. Cap
-	# ensures the streak is reachable given the round count.
+	# v4.24-Q3: cap MIN_CLEAN_STREAK at MIN_ROUNDS. When the scaler says 1
+	# round is enough but the operator raised the streak (the pre-#792
+	# default of 2 made this contradiction the default posture), you can't
+	# have 2 consecutive clean rounds in 1 total round. Cap ensures the
+	# streak is reachable given the round count. (#2486: default is 1.)
 	EFFECTIVE_STREAK="$MIN_CLEAN_STREAK"
 	if [ "$MIN_ROUNDS" -lt "$EFFECTIVE_STREAK" ]; then
 		EFFECTIVE_STREAK="$MIN_ROUNDS"
@@ -839,7 +843,7 @@ Branch: $BRANCH
 - Push-skip audit log: .claude/logs/pipeline-skip.jsonl
 
 # How to fix
-1. Run Phase 0.5 + Phase 1 rounds until 2-clean-streak convergence
+1. Run Phase 0.5 + Phase 1 rounds until the required clean streak (default 1) converges
 2. Run Phase 2 CR-CLI cleanly
 3. Re-attempt the push
 

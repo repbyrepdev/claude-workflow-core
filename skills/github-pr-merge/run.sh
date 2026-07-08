@@ -7,11 +7,26 @@ set -euo pipefail
 #
 # Usage:
 #   .claude/skills/github-pr-merge/run.sh --pr <num> \
-#     [--squash|--merge|--rebase] [--delete-branch] [--tag vX.Y.Z]
+#     [--squash|--merge|--rebase] [--delete-branch] [--tag vX.Y.Z] [--auto]
 #
 # Defaults: --squash --delete-branch.
 # If --tag is provided, runs auto-release.sh after merge (respecting
 # ACTIONS_MODE guard via auto-release.sh's own check).
+#
+# --auto (#2487, gold-standard merge model): ARM GitHub native auto-merge
+# instead of merging now. The platform merges when the branch ruleset is
+# satisfied — two-party review is enforced ONLY when that ruleset requires
+# an approving review (GitHub blocks author self-approval; CodeRabbit
+# satisfies it via request_changes_workflow). On a repo without a
+# review-required rule, --auto merges on green required checks alone.
+# The immediate path's gates (mergeable bail, FAILED-check
+# refusal-under-APPROVE=1, stranded-thread check) do not run; FAILED
+# checks are surfaced as a warning before the approval prompt. CAVEAT:
+# gh's clean-status fallback merges an already-green PR IMMEDIATELY
+# instead of arming — the wrapper verifies the outcome post-call and
+# reports which happened (post-merge steps run in neither case).
+# Incompatible with --tag (the tag needs the merge commit; tag after the
+# platform merges).
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # v0.6.7 (#15): REPO_ROOT via git rev-parse (works whether the wrapper
@@ -30,6 +45,7 @@ PR=""
 METHOD="--squash"
 DELETE_BRANCH=1
 TAG=""
+AUTO=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -61,6 +77,10 @@ while [ $# -gt 0 ]; do
 		TAG="$2"
 		shift 2
 		;;
+	--auto)
+		AUTO=1
+		shift
+		;;
 	-h | --help)
 		grep '^#' "$0" | sed 's/^# \?//'
 		exit 0
@@ -73,15 +93,92 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$PR" ] || ! [[ $PR =~ ^[0-9]+$ ]]; then
-	echo "Usage: $0 --pr <num> [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] [--tag vX.Y.Z]" >&2
+	echo "Usage: $0 --pr <num> [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] [--tag vX.Y.Z] [--auto]" >&2
+	exit 2
+fi
+
+if [ "$AUTO" = "1" ] && [ -n "$TAG" ]; then
+	echo "error: --tag is incompatible with --auto — the tag needs the merge commit; tag after the platform merges" >&2
 	exit 2
 fi
 
 # Pre-merge state check.
-STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRollup \
-	--jq '{state: .state, mergeable: .mergeable, mergeStateStatus: .mergeStateStatus, checks: [(.statusCheckRollup // [])[] | {context: .context, state: .state}]}')
+STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRollup,headRefOid \
+	--jq '{state: .state, mergeable: .mergeable, mergeStateStatus: .mergeStateStatus, head: .headRefOid, checks: [(.statusCheckRollup // [])[] | {context: .context, state: .state}]}')
 echo "=== Pre-merge state for PR #$PR ==="
 printf '%s\n' "$STATE" | jq .
+
+# --auto (#2487): ARM platform auto-merge and exit. The immediate path's
+# gates below (the mergeable bail, the FAILED-check warn that refuses under
+# non-interactive APPROVE=1, the stranded-thread check) do not run — GitHub
+# holds the merge until the branch ruleset is satisfied, WHATEVER it
+# requires; FAILED checks are surfaced as a warning here instead. NOTE
+# (Phase 1 r1): gh's clean-status fallback means a PR that ALREADY
+# satisfies the ruleset is merged IMMEDIATELY by this call rather than
+# armed — the post-call verification below detects which outcome happened
+# and says so, because the post-merge steps (checkout main, tag, trivy,
+# auto-close-parent, marker cleanup) do NOT run in this path either way.
+if [ "$AUTO" = "1" ]; then
+	# Refuse deterministically before spending the approval on a PR that
+	# cannot be armed (already merged/closed).
+	pr_state=$(printf '%s' "$STATE" | jq -r '.state')
+	if [ "$pr_state" != "OPEN" ]; then
+		echo "PR #$PR is $pr_state — cannot arm auto-merge; refusing" >&2
+		exit 2
+	fi
+	# Warn (not refuse) on currently-FAILED checks: the ruleset holds the
+	# merge only on REQUIRED checks, so a red non-required check would ride
+	# through — make it visible before the approval.
+	failed_now=$(printf '%s' "$STATE" | jq -r '[.checks[] | select(.state == "FAILURE" or .state == "ERROR" or .state == "CANCELLED" or .state == "TIMED_OUT")] | length')
+	if [ "$failed_now" -gt 0 ]; then
+		echo "⚠ $failed_now check(s) currently FAILED. The ruleset blocks the merge only on REQUIRED checks — a red non-required check will NOT stop the platform merge." >&2
+	fi
+	skc_approve_or_exit "Arm auto-merge for PR #$PR ($METHOD)? The platform merges when the branch ruleset is satisfied (whatever it requires)"
+	# Pin the merge to the head the operator just approved: a push between
+	# this approval and the platform merge would otherwise merge a commit
+	# nobody reviewed (arm-time TOCTOU). --match-head-commit makes GitHub
+	# refuse the merge if the head has moved past the approved sha.
+	arm_head=$(printf '%s' "$STATE" | jq -r '.head')
+	MERGE_ARGS=(pr merge "$PR" "$METHOD" --auto --match-head-commit "$arm_head")
+	# Kept for the clean-status fallback (an immediate merge DOES honor it).
+	# On a genuinely armed PR gh exits before any merge, so deletion is
+	# governed solely by the repo's delete-branch-on-merge setting — the
+	# outcome echo below tells the truth per that setting.
+	[ "$DELETE_BRANCH" = "1" ] && MERGE_ARGS+=(--delete-branch)
+	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
+	# Verify the outcome instead of asserting it: gh rc 0 covers BOTH
+	# "armed" and "merged immediately" (clean-status fallback).
+	POST=$(gh pr view "$PR" --json state,autoMergeRequest,headRefOid,mergeQueueEntry \
+		--jq '{state: .state, armed: (.autoMergeRequest != null), queued: (.mergeQueueEntry != null), head: .headRefOid}')
+	post_state=$(printf '%s' "$POST" | jq -r '.state')
+	post_armed=$(printf '%s' "$POST" | jq -r '.armed')
+	post_queued=$(printf '%s' "$POST" | jq -r '.queued')
+	post_head=$(printf '%s' "$POST" | jq -r '.head')
+	if [ "$post_state" = "MERGED" ]; then
+		echo "⚠ PR #$PR already satisfied the ruleset — gh merged it IMMEDIATELY (clean-status fallback); auto-merge was NOT armed."
+		echo "  Post-merge steps did NOT run in this path: checkout main + pull, auto-close-parent, trivy, tag."
+		echo "  Run them via the repo's post-merge flow (or re-invoke this skill's immediate path conventions manually)."
+	elif [ "$post_state" = "OPEN" ] && [ "$post_armed" = "true" ]; then
+		echo "✓ Auto-merge armed for PR #$PR ($METHOD) at head $post_head — the platform merges when the branch ruleset is satisfied."
+		echo "  Two-party review holds ONLY if the ruleset requires an approving review (author self-approval is blocked by GitHub)."
+		echo "  A push after arming re-verifies checks but NOT stale approvals unless the ruleset dismisses them — see SKILL.md."
+		if del_setting=$(gh repo view --json deleteBranchOnMerge --jq '.deleteBranchOnMerge' 2>/dev/null); then
+			if [ "$del_setting" = "true" ]; then
+				echo "  Branch cleanup: GitHub auto-deletes the head branch on merge (repo setting)."
+			elif [ "$DELETE_BRANCH" = "1" ]; then
+				echo "  ⚠ --delete-branch has no effect on an ARMED merge and repo auto-delete is OFF — delete the branch manually after the platform merges." >&2
+			fi
+		fi
+		echo "  Poll: gh pr view $PR --json state,autoMergeRequest"
+	elif [ "$post_state" = "OPEN" ] && [ "$post_queued" = "true" ]; then
+		echo "✓ PR #$PR entered the merge queue ($METHOD) — the platform merges when the queue processes it."
+		echo "  Poll: gh pr view $PR --json state,mergeQueueEntry"
+	else
+		echo "gh exited 0 but PR #$PR is $post_state, armed=$post_armed, queued=$post_queued — neither merged, armed, nor queued; investigate" >&2
+		exit 2
+	fi
+	exit 0
+fi
 
 # Bail if not mergeable. Note: UNKNOWN (GitHub still computing mergeable
 # state) is treated the same as CONFLICTING here — if you hit UNKNOWN

@@ -15,8 +15,41 @@ so skill-bypass-guard honors the internal `gh pr merge` call.
 ```bash
 .claude/skills/github-pr-merge/run.sh --pr <num> \
   [--squash|--merge|--rebase] [--delete-branch|--no-delete-branch] \
-  [--tag vX.Y.Z]
+  [--tag vX.Y.Z] [--auto]
 ```
+
+**`--auto` is the required flag for agent-driven merges (#2487)** — note
+it is OPT-IN: omitting it takes the immediate-merge path. It ARMS GitHub
+native auto-merge; the platform merges when the branch ruleset is
+satisfied, whatever it requires. **Two-party review is enforced only when
+the target branch's ruleset requires an approving review** (CodeRabbit
+satisfies it via `request_changes_workflow`, or the repin-auto-approve
+byte-verify bot for consumer re-pins; GitHub blocks author
+self-approval). On a repo without a review-required rule, `--auto` merges
+on green required checks alone — verify the ruleset
+(`gh api repos/:owner/:repo/rules/branches/main`) before relying on
+arming for two-party enforcement. An agent must NEVER take the
+immediate-merge path on its own PR — that is a two-party-review bypass:
+skill-bypass-guard blocks raw `gh pr merge`, the wrapper's immediate path
+requires an explicit human gate (do not satisfy it with `APPROVE=1` on
+your own PR), and the harness auto-mode classifier will typically refuse
+it too. Arm `--auto` and let the platform merge.
+
+`--auto` behavior details: incompatible with `--tag` (tag after the
+platform merges). The immediate path's pre-gates do not run; currently-
+FAILED checks are surfaced as a warning (the ruleset blocks only REQUIRED
+checks — a red non-required check will not stop the merge). gh's
+clean-status fallback merges an already-green PR IMMEDIATELY instead of
+arming; the wrapper verifies the outcome post-call and reports which
+happened. Post-merge steps (checkout main, tag, trivy, auto-close-parent)
+run in neither case. `--delete-branch` only takes effect on an immediate
+(fallback) merge; for a genuinely armed merge, branch deletion is governed
+by the repo's delete-branch-on-merge setting (the wrapper reports which
+applies). Arm-to-merge drift window: a push after arming re-verifies
+checks but NOT stale approvals — enable "dismiss stale approvals on new
+commits" (or "require approval of the most recent reviewable push") in the
+ruleset to close it; the wrapper prints the armed head sha so drift is
+observable.
 
 The inline flow below is the **pre-v4.20 manual path**. Prefer the wrapper
 for routine merges; fall back to inline steps only when debugging or when
