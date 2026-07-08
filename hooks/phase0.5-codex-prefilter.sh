@@ -74,7 +74,7 @@ fi
 # available (function definitions only — no side effects beyond the
 # audit-dedup path var). Preflight still runs later, pre-invocation.
 # shellcheck source=../_lib/phase05-dedupe.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/phase05-dedupe.sh"
+. "$PLUGIN_LIB/phase05-dedupe.sh"
 command -v codex >/dev/null 2>&1 || {
 	# Absent CLI = graceful skip (#2259): parity with the copilot
 	# pre-filter's absent-helper path. An OPTIONAL pre-filter that is not

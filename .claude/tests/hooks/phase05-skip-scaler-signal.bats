@@ -62,6 +62,17 @@ _mk_fixture() {
 	ln -sf "$(command -v jq)" "$BIN/jq" || return 1
 	ln -sf "$(command -v yq)" "$BIN/yq" || return 1
 	ln -sf "$(command -v git)" "$BIN/git" || return 1
+	# CR r6: /usr/bin:/bin stay on PATH for coreutils (shimming ~15 of
+	# them is fragile), so the absent-CLI contract holds only while no
+	# host ships codex/gemini THERE (brew -> /opt/homebrew, npm ->
+	# /usr/local|~). Fail LOUD if an exotic host breaks that assumption
+	# instead of letting absent-CLI tests silently test the wrong thing.
+	for _cli in codex gemini; do
+		if [ -x "/usr/bin/$_cli" ] || [ -x "/bin/$_cli" ]; then
+			echo "FATAL: host has $_cli in /usr/bin or /bin - fixture PATH isolation broken" >&2
+			return 1
+		fi
+	done
 	return 0
 }
 
@@ -189,11 +200,24 @@ _scaler() {
 	run bash -c "cd '$WORK' && bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
 }
 
-@test "scaler: skipped-* entry is NO SIGNAL -> rounds=2, not all-clean" {
+# Shared log-fixture writers (CR r6): the mkdir + rev-parse + printf JSONL
+# construction was repeated in every scaler case. Appends are safe - each
+# test gets a fresh TEST_TMP from setup().
+_log_p05() { # $1=git rev (HEAD/HEAD~1)  $2=agent  $3=findings (raw JSON)  $4=status
+	local _sha
+	_sha=$(cd "$WORK" && git rev-parse "$1") || return 1
 	mkdir -p "$WORK/.claude/logs"
-	sha=$(cd "$WORK" && git rev-parse HEAD)
-	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"<all>","findings":0,"status":"skipped-no-copilot-helper"}\n' "$sha" \
-		>"$WORK/.claude/logs/phase0.5-run.jsonl"
+	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"%s","findings":%s,"status":"%s"}\n' \
+		"$_sha" "$2" "$3" "$4" >>"$WORK/.claude/logs/phase0.5-run.jsonl"
+}
+_log_cr() { # $1=findings count for the latest CR entry
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"ts":"2026-07-08T00:00:00Z","findings":%s}\n' "$1" \
+		>>"$WORK/.claude/logs/cr-local-review.jsonl"
+}
+
+@test "scaler: skipped-* entry is NO SIGNAL -> rounds=2, not all-clean" {
+	_log_p05 HEAD "<all>" 0 skipped-no-copilot-helper
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"ROUNDS=2"* ]]
@@ -201,10 +225,7 @@ _scaler() {
 }
 
 @test "scaler: ok entry with 0 findings IS a clean signal -> rounds=1 all-clean" {
-	mkdir -p "$WORK/.claude/logs"
-	sha=$(cd "$WORK" && git rev-parse HEAD)
-	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"<all>","findings":0,"status":"ok"}\n' "$sha" \
-		>"$WORK/.claude/logs/phase0.5-run.jsonl"
+	_log_p05 HEAD "<all>" 0 ok
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"ROUNDS=1"* ]]
@@ -223,12 +244,8 @@ _scaler() {
 	# old single max_by returned the LAST tie's findings (0 here) ->
 	# false all-clean; the summed aggregation must yield 4 -> moderate.
 	# Larger entry FIRST so the old code provably fails this test.
-	mkdir -p "$WORK/.claude/logs"
-	sha=$(cd "$WORK" && git rev-parse HEAD)
-	{
-		printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"pr-test-analyzer","findings":4,"status":"ok"}\n' "$sha"
-		printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"comment-analyzer","findings":0,"status":"ok"}\n' "$sha"
-	} >"$WORK/.claude/logs/phase0.5-run.jsonl"
+	_log_p05 HEAD pr-test-analyzer 4 ok
+	_log_p05 HEAD comment-analyzer 0 ok
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"phase0.5=4"* ]]
@@ -237,12 +254,11 @@ _scaler() {
 }
 
 @test "scaler: a skip entry alongside ok entries neither erases signal nor count" {
-	mkdir -p "$WORK/.claude/logs"
+	_log_p05 HEAD code-reviewer 2 ok
+	# cli-tagged skip line (unique shape: cli field + later ts) stays inline.
 	sha=$(cd "$WORK" && git rev-parse HEAD)
-	{
-		printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"code-reviewer","findings":2,"status":"ok"}\n' "$sha"
-		printf '{"ts":"2026-07-08T00:00:01Z","sha":"%s","phase":"0.5","cli":"codex","agent":"<all>","findings":0,"status":"skipped-no-codex-cli"}\n' "$sha"
-	} >"$WORK/.claude/logs/phase0.5-run.jsonl"
+	printf '{"ts":"2026-07-08T00:00:01Z","sha":"%s","phase":"0.5","cli":"codex","agent":"<all>","findings":0,"status":"skipped-no-codex-cli"}\n' "$sha" \
+		>>"$WORK/.claude/logs/phase0.5-run.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"phase0.5=2"* ]]
@@ -252,10 +268,7 @@ _scaler() {
 @test "scaler: entries for an OLDER sha do not vouch for HEAD (stale-sha)" {
 	# ok entries exist ONLY for the parent commit; HEAD has no signal ->
 	# must floor at no-prefilter-signal, not inherit the old all-clean.
-	mkdir -p "$WORK/.claude/logs"
-	old_sha=$(cd "$WORK" && git rev-parse HEAD~1)
-	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"<all>","findings":0,"status":"ok"}\n' "$old_sha" \
-		>"$WORK/.claude/logs/phase0.5-run.jsonl"
+	_log_p05 HEAD~1 "<all>" 0 ok
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"ROUNDS=2"* ]]
@@ -266,12 +279,8 @@ _scaler() {
 	# A skip must not cap rounds while CR is screaming: total>0 keeps the
 	# finding-count tiers (15 -> high/5), the no-signal floor only applies
 	# at total==0.
-	mkdir -p "$WORK/.claude/logs"
-	sha=$(cd "$WORK" && git rev-parse HEAD)
-	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"<all>","findings":0,"status":"skipped-no-copilot-helper"}\n' "$sha" \
-		>"$WORK/.claude/logs/phase0.5-run.jsonl"
-	printf '{"ts":"2026-07-08T00:00:00Z","findings":15}\n' \
-		>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_log_p05 HEAD "<all>" 0 skipped-no-copilot-helper
+	_log_cr 15
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"ROUNDS=5"* ]]
@@ -281,10 +290,7 @@ _scaler() {
 @test "scaler: malformed findings value degrades sanely, no crash" {
 	# findings:null is dropped by the type filter; the scaler must still
 	# emit a sane decision (ok entry present -> signal, count 0 -> clean).
-	mkdir -p "$WORK/.claude/logs"
-	sha=$(cd "$WORK" && git rev-parse HEAD)
-	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"<all>","findings":null,"status":"ok"}\n' "$sha" \
-		>"$WORK/.claude/logs/phase0.5-run.jsonl"
+	_log_p05 HEAD "<all>" null ok
 	_scaler
 	[ "$status" -eq 0 ]
 	# The documented sane decision: null findings dropped by the type
