@@ -266,3 +266,29 @@ _gh_returns() {
 	[[ $output == *deny* ]]
 	[[ $output == *"#42"* ]]
 }
+
+@test "grouping/wrapper-prefixed merges fire (#2396: brace group, subshell, sudo, env)" {
+	# Pre-#2396 all of these failed OPEN — the gate saw no command-position
+	# `gh pr merge` behind the prefix and silently did not fire.
+	_install_helper 1
+	run _run_gate "{ gh pr merge 42; }"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	[[ $output == *"#42"* ]]
+	run _run_gate "(gh pr merge 42)"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	run _run_gate "sudo -E gh pr merge 42"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+	run _run_gate "env APPROVE=1 gh pr merge 42"
+	[ "$status" -eq 0 ]
+	[[ $output == *deny* ]]
+}
+
+@test "quoted mid-string merge mention still passes after #2396 (no regression)" {
+	_install_helper 1 # would deny if the gate (wrongly) fired
+	run _run_gate 'git commit -m "docs: how { gh pr merge } is gated"'
+	[ "$status" -eq 0 ]
+	[[ $output != *deny* ]]
+}

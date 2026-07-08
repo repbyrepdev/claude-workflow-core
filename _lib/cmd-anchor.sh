@@ -37,19 +37,48 @@
 #   # OR build inline:
 #   if printf '%s' "$CMD" | grep -qE "${CMD_SEGMENT_ANCHOR}git[[:space:]]+commit${CMD_SEGMENT_END}"; then ...
 
-# r4 silent-failure-hunter rejected (intentional): no env-var prefix
-# anchor exposed here — env-var matching is a different pattern (whole-
-# token bracket-class boundary) and conflating them masked a class of
-# bugs. Callers that need env-var-prefix matching keep their inline regex.
+# History: r4 (#748) deliberately kept the env-var prefix OUT of this lib
+# (callers carried an inline ENV_PREFIX). #2396 reverses that: two gate
+# hooks byte-copied the same ENV_PREFIX to stay in lockstep — exactly the
+# regex drift this lib exists to kill — and NEITHER detected command-
+# wrapper (`command`/`builtin`/`sudo -E`/`env X=1`) or grouping (`{ v; }`,
+# `( v )`) prefixes, so both failed OPEN on those forms. The hardened
+# prefix below owns all of it in ONE place; callers interpolate it between
+# CMD_SEGMENT_ANCHOR and their verb (or call the hardened helper).
 
 CMD_SEGMENT_ANCHOR='(^|[;&|][[:space:]]*)'
 CMD_SEGMENT_END='([[:space:]]|$)'
+
+# #2396: everything that may legally sit between the anchor and the verb,
+# any number of times, in any order:
+#   - grouping openers: `{ ` brace group, `( ` subshell
+#   - wrapper commands: `command`/`builtin` (bare), `sudo`/`env` with
+#     optional dash-flags (flag ARGUMENTS — e.g. `sudo -u admin` — are NOT
+#     consumed: skipping arbitrary non-dash words would let the prefix
+#     swallow anything and match the verb mid-command)
+#   - env assignments: `VAR=val` with the CR-hardened value alternation
+#     (single-quoted | double-quoted | unquoted-not-starting-with-a-quote;
+#     CR #634 finding 136) — byte-equivalent to the ENV_PREFIX the gate
+#     hooks previously carried inline.
+CMD_HARDENED_PREFIX='([{(][[:space:]]*|(command|builtin)[[:space:]]+|(sudo|env)([[:space:]]+-[^[:space:]]+)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
 
 match_cmd_at_anchor() {
 	local pattern=$1
 	local cmd=$2
 	[ -n "$pattern" ] || return 1
 	printf '%s' "$cmd" | grep -qE "${CMD_SEGMENT_ANCHOR}${pattern}${CMD_SEGMENT_END}"
+}
+
+# #2396: anchor match that ALSO accepts wrapper/grouping/env prefixes
+# between the anchor and the verb. Gate hooks use this (or interpolate
+# CMD_HARDENED_PREFIX themselves) so `{ gh pr merge 5; }`, `sudo -E git
+# commit`, `env X=1 gh pr create`, `command bats` cannot slip a gate that
+# fires on the bare form.
+match_cmd_at_anchor_hardened() {
+	local pattern=$1
+	local cmd=$2
+	[ -n "$pattern" ] || return 1
+	printf '%s' "$cmd" | grep -qE "${CMD_SEGMENT_ANCHOR}${CMD_HARDENED_PREFIX}(${pattern})${CMD_SEGMENT_END}"
 }
 
 # v4.28-W4 #748: match either `git commit ...` directly OR

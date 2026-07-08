@@ -70,3 +70,29 @@ _run_guard() {
 	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
+
+@test "wrapper/grouping prefixes no longer slip the guard (#2396)" {
+	# Pre-#2396 these all failed OPEN: the anchor accepted only the bare form
+	# (plus env assignments), so grouping/wrapper prefixes hid the verb.
+	_run_guard "{ gh issue create --title x; }"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "(gh pr create --title x)"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "command gh release create v1.0.0"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "sudo -E gh pr merge 5"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+	_run_guard "env X=1 bats foo.bats"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "quoted mid-string verbs still pass after #2396 (no new false fires)" {
+	_run_guard 'git log --grep "gh issue create" --oneline'
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}

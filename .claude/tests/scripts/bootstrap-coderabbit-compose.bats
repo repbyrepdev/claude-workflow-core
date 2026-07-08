@@ -1,11 +1,17 @@
 #!/usr/bin/env bats
-# covers: scripts/bootstrap-repo.sh
+# covers: scripts/bootstrap-repo.sh scripts/compose-coderabbit.sh
 #
 # #234 (Wave H) r1: the _compose_coderabbit step. meta-bootstrap-repo.bats
 # covers the no-overlay case (composed == base); this file covers the paths
 # phase-1 review flagged as untested: WITH-overlay compose, --dry-run preview
 # fidelity, idempotency (skip-pre-existing-unless-force), and fail-soft
 # (compose failure WARNs + sets the summary reminder, bootstrap still exits 0).
+#
+# #2400: plus fixture-driven unit tests for compose-coderabbit.sh's
+# #2254/#2257 canonical-mirror exclusion branches, driven DIRECTLY via the
+# COMPOSE_CR_{HOOKS,LIB}_DIR + COMPOSE_CR_CONSUMER_{HOOKS,LIB}_DIR overrides
+# (meta-bootstrap-repo.bats proves the pass fires COMPLETELY at integration
+# level; the per-branch logic lives here).
 
 setup() {
 	SCRIPT="${BATS_TEST_DIRNAME}/../../../scripts/bootstrap-repo.sh"
@@ -103,4 +109,87 @@ EOF
 	# base still written; .coderabbit.yaml not produced (compose failed).
 	[ -f "$TMP/target/.coderabbit.base.yaml" ]
 	[ ! -f "$TMP/target/.coderabbit.yaml" ]
+}
+
+# ---- #2400: canonical-mirror exclusion branches (compose driven directly) ----
+
+# Fixture: canonical dir with two hooks; empty _lib fixture dirs so the real
+# plugin _lib never leaks into the composed output under test.
+_mk_excl_fixture() {
+	COMPOSE="${BATS_TEST_DIRNAME}/../../../scripts/compose-coderabbit.sh"
+	BASEF="${BATS_TEST_DIRNAME}/../../../.coderabbit.base.yaml"
+	[ -x "$COMPOSE" ]
+	[ -f "$BASEF" ]
+	mkdir -p "$TMP/canon" "$TMP/consumer" "$TMP/libcanon" "$TMP/libconsumer"
+	printf '#!/bin/bash\necho a\n' >"$TMP/canon/alpha.sh"
+	printf '#!/bin/bash\necho b\n' >"$TMP/canon/beta.sh"
+}
+
+_run_compose_fixture() {
+	COMPOSE_CR_HOOKS_DIR="$TMP/canon" \
+		COMPOSE_CR_CONSUMER_HOOKS_DIR="$TMP/consumer" \
+		COMPOSE_CR_LIB_DIR="$TMP/libcanon" \
+		COMPOSE_CR_CONSUMER_LIB_DIR="$TMP/libconsumer" \
+		run bash "$COMPOSE" --base "$BASEF" --out "$TMP/composed.yaml"
+}
+
+@test "exclusion: byte-identical consumer mirror IS excluded (#2400 case 1)" {
+	_mk_excl_fixture
+	cp "$TMP/canon/alpha.sh" "$TMP/consumer/alpha.sh"
+	cp "$TMP/canon/beta.sh" "$TMP/consumer/beta.sh"
+	_run_compose_fixture
+	[ "$status" -eq 0 ]
+	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/beta.sh'* ]]
+}
+
+@test "exclusion: consumer-OVERRIDDEN copy stays REVIEWED (#2400 case 2)" {
+	_mk_excl_fixture
+	cp "$TMP/canon/alpha.sh" "$TMP/consumer/alpha.sh"
+	printf '#!/bin/bash\necho DIFFERENT\n' >"$TMP/consumer/beta.sh"
+	_run_compose_fixture
+	[ "$status" -eq 0 ]
+	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output != *'!.claude/hooks/beta.sh'* ]]
+}
+
+@test "exclusion: ABSENT consumer file IS excluded — mirror assumed (#2400 case 3)" {
+	_mk_excl_fixture
+	# consumer dir exists but has neither hook
+	_run_compose_fixture
+	[ "$status" -eq 0 ]
+	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/beta.sh'* ]]
+}
+
+@test "exclusion: cmp ERROR keeps the file REVIEWED + emits diagnostic (#2400 case 4)" {
+	_mk_excl_fixture
+	cp "$TMP/canon/alpha.sh" "$TMP/consumer/alpha.sh"
+	cp "$TMP/canon/beta.sh" "$TMP/consumer/beta.sh"
+	chmod 000 "$TMP/consumer/beta.sh"
+	# Root ignores mode bits — the unreadable-file fixture can't produce a cmp
+	# error there, so the branch is untestable; skip rather than false-pass.
+	if [ "$(id -u)" -eq 0 ]; then
+		chmod 644 "$TMP/consumer/beta.sh"
+		skip "#2400: environmental — as root chmod 000 cannot make the fixture unreadable"
+	fi
+	_run_compose_fixture
+	[ "$status" -eq 0 ]
+	[[ $output == *"WARNING: cmp failed"* ]]
+	[[ $output == *"beta.sh"* ]]
+	chmod 644 "$TMP/consumer/beta.sh"
+	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output != *'!.claude/hooks/beta.sh'* ]]
+}
+
+@test "exclusion: #2254/#2257 head_comment injected on path_filters (#2400 case 5)" {
+	_mk_excl_fixture
+	_run_compose_fixture
+	[ "$status" -eq 0 ]
+	run grep -c "canonical-mirror exclusions auto-appended by compose-coderabbit.sh" "$TMP/composed.yaml"
+	[ "$output" -ge 1 ]
 }

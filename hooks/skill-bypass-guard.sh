@@ -181,7 +181,19 @@ GH_RULES=(
 # any --fix-summary / commit-message arg containing "bats" tripped the
 # guard. Fix: require unquoted env-values to NOT start with `"` or `'`,
 # forcing the quoted alternations to handle quoted values exclusively.
-ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+#
+# #2396: the prefix now comes from _lib/cmd-anchor.sh's CMD_HARDENED_PREFIX,
+# which supersets the old inline env-assignment prefix with command-wrapper
+# (`command`/`builtin`/`sudo -E`/`env X=1`) and grouping (`{ v; }`/`( v )`)
+# detection — `{ gh pr merge 5; }` and `sudo -E git commit` no longer slip
+# the guard. The explicit else-branch keeps the old env-only prefix if the
+# sourced lib predates #2396 (mixed-version tree mid-re-pin) — degraded
+# coverage there, never a set -u abort inside a PreToolUse guard.
+if [ -n "${CMD_HARDENED_PREFIX:-}" ]; then
+	ENV_PREFIX="$CMD_HARDENED_PREFIX"
+else
+	ENV_PREFIX='([A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)[[:space:]]+)*'
+fi
 
 # CR #634 finding 177: also extract the inner command from shell-wrapper
 # invocations like `bash -lc 'git commit ...'` or `sh -c 'bats foo.bats'`.

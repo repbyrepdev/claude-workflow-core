@@ -99,6 +99,12 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: compose-coderabbit-regen
+        name: compose-coderabbit-regen — .coderabbit.yaml must equal compose(base, overlay) (#2402)
+        entry: pre-commit-hooks/compose-coderabbit-regen.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
       - id: stale-shadow-guard
         name: stale-shadow — .claude/scripts|_lib copy must not drift from plugin canonical (#223)
         entry: pre-commit-hooks/stale-shadow-guard.sh
