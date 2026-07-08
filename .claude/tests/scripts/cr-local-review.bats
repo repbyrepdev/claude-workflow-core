@@ -154,15 +154,25 @@ _stub_coderabbit() {
 	[[ $output == *"findings detail persisted"* ]]
 }
 
-@test "local-review: mark-exhausted resolves rate-budget.sh next to ITSELF (#2519)" {
-	# Static companion to the behavior test below (CR r2 asked for the
-	# behavior test as the primary coverage; this pin stays as a cheap
-	# guard against a path-form regression that compiles but misresolves).
-	run grep -c 'SCRIPT_DIR/rate-budget.sh' "$LR"
-	[ "$status" -eq 0 ]
-	[ "$output" -ge 3 ]
-	run grep -c 'REPO_ROOT/.claude/scripts/cr/rate-budget.sh' "$LR"
-	[ "$output" -eq 0 ]
+@test "local-review: mark-exhausted ignores a consumer-tree decoy, uses the sibling (#2519)" {
+	# Behavior discriminator (CR r3: converted from a static grep pin): a
+	# BROKEN rate-budget.sh planted at the old consumer-tree path must be
+	# irrelevant — the script resolves its SIBLING copy, so the rate_limit
+	# flow still exits 3, writes the marker, and emits no WARN. Pre-fix
+	# code called the decoy and failed.
+	mkdir -p "$TEST_TMP/.claude/scripts/cr"
+	printf '#!/usr/bin/env bash\necho ran >"%s/decoy-ran.log"\nexit 9\n' "$TEST_TMP" \
+		>"$TEST_TMP/.claude/scripts/cr/rate-budget.sh"
+	chmod +x "$TEST_TMP/.claude/scripts/cr/rate-budget.sh"
+	_stub_coderabbit '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}' 1
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 3 ]
+	[[ $output == *"rate_limit"* ]]
+	[[ $output != *"mark-exhausted failed"* ]]
+	# The decoy leaves a sentinel if executed — it must never run.
+	[ ! -f "$TEST_TMP/decoy-ran.log" ]
+	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
 }
 
 @test "local-review: rate_limit event marks budget exhausted via SIBLING path -> exit 3 (#2519)" {

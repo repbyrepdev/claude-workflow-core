@@ -67,6 +67,12 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	run bash -c "cd '$WORK' && PATH='$BIN:/usr/bin:/bin' $2 bash '$TREE/hooks/$1'"
 }
 
+# Assert a skip entry with BOTH the status and the per-cli attribution
+# on the same log line (CR r3: centralizes the repeated two-grep pattern).
+_assert_skip_logged() { # $1 = status string, $2 = cli name
+	grep "\"$1\"" "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q "\"cli\":\"$2\""
+}
+
 @test "copilot: helper ABSENT from tree+repo -> graceful skip rc=0, [], logged" {
 	_run_hook phase0.5-copilot-prefilter.sh ""
 	[ "$status" -eq 0 ]
@@ -100,7 +106,7 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	grep -q '"status":"skipped-no-codex-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl"
 	# per-cli attribution: the skip entry carries cli:"codex" like every
 	# other codex log line
-	grep '"skipped-no-codex-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"codex"'
+	_assert_skip_logged skipped-no-codex-cli codex
 }
 
 @test "gemini: CLI absent -> graceful skip rc=0, [], logged with cli field (#2259 parity)" {
@@ -108,7 +114,7 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	[ "$status" -eq 0 ]
 	[[ $output == *"[]"* ]]
 	grep -q '"status":"skipped-no-gemini-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl"
-	grep '"skipped-no-gemini-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"gemini"'
+	_assert_skip_logged skipped-no-gemini-cli gemini
 }
 
 @test "codex: CLI present but repo config BROKEN -> hard-fail rc=1 (no silent skip)" {
@@ -136,7 +142,7 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	_run_hook phase0.5-codex-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
 	[[ $output == *"[]"* ]]
-	grep '"skipped-diff-too-large"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"codex"'
+	_assert_skip_logged skipped-diff-too-large codex
 }
 
 @test "gemini: oversized diff -> skip rc=0 with skipped-diff-too-large logged" {
@@ -147,7 +153,7 @@ _run_hook() { # $1 = hook basename, extra env via leading VAR=val words
 	_run_hook phase0.5-gemini-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
 	[[ $output == *"[]"* ]]
-	grep '"skipped-diff-too-large"' "$WORK/.claude/logs/phase0.5-run.jsonl" | grep -q '"cli":"gemini"'
+	_assert_skip_logged skipped-diff-too-large gemini
 }
 
 # ---- phase1-scaler signal tiers (#2259 item 2) ----
