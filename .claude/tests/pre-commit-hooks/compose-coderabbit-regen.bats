@@ -217,6 +217,7 @@ teardown() {
 	git add .coderabbit.yaml
 	run bash "$GATE"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # clean pass is silent
 }
 
 @test "hook-sibling compose fallback POSITIVE path works (r2 pr-test-analyzer)" {
@@ -237,4 +238,5 @@ teardown() {
 	git add .coderabbit.overlay.yaml .coderabbit.yaml
 	run bash .claude/pre-commit-hooks/compose-coderabbit-regen.sh
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # clean pass is silent
 }

@@ -69,8 +69,9 @@ CMD_SEGMENT_END_GROUPED='([[:space:]]|$|[;&|)}])'
 # #2396: everything that may legally sit between the anchor and the verb,
 # any number of times, in any order:
 #   - grouping openers: `{ ` brace group, `( ` subshell
-#   - wrapper commands: `command`/`builtin`/`sudo`/`env`, each with
-#     optional dash-flags (`command -p`, `sudo -E`, `env -i`); flag
+#   - wrapper commands: `command`/`builtin`/`sudo`/`env`/`nohup`/`nice`/
+#     `time`/`stdbuf` (phase2 r4 widened the last four), each with optional
+#     dash-flags (`command -p`, `sudo -E`, `env -i`, `nice -n`); flag
 #     ARGUMENTS — e.g. `sudo -u admin` — are NOT consumed: skipping
 #     arbitrary non-dash words would let the prefix swallow anything and
 #     match the verb mid-command
@@ -80,7 +81,7 @@ CMD_SEGMENT_END_GROUPED='([[:space:]]|$|[;&|)}])'
 #     (`?`) so a bare `FOO= verb` (valid bash) is consumed too; phase1 r2
 #     silent-failure: a required value let `FOO= gh pr merge` slip both
 #     gates.
-CMD_HARDENED_PREFIX='([{(][[:space:]]*|(command|builtin|sudo|env)([[:space:]]+-[^[:space:]]+)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)?[[:space:]]+)*'
+CMD_HARDENED_PREFIX='([{(][[:space:]]*|(command|builtin|sudo|env|nohup|nice|time|stdbuf)([[:space:]]+-[^[:space:]]+)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=('"'"'[^'"'"']*'"'"'|"[^"]*"|[^"'"'"'[:space:]][^[:space:]]*)?[[:space:]]+)*'
 
 match_cmd_at_anchor() {
 	local pattern=$1

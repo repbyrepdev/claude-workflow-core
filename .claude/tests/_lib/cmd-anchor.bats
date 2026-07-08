@@ -63,6 +63,15 @@ setup() {
 	# phase2: command/builtin take dash-flags too (command -p, env -i).
 	match_cmd_at_anchor_hardened "$GPM" "command -p gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "env -i gh pr merge 5"
+	# phase2 r4: nohup/nice/time/stdbuf wrappers.
+	match_cmd_at_anchor_hardened "$GPM" "nohup gh pr merge 5"
+	match_cmd_at_anchor_hardened "$GPM" "time gh pr merge 5"
+	match_cmd_at_anchor_hardened "$GPM" "stdbuf -oL gh pr merge 5"
+	# `nice -n 10 verb` stays a MISS: `10` is a flag ARGUMENT (the same
+	# documented bound as `sudo -u admin`).
+	run match_cmd_at_anchor_hardened "$GPM" "nice -n 10 gh pr merge 5"
+	[ "$status" -ne 0 ]
+	[ -z "$output" ] # matchers are silent — output would mean a regression
 }
 
 @test "hardened: env assignments with quoted values hit (#2396)" {
