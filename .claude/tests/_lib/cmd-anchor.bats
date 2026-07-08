@@ -19,9 +19,10 @@ setup() {
 	GC='git[[:space:]]+commit'
 }
 
-@test "exports are non-empty (anchor, end, hardened prefix)" {
+@test "exports are non-empty (anchor, end, grouped end, hardened prefix)" {
 	[ -n "$CMD_SEGMENT_ANCHOR" ]
 	[ -n "$CMD_SEGMENT_END" ]
+	[ -n "$CMD_SEGMENT_END_GROUPED" ]
 	[ -n "$CMD_HARDENED_PREFIX" ]
 }
 
