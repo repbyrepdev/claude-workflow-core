@@ -59,6 +59,10 @@ case "$1 $2" in
 	printf '%s\n' "${FAKE_DEL:-false}"
 	;;
 "api graphql")
+	if [ "${FAKE_QUEUE_FAIL:-0}" = "1" ]; then
+		echo "GraphQL: Could not resolve to a Repository" >&2
+		exit 1
+	fi
 	printf '%s\n' "${FAKE_QUEUED:-false}"
 	;;
 *)
@@ -144,6 +148,20 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
 	[[ $output == *"entered the merge queue"* ]]
+}
+
+@test "--auto queue-probe failure yields UNKNOWN + WARN exit 0, not the exit-2 hard error" {
+	# A probe blip after a successful enqueue must not report failure — the
+	# side effect already happened (same posture as the POST-failure WARN).
+	_install_gh_shim
+	export FAKE_STATE FAKE_POST FAKE_QUEUE_FAIL
+	FAKE_STATE=$(_state OPEN 0)
+	FAKE_POST='{"state":"OPEN","armed":false,"head":"abc1234"}'
+	FAKE_QUEUE_FAIL=1
+	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output == *"queue state UNKNOWN"* ]]
+	[[ $output != *"neither merged, armed, nor queued"* ]]
 }
 
 @test "--auto POST verification failure degrades to WARN, never dies post-merge (rc 0)" {

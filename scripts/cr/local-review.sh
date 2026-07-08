@@ -310,17 +310,32 @@ fi
 # re-runs or blind converge-rejections. Keep the full JSONL per sha; loud
 # WARN (not fatal) if the copy fails.
 if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
-	_detail_sha=$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
+	# Bare --short (NOT --short=7): scm_log keys its jsonl line on bare
+	# --short (auto-abbrev), and consumers reconstruct this path from that
+	# sha — the two derivations must stay byte-identical at any repo size.
+	_detail_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 	_detail_dir="$REPO_ROOT/.claude/logs"
 	_detail_file="$_detail_dir/cr-local-review-${_detail_sha}-detail.jsonl"
-	if mkdir -p "$_detail_dir" 2>/dev/null && cp "$TEE_OUT" "$_detail_file" 2>/dev/null; then
+	# Atomic write (temp in the SAME dir + mv): a mid-write failure must
+	# never leave a TRUNCATED detail file at the advertised path (or destroy
+	# a prior complete one) — partial detail parsed as truth is worse than
+	# the missing-detail problem this block fixes. Stderr is captured so the
+	# WARN states the actual cause.
+	_detail_err=""
+	if _detail_err=$(
+		mkdir -p "$_detail_dir" &&
+			_dtmp=$(mktemp "$_detail_dir/.cr-detail.XXXXXX") &&
+			cp "$TEE_OUT" "$_dtmp" &&
+			mv -f "$_dtmp" "$_detail_file" 2>&1
+	); then
 		echo "local-review: findings detail persisted to $_detail_file (#2484)" >&2
 	else
-		echo "local-review: WARN — could not persist findings detail to $_detail_file; the tee tmpfile dies with this process (#2484)" >&2
+		rm -f "$_detail_dir"/.cr-detail.?????? 2>/dev/null || true
+		echo "local-review: WARN — could not persist findings detail to $_detail_file (${_detail_err:-no stderr}); the tee tmpfile dies with this process (#2484)" >&2
 	fi
 fi
 
-# scm_log injects `sha` (short 7-char HEAD) into the log line — that's the
+# scm_log injects `sha` (bare --short HEAD, auto-abbrev) into the log line — that's the
 # key the pre-push gate matches against. This fields object provides the
 # NEW fields: base/force/rc (pre-existing) + findings (v4.24-Q2 #609 addition).
 scm_log cr-local-review "$(jq -nc --arg base "$BASE" \

@@ -140,10 +140,16 @@ _stub_coderabbit() {
 	} >"$TEST_TMP/bin/coderabbit"
 	chmod +x "$TEST_TMP/bin/coderabbit"
 	cd "$TEST_TMP" || return 1
-	sha7=$(git rev-parse --short=7 HEAD)
+	# core.abbrev=12 makes bare --short diverge from --short=7 here, so this
+	# test DISCRIMINATES: the detail filename must use the same bare --short
+	# derivation scm_log keys the jsonl on, or the per-sha join breaks.
+	git config core.abbrev 12
+	sha_key=$(git rev-parse --short HEAD)
+	[ "${#sha_key}" -eq 12 ]
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 1 ]
-	detail="$TEST_TMP/.claude/logs/cr-local-review-${sha7}-detail.jsonl"
+	detail="$TEST_TMP/.claude/logs/cr-local-review-${sha_key}-detail.jsonl"
 	[ -f "$detail" ]
 	grep -q '"type":"finding"' "$detail"
+	[[ $output == *"findings detail persisted"* ]]
 }
