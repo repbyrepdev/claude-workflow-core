@@ -22,7 +22,8 @@ set -euo pipefail
 #       gemini CLI genuinely absent (graceful skip, logged
 #       skipped-no-gemini-cli — parity with the copilot pre-filter, #2259)
 #   1 = tooling error (yq missing / config missing / gemini present but broken)
-#   2 = arg error
+#   2 = arg error, or unusable environment (not a git repo, LOG_DIR
+#       uncreatable/unwritable, canonical_brief read failure)
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [ -n "$REPO_ROOT" ] || {
@@ -43,7 +44,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,25p' "$0"
+		sed -n '4,26p' "$0"
 		exit 0
 		;;
 	*)
@@ -76,10 +77,16 @@ command -v gemini >/dev/null 2>&1 || {
 	# (Present-but-broken preconditions below still hard-fail.)
 	echo "phase0.5-gemini: gemini CLI absent — skipping optional pre-filter; Phase 1 Claude agents proceed. Install via npm + run 'gemini' once to auth to enable" >&2
 	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	# Guarded append: the skip itself must stay exit-0 (optional
+	# pre-filter), but a failed skip-log write is WARNED loudly — the
+	# scaler then treats this sha as no-prefilter-signal, which is the
+	# safe direction (more review rounds, not fewer).
 	mkdir -p "$LOG_DIR" 2>/dev/null || true
-	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
-		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-gemini-cli"}' \
-		>>"$LOG"
+	if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
+		'{ts:$ts, sha:$sha, phase:"0.5", cli:"gemini", agent:"<all>", findings:0, status:"skipped-no-gemini-cli"}' \
+		>>"$LOG" 2>/dev/null; then
+		echo "phase0.5-gemini: WARN — could not append skip entry to $LOG; the scaler will treat this sha as no-prefilter-signal" >&2
+	fi
 	echo "[]"
 	exit 0
 }
@@ -300,18 +307,15 @@ No prose. No markdown fence. Just the array."
 
 	# v4.28-W4 (#661): Invoke `gemini -p` with the canonical_brief prompt.
 	# --approval-mode plan = read-only (Gemini won't try to edit/exec).
-	# --policy points at .gemini/policy.toml (#643 deny block) when present
-	# (defense-in-depth beyond settings.json tools.exclude). --skip-trust
-	# auto-trusts the workspace for this single non-interactive invocation.
-	# 60s timeout matches Copilot — Gemini is fast for review prompts.
+	# --policy points at .gemini/policy.toml (#643 deny block) — its
+	# existence is hard-required at preflight above, so it is passed
+	# unconditionally (defense-in-depth beyond settings.json
+	# tools.exclude). --skip-trust auto-trusts the workspace for this
+	# single non-interactive invocation. 60s timeout matches Copilot —
+	# Gemini is fast for review prompts.
 	_helper_err=$(mktemp)
 	_helper_rc=0
-	gemini_args=(timeout 60 gemini --approval-mode plan --skip-trust)
-	if [ -f "$GEMINI_POLICY" ]; then
-		gemini_args+=(--policy "$GEMINI_POLICY")
-	fi
-	gemini_args+=(-p "$full_prompt")
-	raw=$("${gemini_args[@]}" 2>"$_helper_err") || _helper_rc=$?
+	raw=$(timeout 60 gemini --approval-mode plan --skip-trust --policy "$GEMINI_POLICY" -p "$full_prompt" 2>"$_helper_err") || _helper_rc=$?
 	if [ "$_helper_rc" -ne 0 ]; then
 		_err_excerpt=$(head -c 500 "$_helper_err" | tr '\n' ' ' | tr -d '"')
 		_failure_mode=other

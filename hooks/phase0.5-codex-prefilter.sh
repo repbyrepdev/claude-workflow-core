@@ -23,7 +23,8 @@ set -euo pipefail
 #       codex CLI genuinely absent (graceful skip, logged skipped-no-codex-cli
 #       — parity with the copilot pre-filter, #2259)
 #   1 = tooling error (yq missing / config missing / codex present but broken)
-#   2 = arg error
+#   2 = arg error, or unusable environment (not a git repo, LOG_DIR
+#       uncreatable/unwritable, canonical_brief read failure)
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [ -n "$REPO_ROOT" ] || {
@@ -44,7 +45,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,25p' "$0"
+		sed -n '4,27p' "$0"
 		exit 0
 		;;
 	*)
@@ -77,10 +78,16 @@ command -v codex >/dev/null 2>&1 || {
 	# (Present-but-broken preconditions below still hard-fail.)
 	echo "phase0.5-codex: codex CLI absent — skipping optional pre-filter; Phase 1 Claude agents proceed. Install via brew + 'codex login' to enable" >&2
 	_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	# Guarded append: the skip itself must stay exit-0 (optional
+	# pre-filter), but a failed skip-log write is WARNED loudly — the
+	# scaler then treats this sha as no-prefilter-signal, which is the
+	# safe direction (more review rounds, not fewer).
 	mkdir -p "$LOG_DIR" 2>/dev/null || true
-	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
-		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:0, status:"skipped-no-codex-cli"}' \
-		>>"$LOG"
+	if ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
+		'{ts:$ts, sha:$sha, phase:"0.5", cli:"codex", agent:"<all>", findings:0, status:"skipped-no-codex-cli"}' \
+		>>"$LOG" 2>/dev/null; then
+		echo "phase0.5-codex: WARN — could not append skip entry to $LOG; the scaler will treat this sha as no-prefilter-signal" >&2
+	fi
 	echo "[]"
 	exit 0
 }

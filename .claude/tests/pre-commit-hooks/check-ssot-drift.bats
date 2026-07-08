@@ -84,6 +84,17 @@ EOF
 	[[ $output != *drift* ]]
 }
 
+@test "multiple claim matches: FIRST match wins (10 then 99, SSOT=10 -> pass)" {
+	# Pins first-match-wins so the grep -m1 extraction is provably
+	# behavior-preserving (and no future last-match/aggregate regression).
+	printf 'There are 10 required status checks.\nLegacy note: 99 required status checks once.\n' >"$TEST_TMP/claim.md"
+	printf 'required:\n%s' "$(for i in 0 1 2 3 4 5 6 7 8 9; do printf '  - check_name: c%s\n' "$i"; done)" >"$TEST_TMP/required.yml"
+	write_config
+	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
+	[ "$status" -eq 0 ]
+	[[ $output != *drift* ]]
+}
+
 @test "multi-digit claim still BLOCKS on real divergence (claim 10 vs SSOT 3)" {
 	# Companion to the regression test: the two-step extraction must not
 	# weaken detection — a genuinely wrong multi-digit claim still blocks.
@@ -146,6 +157,10 @@ EOF
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
 	[ "$status" -ne 0 ]
 	[[ $output == *drift* ]]
+	# The BLOCK must NAME the diverging item — a regression in the item
+	# formatting loop that prints an empty/mangled list would otherwise
+	# pass on exit code alone.
+	[[ $output == *"- d"* ]]
 }
 
 @test "check-ssot-drift passes when the config file is absent (exit 0)" {

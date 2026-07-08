@@ -179,7 +179,8 @@ if [ -f "$TEE_OUT" ] && grep -qE "ERROR:.*[Yy]ou'?ve run out of usage credits" "
 	# without the mirror (#2519) — the ledger stays per-repo either way
 	# because rate-budget.sh resolves it from CWD via git rev-parse.
 	if ! "$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2; then
-		echo "local-review: WARN: rate-budget mark-exhausted failed (text-path) — budget tracker drift will persist" >&2
+		_me_rc=$?
+		echo "local-review: WARN: rate-budget mark-exhausted failed (text-path, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
 	fi
 	_rate_limit_handled=1
 fi
@@ -245,7 +246,8 @@ if [ "$_rate_limit_handled" -eq 0 ] && [ -f "$TEE_OUT" ]; then
 				# without the mirror (#2519) — the ledger stays per-repo either way
 				# because rate-budget.sh resolves it from CWD via git rev-parse.
 				if ! "$SCRIPT_DIR/rate-budget.sh" mark-exhausted >&2; then
-					echo "local-review: WARN: rate-budget mark-exhausted failed (json-path) — budget tracker drift will persist" >&2
+					_me_rc=$?
+					echo "local-review: WARN: rate-budget mark-exhausted failed (json-path, rc=$_me_rc) — budget tracker drift will persist. Re-run manually: $SCRIPT_DIR/rate-budget.sh mark-exhausted" >&2
 				fi
 				_rate_limit_handled=1
 			fi

@@ -84,46 +84,67 @@ _abs_path() {
 # capture treatment for symmetry.
 _check_count() {
 	local name=$1 claim_file=$2 claim_regex=$3 ssot_file=$4 ssot_expr=$5 desc=$6
-	local claimed actual claim_abs ssot_abs sed_err yq_err
+	local claimed actual claim_abs ssot_abs extract_err yq_err matched
 	claim_abs=$(_abs_path "$claim_file")
 	ssot_abs=$(_abs_path "$ssot_file")
 
-	sed_err=$(mktemp)
+	# extract_err captures stderr of BOTH extraction passes (grep + sed).
+	extract_err=$(mktemp)
 	yq_err=$(mktemp)
 
-	# Two-step extraction (#2387): grep -o isolates the FULL regex match
-	# first, then an ^anchored$ sed pulls capture group 1 out of that
-	# exact substring. The old single-pass `s|.*${claim_regex}.*|\1|p`
-	# let the greedy `.*` prefix eat leading digits of the capture (a
-	# claim of "10" extracted as "0" -> false drift BLOCK on any
-	# multi-digit count). stderr non-empty = real failure (bad regex);
-	# empty + rc=1 = "no match" (normal).
+	# Two-step extraction (#2387): grep -m1 -o isolates the FULL first
+	# regex match (self-limiting — no `| head` pipe that could SIGPIPE
+	# grep under pipefail), then an ^anchored$ sed pulls capture group 1
+	# out of that exact substring. The old single-pass
+	# `s|.*${claim_regex}.*|\1|p` let the greedy `.*` prefix eat leading
+	# digits of the capture (a claim of "10" extracted as "0" -> false
+	# drift BLOCK on any multi-digit count). stderr non-empty = real
+	# failure (bad regex); empty + rc=1 = "no match" (normal).
+	# NB: the sed step uses `|` as its delimiter, so claim_regex must not
+	# contain a literal `|` (same constraint _check_list documents for
+	# its extraction below).
 	matched=""
-	if ! matched=$(grep -oE "${claim_regex}" "$claim_abs" 2>"$sed_err" | head -1); then
-		if [ -s "$sed_err" ]; then
+	if ! matched=$(grep -m1 -oE "${claim_regex}" "$claim_abs" 2>"$extract_err"); then
+		if [ -s "$extract_err" ]; then
 			echo "BLOCK: SSOT drift check '${name}' — regex match extraction failed:" >&2
-			cat "$sed_err" >&2
+			cat "$extract_err" >&2
 			echo "  Bad regex in .claude/ssot-checks.yml? claim_regex=$claim_regex" >&2
-			rm -f "$sed_err" "$yq_err"
+			rm -f "$extract_err" "$yq_err"
 			return 2
 		fi
 		# Empty result without stderr = no matches (normal).
 		matched=""
 	fi
+	# grep -m1 stops at the first matching LINE but prints every match on
+	# it; keep only the first (multi-match lines are first-match-wins).
+	matched=${matched%%$'\n'*}
 	claimed=""
 	if [ -n "$matched" ]; then
-		if ! claimed=$(printf '%s\n' "$matched" | sed -nE "s|^${claim_regex}\$|\1|p" 2>"$sed_err"); then
-			if [ -s "$sed_err" ]; then
+		if ! claimed=$(printf '%s\n' "$matched" | sed -nE "s|^${claim_regex}\$|\1|p" 2>"$extract_err"); then
+			if [ -s "$extract_err" ]; then
 				echo "BLOCK: SSOT drift check '${name}' — sed capture extraction failed:" >&2
-				cat "$sed_err" >&2
+				cat "$extract_err" >&2
 				echo "  Bad regex in .claude/ssot-checks.yml? claim_regex=$claim_regex" >&2
-				rm -f "$sed_err" "$yq_err"
+				rm -f "$extract_err" "$yq_err"
 				return 2
 			fi
 			claimed=""
 		fi
+		# Fail-loud on extraction inconsistency: grep PROVED the claim
+		# exists, so an empty second-pass capture means the two steps
+		# disagree (regex dialect divergence between grep -E and sed -E,
+		# or a zero-width capture) — NOT an absent claim. Returning 0
+		# here would silently disable this check forever.
+		if [ -z "$claimed" ]; then
+			echo "BLOCK: SSOT drift check '${name}' — extraction inconsistency:" >&2
+			echo "  grep matched '$matched' but the anchored sed capture came back empty." >&2
+			echo "  Likely a grep-vs-sed ERE dialect divergence in claim_regex=$claim_regex" >&2
+			echo "  Fix the regex in .claude/ssot-checks.yml to use portable ERE." >&2
+			rm -f "$extract_err" "$yq_err"
+			return 2
+		fi
 	fi
-	rm -f "$sed_err"
+	rm -f "$extract_err"
 
 	if ! actual=$(yq -r "$ssot_expr" "$ssot_abs" 2>"$yq_err"); then
 		if [ -s "$yq_err" ]; then
@@ -226,7 +247,7 @@ _check_list() {
 			return 2
 		fi
 		# Empty result without yq stderr = legit empty list — caught by
-		# the existing line-131 broken-SSOT-expression branch.
+		# the empty-or-null broken-SSOT-expression branch below.
 		actual_items=""
 	fi
 	rm -f "$yq_err"
@@ -237,7 +258,11 @@ _check_list() {
 		return 0
 	fi
 
-	if [ "$actual_items" = "null" ]; then
+	# Empty AND literal-null both mean "the SSOT expression returned no
+	# list" — a broken config, not drift. Without the -z arm an empty
+	# result fell through to the set-difference and reported every
+	# claimed item as a misleading orphan-drift BLOCK.
+	if [ -z "$actual_items" ] || [ "$actual_items" = "null" ]; then
 		echo "BLOCK: SSOT list-drift check '${name}' has a broken SSOT expression" >&2
 		echo "  File:       $ssot_file" >&2
 		echo "  Expression: $ssot_expr" >&2

@@ -165,3 +165,23 @@ _stub_coderabbit() {
 	run grep -c 'REPO_ROOT/.claude/scripts/cr/rate-budget.sh' "$LR"
 	[ "$output" -eq 0 ]
 }
+
+@test "local-review: rate_limit event marks budget exhausted via SIBLING path -> exit 3 (#2519)" {
+	# Behavior companion to the text-pin above: a JSON rate_limit event
+	# must (a) exit 3 per the SSOT contract, (b) append the exhausted
+	# marker to THIS repo's ledger via the script-sibling rate-budget.sh,
+	# (c) emit no mark-exhausted WARN. Pre-fix code in a consumer without
+	# the .claude/scripts/cr mirror hit rc=127 + WARN and wrote no marker.
+	{
+		echo '#!/usr/bin/env bash'
+		printf 'printf "%%s\\n" %q\n' '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}'
+		echo 'exit 1'
+	} >"$TEST_TMP/bin/coderabbit"
+	chmod +x "$TEST_TMP/bin/coderabbit"
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 3 ]
+	[[ $output != *"mark-exhausted failed"* ]]
+	[ -f "$TEST_TMP/.claude/review-log/cr-budget.jsonl" ]
+	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
+}
