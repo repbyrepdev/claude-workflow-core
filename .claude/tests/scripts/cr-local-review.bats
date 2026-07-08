@@ -153,3 +153,55 @@ _stub_coderabbit() {
 	grep -q '"type":"finding"' "$detail"
 	[[ $output == *"findings detail persisted"* ]]
 }
+
+@test "local-review: mark-exhausted ignores a consumer-tree decoy, uses the sibling (#2519)" {
+	# Behavior discriminator (CR r3: converted from a static grep pin): a
+	# BROKEN rate-budget.sh planted at the old consumer-tree path must be
+	# irrelevant — the script resolves its SIBLING copy, so the rate_limit
+	# flow still exits 3, writes the marker, and emits no WARN. Pre-fix
+	# code called the decoy and failed.
+	mkdir -p "$TEST_TMP/.claude/scripts/cr"
+	printf '#!/usr/bin/env bash\necho ran >"%s/decoy-ran.log"\nexit 9\n' "$TEST_TMP" \
+		>"$TEST_TMP/.claude/scripts/cr/rate-budget.sh"
+	chmod +x "$TEST_TMP/.claude/scripts/cr/rate-budget.sh"
+	_stub_coderabbit '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}' 1
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 3 ]
+	[[ $output == *"rate_limit"* ]]
+	[[ $output != *"mark-exhausted failed"* ]]
+	# The decoy leaves a sentinel if executed — it must never run.
+	[ ! -f "$TEST_TMP/decoy-ran.log" ]
+	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
+}
+
+@test "local-review: TEXT out-of-credits page hits the same exhausted contract -> exit 3 (#837)" {
+	# The dual-path detection's OTHER branch (CR r8): no structured JSON
+	# errorType event, just CR's server-side out-of-credits text page. The
+	# text grep must trigger the identical SSOT contract as the JSON path:
+	# exit 3, exhausted marker via the sibling rate-budget.sh, no WARN.
+	_stub_coderabbit "ERROR: You've run out of usage credits" 1
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 3 ]
+	[[ $output == *"text-detect"* ]]
+	[[ $output != *"mark-exhausted failed"* ]]
+	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
+}
+
+@test "local-review: rate_limit event marks budget exhausted via SIBLING path -> exit 3 (#2519)" {
+	# Primary coverage (CR r2): a JSON
+	# rate_limit event must (a) exit 3 per the SSOT contract, (b) append
+	# the exhausted marker to THIS repo's ledger via the script-sibling
+	# rate-budget.sh, (c) emit no mark-exhausted WARN. Pre-fix code in a
+	# consumer without the .claude/scripts/cr mirror hit rc=127 + WARN
+	# and wrote no marker.
+	_stub_coderabbit '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded","recoverable":true}' 1
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 3 ]
+	[[ $output == *"rate_limit"* ]]
+	[[ $output != *"mark-exhausted failed"* ]]
+	[ -f "$TEST_TMP/.claude/review-log/cr-budget.jsonl" ]
+	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
+}

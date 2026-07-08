@@ -19,9 +19,12 @@ set -euo pipefail
 #   stdout: JSON array of dedup'd findings (may be [])
 #   .claude/logs/phase0.5-run.jsonl: per-agent entry with cli=codex
 # Exit:
-#   0 = ran successfully (findings may be present; caller decides)
-#   1 = tooling error (codex missing / yq missing / config missing)
-#   2 = arg error
+#   0 = ran successfully (findings may be present; caller decides), OR
+#       codex CLI genuinely absent (graceful skip, logged skipped-no-codex-cli
+#       — parity with the copilot pre-filter, #2259)
+#   1 = tooling error (yq missing / config missing / codex present but broken)
+#   2 = arg error, or unusable environment (not a git repo, LOG_DIR
+#       uncreatable/unwritable, canonical_brief read failure)
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [ -n "$REPO_ROOT" ] || {
@@ -42,7 +45,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,25p' "$0"
+		sed -n '4,27p' "$0"
 		exit 0
 		;;
 	*)
@@ -63,13 +66,23 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 CODEX_HOME_REPO="$REPO_ROOT/.codex"
 
-[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
-	echo "phase0.5-codex: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
+if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
+	echo "phase0.5-codex: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
-}
+fi
+# Sourced BEFORE the CLI check so the shared graceful-skip helper is
+# available (function definitions only — no side effects beyond the
+# audit-dedup path var). Preflight still runs later, pre-invocation.
+# shellcheck source=../_lib/phase05-dedupe.sh
+. "$PLUGIN_LIB/phase05-dedupe.sh"
 command -v codex >/dev/null 2>&1 || {
-	echo "phase0.5-codex: codex CLI missing — install via brew + run 'codex login' first" >&2
-	exit 1
+	# Absent CLI = graceful skip (#2259): parity with the copilot
+	# pre-filter's absent-helper path. An OPTIONAL pre-filter that is not
+	# installed must not hard-fail the walk; the cli-tagged skip status is
+	# logged so phase1-scaler treats it as "no pre-filter signal", not
+	# "ran clean". (Present-but-broken preconditions below still
+	# hard-fail.) Shared helper: logs, emits [], exits 0.
+	phase05_emit_skip_and_exit codex "$LOG" "skipped-no-codex-cli" "Install via brew + 'codex login' to enable"
 }
 [ -d "$CODEX_HOME_REPO" ] || {
 	echo "phase0.5-codex: $CODEX_HOME_REPO missing — Codex 0.125 needs project-level config" >&2
@@ -90,13 +103,9 @@ export CODEX_HOME="$CODEX_HOME_REPO"
 	echo "phase0.5: phase1-dedup.sh missing at $DEDUP_HOOK" >&2
 	exit 1
 }
-# v4.28-W5 #827: 2-stage dedup wiring extracted to shared lib.
-# Preflight runs BEFORE invoking Codex so a missing audit-dedup hook
-# fails-loud instead of wasting CLI quota.
-# CR-in-CI Phase 2 r3: source script-relative (dirname BASH_SOURCE) to
-# match hook path-resolution contract (independent of REPO_ROOT detection).
-# shellcheck source=../_lib/phase05-dedupe.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/phase05-dedupe.sh"
+# v4.28-W5 #827: 2-stage dedup wiring extracted to shared lib (sourced
+# above, before the CLI check). Preflight runs BEFORE invoking Codex so a
+# missing audit-dedup hook fails-loud instead of wasting CLI quota.
 phase05_preflight_audit_dedup_hook
 command -v yq >/dev/null 2>&1 || {
 	echo "phase0.5: yq required" >&2

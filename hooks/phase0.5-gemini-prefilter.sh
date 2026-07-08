@@ -18,9 +18,12 @@ set -euo pipefail
 #   stdout: JSON array of dedup'd findings (may be [])
 #   .claude/logs/phase0.5-run.jsonl: per-agent entry with cli=gemini
 # Exit:
-#   0 = ran successfully (findings may be present; caller decides)
-#   1 = tooling error (gemini missing / yq missing / config missing)
-#   2 = arg error
+#   0 = ran successfully (findings may be present; caller decides), OR
+#       gemini CLI genuinely absent (graceful skip, logged
+#       skipped-no-gemini-cli — parity with the copilot pre-filter, #2259)
+#   1 = tooling error (yq missing / config missing / gemini present but broken)
+#   2 = arg error, or unusable environment (not a git repo, LOG_DIR
+#       uncreatable/unwritable, canonical_brief read failure)
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [ -n "$REPO_ROOT" ] || {
@@ -41,7 +44,7 @@ while [ "$#" -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '4,25p' "$0"
+		sed -n '4,26p' "$0"
 		exit 0
 		;;
 	*)
@@ -62,13 +65,23 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 LOG="$LOG_DIR/phase0.5-run.jsonl"
 GEMINI_POLICY="$REPO_ROOT/.gemini/policy.toml"
 
-[ -n "$CONFIG" ] && [ -f "$CONFIG" ] || {
-	echo "phase0.5-gemini: review-config.yml missing (checked \$REPO_ROOT/.claude/ + plugin cache)" >&2
+if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
+	echo "phase0.5-gemini: review-config.yml missing (checked $REPO_ROOT/.claude/ + plugin cache)" >&2
 	exit 1
-}
+fi
+# Sourced BEFORE the CLI check so the shared graceful-skip helper is
+# available (function definitions only — no side effects beyond the
+# audit-dedup path var). Preflight still runs later, pre-invocation.
+# shellcheck source=../_lib/phase05-dedupe.sh
+. "$PLUGIN_LIB/phase05-dedupe.sh"
 command -v gemini >/dev/null 2>&1 || {
-	echo "phase0.5-gemini: gemini CLI missing — install via npm + run 'gemini' once to auth" >&2
-	exit 1
+	# Absent CLI = graceful skip (#2259): parity with the copilot
+	# pre-filter's absent-helper path. An OPTIONAL pre-filter that is not
+	# installed must not hard-fail the walk; the cli-tagged skip status is
+	# logged so phase1-scaler treats it as "no pre-filter signal", not
+	# "ran clean". (Present-but-broken preconditions below still
+	# hard-fail.) Shared helper: logs, emits [], exits 0.
+	phase05_emit_skip_and_exit gemini "$LOG" "skipped-no-gemini-cli" "Install via npm + run 'gemini' once to auth to enable"
 }
 # CR Phase 3 Major: refuse to run without the policy.toml deny block.
 # Phase 0.5 reviewer must be read-only — running Gemini without the policy
@@ -83,13 +96,9 @@ command -v gemini >/dev/null 2>&1 || {
 	echo "phase0.5: phase1-dedup.sh missing at $DEDUP_HOOK" >&2
 	exit 1
 }
-# v4.28-W5 #827: 2-stage dedup wiring extracted to shared lib.
-# Preflight runs BEFORE invoking Gemini so a missing audit-dedup hook
-# fails-loud instead of wasting CLI quota.
-# CR-in-CI Phase 2 r3: source script-relative (dirname BASH_SOURCE) to
-# match hook path-resolution contract (independent of REPO_ROOT detection).
-# shellcheck source=../_lib/phase05-dedupe.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/phase05-dedupe.sh"
+# v4.28-W5 #827: 2-stage dedup wiring extracted to shared lib (sourced
+# above, before the CLI check). Preflight runs BEFORE invoking Gemini so a
+# missing audit-dedup hook fails-loud instead of wasting CLI quota.
 phase05_preflight_audit_dedup_hook
 command -v yq >/dev/null 2>&1 || {
 	echo "phase0.5: yq required" >&2
@@ -287,18 +296,18 @@ No prose. No markdown fence. Just the array."
 
 	# v4.28-W4 (#661): Invoke `gemini -p` with the canonical_brief prompt.
 	# --approval-mode plan = read-only (Gemini won't try to edit/exec).
-	# --policy points at .gemini/policy.toml (#643 deny block) when present
-	# (defense-in-depth beyond settings.json tools.exclude). --skip-trust
-	# auto-trusts the workspace for this single non-interactive invocation.
-	# 60s timeout matches Copilot — Gemini is fast for review prompts.
+	# --policy points at .gemini/policy.toml (#643 deny block) — its
+	# existence is hard-required at preflight above, so it is passed
+	# unconditionally (defense-in-depth beyond settings.json
+	# tools.exclude). --skip-trust auto-trusts the workspace for this
+	# single non-interactive invocation. 60s timeout matches Copilot —
+	# Gemini is fast for review prompts.
 	_helper_err=$(mktemp)
 	_helper_rc=0
-	gemini_args=(timeout 60 gemini --approval-mode plan --skip-trust)
-	if [ -f "$GEMINI_POLICY" ]; then
-		gemini_args+=(--policy "$GEMINI_POLICY")
-	fi
-	gemini_args+=(-p "$full_prompt")
-	raw=$("${gemini_args[@]}" 2>"$_helper_err") || _helper_rc=$?
+	# CR-in-CI #2524: stdin from /dev/null — gemini -p still reads inherited
+	# tty stdin in headless mode and can stall until the 60s timeout
+	# (same guard as the codex prefilter's verified stdin-block).
+	raw=$(timeout 60 gemini --approval-mode plan --skip-trust --policy "$GEMINI_POLICY" -p "$full_prompt" 2>"$_helper_err" </dev/null) || _helper_rc=$?
 	if [ "$_helper_rc" -ne 0 ]; then
 		_err_excerpt=$(head -c 500 "$_helper_err" | tr '\n' ' ' | tr -d '"')
 		_failure_mode=other
