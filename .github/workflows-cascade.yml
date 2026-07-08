@@ -6,8 +6,16 @@
 #   * pre-commit-hooks/workflow-source-pin.sh — enforces hash-equivalence
 #     between workflows-source/X.yml and workflows/X.yml for every
 #     cascade entry on the plugin side.
-#   * scripts/refresh-from-source.sh (#151, not yet shipped) — iterates
-#     cascade[] and copies into each consumer's `.github/workflows/`.
+#
+# Consumer propagation (settled by the #2289/#2323 normalization audit,
+# 2026-07-08): workflows are TEMPLATE-WITH-OVERRIDES, not byte-SSOT.
+# bootstrap-repo.sh seeds gitleaks/pr-lint/pr-labeler ONCE via heredocs;
+# each repo then owns its copy (bootstrap-manifest.yml declares them
+# non-hashed — "workflows legitimately vary per repo"). The shipped
+# refresh-from-source.sh (#151) copies ONLY hashed .source-hashes.json
+# paths and deliberately does NOT iterate cascade[] into consumers; the
+# earlier plan to do so was superseded by this model. cascade[] therefore
+# governs ONLY the plugin-side source↔live pin above.
 #
 # Plugin design (Sub 6 #144 of #138):
 #   - workflows-source/ is the SSOT directory the plugin owns
