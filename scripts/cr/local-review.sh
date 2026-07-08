@@ -316,6 +316,9 @@ if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
 	_detail_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 	_detail_dir="$REPO_ROOT/.claude/logs"
 	_detail_file="$_detail_dir/cr-local-review-${_detail_sha}-detail.jsonl"
+	# Retention: best-effort prune of stale detail files (>30d) so the
+	# gitignored logs dir stays bounded — one file lands per findings>0 run.
+	find "$_detail_dir" -maxdepth 1 -name 'cr-local-review-*-detail.jsonl' -mtime +30 -delete 2>/dev/null || true
 	# Atomic write (temp in the SAME dir + mv): a mid-write failure must
 	# never leave a TRUNCATED detail file at the advertised path (or destroy
 	# a prior complete one) — partial detail parsed as truth is worse than
