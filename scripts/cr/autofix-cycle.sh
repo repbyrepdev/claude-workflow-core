@@ -281,7 +281,13 @@ _budget_remaining() {
 	# v4.27 (#632) item #9: returns CR rate budget remaining (integer 0+),
 	# or empty string if rate-budget.sh is unavailable. Used to branch on
 	# adaptive routing before each cycle.
+	# Sibling-first (#2519 class): rate-budget.sh lives next to THIS
+	# script — resolves in the plugin repo, the plugin cache, and any
+	# consumer mirror alike. The consumer-tree path silently disabled
+	# budget-aware routing in repos without the mirror. Consumer copy
+	# still wins when present (override semantics).
 	local budget_script="$REPO_ROOT/.claude/scripts/cr/rate-budget.sh"
+	[ -x "$budget_script" ] || budget_script="$_SCRIPT_DIR/rate-budget.sh"
 	if [ ! -x "$budget_script" ]; then
 		echo ""
 		return
