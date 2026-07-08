@@ -172,6 +172,7 @@ teardown() {
 	git add .coderabbit.yaml
 	run bash "$GATE"
 	[ "$status" -eq 0 ]
+	[ -z "$output" ] # clean pass is silent
 	# ...and FAIL (drift) when composed still carries the deleted overlay.
 	git checkout -q HEAD -- .coderabbit.yaml # restore overlay-bearing composed
 	git rm -q --cached .coderabbit.overlay.yaml 2>/dev/null || true

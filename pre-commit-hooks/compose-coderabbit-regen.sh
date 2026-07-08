@@ -54,7 +54,7 @@ COMPOSED_F=".coderabbit.yaml"
 # --no-renames: with rename detection on, a staged rename of a trio file
 # surfaces only under its NEW name (R) — the removal of .coderabbit.yaml
 # itself would be invisible here and the gate would early-exit 0 (phase2).
-if ! STAGED_ALL=$(git diff --cached --no-renames --name-only --diff-filter=ACMRD 2>/dev/null); then
+if ! STAGED_ALL=$(git diff --cached --no-renames --name-only --diff-filter=ACMRDT 2>/dev/null); then
 	echo "compose-coderabbit-regen: git diff --cached failed — refusing (fail-closed)" >&2
 	exit 2
 fi
