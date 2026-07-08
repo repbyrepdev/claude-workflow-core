@@ -51,7 +51,10 @@ COMPOSED_F=".coderabbit.yaml"
 
 # 1. Trio staged? Fail-closed on index errors (a masked git failure would
 # read as "nothing staged" → exit 0 false-pass).
-if ! STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACMRD 2>/dev/null); then
+# --no-renames: with rename detection on, a staged rename of a trio file
+# surfaces only under its NEW name (R) — the removal of .coderabbit.yaml
+# itself would be invisible here and the gate would early-exit 0 (phase2).
+if ! STAGED_ALL=$(git diff --cached --no-renames --name-only --diff-filter=ACMRD 2>/dev/null); then
 	echo "compose-coderabbit-regen: git diff --cached failed — refusing (fail-closed)" >&2
 	exit 2
 fi

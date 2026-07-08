@@ -51,6 +51,9 @@ setup() {
 	match_cmd_at_anchor_hardened "$GPM" "builtin gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "sudo -E gh pr merge 5"
 	match_cmd_at_anchor_hardened "$GPM" "env X=1 gh pr merge 5"
+	# phase2: command/builtin take dash-flags too (command -p, env -i).
+	match_cmd_at_anchor_hardened "$GPM" "command -p gh pr merge 5"
+	match_cmd_at_anchor_hardened "$GPM" "env -i gh pr merge 5"
 }
 
 @test "hardened: env assignments with quoted values hit (#2396)" {

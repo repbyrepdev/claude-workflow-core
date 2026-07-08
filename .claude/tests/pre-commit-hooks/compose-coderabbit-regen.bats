@@ -61,6 +61,9 @@ teardown() {
 	git add .coderabbit.overlay.yaml .coderabbit.yaml
 	run bash "$GATE"
 	[ "$status" -eq 0 ]
+	# A clean pass is SILENT — drift/warn text with exit 0 would be a
+	# report-without-refusal regression.
+	[ -z "$output" ]
 }
 
 @test "stale composed: overlay staged WITHOUT recompose fails (exit 1 + remediation)" {
@@ -139,7 +142,8 @@ teardown() {
 	git add .coderabbit.yaml
 	run bash "$GATE"
 	[ "$status" -eq 0 ]
-	[[ $output != *"unbound variable"* ]]
+	# Positive success shape (silent clean pass), not just crash-absence.
+	[ -z "$output" ]
 }
 
 @test "untracked-but-present composed refuses — commit ships without it (r2 comment-analyzer)" {
