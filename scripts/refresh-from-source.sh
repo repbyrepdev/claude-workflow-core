@@ -278,29 +278,34 @@ _mirror_test_drift_gate() {
 	}
 
 	# Collect the consumer *.bats whose `# covers:` header names a replaced
-	# hook by BASENAME (the full consumer-relative path always contains the
-	# basename, so a basename match subsumes a path match). The basename is
-	# boundary-anchored between non-alphanumerics so `foo.sh` does not
-	# spuriously match `barfoo.sh`; the header tolerates leading whitespace.
-	# Restricted to *.bats so a stray non-bats file carrying a `# covers:`
-	# line is never fed to `bats`. A grep ERROR (rc>1: unreadable dir / bad
-	# pattern) is surfaced loudly, NOT swallowed as a clean no-match (rc=1).
-	# Dedup via `sort -u` (no associative arrays — bash 3.2, the macOS
-	# system bash, like the rest of this script). `replaced` is non-empty
-	# (caller guard), so the loop never expands an empty array under set -u.
+	# hook by its SSOT-relative path (the consumer-relative path with the
+	# `.claude/` prefix stripped, e.g. `hooks/foo.sh` or `skills/foo/run.sh`).
+	# Matching the PATH, not just the basename, is required because skill
+	# wrappers all share the basename `run.sh` — a basename match would
+	# collide across skills and pull in unrelated bats. The path is
+	# boundary-anchored between non-alphanumerics so `hooks/foo.sh` does not
+	# spuriously match `otherhooks/foo.sh`, and it matches a `# covers:`
+	# header written either with or without the `.claude/` prefix (both the
+	# consumer `.claude/hooks/foo.sh` and the SSOT `hooks/foo.sh` forms end
+	# with the same suffix). Restricted to *.bats so a stray non-bats file
+	# carrying a `# covers:` line is never fed to `bats`. A grep ERROR (rc>1:
+	# unreadable dir / bad pattern) is surfaced loudly, NOT swallowed as a
+	# clean no-match (rc=1). Dedup via `sort -u` (no associative arrays —
+	# bash 3.2, the macOS system bash). `replaced` is non-empty (caller
+	# guard), so the loop never expands an empty array under set -u.
 	local bats_to_run=() covering
 	while IFS= read -r covering; do
 		[ -n "$covering" ] && bats_to_run+=("$covering")
 	done < <(
 		for hook in "${replaced[@]}"; do
-			base=${hook##*/}
-			esc=${base//./\\.}
+			relpath=${hook#.claude/}
+			esc=${relpath//./\\.}
 			grc=0
 			grep -rlE --include='*.bats' \
-				"^#[[:space:]]*covers:.*[^[:alnum:]]${esc}(\$|[^[:alnum:]])" \
+				"^#[[:space:]]*covers:.*(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" \
 				"$tests_dir" 2>/dev/null || grc=$?
 			[ "$grc" -gt 1 ] &&
-				echo "  [drift-gate] WARN: grep failed (rc=$grc) scanning $tests_dir for $base" >&2
+				echo "  [drift-gate] WARN: grep failed (rc=$grc) scanning $tests_dir for $relpath" >&2
 		done | sort -u
 	)
 	[ "${#bats_to_run[@]}" -gt 0 ] || {

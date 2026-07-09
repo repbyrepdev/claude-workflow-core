@@ -154,6 +154,29 @@ EOF
 	[[ $output == *"myskill.bats"* ]]
 }
 
+@test "gate: skill basename collision — matching keys on the full path, not the shared run.sh" {
+	# Every skill wrapper shares the basename run.sh, so a basename match
+	# would pull in a bats covering a DIFFERENT skill. Replacing myskill/
+	# run.sh must NOT run a RED test that covers otherskill/run.sh.
+	mkdir -p "$CONSUMER/.claude/skills/myskill" \
+		"$CONSUMER/.claude/skills/otherskill" "$CONSUMER/.claude/tests/skills"
+	printf '#!/usr/bin/env bash\necho skill-old\n' >"$CONSUMER/.claude/skills/myskill/run.sh"
+	printf '#!/usr/bin/env bash\necho other\n' >"$CONSUMER/.claude/skills/otherskill/run.sh"
+	# A RED covering test for the OTHER skill's run.sh — must be ignored,
+	# since otherskill is not in the sync set and did not drift.
+	cat >"$CONSUMER/.claude/tests/skills/otherskill.bats" <<'EOF'
+#!/usr/bin/env bats
+# covers: .claude/skills/otherskill/run.sh
+@test "other" { false; }
+EOF
+	# myskill drifts but has no covering test; a basename match would
+	# wrongly grab otherskill.bats and block with rc=4.
+	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output == *"no consumer bats cover"* ]]
+}
+
 @test "gate: --dry-run never invokes the gate even with a stale test → rc=0" {
 	_write_test testhook old
 	_refresh --dry-run --consumer-path "$CONSUMER"
