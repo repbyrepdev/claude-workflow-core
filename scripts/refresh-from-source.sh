@@ -20,7 +20,11 @@ set -euo pipefail
 #       .source-hashes.json)
 #   3 — partial failure (some file copies failed mid-cascade — audit log
 #       lists which; consumer left in inconsistent state, manual recovery
-#       required)
+#       required). Takes precedence over 4: an inconsistent filesystem is
+#       reported even when a covering test also drifted.
+#   4 — mirror-test drift gate blocked (#2525): a replaced mirror hook's
+#       consumer bats still assert the OLD contract. Refresh those tests in
+#       this cascade PR, or override with REFRESH_DRIFT_GATE_SKIP=1.
 #
 # Deferred behaviors (gated on other unshipped subs):
 #   - settings.json re-render via templates/settings.json.tpl — Sub 12
@@ -238,6 +242,125 @@ _load_overrides_paths() {
 	fi
 }
 
+# #2525 mirror-test drift gate. Given a consumer path + the list of replaced
+# mirror shell files (consumer-relative, e.g. .claude/hooks/phase1-scaler.sh),
+# find the consumer's bats whose `# covers:` header names each replaced hook
+# and run them. A red covering test means the cascade updated the hook but its
+# consumer-local test still asserts the OLD contract — fail loud (return 1) so
+# the operator refreshes the tests in the SAME cascade PR.
+#
+# Best-effort, not airtight. Covering-test discovery is a `# covers:` grep, so
+# a header written in a shape the pattern misses is treated as "no coverage"
+# (return 0). A covering test whose cases all `skip` (e.g. a `command -v yq ||
+# skip` guard in a lean env) exits 0 but verifies NOTHING — it is reported as
+# UNVERIFIED (a loud warning), never scored as a silent pass ("bats skip =
+# pass" trap). Returns 0 (with a note) when it genuinely cannot verify — bats
+# absent, no test tree, or no covering test found — and only returns 1 on an
+# actual red covering test. Escape hatch for a genuine unrelated pre-existing
+# failure: REFRESH_DRIFT_GATE_SKIP=1.
+_mirror_test_drift_gate() {
+	local cpath=$1 pver=$2
+	shift 2
+	local replaced=("$@")
+
+	if [ "${REFRESH_DRIFT_GATE_SKIP:-0}" = "1" ]; then
+		echo "  [drift-gate] skipped via REFRESH_DRIFT_GATE_SKIP=1" >&2
+		return 0
+	fi
+	if ! command -v bats >/dev/null 2>&1; then
+		echo "  [drift-gate] WARN: bats not installed — cannot verify mirror-test drift (install bats to enforce)" >&2
+		return 0
+	fi
+	local tests_dir="$cpath/.claude/tests"
+	[ -d "$tests_dir" ] || {
+		echo "  [drift-gate] consumer keeps no .claude/tests tree — nothing to verify" >&2
+		return 0
+	}
+
+	# Collect the consumer *.bats whose `# covers:` header names a replaced
+	# hook by its SSOT-relative path (the consumer-relative path with the
+	# `.claude/` prefix stripped, e.g. `hooks/foo.sh` or `skills/foo/run.sh`).
+	# Matching the PATH, not just the basename, is required because skill
+	# wrappers all share the basename `run.sh` — a basename match would
+	# collide across skills and pull in unrelated bats. The path is
+	# boundary-anchored between non-alphanumerics so `hooks/foo.sh` does not
+	# spuriously match `otherhooks/foo.sh`, and it matches a `# covers:`
+	# header written either with or without the `.claude/` prefix (both the
+	# consumer `.claude/hooks/foo.sh` and the SSOT `hooks/foo.sh` forms end
+	# with the same suffix). Restricted to *.bats so a stray non-bats file
+	# carrying a `# covers:` line is never fed to `bats`. A grep ERROR (rc>1:
+	# unreadable dir / bad pattern) is surfaced loudly, NOT swallowed as a
+	# clean no-match (rc=1). Dedup via `sort -u` (no associative arrays —
+	# bash 3.2, the macOS system bash). `replaced` is non-empty (caller
+	# guard), so the loop never expands an empty array under set -u.
+	local bats_to_run=() covering
+	while IFS= read -r covering; do
+		[ -n "$covering" ] && bats_to_run+=("$covering")
+	done < <(
+		for hook in "${replaced[@]}"; do
+			relpath=${hook#.claude/}
+			esc=${relpath//./\\.}
+			grc=0
+			grep -rlE --include='*.bats' \
+				"^#[[:space:]]*covers:.*(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" \
+				"$tests_dir" 2>/dev/null || grc=$?
+			[ "$grc" -gt 1 ] &&
+				echo "  [drift-gate] WARN: grep failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+		done | sort -u
+	)
+	[ "${#bats_to_run[@]}" -gt 0 ] || {
+		echo "  [drift-gate] no consumer bats cover the ${#replaced[@]} replaced mirror hook(s) — nothing to verify" >&2
+		return 0
+	}
+
+	echo "  [drift-gate] verifying ${#bats_to_run[@]} consumer bats covering the replaced v${pver} mirror hook(s)..."
+	local failed=() unverified=()
+	local b rel out
+	for b in "${bats_to_run[@]}"; do
+		rel=${b#"$cpath"/}
+		# Capture stdout+stderr (not >/dev/null) so a red run can surface
+		# WHICH assertion failed, and so an all-skipped run is detected.
+		# Run the CONSUMER-RELATIVE path after cd so a relative --consumer-
+		# path (e.g. ./consumer) doesn't double up into a non-existent path.
+		if out=$(cd "$cpath" && bats "$rel" 2>&1); then
+			if printf '%s\n' "$out" | grep -q '# skip'; then
+				echo "    ⚠ $rel (contains skipped case(s) — drift NOT fully verified)"
+				unverified+=("$rel")
+			else
+				echo "    ✓ $rel"
+			fi
+		else
+			echo "    ✗ $rel (drifted from the refreshed hook contract)"
+			printf '%s\n' "$out" | grep -E '^(not ok|# )' | sed 's/^/        /' >&2 || true
+			failed+=("$rel")
+		fi
+	done
+
+	if [ "${#failed[@]}" -gt 0 ]; then
+		{
+			echo ""
+			echo "  [drift-gate] BLOCKED: ${#failed[@]} consumer test file(s) drifted from the refreshed v${pver} mirror hooks:"
+			local f
+			for f in "${failed[@]}"; do echo "    - $f"; done
+			echo "  The cascade updated the mirror hooks but these consumer tests still assert"
+			echo "  the OLD contract. Refresh them to the current contract in THIS cascade PR"
+			echo "  (see repbyrepdev/claude-workflow-core#2525), then re-run refresh-from-source."
+			echo "  Genuine unrelated pre-existing failure? Override with REFRESH_DRIFT_GATE_SKIP=1."
+		} >&2
+		return 1
+	fi
+	if [ "${#unverified[@]}" -gt 0 ]; then
+		# Don't claim a clean "passed ✓" when some covering tests only
+		# skipped — that would be the same false-verified signal the gate
+		# exists to catch.
+		echo "  [drift-gate] WARN: ${#unverified[@]} covering test(s) only skipped — drift NOT verified; check their skip guards" >&2
+		echo "  [drift-gate] covering consumer tests ran, but ${#unverified[@]} were UNVERIFIED (skipped)"
+		return 0
+	fi
+	echo "  [drift-gate] covering consumer tests passed against the refreshed hooks ✓"
+	return 0
+}
+
 _refresh_one_consumer() {
 	local cpath=$1
 	if [ ! -d "$cpath" ]; then
@@ -285,6 +408,10 @@ _refresh_one_consumer() {
 	# consumer's tracked .new (already cleaned up via mv) doesn't pollute
 	# this consumer's trap-cleanup behavior.
 	_in_flight_new=()
+	# #2525 mirror-test drift gate: collect the consumer-relative paths of
+	# replaced mirror SHELL files (hooks/ + _lib/) so we can run their
+	# covering consumer bats afterward and fail loud on drift.
+	local _replaced_sh=()
 
 	# Filter to --files subset if requested.
 	local filter_arr=()
@@ -384,6 +511,14 @@ _refresh_one_consumer() {
 		[ -x "$src" ] && chmod +x "$dst"
 		echo "  [REPLACED] $relpath (dst=${dst_hash:0:8} → src=${src_hash:0:8})"
 		n_replaced=$((n_replaced + 1))
+		# #2525: track replaced mirror shell files for the drift gate.
+		case "$consumer_rel" in
+		# In `case` globs `*` spans `/`, so `.claude/skills/*.sh` already
+		# covers a skill's run.sh at any nesting depth.
+		.claude/hooks/*.sh | .claude/_lib/*.sh | .claude/skills/*.sh)
+			_replaced_sh+=("$consumer_rel")
+			;;
+		esac
 	done <<<"$ssot_paths"
 
 	# Audit log to consumer.
@@ -414,15 +549,34 @@ _refresh_one_consumer() {
 
 	echo "  Summary: clean=$n_clean replaced=$n_replaced overridden=$n_overridden failed=$n_failed"
 
+	# A partial-copy failure leaves the consumer in an inconsistent state
+	# (rc=3) that outranks a mere test drift (rc=4) — report it FIRST so the
+	# more-urgent "manual recovery required" signal is never masked by the
+	# drift gate below.
+	if [ "$n_failed" -gt 0 ]; then
+		return 3
+	fi
+
+	# #2525 mirror-test drift gate. A cascade re-pin updates the consumer's
+	# mirror HOOKS but the consumer's own bats copies of those hooks are not
+	# in the sync set, so they drift from the hook contract and go red —
+	# silently, since consumer bats is not a required CI check. Run the
+	# covering consumer bats for every replaced mirror hook NOW and fail
+	# loud, so drift is caught at refresh time (before a cascade PR opens)
+	# instead of by accident mid-review. Real (non-dry) runs only. The
+	# helper returns 1 on drift; map that to the caller's rc=4 contract.
+	if [ "$DRY_RUN" -eq 0 ] && [ "${#_replaced_sh[@]}" -gt 0 ]; then
+		if ! _mirror_test_drift_gate "$cpath" "$plugin_version" "${_replaced_sh[@]}"; then
+			return 4
+		fi
+	fi
+
 	# TODO (deferred to other unshipped subs):
 	#   * Re-render consumer's settings.json from templates/settings.json.tpl
 	#     (Sub 12) — preserves operator-only voice/marketplace sections.
 	#   * Post-cascade `hash-drift.sh --verify` (Sub 10) to confirm zero
 	#     drift on cascade-target paths.
 
-	if [ "$n_failed" -gt 0 ]; then
-		return 3
-	fi
 	return 0
 }
 
