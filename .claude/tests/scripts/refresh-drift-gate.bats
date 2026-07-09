@@ -53,19 +53,22 @@ teardown() {
 # fine. The mirror sources are the NEW contract. Includes a hook, a second
 # hook, a skill run.sh, and a non-hook (.github) file to exercise tracking.
 _build_plugin() {
-	mkdir -p "$PLUGIN/scripts" "$PLUGIN/hooks" "$PLUGIN/skills/myskill" \
+	mkdir -p "$PLUGIN/scripts" "$PLUGIN/hooks" "$PLUGIN/_lib" "$PLUGIN/skills/myskill" \
 		"$PLUGIN/.github" "$PLUGIN/.claude" "$PLUGIN/.claude-plugin"
 	cp "$REAL_SCRIPT" "$PLUGIN/scripts/refresh-from-source.sh"
 	chmod +x "$PLUGIN/scripts/refresh-from-source.sh"
 	printf '#!/usr/bin/env bash\necho new\n' >"$PLUGIN/hooks/testhook.sh"
 	printf '#!/usr/bin/env bash\necho other-new\n' >"$PLUGIN/hooks/other.sh"
+	printf '#!/usr/bin/env bash\n: lib\n' >"$PLUGIN/_lib/broken.sh"
 	printf '#!/usr/bin/env bash\necho skill-new\n' >"$PLUGIN/skills/myskill/run.sh"
 	printf 'new-config\n' >"$PLUGIN/.github/thing.yml"
-	chmod +x "$PLUGIN/hooks/testhook.sh" "$PLUGIN/hooks/other.sh" "$PLUGIN/skills/myskill/run.sh"
+	chmod +x "$PLUGIN/hooks/testhook.sh" "$PLUGIN/hooks/other.sh" \
+		"$PLUGIN/_lib/broken.sh" "$PLUGIN/skills/myskill/run.sh"
 	local dummy='0000000000000000000000000000000000000000000000000000000000000000'
 	jq -n --arg h "$dummy" '{files: {
 		"hooks/testhook.sh": $h,
 		"hooks/other.sh": $h,
+		"_lib/broken.sh": $h,
 		"skills/myskill/run.sh": $h,
 		".github/thing.yml": $h
 	}}' >"$PLUGIN/.claude/.source-hashes.json"
@@ -227,13 +230,16 @@ EOF
 }
 
 @test "gate: partial-copy failure (rc=3) takes precedence over drift (rc=4)" {
-	# other.sh's plugin SOURCE is made unreadable so its shasum fails
-	# (n_failed>0), WHILE testhook drifts. rc=3 (inconsistent state) must
-	# win over rc=4 (drift) — the n_failed check runs before the gate.
-	chmod 000 "$PLUGIN/hooks/other.sh"
+	# The consumer's .claude/_lib is a FILE, so copying the mirror
+	# _lib/broken.sh into it fails ("Not a directory" → n_failed>0),
+	# WHILE testhook drifts. rc=3 (inconsistent state) must win over rc=4
+	# (drift) — the n_failed check runs before the gate. Using an
+	# unwritable destination parent instead of chmod 000 on the source
+	# keeps the failure privilege-independent (root can read 000 files, so
+	# a chmod-based shasum failure silently regresses to rc=4 under root).
+	printf 'not-a-dir\n' >"$CONSUMER/.claude/_lib"
 	_write_test testhook old
 	_refresh --consumer-path "$CONSUMER"
-	chmod 644 "$PLUGIN/hooks/other.sh" # restore so teardown can clean up
 	[ "$status" -eq 3 ]
 }
 
