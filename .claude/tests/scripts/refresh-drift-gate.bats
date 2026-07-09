@@ -241,6 +241,11 @@ EOF
 	_write_test testhook old
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 3 ]
+	# Assert rc=3 came from the copy-failure path specifically (not some
+	# other n_failed source), so a future regression can't green this test
+	# with the wrong failure. The script emits a [FAIL] line naming the
+	# offending mirror file.
+	[[ $output == *"[FAIL] _lib/broken.sh"* ]]
 }
 
 @test "gate: multi-consumer — a drifted consumer surfaces exit 4 overall" {
