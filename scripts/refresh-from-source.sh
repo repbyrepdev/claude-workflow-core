@@ -315,7 +315,9 @@ _mirror_test_drift_gate() {
 		rel=${b#"$cpath"/}
 		# Capture stdout+stderr (not >/dev/null) so a red run can surface
 		# WHICH assertion failed, and so an all-skipped run is detected.
-		if out=$(cd "$cpath" && bats "$b" 2>&1); then
+		# Run the CONSUMER-RELATIVE path after cd so a relative --consumer-
+		# path (e.g. ./consumer) doesn't double up into a non-existent path.
+		if out=$(cd "$cpath" && bats "$rel" 2>&1); then
 			if printf '%s\n' "$out" | grep -q '# skip'; then
 				echo "    ⚠ $rel (contains skipped case(s) — drift NOT fully verified)"
 				unverified+=("$rel")
@@ -343,7 +345,12 @@ _mirror_test_drift_gate() {
 		return 1
 	fi
 	if [ "${#unverified[@]}" -gt 0 ]; then
+		# Don't claim a clean "passed ✓" when some covering tests only
+		# skipped — that would be the same false-verified signal the gate
+		# exists to catch.
 		echo "  [drift-gate] WARN: ${#unverified[@]} covering test(s) only skipped — drift NOT verified; check their skip guards" >&2
+		echo "  [drift-gate] covering consumer tests ran, but ${#unverified[@]} were UNVERIFIED (skipped)"
+		return 0
 	fi
 	echo "  [drift-gate] covering consumer tests passed against the refreshed hooks ✓"
 	return 0

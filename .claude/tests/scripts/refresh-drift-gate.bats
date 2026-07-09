@@ -13,11 +13,23 @@
 # drives the REAL refresh-from-source.sh against them.
 
 setup() {
-	command -v bats >/dev/null || skip "bats not on PATH"
-	command -v yq >/dev/null || skip "yq required"
-	command -v jq >/dev/null || skip "jq required"
+	# Hard-fail (not `skip`) on a missing prerequisite: a skipped bats test
+	# counts as passing, so skipping here would silently green the whole
+	# drift-gate suite in a lean env — the exact "bats skip = pass" trap
+	# this gate exists to catch. In CI these tools are always present, so
+	# this only fires (loudly) on a genuinely-broken dev environment.
+	local t
+	for t in yq jq; do
+		command -v "$t" >/dev/null || {
+			echo "FATAL: required tool '$t' missing — cannot verify the drift gate" >&2
+			return 1
+		}
+	done
 	REAL_SCRIPT="${BATS_TEST_DIRNAME}/../../../scripts/refresh-from-source.sh"
-	[ -f "$REAL_SCRIPT" ] || skip "refresh-from-source.sh not found"
+	[ -f "$REAL_SCRIPT" ] || {
+		echo "FATAL: refresh-from-source.sh not found at $REAL_SCRIPT" >&2
+		return 1
+	}
 	TEST_TMP=$(mktemp -d -t rfs-drift.XXXXXX) || {
 		echo "FATAL mktemp" >&2
 		return 1
@@ -116,8 +128,9 @@ _refresh() { run bash "$PLUGIN/scripts/refresh-from-source.sh" "$@"; }
 	_write_test testhook new 'skip "dependency absent"'
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
-	[[ $output == *"NOT verified"* ]] || [[ $output == *"only skipped"* ]]
-	[[ $output != *"covering consumer tests passed against the refreshed hooks ✓"* ]] || true
+	[[ $output == *"UNVERIFIED"* ]] || [[ $output == *"NOT verified"* ]]
+	# Must NOT claim a clean pass when the covering test only skipped.
+	[[ $output != *"covering consumer tests passed against the refreshed hooks ✓"* ]]
 }
 
 @test "gate: drifted SKILL run.sh is tracked and gated (#2525 skills coverage)" {
@@ -134,7 +147,8 @@ _refresh() { run bash "$PLUGIN/scripts/refresh-from-source.sh" "$@"; }
 	[ "$output" = "skill-old" ]
 }
 EOF
-	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
+	# testhook has no covering bats (setup seeds only the hook), so only the
+	# skill drifts here — the scenario stays focused on skill gating.
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 4 ]
 	[[ $output == *"myskill.bats"* ]]
