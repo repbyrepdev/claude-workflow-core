@@ -37,83 +37,210 @@ teardown() {
 
 # Scratch plugin: the script derives PLUGIN_ROOT from its own dir, so the
 # copy at $PLUGIN/scripts/ makes PLUGIN_ROOT=$PLUGIN. The SSOT list needs
-# only correct KEYS (paths); the hash VALUE is recomputed live, so a dummy
-# is fine. testhook.sh is the NEW contract (`echo new`).
+# only correct KEYS (paths); hash VALUES are recomputed live, so dummies are
+# fine. The mirror sources are the NEW contract. Includes a hook, a second
+# hook, a skill run.sh, and a non-hook (.github) file to exercise tracking.
 _build_plugin() {
-	mkdir -p "$PLUGIN/scripts" "$PLUGIN/hooks" "$PLUGIN/.claude" "$PLUGIN/.claude-plugin" "$PLUGIN/.github"
+	mkdir -p "$PLUGIN/scripts" "$PLUGIN/hooks" "$PLUGIN/skills/myskill" \
+		"$PLUGIN/.github" "$PLUGIN/.claude" "$PLUGIN/.claude-plugin"
 	cp "$REAL_SCRIPT" "$PLUGIN/scripts/refresh-from-source.sh"
 	chmod +x "$PLUGIN/scripts/refresh-from-source.sh"
 	printf '#!/usr/bin/env bash\necho new\n' >"$PLUGIN/hooks/testhook.sh"
-	chmod +x "$PLUGIN/hooks/testhook.sh"
-	printf '{"files": {"hooks/testhook.sh": "0000000000000000000000000000000000000000000000000000000000000000"}}\n' \
-		>"$PLUGIN/.claude/.source-hashes.json"
+	printf '#!/usr/bin/env bash\necho other-new\n' >"$PLUGIN/hooks/other.sh"
+	printf '#!/usr/bin/env bash\necho skill-new\n' >"$PLUGIN/skills/myskill/run.sh"
+	printf 'new-config\n' >"$PLUGIN/.github/thing.yml"
+	chmod +x "$PLUGIN/hooks/testhook.sh" "$PLUGIN/hooks/other.sh" "$PLUGIN/skills/myskill/run.sh"
+	local dummy='0000000000000000000000000000000000000000000000000000000000000000'
+	jq -n --arg h "$dummy" '{files: {
+		"hooks/testhook.sh": $h,
+		"hooks/other.sh": $h,
+		"skills/myskill/run.sh": $h,
+		".github/thing.yml": $h
+	}}' >"$PLUGIN/.claude/.source-hashes.json"
 	printf '{"name":"t","version":"9.9.9"}\n' >"$PLUGIN/.claude-plugin/plugin.json"
 	printf 'consumers: []\n' >"$PLUGIN/.github/consumers.yml"
 }
 
-# Scratch consumer: OLD mirror hook (`echo old`, different hash → refresh
-# will REPLACE it) + a covering bats. The bats body is written per-test.
+# Scratch consumer: OLD mirror files (different hash → refresh REPLACES) +
+# a covering bats for testhook (body written per-test). Only testhook +
+# its test are seeded by default; other files are added per-test.
 _build_consumer() {
-	mkdir -p "$CONSUMER/.claude/hooks" "$CONSUMER/.claude/tests/hooks"
+	mkdir -p "$CONSUMER/.claude/hooks" "$CONSUMER/.claude/tests/hooks" "$CONSUMER/.github"
 	printf '#!/usr/bin/env bash\necho old\n' >"$CONSUMER/.claude/hooks/testhook.sh"
+	printf 'old-config\n' >"$CONSUMER/.github/thing.yml"
 	chmod +x "$CONSUMER/.claude/hooks/testhook.sh"
 }
 
-# Write the consumer's covering bats asserting a given expected output.
-_write_consumer_test() { # $1 = expected hook output
-	cat >"$CONSUMER/.claude/tests/hooks/testhook.bats" <<EOF
+# Write a covering bats for a hook asserting a given expected output.
+# $1=hook basename (no .sh)  $2=expected output  [$3=extra body lines]
+_write_test() {
+	cat >"$CONSUMER/.claude/tests/hooks/$1.bats" <<EOF
 #!/usr/bin/env bats
-# covers: .claude/hooks/testhook.sh
-@test "testhook emits the expected contract" {
-	run bash "\$BATS_TEST_DIRNAME/../../hooks/testhook.sh"
+# covers: .claude/hooks/$1.sh
+@test "$1 emits the expected contract" {
+	${3:-}
+	run bash "\$BATS_TEST_DIRNAME/../../hooks/$1.sh"
 	[ "\$status" -eq 0 ]
-	[ "\$output" = "$1" ]
+	[ "\$output" = "$2" ]
 }
 EOF
 }
 
-@test "drift gate: consumer test matching the NEW hook contract → refresh rc=0" {
-	# Test asserts `new` — after the hook is refreshed to `echo new`, it
-	# passes, so the gate is satisfied and refresh succeeds.
-	_write_consumer_test new
-	run bash "$PLUGIN/scripts/refresh-from-source.sh" --consumer-path "$CONSUMER"
+_refresh() { run bash "$PLUGIN/scripts/refresh-from-source.sh" "$@"; }
+
+@test "gate: covering test matching the NEW contract → rc=0, verified" {
+	_write_test testhook new
+	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
 	[[ $output == *"[REPLACED] hooks/testhook.sh"* ]]
-	[[ $output == *"drift-gate"* ]]
-	[[ $output == *"all covering consumer tests pass"* ]]
-	# The hook was actually refreshed to the new contract.
+	[[ $output == *"covering consumer tests passed"* ]]
 	[ "$(bash "$CONSUMER/.claude/hooks/testhook.sh")" = "new" ]
 }
 
-@test "drift gate: STALE consumer test (asserts OLD contract) → refresh rc=4, BLOCKED" {
-	# Test still asserts `old` — after the hook is refreshed to `echo new`
-	# it FAILS, exactly the silent-drift the gate must catch. refresh must
-	# exit 4 and name the drifted file.
-	_write_consumer_test old
-	run bash "$PLUGIN/scripts/refresh-from-source.sh" --consumer-path "$CONSUMER"
+@test "gate: STALE covering test (OLD contract) → rc=4 BLOCKED, hook replaced + audited" {
+	_write_test testhook old
+	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 4 ]
-	[[ $output == *"[REPLACED] hooks/testhook.sh"* ]]
-	[[ $output == *"drift-gate"* ]]
 	[[ $output == *"BLOCKED"* ]]
 	[[ $output == *"testhook.bats"* ]]
+	# Replaced-but-blocked: the gate runs AFTER replacement + audit, so the
+	# operator must recover from a live-but-flagged change.
+	[ "$(bash "$CONSUMER/.claude/hooks/testhook.sh")" = "new" ]
+	[ -f "$CONSUMER/.claude/logs/refresh-from-source.jsonl" ]
 }
 
-@test "drift gate: REFRESH_DRIFT_GATE_SKIP=1 overrides a drifted test → rc=0" {
-	# The escape hatch for a genuine unrelated pre-existing failure: the
-	# stale test still drifts, but the gate is skipped so refresh succeeds.
-	_write_consumer_test old
+@test "gate: SKIPPED covering test → UNVERIFIED warning, NOT a silent pass (bats skip=pass trap)" {
+	# The covering test skips (as a lean-env `command -v foo || skip` guard
+	# would). bats exits 0, but it verified NOTHING — the gate must warn,
+	# not report a green pass.
+	_write_test testhook new 'skip "dependency absent"'
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output == *"NOT verified"* ]] || [[ $output == *"only skipped"* ]]
+	[[ $output != *"covering consumer tests passed against the refreshed hooks ✓"* ]] || true
+}
+
+@test "gate: drifted SKILL run.sh is tracked and gated (#2525 skills coverage)" {
+	# skills/*/run.sh is in the SSOT sync set; a contract change must be
+	# gated like a hook. Seed the OLD skill mirror + a stale covering test.
+	mkdir -p "$CONSUMER/.claude/skills/myskill" "$CONSUMER/.claude/tests/skills"
+	printf '#!/usr/bin/env bash\necho skill-old\n' >"$CONSUMER/.claude/skills/myskill/run.sh"
+	chmod +x "$CONSUMER/.claude/skills/myskill/run.sh"
+	cat >"$CONSUMER/.claude/tests/skills/myskill.bats" <<'EOF'
+#!/usr/bin/env bats
+# covers: .claude/skills/myskill/run.sh
+@test "skill run emits contract" {
+	run bash "$BATS_TEST_DIRNAME/../../skills/myskill/run.sh"
+	[ "$output" = "skill-old" ]
+}
+EOF
+	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 4 ]
+	[[ $output == *"myskill.bats"* ]]
+}
+
+@test "gate: --dry-run never invokes the gate even with a stale test → rc=0" {
+	_write_test testhook old
+	_refresh --dry-run --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output != *"drift-gate"* ]]
+	[[ $output != *"BLOCKED"* ]]
+}
+
+@test "gate: no covering test → no-op, rc=0" {
+	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output == *"no consumer bats cover"* ]]
+}
+
+@test "gate: no .claude/tests tree → no-op with a note, rc=0" {
+	rm -rf "$CONSUMER/.claude/tests"
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output == *"no .claude/tests tree"* ]]
+}
+
+@test "gate: replacing only a non-hook (.github) file does NOT invoke the gate" {
+	# Only .github/thing.yml drifts (hook + skill already match). The
+	# tracking case excludes non-shell/non-mirror paths, so no gate runs.
+	printf '#!/usr/bin/env bash\necho new\n' >"$CONSUMER/.claude/hooks/testhook.sh"
+	_write_test testhook new
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output == *"[REPLACED] .github/thing.yml"* ]]
+	[[ $output != *"drift-gate] verifying"* ]]
+}
+
+@test "gate: grep is basename-anchored — foo.sh must not match barfoo.sh" {
+	# A test covering a DIFFERENT hook whose basename ends in the replaced
+	# hook's basename must not be pulled in. Cover 'xtesthook.sh' (a
+	# non-replaced name) and assert the gate finds no covering test for the
+	# replaced 'testhook.sh'.
+	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
+	cat >"$CONSUMER/.claude/tests/hooks/decoy.bats" <<'EOF'
+#!/usr/bin/env bats
+# covers: .claude/hooks/xtesthook.sh
+@test "decoy" { true; }
+EOF
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	[[ $output == *"no consumer bats cover"* ]]
+}
+
+@test "gate: partial-copy failure (rc=3) takes precedence over drift (rc=4)" {
+	# other.sh's plugin SOURCE is made unreadable so its shasum fails
+	# (n_failed>0), WHILE testhook drifts. rc=3 (inconsistent state) must
+	# win over rc=4 (drift) — the n_failed check runs before the gate.
+	chmod 000 "$PLUGIN/hooks/other.sh"
+	_write_test testhook old
+	_refresh --consumer-path "$CONSUMER"
+	chmod 644 "$PLUGIN/hooks/other.sh" # restore so teardown can clean up
+	[ "$status" -eq 3 ]
+}
+
+@test "gate: multi-consumer — a drifted consumer surfaces exit 4 overall" {
+	# Two --consumer-path targets: one clean, one drifted. The worst-rc
+	# aggregation must exit 4, and a clean consumer processed after the
+	# drifted one must not reset it.
+	_write_test testhook new
+	local CONSUMER2="$TEST_TMP/consumer2"
+	mkdir -p "$CONSUMER2/.claude/hooks" "$CONSUMER2/.claude/tests/hooks"
+	printf '#!/usr/bin/env bash\necho old\n' >"$CONSUMER2/.claude/hooks/testhook.sh"
+	chmod +x "$CONSUMER2/.claude/hooks/testhook.sh"
+	cat >"$CONSUMER2/.claude/tests/hooks/testhook.bats" <<'EOF'
+#!/usr/bin/env bats
+# covers: .claude/hooks/testhook.sh
+@test "t" { run bash "$BATS_TEST_DIRNAME/../../hooks/testhook.sh"; [ "$output" = "old" ]; }
+EOF
+	# Drifted consumer2 processed AFTER clean consumer.
+	_refresh --consumer-path "$CONSUMER" --consumer-path "$CONSUMER2"
+	[ "$status" -eq 4 ]
+}
+
+@test "gate: one bats covering two replaced hooks runs once (dedup)" {
+	# other.sh also drifts; a single bats covers BOTH testhook + other.
+	printf '#!/usr/bin/env bash\necho old\n' >"$CONSUMER/.claude/hooks/other.sh"
+	chmod +x "$CONSUMER/.claude/hooks/other.sh"
+	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
+	cat >"$CONSUMER/.claude/tests/hooks/combo.bats" <<'EOF'
+#!/usr/bin/env bats
+# covers: .claude/hooks/testhook.sh .claude/hooks/other.sh
+@test "both" {
+	[ "$(bash "$BATS_TEST_DIRNAME/../../hooks/testhook.sh")" = "new" ]
+	[ "$(bash "$BATS_TEST_DIRNAME/../../hooks/other.sh")" = "other-new" ]
+}
+EOF
+	_refresh --consumer-path "$CONSUMER"
+	[ "$status" -eq 0 ]
+	# "verifying 1 consumer bats" — the shared file is deduped to a single run.
+	[[ $output == *"verifying 1 consumer bats"* ]]
+}
+
+@test "gate: REFRESH_DRIFT_GATE_SKIP=1 overrides a drifted test → rc=0" {
+	_write_test testhook old
 	run env REFRESH_DRIFT_GATE_SKIP=1 bash "$PLUGIN/scripts/refresh-from-source.sh" --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[REPLACED] hooks/testhook.sh"* ]]
 	[[ $output == *"drift-gate] skipped"* ]]
-}
-
-@test "drift gate: no covering consumer test → gate no-ops, refresh rc=0" {
-	# A consumer that keeps no bats covering the replaced hook has nothing
-	# to drift; the gate must not block (fails open with a note).
-	rm -f "$CONSUMER/.claude/tests/hooks/testhook.bats"
-	run bash "$PLUGIN/scripts/refresh-from-source.sh" --consumer-path "$CONSUMER"
-	[ "$status" -eq 0 ]
-	[[ $output == *"[REPLACED] hooks/testhook.sh"* ]]
-	[[ $output == *"no consumer bats cover"* ]]
 }
