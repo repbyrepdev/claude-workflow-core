@@ -265,7 +265,13 @@ _cmd_launders_mutation() {
 # BOUNDED (…output([[:space:]=]|$)) so semgrep's READ flag
 # --output-indicator-new/-old (a display glyph, not a file) is NOT rejected.
 _semgrep_has_write_flag() {
-	printf '%s' "$1" | grep -qE '(^|[[:space:]])-o|(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-local-builds)([[:space:]=]|$)'
+	# Short forms are matched as a CLUSTER (`-[a-zA-Z]*[ao]`) so both the bare
+	# `-a`/`-o`, the attached-value `-oFILE`, and a bundled `-qa`/`-qo` are
+	# caught — semgrep documents `-a/--autofix` (in-place source rewrite) and
+	# `-o/--output`, and a cluster is the same flag by another spelling.
+	# `--allow-*` is screened as a FAMILY (not just --allow-local-builds) since
+	# every member relaxes a sandbox/exec restriction.
+	printf '%s' "$1" | grep -qE '(^|[[:space:]])-[a-zA-Z]*[ao]|(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-[a-z-]+)([[:space:]=]|$)'
 }
 
 # Allow the cycle-advance/report verbs `ship-pr-cycle.sh next|resume|status|

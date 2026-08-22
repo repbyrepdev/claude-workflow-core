@@ -32,15 +32,31 @@ teardown() {
 	sha="0123456789abcdef0123456789abcdef01234567"
 	run phase05_log_no_reviewable_agents "codex" "$sha" "$LOG" "2026-07-09T00:00:00Z" 0
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	[ -f "$LOG" ]
 	[ "$(wc -l <"$LOG" | tr -d ' ')" -eq 1 ]
 	run jq -e --arg sha "$sha" '.sha==$sha and .cli=="codex" and .status=="skipped-no-reviewable-agents" and .findings==0 and .phase=="0.5" and .agent=="<all>"' "$LOG"
 	[ "$status" -eq 0 ]
 }
 
+@test "#2530 CR: an ABBREVIATED sha pin is normalized to the full 40-char commit" {
+	# Exercises the git rev-parse --verify branch in the helper — the phase0.5
+	# gate matches `.sha == $(git rev-parse HEAD)` EXACTLY, so a short pin (the
+	# copilot --sha form) must be widened or the row never advances the gate.
+	command -v git >/dev/null 2>&1 || skip "git unavailable"
+	short=$(git rev-parse --short HEAD 2>/dev/null) || skip "not in a git repo"
+	full=$(git rev-parse HEAD)
+	run phase05_log_no_reviewable_agents "copilot" "$short" "$LOG" "2026-07-09T00:00:00Z" 0
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+	run jq -e --arg sha "$full" '.sha == $sha' "$LOG"
+	[ "$status" -eq 0 ]
+}
+
 @test "#2530 attempted>0 → no-op (per-agent records already cover the SHA)" {
 	run phase05_log_no_reviewable_agents "codex" "0123456789abcdef0123456789abcdef01234567" "$LOG" "2026-07-09T00:00:00Z" 3
 	[ "$status" -eq 0 ]
+	[ -z "$output" ]
 	# setup() gives a fresh empty dir and nothing writes $LOG before this,
 	# so the no-op is proven by the log file never being created.
 	[ ! -f "$LOG" ]
