@@ -66,32 +66,6 @@ rm -f "$git_err"
 DIRECTIVE_DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
 [ -d "$DIRECTIVE_DIR" ] || exit 0
 
-# (#2535) True when the phase1 directive for $1 has been SATISFIED: the latest
-# round in that sha's review-log has every expected agent logged. Mirrors the
-# round-complete predicate in review-log.sh (same list-phase1-agents.sh SSOT and
-# the same comm -23 expected-vs-logged comparison) so the two can't disagree
-# about what "complete" means. Returns 1 (NOT complete → keep blocking) on ANY
-# error: missing log, missing/failed agent-list script, empty expected set, or
-# unreadable jq. Fail-closed by construction — a genuinely un-fired directive
-# can never be mistaken for a satisfied one.
-_phase1_round_complete() {
-	local _sha="$1" _log _list _expected _round _logged _missing
-	_log="$REPO_ROOT/.claude/review-log/${_sha}.jsonl"
-	[ -f "$_log" ] || return 1
-	_list="$REPO_ROOT/.claude/hooks/list-phase1-agents.sh"
-	[ -x "$_list" ] || return 1
-	command -v jq >/dev/null 2>&1 || return 1
-	_expected=$("$_list" main 2>/dev/null | sort -u) || return 1
-	[ -n "$_expected" ] || return 1
-	# Latest round number present for phase1 in this sha's log.
-	_round=$(jq -r 'select(.phase==1) | .round' "$_log" 2>/dev/null | sort -n | tail -1) || return 1
-	[ -n "$_round" ] || return 1
-	_logged=$(jq -r --arg r "$_round" 'select(.phase==1 and (.round|tostring)==$r) | .agent' "$_log" 2>/dev/null | sort -u) || return 1
-	[ -n "$_logged" ] || return 1
-	_missing=$(comm -23 <(printf '%s\n' "$_expected") <(printf '%s\n' "$_logged"))
-	[ -z "$_missing" ]
-}
-
 # Find phase1-directive markers (existing ship-pr-cycle infrastructure).
 # Use find with explicit rc capture (v0.6.5+ pattern). Pattern matches the
 # `_phase1_directive_marker_file()` filename convention: `<sha>.phase1-directive.txt`.
@@ -227,20 +201,6 @@ while IFS= read -r -d '' f; do
 			fi
 			echo "phase1-directive-pending-guard: WARN: stamp-less self-heal rm failed for $sha (continuing): $_slh_rm" >&2
 		fi
-	fi
-	# (#2535) SATISFIED-DIRECTIVE self-clear: a marker whose round is COMPLETE
-	# (every expected agent logged in review-log for the latest round) has done
-	# its job — the operator's remaining task is to APPLY the findings, which
-	# needs Edit/Write. Blocking there is the re-creation deadlock: review-log
-	# clears the marker at round-complete, but `ship-pr-cycle next` re-writes it
-	# whenever phase1 has not yet converged, and `next` is exactly what the
-	# operator must run to advance. That loop forced 4 manual `rm`s in the
-	# v0.34.109 cycle alone. Fail-CLOSED: any error (no log, no agent-list
-	# script, unreadable jq) leaves the marker pending, so a genuinely
-	# un-fired directive still blocks.
-	if _phase1_round_complete "$sha"; then
-		echo "phase1-directive-pending-guard: directive for $sha is SATISFIED (all expected agents logged for the latest round) — allowing so findings can be applied (#2535)" >&2
-		continue
 	fi
 	pending_count=$((pending_count + 1))
 	pending_list="${pending_list}  - sha=$sha (directive emitted; agents not yet fired)

@@ -72,59 +72,6 @@ _run_guard() {
 	fi
 }
 
-# (#2535) Seed a pending repo whose directive is SATISFIED: a stub
-# list-phase1-agents.sh (the SSOT the guard and review-log.sh both consult) plus
-# a review-log for HEAD whose latest round logs $1 agents. Stubbed so the
-# fixture tests the guard's OWN round-complete predicate deterministically,
-# rather than the real script's diff-dependent agent selection.
-# Usage: _seed_satisfied_round "<space-separated agents logged>"
-_seed_satisfied_round() {
-	local logged=$1 sha
-	sha=$(git -C "$TDIR" rev-parse HEAD)
-	mkdir -p "$TDIR/.claude/hooks" "$TDIR/.claude/review-log"
-	printf '#!/bin/bash\nprintf "%%s\\n" code-reviewer comment-analyzer\n' \
-		>"$TDIR/.claude/hooks/list-phase1-agents.sh"
-	chmod +x "$TDIR/.claude/hooks/list-phase1-agents.sh"
-	: >"$TDIR/.claude/review-log/${sha}.jsonl"
-	local a
-	for a in $logged; do
-		printf '{"phase":1,"round":1,"agent":"%s","findings":0,"status":"ok"}\n' "$a" \
-			>>"$TDIR/.claude/review-log/${sha}.jsonl"
-	done
-}
-
-@test "#2535: marker whose round is COMPLETE no longer blocks (apply-findings unblocked)" {
-	_setup_pending_repo
-	# Before the round completes the marker blocks productive work...
-	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')" = deny ]
-	[ "$(_run_guard '{"tool_name":"Edit","tool_input":{"file_path":"x","old_string":"a","new_string":"b"}}')" = deny ]
-	# ...and once EVERY expected agent is logged the directive is satisfied, so
-	# Edit/commit are allowed — the operator's remaining job is applying findings.
-	# This is the re-creation deadlock: review-log clears the marker at
-	# round-complete but `ship-pr-cycle next` re-writes it while phase1 has not
-	# converged, and `next` is what the operator must run to advance (#2535).
-	_seed_satisfied_round "code-reviewer comment-analyzer"
-	[ "$(_run_guard '{"tool_name":"Edit","tool_input":{"file_path":"x","old_string":"a","new_string":"b"}}')" = allow ]
-	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')" = allow ]
-}
-
-@test "#2535: an INCOMPLETE round still blocks (fail-closed)" {
-	_setup_pending_repo
-	# comment-analyzer expected but not logged → directive is NOT satisfied.
-	_seed_satisfied_round "code-reviewer"
-	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')" = deny ]
-	[ "$(_run_guard '{"tool_name":"Edit","tool_input":{"file_path":"x","old_string":"a","new_string":"b"}}')" = deny ]
-}
-
-@test "#2535: no review-log at all still blocks (fail-closed)" {
-	_setup_pending_repo
-	# Agent-list stub present but no review-log written yet — agents never fired.
-	mkdir -p "$TDIR/.claude/hooks"
-	printf '#!/bin/bash\nprintf "%%s\\n" code-reviewer\n' >"$TDIR/.claude/hooks/list-phase1-agents.sh"
-	chmod +x "$TDIR/.claude/hooks/list-phase1-agents.sh"
-	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')" = deny ]
-}
-
 # #2531 CR r1 (pr-test-analyzer F4): run the hook with NO _lib sibling to
 # simulate the $HOOK_DIR/../_lib resolution FAILURE that the lib-independent
 # escapes exist to survive. Copies only the hook .sh into a lib-less dir, so

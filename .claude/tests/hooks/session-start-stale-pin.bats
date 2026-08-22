@@ -63,55 +63,6 @@ EOF
 	[[ $output == *"migrate-settings.sh"* ]]
 }
 
-@test "#2536 auto-heal: complete target cache → settings repointed + backup kept" {
-	# The failure this exists for: the cache advances, GC prunes the old version
-	# dir, and every registered hook path 404s at once. A warning is useless
-	# there (it scrolls past in a long session), so heal when it is safe to.
-	_write_settings_with_version "0.8.5"
-	mkdir -p "$CACHE_DIR/0.8.5/hooks" "$CACHE_DIR/0.9.7/hooks"
-	# The referenced hook EXISTS at the new version → repointing is safe.
-	: >"$CACHE_DIR/0.9.7/hooks/some-hook.sh"
-	run bash "$SCRIPT" 2>&1
-	[ "$status" -eq 0 ]
-	[[ $output == *"AUTO-HEALED"* ]]
-	# Settings now point at the new version, and NOT the old one.
-	run grep -c "claude-workflow-core/0.9.7/hooks/some-hook.sh" "$SETTINGS"
-	[ "$status" -eq 0 ]
-	run grep -c "claude-workflow-core/0.8.5/" "$SETTINGS"
-	[ "$status" -ne 0 ]
-	# A backup was retained, and the healed file is still valid JSON.
-	[ -f "${SETTINGS}.bak-stale-pin-0.8.5-to-0.9.7" ]
-	run jq empty "$SETTINGS"
-	[ "$status" -eq 0 ]
-}
-
-@test "#2536 auto-heal: INCOMPLETE target cache → refuses to heal, warns instead" {
-	# Repointing into a partially-populated cache dir would swap one set of dead
-	# paths for a different set. The completeness guard must decline.
-	_write_settings_with_version "0.8.5"
-	mkdir -p "$CACHE_DIR/0.8.5/hooks" "$CACHE_DIR/0.9.7/hooks"
-	# some-hook.sh deliberately ABSENT from 0.9.7.
-	run bash "$SCRIPT" 2>&1
-	[ "$status" -eq 0 ]
-	[[ $output == *"NOT auto-healing"* ]]
-	[[ $output == *"plugin-cache drift detected"* ]]
-	# Settings untouched — still on the old version.
-	run grep -c "claude-workflow-core/0.8.5/" "$SETTINGS"
-	[ "$status" -eq 0 ]
-}
-
-@test "#2536 auto-heal: SESSION_START_STALE_PIN_NO_HEAL=1 opts out (warn only)" {
-	_write_settings_with_version "0.8.5"
-	mkdir -p "$CACHE_DIR/0.8.5/hooks" "$CACHE_DIR/0.9.7/hooks"
-	: >"$CACHE_DIR/0.9.7/hooks/some-hook.sh"
-	SESSION_START_STALE_PIN_NO_HEAL=1 run bash "$SCRIPT" 2>&1
-	[ "$status" -eq 0 ]
-	[[ $output != *"AUTO-HEALED"* ]]
-	# Settings untouched.
-	run grep -c "claude-workflow-core/0.8.5/" "$SETTINGS"
-	[ "$status" -eq 0 ]
-}
-
 @test "up-to-date: settings v0.9.7 == cache v0.9.7 → silent" {
 	_write_settings_with_version "0.9.7"
 	mkdir -p "$CACHE_DIR/0.9.7"

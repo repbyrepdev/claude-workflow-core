@@ -143,7 +143,10 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	# and treat it as IN-SCOPE below: dropping it would lower cr_count, which
 	# lowers the round cap — the UNSAFE direction (less review). Every entry the
 	# current writer produces carries .sha; "-" covers legacy/rotated rows only.
-	if ! _cr_rows=$(jq -r '"\(if (.sha | type) == "string" then .sha else "-" end) \(.findings // 0)"' "$cr_log" 2>/dev/null | tail -50); then
+	# `length > 0` matters: an EMPTY-STRING sha would emit a leading blank, and
+	# `read -r _e_sha _e_find` strips leading whitespace — shifting the findings
+	# count into _e_sha and silently DROPPING the row (CR silent-failure-hunter).
+	if ! _cr_rows=$(jq -r '"\(if (.sha | type) == "string" and (.sha | length) > 0 then .sha else "-" end) \(.findings // 0)"' "$cr_log" 2>/dev/null | tail -50); then
 		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
 		cr_count=1
 	else
@@ -152,7 +155,22 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 		while read -r _e_sha _e_find; do
 			[ -n "$_e_sha" ] || continue
 			_cr_any=1
-			if [ "$_e_sha" = "-" ] || git -C "$REPO_ROOT" merge-base --is-ancestor "$_e_sha" HEAD 2>/dev/null; then
+			_anc_rc=0
+			[ "$_e_sha" = "-" ] || git -C "$REPO_ROOT" merge-base --is-ancestor "$_e_sha" HEAD 2>/dev/null || _anc_rc=$?
+			if [ "$_e_sha" = "-" ] || [ "$_anc_rc" -ge 2 ]; then
+				# Unattributable row: no .sha, or git could not decide (rc>=2 —
+				# unknown/GC'd object, the normal state after a rebase or
+				# force-push, both of which this workflow uses). rc=1 alone means
+				# genuinely not on this branch. Such a row cannot be ordered
+				# against branch rows, so take the MAX rather than overwrite:
+				# admitting it must never LOWER cr_count, which is the entire
+				# justification for admitting it (CR silent-failure-hunter).
+				if [[ $_e_find =~ ^[0-9]+$ ]] &&
+					{ [ -z "$_cr_scoped" ] || [ "$_e_find" -gt "$_cr_scoped" ]; }; then
+					_cr_scoped=$_e_find
+				fi
+			elif [ "$_anc_rc" -eq 0 ]; then
+				# Genuine ancestor — newest wins (forward walk, last assignment).
 				_cr_scoped=$_e_find
 			fi
 		done <<EOF
