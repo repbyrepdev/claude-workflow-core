@@ -146,6 +146,11 @@ _seed_coverage() {
 	# ...and none of the phase2 advance output appears (no CR-CLI walk).
 	[[ $output != *"advanced to push"* ]]
 	[[ $output != *"round-cap reached"* ]]
+	# Strongest assertion (CR): the stub drops .claude/.local-review-ran when it
+	# executes, so its ABSENCE proves the CR-CLI was never invoked — the whole
+	# point of stopping at the preread gate, and something output-matching alone
+	# cannot establish.
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ]
 }
 
 @test "phase2 at round-cap WITH all residuals addressed advances to push (#234/#238)" {

@@ -149,6 +149,15 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	if ! _cr_rows=$(jq -r '"\(if (.sha | type) == "string" and (.sha | length) > 0 then .sha else "-" end) \(.findings // 0)"' "$cr_log" 2>/dev/null | tail -50); then
 		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
 		cr_count=1
+	elif [ -s "$cr_log" ] && [ -z "$_cr_rows" ]; then
+		# jq exited 0 but produced NOTHING from a NON-EMPTY log — the file is
+		# unreadable/corrupt in a way that does not raise a jq error (binary
+		# content, a truncated write). Fail CLOSED to the minimal tier rather
+		# than vouching clean. A MISSING log is a different case entirely and is
+		# handled by the `[ -f "$cr_log" ]` guard above, which correctly leaves
+		# cr_count at 0 (a first run legitimately has no CR signal). (CR)
+		echo "phase1-scaler: WARN — $cr_log is non-empty but yielded no readable rows (corrupt?); forcing minimal tier" >&2
+		cr_count=1
 	else
 		# Tracked SEPARATELY (CR): sharing one accumulator let a later low
 		# ancestor row overwrite a higher unattributable one downward — the very
