@@ -767,6 +767,59 @@ _phase1_clean_streak() {
 	printf '%s\n' "$streak"
 }
 
+# (#2492) Lean per-finding projection for the phase2 result cache.
+#
+# local-review.sh already persists CR's full JSON stream to
+# .claude/logs/cr-local-review-<short-sha>-detail.jsonl (#2484) — atomic, 30-day
+# retained — and until now NOTHING read it. That is why a cache HIT could tell
+# the operator to "address EACH of the N findings" while handing them only N.
+#
+# Emits a compact single-line JSON array of {severity, file, summary}, or [] when
+# there is nothing usable. Never fails: the caller treats empty as "no detail"
+# and falls back to the count-only directive.
+#
+# Shape notes, from the real files: a finding carries `severity`, `fileName`, and
+# `codegenInstructions` — there is NO line/title/message field. The instructions
+# string is a constant boilerplate prefix, then a blank line, then the body, so
+# `split("\n\n") | .[1]` is a clean extraction. The body embeds its own line
+# range ("In @path around lines N - M, ...").
+_phase2_detail_projection() {
+	local sha=$1
+	[ -n "$sha" ] || {
+		printf '[]'
+		return 0
+	}
+	local f="$REPO_ROOT/.claude/logs/cr-local-review-${sha}-detail.jsonl"
+	[ -f "$f" ] || {
+		printf '[]'
+		return 0
+	}
+	command -v jq >/dev/null 2>&1 || {
+		printf '[]'
+		return 0
+	}
+	# Cap the array so an enormous review cannot bloat an append-only ledger that
+	# is never compacted. The cap is REPORTED, not silent — a truncated detail
+	# that looked complete would be worse than no detail at all.
+	local cap=40 total out
+	total=$(jq -rs '[.[] | select(.type == "finding")] | length' "$f" 2>/dev/null) || total=0
+	case "$total" in '' | *[!0-9]*) total=0 ;; esac
+	if [ "$total" -gt "$cap" ]; then
+		scm_warn "phase2 detail: $total findings exceeds the $cap-entry cache cap — storing the first $cap; full stream stays at $f"
+	fi
+	out=$(jq -cs --argjson cap "$cap" '
+		[ .[]
+		  | select(.type == "finding")
+		  | { severity: (.severity // "unknown"),
+		      file:     (.fileName // .file // "unknown"),
+		      summary:  ((.codegenInstructions // "" | split("\n\n") | (.[1] // .[0] // ""))[0:200])
+		    }
+		] | .[0:$cap]
+	' "$f" 2>/dev/null) || out=""
+	[ -n "$out" ] || out='[]'
+	printf '%s' "$out"
+}
+
 _phase2_run_cr_cli() {
 	# Invoke local CR-CLI. local-review.sh exits 1 (NOT 0) when CR found
 	# things — both 0 and 1 are valid "ran cleanly" exit codes; only
@@ -1581,8 +1634,15 @@ EOF
 		# review (p2_from_cache=1) is already in the ledger — don't re-record.
 		if [ "$p2_from_cache" -eq 0 ] && [ -n "$p2_ckey" ] &&
 			command -v phase2_review_cache_put >/dev/null 2>&1; then
-			phase2_review_cache_put "$p2_ckey" "$findings" \
-				"$(git rev-parse --short HEAD 2>/dev/null || echo "")"
+			local _p2_sha
+			_p2_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+			# (#2492) Persist the per-finding DETAIL alongside the count. The
+			# detail already exists on disk — local-review.sh writes the full CR
+			# stream to .claude/logs/cr-local-review-<short-sha>-detail.jsonl —
+			# but nothing has ever read it, so a cache HIT could only ever say
+			# "N findings" while telling the operator to address each one.
+			phase2_review_cache_put "$p2_ckey" "$findings" "$_p2_sha" \
+				"$(_phase2_detail_projection "$_p2_sha")"
 		fi
 		if [ "$findings" -eq 0 ]; then
 			_set_stage "push"
@@ -1636,6 +1696,24 @@ ship-pr-cycle: phase2 content-hash cache HIT — the $findings finding(s) from t
         --covers-count $findings --follow-up-issue <N> --finding-id <id> --finding-text "..." \\
         --dogfood-cmd "..." --dogfood-output "..." --dogfood-rc 0 --external-authority "..." --reason "..."
 EOF
+			# (#2493) Render WHAT the findings actually were. This directive asks
+			# for --severity, --finding-id and --finding-text; without the detail
+			# it was demanding fields the operator had no way to fill from a cache
+			# hit, which forced either a budget-burning re-review or a blind
+			# converge-rejection. Empty detail (legacy record, corrupt ledger,
+			# pruned file) falls through silently to the count-only form above —
+			# detail is an operator convenience, never a correctness input.
+			local _p2_detail=""
+			if command -v phase2_review_cache_get_detail >/dev/null 2>&1; then
+				_p2_detail=$(phase2_review_cache_get_detail "$p2_ckey" 2>/dev/null || echo "")
+			fi
+			if [ -n "$_p2_detail" ] && [ "$_p2_detail" != "[]" ]; then
+				printf '\n  Findings from that review:\n'
+				printf '%s' "$_p2_detail" | jq -r '
+					to_entries[] | "    \(.key + 1). [\(.value.severity)] \(.value.file)\n       \(.value.summary)"
+				' 2>/dev/null || printf '    (detail present but unrenderable — see .claude/logs/cr-local-review-*-detail.jsonl)\n'
+				printf '\n'
+			fi
 			return 0
 		else
 			# Round-cap graduation (#234): phase2 CR-CLI findings on a large

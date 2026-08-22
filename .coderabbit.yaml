@@ -228,6 +228,8 @@ reviews:
       - '!.claude/_lib/phase05-auth-summary.sh'
       - '!.claude/_lib/phase05-dedupe.sh'
       - '!.claude/_lib/phase1-agent-prompt.sh'
+      - '!.claude/_lib/phase1-round-coverage.sh'
+      - '!.claude/_lib/plugin-cache-resolve.sh'
       - '!.claude/_lib/post-commit-detect.sh'
       - '!.claude/_lib/repo-guard.sh'
       - '!.claude/_lib/resolve-orchestrator.sh'
@@ -253,6 +255,17 @@ reviews:
   # Universal path review rules. Repos append file-path rules for their own
   # source trees (stacks/, coalesce/, *.sql, ...) via overlay.
   path_instructions:
+    # pricing-team-toolkit#123 — kill a recurring FALSE POSITIVE at the SSOT.
+    # Local CR-CLI flags the `rev:` pin for repbyrepdev/claude-workflow-core as a
+    # CRITICAL "cannot be verified — repo is private or moved" on EVERY consumer
+    # convergence PR. The pin is real and fetchable with the operator's gh auth;
+    # the CR-CLI review sandbox simply has no credential for a private repo.
+    # CR-in-CI (the GitHub App, which DOES have access) never flags it — so the
+    # finding is an artifact of the sandbox, not a property of the code. It cost
+    # a prove-yourself dogfood cycle on every consumer pin bump.
+    - path: ".pre-commit-config.yaml"
+      instructions: >-
+        Do NOT flag the `rev:` pin for the private repo repbyrepdev/claude-workflow-core as unverifiable, missing, moved, or non-existent. That repository is intentionally PRIVATE; the local review sandbox has no credential for it, so an inability to resolve the tag is expected and carries no signal. The pin is verified mechanically elsewhere — consumer-pin-staleness hooks and the cascade re-pin flow both resolve it with real auth. Review the pin only for what is checkable here: that the `rev:` is a concrete tag or SHA rather than a mutable branch name, and that the same version appears consistently wherever the plugin is referenced.
     - path: ".claude/hooks/*.sh"
       instructions: >-
         Bash strict-mode hook. REQUIRE `set -euo pipefail` (or at minimum `set -u`) within the first 20 lines after the shebang — `# event:` / `# matcher:` frontmatter may sit between shebang and the strict-mode line. REQUIRE paths resolved via `dirname "${BASH_SOURCE[0]}"`, not caller CWD. REQUIRE JSON stdin parsed with `jq`, never grep/sed. REQUIRE fail-closed on `git rev-parse` and auxiliary commands — `|| true` / `2>/dev/null` silently swallow errors. FLAG hardcoded user paths, `*"FOO=1"*` globs that fire on arbitrary argv, and `$VAR` interpolated inside `jq -r "...$VAR..."` (require `--arg`). PAIRED REVIEW: IF a matching .claude/tests/hooks/<name>.bats EXISTS in this repo, inspect it for STALE assertions when the hook's event/matcher/exit-code contract changes. Do NOT request or flag a MISSING paired test — most .claude/hooks/*.sh are vendored byte-identical mirrors of an upstream plugin (claude-workflow-core) whose canonical tests live upstream and are drift-gate-enforced; a consumer having no local .bats is expected and correct, not a coverage gap.

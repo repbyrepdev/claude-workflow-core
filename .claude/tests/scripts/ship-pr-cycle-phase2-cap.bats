@@ -442,3 +442,49 @@ _seed_cache() {
 	[ "$(_cur_stage)" = phase2 ]
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }
+
+# --- #2492/#2493: the cache carries finding DETAIL, not just a count -------
+# The unaddressed-cache-HIT directive asks for --severity / --finding-id /
+# --finding-text. Before this it supplied only N, so the operator had to either
+# burn CR budget re-reviewing identical content or reject blind.
+
+# Seed a cache record that ALSO carries findings_detail (what put() now writes).
+_seed_cache_detail() {
+	(cd "$ROOT" && git branch -M main) || return 1
+	local key
+	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
+	mkdir -p "$ROOT/.claude/.review-cache"
+	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":2,"findings_detail":[{"severity":"major","file":"hooks/foo.sh","summary":"rc capture aborts under set -e"},{"severity":"minor","file":"scripts/bar.sh","summary":"prefer mktemp over a PID-derived name"}]}\n' \
+		"$key" "$SHA_SHORT" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
+}
+
+@test "#2493 cache HIT with unaddressed findings RENDERS the detail" {
+	_seed_stage phase2
+	_seed_cache_detail
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"NOT all addressed"* ]]
+	[[ $output == *"Findings from that review:"* ]]
+	[[ $output == *"[major] hooks/foo.sh"* ]]
+	[[ $output == *"rc capture aborts under set -e"* ]]
+	[[ $output == *"[minor] scripts/bar.sh"* ]]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] # still must not burn CR budget
+}
+
+@test "#2493 a LEGACY count-only record still yields the count-only directive" {
+	# Records written before findings_detail existed must degrade cleanly —
+	# detail is an operator convenience, never a correctness input.
+	_seed_stage phase2
+	_seed_cache 2 # no findings_detail field at all
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"NOT all addressed"* ]]
+	[[ $output != *"Findings from that review:"* ]]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ]
+}

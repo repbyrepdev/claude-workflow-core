@@ -1471,6 +1471,26 @@ reviews:
   # Universal path review rules. Repos append file-path rules for their own
   # source trees (stacks/, coalesce/, *.sql, ...) via overlay.
   path_instructions:
+    # pricing-team-toolkit#123 — kill a recurring FALSE POSITIVE at the SSOT.
+    # Local CR-CLI flags the `rev:` pin for repbyrepdev/claude-workflow-core as a
+    # CRITICAL "cannot be verified — repo is private or moved" on EVERY consumer
+    # convergence PR. The pin is real and fetchable with the operator's gh auth;
+    # the CR-CLI review sandbox simply has no credential for a private repo.
+    # CR-in-CI (the GitHub App, which DOES have access) never flags it — so the
+    # finding is an artifact of the sandbox, not a property of the code. It cost
+    # a prove-yourself dogfood cycle on every consumer pin bump.
+    - path: ".pre-commit-config.yaml"
+      instructions: >-
+        Do NOT flag the `rev:` pin for the private repo
+        repbyrepdev/claude-workflow-core as unverifiable, missing, moved, or
+        non-existent. That repository is intentionally PRIVATE; the local
+        review sandbox has no credential for it, so an inability to resolve the
+        tag is expected and carries no signal. The pin is verified mechanically
+        elsewhere — consumer-pin-staleness hooks and the cascade re-pin flow
+        both resolve it with real auth. Review the pin only for what is
+        checkable here: that the `rev:` is a concrete tag or SHA rather than a
+        mutable branch name, and that the same version appears consistently
+        wherever the plugin is referenced.
     - path: ".claude/hooks/*.sh"
       instructions: >-
         Bash strict-mode hook. REQUIRE `set -euo pipefail` (or at minimum
