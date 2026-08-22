@@ -39,6 +39,7 @@
     "_lib/phase05-dedupe.sh": "a47ccecf75ee51c2b2eba137fa1559d5347f939264201caae4fe76c98516940b",
     "_lib/phase1-agent-prompt.sh": "13408a8e02a048f4d8ab9de45f8ef41efa81105db8a4bf8031c1852db1f86aad",
     "_lib/phase1-round-coverage.sh": "5b28f7acbc1713724b24d06340112d78bec518665a1e06c5954ec497b91b7862",
+    "_lib/plugin-cache-resolve.sh": "72d2a017babe524afa7b51ac861dcf41a7a714c920ce7ef4522d90112e6f81e6",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",
     "_lib/resolve-orchestrator.sh": "89ed6ffdc5700266036078b3ed594df6ba44a9874114a91292ef31b01c357a81",
