@@ -150,6 +150,15 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
 		cr_count=1
 	else
+		# Tracked SEPARATELY (CR): sharing one accumulator let a later low
+		# ancestor row overwrite a higher unattributable one downward — the very
+		# lowering those rows are admitted to prevent. _cr_anc keeps the LATEST
+		# numeric ancestor value (newest wins for this branch); _cr_unattr keeps
+		# the MAX numeric unattributable value (it cannot be ordered). They are
+		# combined below by taking the greater, so unattributable rows act as a
+		# FLOOR on the tier and can never pull it down.
+		_cr_anc=""
+		_cr_unattr=""
 		_cr_scoped=""
 		_cr_any=0
 		while read -r _e_sha _e_find; do
@@ -157,6 +166,9 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 			_cr_any=1
 			_anc_rc=0
 			[ "$_e_sha" = "-" ] || git -C "$REPO_ROOT" merge-base --is-ancestor "$_e_sha" HEAD 2>/dev/null || _anc_rc=$?
+			# Validate ONCE, before either accumulator is touched: a non-numeric
+			# findings value must not land in the tier input by any path.
+			[[ $_e_find =~ ^[0-9]+$ ]] || continue
 			if [ "$_e_sha" = "-" ] || [ "$_anc_rc" -ge 2 ]; then
 				# Unattributable row: no .sha, or git could not decide (rc>=2 —
 				# unknown/GC'd object, the normal state after a rebase or
@@ -165,17 +177,30 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 				# against branch rows, so take the MAX rather than overwrite:
 				# admitting it must never LOWER cr_count, which is the entire
 				# justification for admitting it (CR silent-failure-hunter).
-				if [[ $_e_find =~ ^[0-9]+$ ]] &&
-					{ [ -z "$_cr_scoped" ] || [ "$_e_find" -gt "$_cr_scoped" ]; }; then
-					_cr_scoped=$_e_find
+				if [ -z "$_cr_unattr" ] || [ "$_e_find" -gt "$_cr_unattr" ]; then
+					_cr_unattr=$_e_find
 				fi
 			elif [ "$_anc_rc" -eq 0 ]; then
 				# Genuine ancestor — newest wins (forward walk, last assignment).
-				_cr_scoped=$_e_find
+				_cr_anc=$_e_find
 			fi
 		done <<EOF
 $_cr_rows
 EOF
+		# Combine: this branch's own latest count, FLOORED by the highest
+		# unattributable count. Taking the greater is what makes admitting
+		# unattributable rows strictly non-lowering.
+		if [ -n "$_cr_anc" ] && [ -n "$_cr_unattr" ]; then
+			if [ "$_cr_unattr" -gt "$_cr_anc" ]; then
+				_cr_scoped=$_cr_unattr
+			else
+				_cr_scoped=$_cr_anc
+			fi
+		elif [ -n "$_cr_anc" ]; then
+			_cr_scoped=$_cr_anc
+		elif [ -n "$_cr_unattr" ]; then
+			_cr_scoped=$_cr_unattr
+		fi
 		if [ -n "$_cr_scoped" ]; then
 			cr_count=$_cr_scoped
 		elif [ "$_cr_any" -eq 1 ] && [ -f "$REPO_ROOT/.claude/review-log/$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null).jsonl" ]; then
