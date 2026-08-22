@@ -328,6 +328,46 @@ _log_cr() { # $1=findings count for the latest CR entry
 	[[ $output == *"tier=minimal"* ]]
 }
 
+@test "#2523 scaler: a CR entry on THIS branch's lineage still escalates" {
+	# Baseline for the scoping tests below: an entry whose sha IS an ancestor of
+	# HEAD must be read exactly as before the branch-scoping change.
+	sha=$(cd "$WORK" && git rev-parse HEAD)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":4}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=4"* ]]
+}
+
+@test "#2523 scaler: a CR entry from a SIBLING branch is ignored (not an ancestor)" {
+	# The log is append-only and shared across branches, so a bare `tail -1`
+	# could read a sibling's entry and over-escalate this branch's tier. A
+	# commit on an unmerged sibling is NOT an ancestor of HEAD, so it is skipped.
+	other=$(cd "$WORK" && git checkout -q -b sibling/other main &&
+		printf 'sibling\n' >s.txt && git add -A && git commit -qm sibling &&
+		git rev-parse HEAD)
+	(cd "$WORK" && git checkout -q feat/test)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":9}\n' "$other" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	# 9 findings from the sibling must NOT leak in.
+	[[ $output != *"cr=9"* ]]
+	[[ $output == *"cr=0"* ]]
+}
+
+@test "#2523 scaler: newest ANCESTOR entry wins over an older ancestor entry" {
+	# Forward walk keeps the LAST ancestor match, so a re-review on the same
+	# branch supersedes its earlier entry rather than the file order deciding.
+	sha=$(cd "$WORK" && git rev-parse HEAD)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":7}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":1}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=1"* ]]
+}
+
 @test "scaler: MIXED malformed batch still sums the readable values" {
 	# The type filter stays defensive for partial corruption: one null +
 	# one numeric 4 -> sum 4, signal intact -> moderate tier.

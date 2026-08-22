@@ -132,11 +132,46 @@ fi
 cr_count=0
 cr_log="$REPO_ROOT/.claude/logs/cr-local-review.jsonl"
 if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
-	if ! cr_count=$(jq -r '.findings // 0' "$cr_log" 2>/dev/null | tail -1); then
+	# (#2523) Scope the lookup to THIS branch. The log is append-only and shared
+	# across branches, so a bare `tail -1` can read a sibling branch's entry —
+	# over-escalating the tier (wasteful) or, after log rotation, failing to
+	# escalate a legitimate re-walk. A commit on an unmerged sibling branch is
+	# NOT an ancestor of HEAD, so ancestry is the branch-scope test. Walk the
+	# recent window forward and keep the LAST ancestor match (newest wins).
+	_cr_rows=""
+	# An entry with NO usable .sha cannot be branch-attributed. Emit it as "-"
+	# and treat it as IN-SCOPE below: dropping it would lower cr_count, which
+	# lowers the round cap — the UNSAFE direction (less review). Every entry the
+	# current writer produces carries .sha; "-" covers legacy/rotated rows only.
+	if ! _cr_rows=$(jq -r '"\(if (.sha | type) == "string" then .sha else "-" end) \(.findings // 0)"' "$cr_log" 2>/dev/null | tail -50); then
 		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
 		cr_count=1
+	else
+		_cr_scoped=""
+		_cr_any=0
+		while read -r _e_sha _e_find; do
+			[ -n "$_e_sha" ] || continue
+			_cr_any=1
+			if [ "$_e_sha" = "-" ] || git -C "$REPO_ROOT" merge-base --is-ancestor "$_e_sha" HEAD 2>/dev/null; then
+				_cr_scoped=$_e_find
+			fi
+		done <<EOF
+$_cr_rows
+EOF
+		if [ -n "$_cr_scoped" ]; then
+			cr_count=$_cr_scoped
+		elif [ "$_cr_any" -eq 1 ] && [ -f "$REPO_ROOT/.claude/review-log/$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null).jsonl" ]; then
+			# Entries exist but none belong to this branch's lineage. On a FRESH
+			# branch that is simply correct (cr=0, no escalation) and must stay
+			# silent — after a squash-merge no prior sha is an ancestor, so an
+			# unconditional warning would fire on every new branch. Warn only
+			# when this sha has ALREADY had phase-1 rounds (a review-log exists),
+			# which is the re-walk case the entries should have covered: they
+			# likely rotated out of the window (#2523).
+			echo "phase1-scaler: WARN — $cr_log has entries but none on this branch's lineage, yet this sha already has phase-1 rounds; treating as no CR signal (cr=0). Prior CR entries for this branch may have rotated out of the retained window." >&2
+		fi
+		[[ $cr_count =~ ^[0-9]+$ ]] || cr_count=1
 	fi
-	[[ $cr_count =~ ^[0-9]+$ ]] || cr_count=1
 fi
 
 total=$((p05_count + cr_count))
