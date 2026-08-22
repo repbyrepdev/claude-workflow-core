@@ -43,8 +43,15 @@ teardown() {
 	# Exercises the git rev-parse --verify branch in the helper — the phase0.5
 	# gate matches `.sha == $(git rev-parse HEAD)` EXACTLY, so a short pin (the
 	# copilot --sha form) must be widened or the row never advances the gate.
-	command -v git >/dev/null 2>&1 || skip "git unavailable"
-	full=$(git rev-parse HEAD 2>/dev/null) || skip "not in a git repo"
+	# git + a real checkout are HARD PREREQUISITES, not optional tools: this test
+	# exists solely to exercise the helper's `git rev-parse --verify` branch, so
+	# a `|| skip` here would silently retire that coverage (bats counts a skip as
+	# a pass — the project's skip-as-pass rule). Assert them instead.
+	run command -v git
+	[ "$status" -eq 0 ]
+	run git rev-parse HEAD
+	[ "$status" -eq 0 ]
+	full=$output
 	# Derive the short form by TRUNCATION, not `--short`: under core.abbrev=40
 	# `--short` returns the full 40 chars, the helper takes its already-full
 	# fast path, and this test would pass GREEN without ever exercising the

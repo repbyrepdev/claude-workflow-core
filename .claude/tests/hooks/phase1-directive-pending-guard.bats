@@ -82,11 +82,20 @@ _run_guard_no_lib() {
 	# wrong reason.
 	mkdir -p "$hookdir/hooks"
 	cp "$HOOK" "$hookdir/hooks/phase1-directive-pending-guard.sh"
-	if out=$(cd "$TDIR" && printf '%s' "$payload" | "$hookdir/hooks/phase1-directive-pending-guard.sh" 2>/dev/null); then
+	# CAPTURE stderr rather than discarding it, and expose the raw status/stdout/
+	# stderr to the caller via NOLIB_{STATUS,STDOUT,STDERR} so a test can assert
+	# the full hook contract, not just the allow/deny reduction (CR-in-CI: bats
+	# tests must assert status AND stdout/stderr content).
+	local errf
+	errf="$hookdir/stderr.txt"
+	if out=$(cd "$TDIR" && printf '%s' "$payload" | "$hookdir/hooks/phase1-directive-pending-guard.sh" 2>"$errf"); then
 		st=0
 	else
 		st=$?
 	fi
+	NOLIB_STATUS=$st
+	NOLIB_STDOUT=$out
+	NOLIB_STDERR=$(cat "$errf" 2>/dev/null || printf '')
 	rm -rf "$hookdir"
 	# Distinguish a VALID deny from an arbitrary hook crash: deny is signalled
 	# by the JSON permissionDecision:deny OR the lib-absent fallback hook_deny's
@@ -530,6 +539,18 @@ teardown() {
 	# lib-gated read verbs (git diff) are DENIED lib-absent — the known #2531
 	# limitation the _lib-resolution follow-up fixes (documents, not a bug assert).
 	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"git diff main..HEAD"}}')" = deny ]
+	# RAW hook-contract assertions (CR-in-CI: assert status AND stdout/stderr, not
+	# just the allow/deny reduction). Call the helper DIRECTLY — a $(...) subshell
+	# would discard NOLIB_*. Lib-absent, hook-deny.sh is unreachable too, so deny
+	# takes the fallback hook_deny path: exit 2 with the reason on STDERR and no
+	# JSON on stdout; allow is exit 0, silent on both streams.
+	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next"}}' >/dev/null
+	[ "$NOLIB_STATUS" -eq 0 ]
+	[ -z "$NOLIB_STDOUT" ]
+	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' >/dev/null
+	[ "$NOLIB_STATUS" -eq 2 ]
+	[ -n "$NOLIB_STDERR" ]
+	[[ $NOLIB_STDOUT != *'"permissionDecision":"deny"'* ]]
 }
 
 # --- v0.31 #225 (silent-failure-hunter #4): sanctioned test-runner carve-out ---
