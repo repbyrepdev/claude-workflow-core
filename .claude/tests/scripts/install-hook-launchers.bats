@@ -60,10 +60,33 @@ _pinned_count() {
 	grep -coE 'claude-workflow-core/[0-9]+\.[0-9]+\.[0-9]+/hooks/' "$CLAUDE_SETTINGS_FILE" || true
 }
 
-@test "generates an executable launcher per auto-register hook" {
+@test "generates an executable launcher per hook" {
 	run "$SCRIPT" --generate
 	[ "$status" -eq 0 ]
 	[ -x "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh" ]
+}
+
+@test "launcher set is NOT gated on 'auto-register: true'" {
+	# `auto-register: true` answers "should register-hook.sh --all-auto-register
+	# add this to settings.json?" — true for only 10 of 87 hooks. Launcher
+	# generation answers a DIFFERENT question: "is this hook ever EXECUTED from
+	# settings.json?", which is any of them. Gating on auto-register produced 10
+	# launchers against 51 referenced refs on the real machine, leaving 41
+	# version-pinned and still able to 404 after a cache GC — the exact failure
+	# this script exists to end. Assert a hook that carries NO auto-register
+	# frontmatter still gets a launcher.
+	local hooks_dir="${BATS_TEST_DIRNAME}/../../../hooks"
+	[ -f "$hooks_dir/skill-bypass-guard.sh" ]
+	run grep -cE '^#[[:space:]]*auto-register:[[:space:]]*true' "$hooks_dir/skill-bypass-guard.sh"
+	[ "$output" = "0" ] # precondition: this hook does NOT opt in
+	"$SCRIPT" --generate
+	[ -x "$PLUGIN_LAUNCHER_DIR/skill-bypass-guard.sh" ]
+}
+
+@test "helpers (_*) and installers (install-*) get no launcher" {
+	"$SCRIPT" --generate
+	run bash -c "ls -1 '$PLUGIN_LAUNCHER_DIR'/_* '$PLUGIN_LAUNCHER_DIR'/install-* 2>/dev/null | wc -l | tr -d ' '"
+	[ "$output" = "0" ]
 }
 
 @test "launcher parses under bash 3.2 (macOS /bin/bash), not just modern bash" {

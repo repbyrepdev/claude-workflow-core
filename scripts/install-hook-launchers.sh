@@ -78,9 +78,18 @@ if [ "$DO_GENERATE" -eq 1 ]; then
 	shopt -s nullglob
 	for hook in "$HOOKS_DIR"/*.sh; do
 		base=${hook##*/}
+		# Helpers (`_*`) and installers (`install-*`) are never invoked as hooks.
 		event_frontmatter_skip_basename "$base" && continue
-		# Only hooks that opt in to auto-registration get a launcher.
-		grep -qE '^#[[:space:]]*auto-register:[[:space:]]*true' "$hook" || continue
+		# EVERY remaining hook gets a launcher — deliberately NOT gated on
+		# `auto-register: true`. That frontmatter answers a different question
+		# ("should register-hook.sh --all-auto-register add this to
+		# settings.json?", true for 10 of 87 hooks); launcher generation has to
+		# answer "is this hook ever EXECUTED from settings.json?", which is any
+		# of them. Gating on auto-register produced launchers for 10 hooks while
+		# the operator's settings.json referenced 58, so 48 refs stayed
+		# version-pinned and still 404'd after a cache GC — the exact failure
+		# this script exists to end. Generating a launcher for a hook nothing
+		# references is free: it is an unused forwarder in a dir we own.
 		want=$(pcr_launcher_body "$base")
 		target="$LAUNCHER_DIR/$base"
 		if [ -f "$target" ] && [ "$(cat "$target")" = "$want" ] && [ -x "$target" ]; then
