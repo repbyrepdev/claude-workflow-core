@@ -116,7 +116,57 @@ fi
 # (lex sort would invert).
 higher=$(printf '%s\n%s\n' "$SETTINGS_VER" "$CACHE_VER" | sort -V | tail -1)
 if [ "$higher" = "$CACHE_VER" ]; then
-	# Forward drift: cache > settings → operator should migrate.
+	# Forward drift: cache > settings. (#2536) AUTO-HEAL rather than advise.
+	#
+	# Why this became auto: a warning is worthless in the failure that actually
+	# happens. When the cache advances and GC prunes the old version dir, EVERY
+	# registered hook path 404s at once — and the advisory scrolls past in a
+	# long session while the operator watches unexplained hook errors for hours
+	# (observed 2026-08-22: 58 dead paths at v0.34.83 after the cache moved to
+	# v0.34.108). The remediation was always mechanical, so do it.
+	#
+	# SAFETY — repoint only when the target can actually serve every reference:
+	#   * every hook path referenced in settings.json must EXIST in $CACHE_VER
+	#     (a partially-populated cache dir would trade 58 dead paths for 58
+	#     different dead paths),
+	#   * back up before writing, write atomically (tmp + mv),
+	#   * re-validate JSON after rendering and refuse to install it otherwise.
+	# Any failure leaves settings.json untouched and falls back to the warning.
+	if [ "${SESSION_START_STALE_PIN_NO_HEAL:-0}" = "1" ]; then
+		echo "session-start-stale-pin: ⚠ drift v$SETTINGS_VER → v$CACHE_VER; auto-heal disabled (SESSION_START_STALE_PIN_NO_HEAL=1)" >&2
+		exit 0
+	fi
+	_heal_ok=1
+	_missing_ct=0
+	# Enumerate referenced hook basenames at the OLD version and require each
+	# to exist under the new one.
+	while IFS= read -r _rel; do
+		[ -n "$_rel" ] || continue
+		[ -e "$CACHE_DIR/$CACHE_VER/$_rel" ] || {
+			_missing_ct=$((_missing_ct + 1))
+			_heal_ok=0
+		}
+	done <<EOF
+$(jq -r --arg v "$SETTINGS_VER" '[.. | strings | select(test("claude-workflow-core/claude-workflow-core/" + $v + "/"))] | map(sub(".*/claude-workflow-core/claude-workflow-core/" + $v + "/"; "")) | unique | .[]' "$SETTINGS" 2>/dev/null)
+EOF
+	if [ "$_heal_ok" -eq 1 ]; then
+		_bak="${SETTINGS}.bak-stale-pin-${SETTINGS_VER}-to-${CACHE_VER}"
+		_tmp="${SETTINGS}.stale-pin.$$"
+		if cp "$SETTINGS" "$_bak" 2>/dev/null &&
+			jq --arg old "claude-workflow-core/claude-workflow-core/$SETTINGS_VER/" \
+				--arg new "claude-workflow-core/claude-workflow-core/$CACHE_VER/" \
+				'walk(if type == "string" then gsub($old; $new) else . end)' \
+				"$SETTINGS" >"$_tmp" 2>/dev/null &&
+			jq empty "$_tmp" 2>/dev/null &&
+			mv "$_tmp" "$SETTINGS" 2>/dev/null; then
+			echo "session-start-stale-pin: ✓ AUTO-HEALED plugin-cache drift — repointed ~/.claude/settings.json hook paths v$SETTINGS_VER → v$CACHE_VER (backup: $_bak). Run /reload-plugins to apply in this session (#2536)." >&2
+			exit 0
+		fi
+		rm -f "$_tmp" 2>/dev/null || true
+		echo "session-start-stale-pin: ⚠ auto-heal FAILED writing $SETTINGS (backup at $_bak if it was created); settings left untouched" >&2
+	else
+		echo "session-start-stale-pin: ⚠ NOT auto-healing — $_missing_ct referenced hook(s) are absent from v$CACHE_VER (partial/incomplete cache); repointing would swap one set of dead paths for another" >&2
+	fi
 	cat >&2 <<EOF
 session-start-stale-pin: ⚠ plugin-cache drift detected
   settings.json refs: v$SETTINGS_VER
