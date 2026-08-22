@@ -170,6 +170,7 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 		_cr_unattr=""
 		_cr_scoped=""
 		_cr_any=0
+		_cr_bad=0
 		while read -r _e_sha _e_find; do
 			[ -n "$_e_sha" ] || continue
 			_cr_any=1
@@ -181,8 +182,14 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 			# bash arithmetic reads a leading zero as OCTAL, so the later -gt
 			# comparison aborts with "value too great for base" (CR). The length
 			# bound keeps values inside the signed-64-bit range bash can compare.
-			[[ $_e_find =~ ^(0|[1-9][0-9]*)$ ]] || continue
-			[ "${#_e_find}" -le 18 ] || continue
+			if ! [[ $_e_find =~ ^(0|[1-9][0-9]*)$ ]] || [ "${#_e_find}" -gt 18 ]; then
+				# Remember that a row was REJECTED. Without this, a log whose
+				# rows are ALL malformed leaves both accumulators empty and
+				# cr_count vouching 0 — clean — from a log nothing could be read
+				# from. Forced to the minimal tier below instead (CR).
+				_cr_bad=1
+				continue
+			fi
 			if [ "$_e_sha" = "-" ] || [ "$_anc_rc" -ge 2 ]; then
 				# Unattributable row: no .sha, or git could not decide (rc>=2 —
 				# unknown/GC'd object, the normal state after a rebase or
@@ -217,6 +224,12 @@ EOF
 		fi
 		if [ -n "$_cr_scoped" ]; then
 			cr_count=$_cr_scoped
+		elif [ "$_cr_bad" -eq 1 ]; then
+			# Rows were present but NONE yielded a usable count. That is an
+			# unreadable log, not a clean branch — fail CLOSED to the minimal
+			# tier rather than vouching 0 findings (CR).
+			echo "phase1-scaler: WARN — $cr_log rows had no usable findings values (malformed); forcing minimal tier" >&2
+			cr_count=1
 		elif [ "$_cr_any" -eq 1 ] && [ -f "$REPO_ROOT/.claude/review-log/$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null).jsonl" ]; then
 			# Entries exist but none belong to this branch's lineage. On a FRESH
 			# branch that is simply correct (cr=0, no escalation) and must stay

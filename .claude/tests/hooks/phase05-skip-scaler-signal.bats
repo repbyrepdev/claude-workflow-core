@@ -359,6 +359,20 @@ _log_cr() { # $1=findings count for the latest CR entry
 	[[ $output == *"cr=0"* ]]
 }
 
+@test "#2523 scaler: ALL-malformed CR rows force the minimal tier (never vouch clean)" {
+	# Rows present but none yielding a usable count is an UNREADABLE log, not a
+	# clean branch. Vouching cr=0 there would silently lower the round cap.
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":"abc"}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":"008"}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"no usable findings values"* ]]
+	[[ $output == *"cr=1"* ]]
+	[[ $output != *"cr=0"* ]]
+}
+
 @test "#2523 scaler: newest ANCESTOR entry wins over an older ancestor entry" {
 	# Forward walk keeps the LAST ancestor match, so a re-review on the same
 	# branch supersedes its earlier entry rather than the file order deciding.
