@@ -175,9 +175,14 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 			_cr_any=1
 			_anc_rc=0
 			[ "$_e_sha" = "-" ] || git -C "$REPO_ROOT" merge-base --is-ancestor "$_e_sha" HEAD 2>/dev/null || _anc_rc=$?
-			# Validate ONCE, before either accumulator is touched: a non-numeric
+			# Validate ONCE, before either accumulator is touched: a malformed
 			# findings value must not land in the tier input by any path.
-			[[ $_e_find =~ ^[0-9]+$ ]] || continue
+			# CANONICAL DECIMAL only — `^[0-9]+$` alone would admit "008", and
+			# bash arithmetic reads a leading zero as OCTAL, so the later -gt
+			# comparison aborts with "value too great for base" (CR). The length
+			# bound keeps values inside the signed-64-bit range bash can compare.
+			[[ $_e_find =~ ^(0|[1-9][0-9]*)$ ]] || continue
+			[ "${#_e_find}" -le 18 ] || continue
 			if [ "$_e_sha" = "-" ] || [ "$_anc_rc" -ge 2 ]; then
 				# Unattributable row: no .sha, or git could not decide (rc>=2 —
 				# unknown/GC'd object, the normal state after a rebase or
