@@ -236,6 +236,14 @@ EOF
 		fi
 		if [ -n "$_cr_scoped" ]; then
 			cr_count=$_cr_scoped
+			# A rejected row must FLOOR the tier even when another row produced a
+			# usable value: an older clean ancestor yielding 0 would otherwise let
+			# a malformed newer row vouch a clean branch, which is the same
+			# fail-open in a different shape (CR).
+			if [ "$_cr_bad" -eq 1 ] && [ "$cr_count" -eq 0 ]; then
+				echo "phase1-scaler: WARN — $cr_log had a malformed row alongside a 0-finding one; flooring at the minimal tier rather than vouching clean" >&2
+				cr_count=1
+			fi
 		elif [ "$_cr_bad" -eq 1 ]; then
 			# Rows were present but NONE yielded a usable count. That is an
 			# unreadable log, not a clean branch — fail CLOSED to the minimal
