@@ -127,6 +127,27 @@ _seed_coverage() {
 		>"$ROOT/.claude/audit/prove-yourself.jsonl"
 }
 
+@test "#1848: resume STOPS at phase2 instead of walking into the CR-CLI" {
+	# The phase2 PREREAD gate is emitted on ENTERING phase2. Before this fix
+	# cmd_resume only stopped on phase1|merge-gate|merged, so an auto-walk that
+	# reached phase2 (a graduated branch short-circuits phase0.5/phase1 inside a
+	# single cmd_next) would run the CR-CLI on the NEXT iteration — spending the
+	# 10/hr budget before the operator ever read the SKILL. phase2 is now a stop
+	# stage: resume returns with the stage still phase2 and no CR-CLI invoked.
+	_seed_stage phase2
+	_seed_log 3
+	_seed_coverage 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" resume
+	[ "$status" -eq 0 ]
+	# Stage untouched — resume did not advance past the preread gate...
+	[ "$(_cur_stage)" = phase2 ]
+	# ...and none of the phase2 advance output appears (no CR-CLI walk).
+	[[ $output != *"advanced to push"* ]]
+	[[ $output != *"round-cap reached"* ]]
+}
+
 @test "phase2 at round-cap WITH all residuals addressed advances to push (#234/#238)" {
 	# 3 runs logged, cap=3 → 3>=3 AND every finding addressed (prove-yourself
 	# scoped to sha) → advance. #238: the cap now requires coverage to advance.
