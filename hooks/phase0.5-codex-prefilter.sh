@@ -371,6 +371,12 @@ done
 . "$(dirname "$0")/../_lib/phase05-auth-summary.sh"
 phase05_emit_auth_summary "codex" "codex login" "$ERRORED" "$ATTEMPTED" "$ERR_EXCERPTS"
 
+# (#2530) Backfill a run record when no codex-callable agent ran (diff
+# matched only security-review — its unique .conf/.json extensions, e.g. a
+# version bump — which the loop skips above) so ship-pr-cycle's phase0.5
+# gate can advance.
+phase05_log_no_reviewable_agents "codex" "$SHA" "$LOG" "$TS" "$ATTEMPTED"
+
 # Two-stage dedup (#817 + #823 + #827): phase1-dedup → audit-dedup.
 # Wiring extracted to .claude/_lib/phase05-dedupe.sh (sourced above).
 phase05_emit_findings "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK"
