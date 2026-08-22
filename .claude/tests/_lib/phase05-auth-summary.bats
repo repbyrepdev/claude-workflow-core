@@ -44,8 +44,17 @@ teardown() {
 	# gate matches `.sha == $(git rev-parse HEAD)` EXACTLY, so a short pin (the
 	# copilot --sha form) must be widened or the row never advances the gate.
 	command -v git >/dev/null 2>&1 || skip "git unavailable"
-	short=$(git rev-parse --short HEAD 2>/dev/null) || skip "not in a git repo"
-	full=$(git rev-parse HEAD)
+	full=$(git rev-parse HEAD 2>/dev/null) || skip "not in a git repo"
+	# Derive the short form by TRUNCATION, not `--short`: under core.abbrev=40
+	# `--short` returns the full 40 chars, the helper takes its already-full
+	# fast path, and this test would pass GREEN without ever exercising the
+	# normalization branch it exists to cover (passes-for-the-wrong-reason).
+	short=${full:0:8}
+	# Assert the SOURCE is a full 40-char sha — that is what makes the
+	# truncation above meaningful (and catches a rev-parse returning empty or
+	# short). Asserting ${#short} instead would be vacuous: it is 8 by
+	# construction. (CR simplifier, conf 10.)
+	[ "${#full}" -eq 40 ]
 	run phase05_log_no_reviewable_agents "copilot" "$short" "$LOG" "2026-07-09T00:00:00Z" 0
 	[ "$status" -eq 0 ]
 	[ -z "$output" ]

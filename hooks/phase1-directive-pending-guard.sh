@@ -262,8 +262,12 @@ _cmd_launders_mutation() {
 # aware), NOT in the general block, because it is a benign READ flag for grep
 # (-o=only-matching), find (-o=OR), and ls (-o) — a blanket reject there broke
 # those reads (#2531 CR r1 Finding A). The `--<fmt>-output` alternative is
-# BOUNDED (…output([[:space:]=]|$)) so semgrep's READ flag
-# --output-indicator-new/-old (a display glyph, not a file) is NOT rejected.
+# BOUNDED (…output([[:space:]=]|$)) so it matches only the write family whose
+# flag ENDS in `output` (--output/--json-output/--sarif-output/--vim-output/…)
+# and not a longer `--…output-<suffix>` flag. (The bound mirrors the general
+# all-verb screen below, where it genuinely protects git diff's READ flag
+# --output-indicator-new/-old; semgrep itself has no such flag — this helper is
+# verb-gated to semgrep, so that protection lives there, not here.)
 _semgrep_has_write_flag() {
 	# Short forms are matched as a CLUSTER (`-[a-zA-Z]*[ao]`) so both the bare
 	# `-a`/`-o`, the attached-value `-oFILE`, and a bundled `-qa`/`-qo` are
