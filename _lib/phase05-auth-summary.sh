@@ -68,10 +68,12 @@ phase05_emit_auth_summary() {
 #
 # The record carries `cli` (matching the codex/gemini per-agent records;
 # copilot's own per-agent records omit it) so the backfill row is
-# attributable to the launcher that wrote it. The `sha` is written
-# VERBATIM — callers MUST pass the full 40-char `git rev-parse HEAD`,
-# because ship-pr-cycle's phase0.5 gate matches on `.sha == HEAD` exactly;
-# a truncated sha would silently fail to advance.
+# attributable to the launcher that wrote it. The `sha` is NORMALIZED before
+# it is written: a full 40-char value takes the verbatim fast path, while an
+# abbreviated commit reference (e.g. copilot's `--sha` short form) is widened
+# via `git rev-parse --verify` first. ship-pr-cycle's phase0.5 gate matches on
+# `.sha == HEAD` EXACTLY, so an un-widened short sha would write a row that
+# never advances the gate. An unresolvable value falls back to as-given.
 # Args: <cli> <sha> <log-path> <iso-ts> <attempted-count>.
 phase05_log_no_reviewable_agents() {
 	local cli="$1"

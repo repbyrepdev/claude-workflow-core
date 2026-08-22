@@ -54,11 +54,19 @@ _setup_pending_repo() {
 # decision. Modern PreToolUse hooks signal deny via a JSON
 # `"permissionDecision":"deny"` on stdout + exit 0 (NOT exit code 2), so we
 # parse the decision from stdout rather than the rc.
+# A NON-ZERO exit is NOT an allow: with the full lib present the hook always
+# exits 0 (deny travels as JSON on stdout), so any non-zero status means the
+# hook crashed — a syntax error, a failed lib source, an unhandled set -e abort.
+# Mapping that to `allow` would let a broken hook silently satisfy every
+# `= allow` assertion. It surfaces as error(st=N) instead, which matches neither
+# `= allow` nor `= deny` and therefore fails the caller loudly (CR-in-CI).
 _run_guard() {
-	local payload=$1 out
-	out=$(cd "$TDIR" && printf '%s' "$payload" | "$HOOK" 2>/dev/null)
+	local payload=$1 out st=0
+	out=$(cd "$TDIR" && printf '%s' "$payload" | "$HOOK" 2>/dev/null) || st=$?
 	if printf '%s' "$out" | grep -q '"permissionDecision":"deny"'; then
 		echo deny
+	elif [ "$st" -ne 0 ]; then
+		echo "error(st=$st)"
 	else
 		echo allow
 	fi

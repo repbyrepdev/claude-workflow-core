@@ -34,7 +34,7 @@
     "_lib/lint-gate-core.sh": "0bcc9bbf892d995e80dc4974cd710a545a25c3baead5e05a05646bf8aacf7086",
     "_lib/lint-log.sh": "23060525ef8e5445803b46fc0933ee1211b3bde5895d8a6fc1ea3f6bbceca7b9",
     "_lib/phase-graduation.sh": "4fac4b2f11e18b44d0504c96eb54592072f897956472775a21b38154088449e0",
-    "_lib/phase05-auth-summary.sh": "91ba3cd1dcdc0863295553544f2d18d6a78bf188d01a3b47af91300e34f172d8",
+    "_lib/phase05-auth-summary.sh": "067548ad091fbe8c00761515cc7c5407739616b2b1e77fe3b6c21b5e530a4147",
     "_lib/phase05-dedupe.sh": "a47ccecf75ee51c2b2eba137fa1559d5347f939264201caae4fe76c98516940b",
     "_lib/phase1-agent-prompt.sh": "13408a8e02a048f4d8ab9de45f8ef41efa81105db8a4bf8031c1852db1f86aad",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
