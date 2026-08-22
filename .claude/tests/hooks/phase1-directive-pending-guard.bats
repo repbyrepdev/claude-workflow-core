@@ -681,3 +681,123 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *.phase1-directive.txt* ]]
 }
+
+# --- #2535: sanctioned-bypass approval write ------------------------------
+# hooks/skip-env-approval-gate.sh only CONSUMES an approval file; creating one
+# is delegated to the operator via `touch "$APPROVAL_FILE"`. Before #2535 this
+# guard denied that touch, so the sanctioned bypass was unreachable from inside
+# a pending round — the second jaw of the #2531 deadlock. These pin the escape
+# open AND pin its bounds shut.
+
+@test "#2535: relative skip-approvals touch is ALLOWED while pending" {
+	_setup_pending_repo
+	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/abc123.txt"}}')
+	[ "$rc" = allow ]
+}
+
+@test "#2535: absolute skip-approvals touch is ALLOWED while pending" {
+	_setup_pending_repo
+	rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch \\\"$TDIR/.claude/.session-state/skip-approvals/deadbeef.txt\\\"\"}}")
+	[ "$rc" = allow ]
+}
+
+@test "#2535: skip-approvals escape is LIB-INDEPENDENT (survives absent _lib)" {
+	# The whole point of the plain-grep shape: it must work in the exact
+	# environment where the general allowlist is skipped.
+	_setup_pending_repo
+	rc=$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/abc123.txt"}}')
+	[ "$rc" = allow ]
+}
+
+@test "#2535: touch OUTSIDE the approvals dir is DENIED" {
+	_setup_pending_repo
+	for c in \
+		"touch /tmp/evil.txt" \
+		"touch .claude/.session-state/other/abc.txt" \
+		"touch abc.txt"; do
+		rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$rc" = deny ] || {
+			echo "expected deny for: $c (got $rc)"
+			return 1
+		}
+	done
+}
+
+@test "#2535: traversal out of the approvals dir is DENIED" {
+	_setup_pending_repo
+	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/../../../../etc/x.txt"}}')
+	[ "$rc" = deny ]
+}
+
+@test "#2535: approval touch with a laundered mutation is DENIED" {
+	_setup_pending_repo
+	for c in \
+		'touch .claude/.session-state/skip-approvals/a.txt; rm -rf /tmp/x' \
+		'touch .claude/.session-state/skip-approvals/a.txt && rm -rf /tmp/x' \
+		'touch .claude/.session-state/skip-approvals/a.txt > /tmp/out' \
+		'touch $(whoami)/.claude/.session-state/skip-approvals/a.txt'; do
+		rc=$(_run_guard "$(jq -nc --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')")
+		[ "$rc" = deny ] || {
+			echo "expected deny for: $c (got $rc)"
+			return 1
+		}
+	done
+}
+
+@test "#2535: approval touch with a SECOND path argument is DENIED" {
+	_setup_pending_repo
+	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/a.txt /tmp/evil.txt"}}')
+	[ "$rc" = deny ]
+}
+
+@test "#2535: env-prefixed approval touch is DENIED (no arbitrary-exec prefix)" {
+	# A BASH_ENV=/LD_PRELOAD= prefix is arbitrary code execution — this escape
+	# is anchored at ^ with no env-assignment prefix, unlike the review-log one.
+	_setup_pending_repo
+	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"BASH_ENV=/tmp/x touch .claude/.session-state/skip-approvals/a.txt"}}')
+	[ "$rc" = deny ]
+}
+
+# --- #2535 item 3: review-log.sh allowlist escape (was UNTESTED) -----------
+# Same load-bearing class as the ship-pr-cycle + semgrep escapes: if this regex
+# regresses, agents cannot be logged → the round cannot complete → deadlock.
+# Dogfood-verified working but unpinned until now.
+
+@test "#2535: review-log.sh allowlist accepts bare / ./-relative / env-prefixed forms" {
+	_setup_pending_repo
+	for c in \
+		".claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok" \
+		"./.claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok" \
+		"FOO=bar .claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok"; do
+		rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$rc" = allow ] || {
+			echo "expected allow for: $c (got $rc)"
+			return 1
+		}
+	done
+}
+
+@test "#2535: review-log.sh allowlist is LIB-INDEPENDENT (survives absent _lib)" {
+	_setup_pending_repo
+	rc=$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":".claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok"}}')
+	[ "$rc" = allow ]
+}
+
+# --- #2531: named failure when a _lib helper cannot be resolved -----------
+
+@test "#2531: absent cmd-anchor lib emits a NAMED warning (not a silent skip)" {
+	# Before #2531 the read-only allowlist was gated on a bare `declare -f`
+	# test, so an unresolvable cmd-anchor silently made the guard far stricter
+	# than documented and the operator saw an inexplicable deny.
+	_setup_pending_repo
+	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' >/dev/null
+	[[ $NOLIB_STDERR == *"cmd-anchor.sh not found"* ]]
+	[[ $NOLIB_STDERR == *"read-only inspection allowlist is DISABLED"* ]]
+}
+
+@test "#2531: absent inline-sentinel lib warns the advertised bypass is unavailable" {
+	_setup_pending_repo
+	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' >/dev/null
+	[[ $NOLIB_STDERR == *"hook-inline-sentinel.sh not found"* ]]
+	[[ $NOLIB_STDERR == *"PHASE1_DIRECTIVE_GUARD_SKIP bypass is UNAVAILABLE"* ]]
+}

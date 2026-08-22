@@ -311,3 +311,100 @@ teardown() {
 	[[ $output == *"phase2 cache write failed"* ]] # surfaces a breadcrumb
 	[ ! -s "$PHASE2_RESULT_LEDGER" ]               # nothing landed (write was denied)
 }
+
+# --- #2490/#2491: findings_detail round-trip ------------------------------
+# The count-only cache produced a directive that told the operator to "address
+# EACH of the N findings" while handing them nothing but N. These pin the
+# detail channel AND its fail-open contract: a bad detail blob must never cost
+# us the COUNT, which is what the cache-hit decision actually runs on.
+
+_detail2='[{"severity":"major","file":"a.sh","summary":"boom"},{"severity":"minor","file":"b.sh","summary":"meh"}]'
+
+@test "put with detail → get_detail returns the array, get still returns the count (#2491)" {
+	phase2_review_cache_put k1 2 abc1234 "$_detail2"
+	run phase2_review_cache_get_detail k1
+	[ "$status" -eq 0 ]
+	[ "$output" = "$_detail2" ]
+	# The count accessor's contract is unchanged — a bare integer.
+	run phase2_review_cache_get k1
+	[ "$status" -eq 0 ]
+	[ "$output" = "2" ]
+}
+
+@test "legacy record with no findings_detail → get_detail empty, get unaffected (#2491)" {
+	mkdir -p "$(dirname "$LEDGER")"
+	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"legacy","sha":"old","findings":4}\n' >"$LEDGER"
+	run phase2_review_cache_get_detail legacy
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+	run phase2_review_cache_get legacy
+	[ "$output" = "4" ]
+}
+
+@test "get_detail on an unknown key → empty, rc 0 (#2491)" {
+	phase2_review_cache_put k1 1 abc1234 "$_detail2"
+	run phase2_review_cache_get_detail nosuchkey
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "malformed detail still writes the COUNT, detail degrades to [] (#2491)" {
+	run phase2_review_cache_put k2 7 def5678 "{not an array}"
+	[ "$status" -eq 0 ]
+	[[ $output == *"findings_detail is not a single JSON array"* ]] # named, never silent
+	run phase2_review_cache_get k2
+	[ "$output" = "7" ] # the count — the thing cache-hit decisions run on — survived
+	run phase2_review_cache_get_detail k2
+	[ "$output" = "[]" ]
+}
+
+@test "non-array JSON detail (bare object) is rejected → [] (#2491)" {
+	phase2_review_cache_put k3 1 aaa1111 '{"severity":"major"}' 2>/dev/null
+	run phase2_review_cache_get_detail k3
+	[ "$output" = "[]" ]
+}
+
+@test "multi-value detail payload is rejected → [] (slurp guard) (#2491)" {
+	# `[1] [2]` is two top-level JSON values; without -s this would smuggle a
+	# second line into a JSONL ledger every reader parses with jq -rs.
+	phase2_review_cache_put k4 1 bbb2222 '[1] [2]' 2>/dev/null
+	run phase2_review_cache_get_detail k4
+	[ "$output" = "[]" ]
+}
+
+@test "omitted detail arg writes [] and is backward compatible (#2491)" {
+	phase2_review_cache_put k5 3 ccc3333
+	run phase2_review_cache_get k5
+	[ "$output" = "3" ]
+	run phase2_review_cache_get_detail k5
+	[ "$output" = "[]" ]
+}
+
+@test "multi-line detail is compacted — JSONL one-object-per-line invariant holds (#2491)" {
+	# A pretty-printed blob must not become N ledger lines: cache_prune's line
+	# filter and every `jq -rs` reader depend on one object per line.
+	local pretty
+	pretty=$(printf '%s' "$_detail2" | jq .)
+	phase2_review_cache_put k6 2 ddd4444 "$pretty"
+	[ "$(wc -l <"$LEDGER" | tr -d ' ')" = "1" ]
+	[ "$(jq -s length "$LEDGER")" = "1" ]
+	run phase2_review_cache_get_detail k6
+	[ "$output" = "$_detail2" ]
+}
+
+@test "latest-wins applies to detail as well as count (#2491)" {
+	phase2_review_cache_put k7 2 eee5555 "$_detail2"
+	phase2_review_cache_put k7 0 fff6666 '[]'
+	run phase2_review_cache_get k7
+	[ "$output" = "0" ]
+	run phase2_review_cache_get_detail k7
+	[ "$output" = "[]" ]
+}
+
+@test "get_detail on a corrupt ledger → empty + breadcrumb, never a crash (#2491)" {
+	mkdir -p "$(dirname "$LEDGER")"
+	printf 'not json {{{\n' >"$LEDGER"
+	run phase2_review_cache_get_detail anykey
+	[ "$status" -eq 0 ]
+	[[ $output == *"jq read failed"* ]]
+}

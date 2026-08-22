@@ -27,9 +27,50 @@ set -euo pipefail
 # Bypass: PHASE1_DIRECTIVE_GUARD_SKIP=1 inline sentinel (audit-logged).
 
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-LIB_DENY="$HOOK_DIR/../_lib/hook-deny.sh"
-LIB_SENTINEL="$HOOK_DIR/../_lib/hook-inline-sentinel.sh"
-if [ -f "$LIB_DENY" ]; then
+
+# (#2531) LAYOUT-AGNOSTIC _lib resolution.
+#
+# WHAT THIS IS *NOT*: the original #2531 theory was that `$HOOK_DIR/../_lib`
+# fails to resolve, silently stranding the read-only allowlist and the
+# advertised PHASE1_DIRECTIVE_GUARD_SKIP bypass. That theory was DOGFOOD-
+# DISPROVEN on 2026-08-22: `hooks/../_lib/cmd-anchor.sh` and
+# `.claude/hooks/../_lib/cmd-anchor.sh` both exist, sourcing either defines
+# `match_cmd_at_anchor`, rc=0, and every cached plugin version ships _lib/.
+# The REAL cause of the observed deadlock was plugin-cache VERSION SKEW —
+# ~/.claude/settings.json had all 58 hooks pinned to a cache version that
+# PREDATED the escapes, so the harness executed an old copy of this file. That
+# root cause is fixed by the version-agnostic registration work (#2536), not
+# here.
+#
+# WHAT THIS *IS*: two real robustness gaps that survived that diagnosis.
+#   1. Consumer layout. `$HOOK_DIR/../_lib` is correct in the plugin, where
+#      `.claude/hooks` + `.claude/_lib` are symlinks to the repo-root dirs. A
+#      real consumer mirrors hooks into `.claude/hooks/` with `_lib` at
+#      `.claude/_lib/` — the same relative hop — but a consumer that installs
+#      hooks anywhere else has no second candidate. Try both explicitly.
+#   2. SILENT degradation. When cmd-anchor did not load, the entire read-only
+#      allowlist was skipped by a bare `declare -f` test with NO signal, so the
+#      guard silently became far stricter than documented and the operator saw
+#      an inexplicable deny. Name the failure instead.
+# NB: candidates are HOOK_DIR-relative ONLY. REPO_ROOT is deliberately not
+# consulted — it is not resolved until further down this file (the git
+# rev-parse block), so a `$REPO_ROOT/.claude/_lib` candidate here would be a
+# dead probe against `/` on every invocation.
+#   ../_lib     → plugin repo (hooks/../_lib) AND the standard consumer mirror
+#                 (.claude/hooks/../_lib = .claude/_lib)
+#   ../../_lib  → a consumer that installs hooks one level deeper
+_resolve_guard_lib() {
+	local rel=$1 c
+	for c in "$HOOK_DIR/../_lib/$rel" "$HOOK_DIR/../../_lib/$rel"; do
+		[ -f "$c" ] && {
+			printf '%s' "$c"
+			return 0
+		}
+	done
+	return 1
+}
+
+if LIB_DENY=$(_resolve_guard_lib hook-deny.sh); then
 	# shellcheck source=../_lib/hook-deny.sh
 	source "$LIB_DENY"
 else
@@ -38,17 +79,21 @@ else
 		exit 2
 	}
 fi
-if [ -f "$LIB_SENTINEL" ]; then
+if LIB_SENTINEL=$(_resolve_guard_lib hook-inline-sentinel.sh); then
 	# shellcheck source=../_lib/hook-inline-sentinel.sh
 	source "$LIB_SENTINEL"
 else
+	# The advertised bypass is UNAVAILABLE, not merely inert — say so, because
+	# the deny message below still advertises it.
+	echo "phase1-directive-pending-guard: WARN: _lib/hook-inline-sentinel.sh not found (searched $HOOK_DIR/../_lib, $HOOK_DIR/../../_lib) — the PHASE1_DIRECTIVE_GUARD_SKIP bypass is UNAVAILABLE in this invocation" >&2
 	hook_inline_sentinel_check() { return 1; }
 fi
 # v0.30.E (#191): cmd-anchor for the read-only allowlist below.
-LIB_ANCHOR="$HOOK_DIR/../_lib/cmd-anchor.sh"
-if [ -f "$LIB_ANCHOR" ]; then
+if LIB_ANCHOR=$(_resolve_guard_lib cmd-anchor.sh); then
 	# shellcheck source=../_lib/cmd-anchor.sh
 	source "$LIB_ANCHOR"
+else
+	echo "phase1-directive-pending-guard: WARN: _lib/cmd-anchor.sh not found (searched $HOOK_DIR/../_lib, $HOOK_DIR/../../_lib) — the read-only inspection allowlist is DISABLED; reads will be denied while a directive is pending" >&2
 fi
 
 # Outside-git-repo: allow (hook can fire anywhere). Capture stderr to
@@ -317,6 +362,35 @@ fi
 if printf '%s' "$CMD" | grep -qE '^semgrep[[:space:]]+scan([[:space:]]|$)' &&
 	! _cmd_launders_mutation "$CMD" &&
 	! _semgrep_has_write_flag "$CMD"; then
+	exit 0
+fi
+
+# (#2535) Allow the sanctioned-bypass APPROVAL WRITE:
+#   touch <...>/.claude/.session-state/skip-approvals/<hash>.txt
+#
+# WHY: hooks/skip-env-approval-gate.sh is the SSOT for authorizing a `*_SKIP=1`
+# bypass. It only ever CONSUMES an approval file; creating one is delegated to
+# the operator, and its own deny message instructs `touch "$APPROVAL_FILE"`.
+# But `touch` is not a read-only verb, so while a phase1 directive marker was
+# pending THIS guard denied that touch — making the entire sanctioned bypass
+# unreachable at exactly the moment it is needed. That is the second jaw of the
+# #2531 deadlock: the escape hatch could not be opened from inside. This guard's
+# own comments already name it ("the bypass's approval-file write is itself
+# blocked by THIS guard → an unrecoverable in-session deadlock").
+#
+# Same lib-independent plain-grep shape as the review-log.sh allowlist above, so
+# it works even when cmd-anchor did not load. Tightly bounded: anchored at `^`
+# with NO env-assignment prefix (a `BASH_ENV=`/`LD_PRELOAD=` prefix is arbitrary
+# code exec — security-review); EXACTLY ONE argument, which must sit under a
+# literal `.claude/.session-state/skip-approvals/` path segment and end in
+# `.txt`; the basename is restricted to the hash charset (no `/`, no spaces);
+# `..` anywhere is rejected so the segment cannot be reached via traversal; and
+# _cmd_launders_mutation still screens separators/pipes/substitutions/redirects.
+# Worst case this admits is creating one empty .txt file in an approvals dir —
+# and skip-env-approval-gate only ever reads the one under $REPO_ROOT.
+if printf '%s' "$CMD" | grep -qE '^touch[[:space:]]+"?([^"[:space:]]*/)?\.claude/\.session-state/skip-approvals/[A-Za-z0-9._-]+\.txt"?[[:space:]]*$' &&
+	! printf '%s' "$CMD" | grep -qF '..' &&
+	! _cmd_launders_mutation "$CMD"; then
 	exit 0
 fi
 

@@ -1306,6 +1306,31 @@ inherit = "core"
 exclude = ["AWS_*", "AZURE_*", "GCP_*", "GCLOUD_*", "DOCKER_*", "VAULT_*", "*_TOKEN", "*_KEY", "*_SECRET", "*_PASSWORD", "*_CREDENTIALS", "*_CERT*", "GH_TOKEN", "GITHUB_TOKEN", "DATABASE_URL", "AGE_*", "SOPS_*", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
 EOF
 
+_write .markdownlint-cli2.jsonc 644 <<'EOF'
+{
+  // Canonical markdownlint-cli2 configuration — byte-SSOT, propagated to every
+  // consumer via scripts/bootstrap-manifest.yml (`hashed: true`) and healed by
+  // scripts/refresh-from-source.sh.
+  //
+  // WHY MD013 is off (pricing-team-toolkit#114 / #116):
+  //   MD013 is the line-length rule. This process ships long-form prose in
+  //   CLAUDE.md / SKILL.md / AGENTS.md — judgment rules, directive text, and
+  //   threat-model TABLE rows. Table rows in particular CANNOT be wrapped
+  //   without breaking the table, so MD013 is unsatisfiable there rather than
+  //   merely noisy. Leaving it on made markdownlint-cli2 fail on pre-existing
+  //   long lines, which blocked ANY edit to those files at commit time — the
+  //   rule was gating unrelated work instead of improving it.
+  //
+  // Scope discipline: this file stays MINIMAL and repo-AGNOSTIC. It is
+  // byte-identical in every repo, so per-repo ignores belong in that repo's
+  // .markdownlintignore (or a declared entry in .claude/local-overrides.yml),
+  // never here.
+  "config": {
+    "MD013": false
+  }
+}
+EOF
+
 _write .coderabbit.base.yaml 644 <<'EOF'
 # CodeRabbit BASE config — canonical, repo-AGNOSTIC SSOT (#234, Wave H).
 # Docs: https://docs.coderabbit.ai/reference/configuration

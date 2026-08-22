@@ -35,13 +35,32 @@ _validate_section() {
 		if [ "$wf" != "null" ]; then
 			[[ $wf =~ \.ya?ml$ ]]
 		fi
-		# event: non-empty enum {pull_request, push, schedule, workflow_dispatch} OR literal "null"
+		# event: enum {pull_request, push, schedule, workflow_dispatch}, OR a
+		# comma-separated LIST of them, OR literal "null".
+		#
+		# The list form is required, not a laxity: a workflow legitimately fires
+		# on more than one event (gitleaks.yml declares both `pull_request:` and
+		# `push: branches:[main]`), so `event: pull_request, push` is the
+		# TRUTHFUL description of it. The old single-token enum rejected that and
+		# made this test red on main — the schema was narrower than the domain it
+		# describes. Validate each token so the enum still catches real typos.
 		ev=$(yq -r ".${section}[$i].event" "$CHECKS_YML")
 		if [ "$ev" != "null" ]; then
-			case "$ev" in
-			pull_request | push | schedule | workflow_dispatch) ;;
-			*) return 1 ;;
-			esac
+			local _tok _saved_ifs=$IFS
+			IFS=','
+			for _tok in $ev; do
+				# strip surrounding whitespace from ", "-joined tokens
+				_tok=${_tok#"${_tok%%[![:space:]]*}"}
+				_tok=${_tok%"${_tok##*[![:space:]]}"}
+				case "$_tok" in
+				pull_request | push | schedule | workflow_dispatch) ;;
+				*)
+					IFS=$_saved_ifs
+					return 1
+					;;
+				esac
+			done
+			IFS=$_saved_ifs
 		fi
 		# paired contract: workflow_file null IFF event null
 		[ "$wf" = "null" ] && [ "$ev" != "null" ] && return 1

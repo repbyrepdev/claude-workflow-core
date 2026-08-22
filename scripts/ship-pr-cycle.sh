@@ -79,6 +79,18 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 		# shellcheck source=../_lib/cr-phase2-coverage.sh
 		. "$PLUGIN_LIB/cr-phase2-coverage.sh"
 	fi
+	# v0.34.122 (#2535): the phase-1 sibling of the coverage SSOT above —
+	# provides phase1_round_has_unapplied_findings + _summary, used by the
+	# phase1 re-arm site to avoid re-arming the directive marker while the
+	# prior round's findings are still unapplied (the Edit-blocked deadlock).
+	# Best-effort source: the use-site guards with `command -v` and falls back
+	# to the prior always-re-arm behavior, which is the STRICTER of the two —
+	# a missing lib can never un-gate a round.
+	if [ -r "$PLUGIN_LIB/phase1-round-coverage.sh" ]; then
+		# shellcheck source=../_lib/phase1-round-coverage.sh
+		. "$PLUGIN_LIB/phase1-round-coverage.sh" ||
+			echo "ship-pr-cycle: WARN: phase1-round-coverage.sh source returned non-zero — phase1 re-arm suppression disabled (always re-arm; stricter fallback)" >&2
+	fi
 	# v0.32.11 (#249-grp): phase2 review-result cache (cap-reset treadmill
 	# fix) — provides phase2_review_cache_{key,get,put}. Best-effort: if it is
 	# absent/unloadable, phase2 simply always invokes the CR-CLI (the prior
@@ -655,32 +667,13 @@ _set_state_field() {
 	mv "$tmp" "$sf" || scm_fail "_set_state_field $field: failed to atomically replace state file $sf"
 }
 
-_phase1_clean_streak() {
-	# Count trailing clean rounds in review-log/<sha>.jsonl. A round is
-	# clean when (a) total findings across all phase==1 entries == 0
-	# AND (b) the round has all expected agents logged. Partial rounds
-	# (subset of agents reporting 0 findings while others still in
-	# flight) must NOT count as clean — sum=0 alone is indistinguishable
-	# from "round done, all clean" without the agent-count check.
-	#
-	# CRITICAL: must filter to .phase==1 — the per-sha review-log also
-	# accumulates phase2 + accept-with-reason entries, both of which can
-	# poison the round-grouping (null .round buckets, missing .findings).
-	# Surfaces jq errors via scm_warn instead of silently masking with 0,
-	# so a malformed JSONL line doesn't quietly wedge convergence.
-	local sha=$1
-	local rlog="$REPO_ROOT/.claude/review-log/$sha.jsonl"
-	[ -f "$rlog" ] || {
-		printf '0\n'
-		return
-	}
-	# Resolve expected agent count via list-phase1-agents.sh SSOT. Capture
-	# stderr to a tmpfile (mirrors `_scaler_rounds` discipline) so a
-	# script regression — schema drift, jq missing, registry-yaml broken —
-	# surfaces a scm_warn instead of silently using the stale-default 7.
-	# Fallback default 7 chosen to match the DIRECTIVE block enumeration
-	# (5 parallel agents + security-review + semgrep) — keep in sync if
-	# the directive's agent list changes.
+# (#2535) SSOT for "how many agents must report before a phase-1 round counts
+# as complete". Extracted from _phase1_clean_streak so the re-arm gate below
+# asks the SAME question the convergence check does — two different answers
+# would let the gate suppress a re-arm on a round the streak counter still
+# considers in flight. Echoes a validated positive integer; every degraded path
+# falls back to 7 (5 parallel agents + security-review + semgrep) with a warn.
+_phase1_expected_agents() {
 	local expected_agents list_out list_err list_err_file list_rc=0
 	list_err_file=$(mktemp -t ship-cycle-list-agents-err.XXXXXX) ||
 		scm_fail "mktemp for list-phase1-agents stderr capture failed"
@@ -709,6 +702,37 @@ _phase1_clean_streak() {
 			expected_agents=7
 		fi
 	fi
+	printf '%s' "$expected_agents"
+}
+
+_phase1_clean_streak() {
+	# Count trailing clean rounds in review-log/<sha>.jsonl. A round is
+	# clean when (a) total findings across all phase==1 entries == 0
+	# AND (b) the round has all expected agents logged. Partial rounds
+	# (subset of agents reporting 0 findings while others still in
+	# flight) must NOT count as clean — sum=0 alone is indistinguishable
+	# from "round done, all clean" without the agent-count check.
+	#
+	# CRITICAL: must filter to .phase==1 — the per-sha review-log also
+	# accumulates phase2 + accept-with-reason entries, both of which can
+	# poison the round-grouping (null .round buckets, missing .findings).
+	# Surfaces jq errors via scm_warn instead of silently masking with 0,
+	# so a malformed JSONL line doesn't quietly wedge convergence.
+	local sha=$1
+	local rlog="$REPO_ROOT/.claude/review-log/$sha.jsonl"
+	[ -f "$rlog" ] || {
+		printf '0\n'
+		return
+	}
+	# Resolve expected agent count via list-phase1-agents.sh SSOT. Capture
+	# stderr to a tmpfile (mirrors `_scaler_rounds` discipline) so a
+	# script regression — schema drift, jq missing, registry-yaml broken —
+	# surfaces a scm_warn instead of silently using the stale-default 7.
+	# Fallback default 7 chosen to match the DIRECTIVE block enumeration
+	# (5 parallel agents + security-review + semgrep) — keep in sync if
+	# the directive's agent list changes.
+	local expected_agents
+	expected_agents=$(_phase1_expected_agents)
 	# Emit `<round>\t<sum>\t<distinct-agent-count>` per round, sorted
 	# DESCENDING (newest first) so the trailing-clean-streak counter
 	# below walks newest → oldest.
@@ -1436,6 +1460,52 @@ cmd_next() {
        phase1, merge-gate, or terminal so it will advance from
        branch-ready → phase0.5 → phase1 in one call once the
        2-streak clean criterion is met)."
+			# (#2535) RE-ARM GATE — the root fix for the phase-1 Edit deadlock.
+			#
+			# Re-arming the marker here on EVERY `next` is what wedged the loop:
+			# a round returns findings → the operator must Edit to apply them →
+			# but the marker denies Edit → and the marker only clears on
+			# round-complete or a stage transition, both of which require the
+			# fixes to already be applied. Circular; the operator had to `rm` the
+			# marker by hand.
+			#
+			# So: when the latest round is COMPLETE and its findings are not yet
+			# applied (or rejected with evidence), do not re-arm — and CLEAR any
+			# marker a prior `next` already left behind, because skipping the
+			# write alone would leave the old marker still blocking Edit.
+			#
+			# This deliberately does NOT touch the guard's round check. Weakening
+			# that was tried and it un-gated rounds 2+; the gate belongs at the
+			# emitter, which knows whether findings are outstanding.
+			#
+			# Fail-CLOSED: the predicate returns 1 for every undeterminable case
+			# (no lib, no jq, missing/unparseable logs, round still in flight), so
+			# any doubt re-arms exactly as before. Suppression needs positive
+			# evidence.
+			if command -v phase1_round_has_unapplied_findings >/dev/null 2>&1 &&
+				phase1_round_has_unapplied_findings "$sha" "$(_phase1_expected_agents)"; then
+				_clear_phase1_directive_marker "$sha"
+				local _p1_cov
+				_p1_cov=$(phase1_round_coverage_summary "$sha" 2>/dev/null || echo "")
+				cat <<EOF
+ship-pr-cycle: phase1 round ${_p1_cov:-<unknown>} — NOT re-arming the directive marker.
+
+The latest phase-1 round is COMPLETE and its findings are not yet addressed
+(round / findings / covered = ${_p1_cov:-unknown}). Edit/Write are intentionally
+UNBLOCKED so you can act on them. Per memory:feedback_apply_or_reject_no_defer —
+address EACH finding now, do not defer to a follow-up PR:
+  - real issue → fix it in-PR and commit
+  - verified FALSE-POSITIVE → record a rejection WITH dogfood evidence:
+      skills/prove-yourself-audit/run.sh record-rejection --source phase1 \\
+        --severity <critical|high|medium|minor|info> --covers-count <N> \\
+        --finding-id <id> --finding-text "..." --dogfood-cmd "..." \\
+        --dogfood-output "..." --dogfood-rc 0 --reason "..."
+
+Then re-run 'ship-pr-cycle.sh next' — once coverage >= findings this gate opens
+and the next round's directive is emitted normally.
+EOF
+				return 0
+			fi
 			_write_phase1_directive_marker "$sha" "$directive_text"
 			# v0.34.32 (#2237): _write_phase1_directive_marker is best-effort
 			# (scm_warn + return 0 on every write failure, by design so it
