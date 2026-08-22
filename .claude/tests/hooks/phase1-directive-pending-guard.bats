@@ -407,6 +407,12 @@ teardown() {
 @test "behavioral: plain semgrep scan (read-only analysis) still ALLOWED" {
 	_setup_pending_repo
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config=auto --error f.sh"}}')" = allow ]
+	# BENIGN short flags must survive the write-flag cluster screen: the reject
+	# is `-[a-zA-Z]*[ao]`, so only clusters CONTAINING a or o (semgrep's -a
+	# autofix / -o output) deny. -q/-j/-c carry neither and must stay allowed —
+	# pins the no-over-denial half of the screen (CR-in-CI).
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -q --config=auto f.sh"}}')" = allow ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -j4 --config=auto f.sh"}}')" = allow ]
 }
 
 # --- #2531: cycle-advance verbs + lib-independent escapes --------------------
