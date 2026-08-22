@@ -379,6 +379,38 @@ _log_cr() { # $1=findings count for the latest CR entry
 	[[ $output != *"cr=0"* ]]
 }
 
+@test "#2523 scaler: an unattributable row FLOORS a lower ancestor count" {
+	# Unattributable rows (no resolvable sha) cannot be ordered against branch
+	# rows, so they are tracked separately and combined by MAX. A higher
+	# unattributable count must therefore raise the tier above a lower ancestor
+	# one — admitting those rows may never LOWER cr_count.
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":2}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_log_cr 9 # no .sha field → unattributable
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=9"* ]]
+	[[ $output != *"cr=2"* ]]
+}
+
+@test "#2523 scaler: a malformed row alongside an ancestor 0 floors at cr=1" {
+	# The other fail-closed shape: a usable value EXISTS (0, from a clean
+	# ancestor) so the all-malformed branch does not fire, but a rejected row
+	# means the log was not fully readable — vouching clean would lower the cap.
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	{
+		printf '{"sha":"%s","findings":0}\n' "$sha"
+		printf '{"sha":"%s","findings":"abc"}\n' "$sha"
+	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"flooring at the minimal tier"* ]]
+	[[ $output == *"cr=1"* ]]
+	[[ $output != *"cr=0"* ]]
+}
+
 @test "#2523 scaler: newest ANCESTOR entry wins over an older ancestor entry" {
 	# Forward walk keeps the LAST ancestor match, so a re-review on the same
 	# branch supersedes its earlier entry rather than the file order deciding.
