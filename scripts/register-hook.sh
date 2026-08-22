@@ -132,6 +132,17 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 }
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 
+# (#2536) Version-agnostic launcher resolution. Best-effort source: if the lib
+# is unavailable, _resolve_hook_command below falls back to its prior behavior —
+# version-pinned but still functional. A missing lib must never stop a hook from
+# registering at all.
+_RH_LIB="$(dirname "$0")/../_lib/plugin-cache-resolve.sh"
+if [ -r "$_RH_LIB" ]; then
+	# shellcheck source=../_lib/plugin-cache-resolve.sh
+	. "$_RH_LIB" ||
+		echo "register-hook.sh: WARN: plugin-cache-resolve.sh failed to source — new registrations will be version-pinned" >&2
+fi
+
 # --- Frontmatter parsing ---------------------------------------------
 
 # Reads first 15 lines of $1 and prints `event=X matcher=Y` (matcher
@@ -172,11 +183,32 @@ _parse_frontmatter() {
 }
 
 _resolve_hook_command() {
-	# Convert repo-relative path to absolute path the plugin cache
-	# would use. Uses $PLUGIN_CACHE_DIR env if set (test mode); otherwise
-	# falls back to $REPO_ROOT/$path (works during dev / when consumer
-	# repo IS the plugin).
+	# The command string baked into settings.json for this hook.
+	#
+	# (#2536) PREFER the version-agnostic launcher. The two fallbacks below both
+	# bake an ABSOLUTE, version-pinned path, which is what left 51 registrations
+	# pointing at a pruned cache version on the operator's machine — 404'ing
+	# after GC, and silently running a stale build before it. A launcher
+	# re-resolves the newest cache version containing this hook at RUN TIME, so
+	# a cache bump plus GC has nothing to dangle.
+	#
+	# Falls through to the prior behavior when no launcher exists (fresh install
+	# before install-hook-launchers.sh has run, or the lib failed to source):
+	# version-pinned is worse, but it is better than refusing to register.
 	local path=$1
+	# Separate `local`: a same-statement `base=${path##*/}` reads the OUTER
+	# `path`, not the one being assigned beside it (SC2318).
+	local base=${path##*/}
+	local launcher
+	if declare -f pcr_launcher_path >/dev/null 2>&1; then
+		launcher=$(pcr_launcher_path "$base")
+		if [ -x "$launcher" ]; then
+			printf '%s' "$launcher"
+			return 0
+		fi
+	fi
+	# Uses $PLUGIN_CACHE_DIR env if set (test mode); otherwise falls back to
+	# $REPO_ROOT/$path (works during dev / when the consumer repo IS the plugin).
 	if [ -n "${PLUGIN_CACHE_DIR:-}" ]; then
 		echo "$PLUGIN_CACHE_DIR/$path"
 	else
@@ -311,11 +343,20 @@ fi
 # --check mode: bidirectional drift between settings.json refs ↔ hook files
 if [ "$CHECK" = "1" ]; then
 	settings=$(_load_settings)
-	settings_refs=$(printf '%s' "$settings" | jq -r '
+	# (#2536) A registration is now EITHER a legacy `…/hooks/<name>.sh` path or a
+	# version-agnostic launcher `<launcher-dir>/<name>.sh`. The old pattern
+	# required a literal `/hooks/` segment immediately before the filename, which
+	# a launcher path does not have — so after the launcher migration --check saw
+	# ZERO registrations and reported every auto-register hook as unregistered.
+	# Accept both shapes and key on the basename, which is identical either way.
+	_check_ld=""
+	if declare -f pcr_launcher_dir >/dev/null 2>&1; then _check_ld=$(pcr_launcher_dir); fi
+	settings_refs=$(printf '%s' "$settings" | jq -r --arg ld "$_check_ld" '
 		[.hooks // {} | to_entries[] |
-		  .value[] | (.hooks // [])[] |
-		  select(.command | test("/hooks/[^/]+\\.sh$"))
-		  | .command | capture("/hooks/(?<f>[^/]+\\.sh)$").f
+		  .value[] | (.hooks // [])[] | .command |
+		  select(type == "string") |
+		  select(test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/")))
+		  | capture("/(?<f>[^/]+\\.sh)$").f
 		] | unique | .[]
 	')
 	# Hooks on disk with frontmatter — separately track sentinel hooks

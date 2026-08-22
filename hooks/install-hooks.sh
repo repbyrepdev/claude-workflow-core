@@ -46,6 +46,16 @@ HOOK_TIMEOUT="${HOOK_TIMEOUT:-5}"
 # shellcheck source=../_lib/event-frontmatter.sh
 . "$SCRIPT_DIR/../_lib/event-frontmatter.sh"
 
+# (#2536) Version-agnostic launcher resolution. Best-effort: without it the
+# registration loop below falls back to version-pinned paths, which still work
+# until the referenced cache version is pruned.
+_IH_LIB="$SCRIPT_DIR/../_lib/plugin-cache-resolve.sh"
+if [ -r "$_IH_LIB" ]; then
+	# shellcheck source=../_lib/plugin-cache-resolve.sh
+	. "$_IH_LIB" ||
+		echo "install-hooks: WARN: plugin-cache-resolve.sh failed to source — registrations will be version-pinned" >&2
+fi
+
 # ---- preflight -----------------------------------------------------------
 
 [ -f "$USER_SETTINGS" ] || {
@@ -121,7 +131,21 @@ for hook in "$HOOKS_DIR"/*.sh; do
 
 	TGT_EVENT+=("$event")
 	TGT_MATCHER+=("$matcher")
-	TGT_HOOK+=("$hook")
+	# (#2536) Register the version-agnostic LAUNCHER when one exists, not this
+	# file's own absolute path. $hook is derived from $BASH_SOURCE, so when this
+	# installer runs from the plugin cache it resolves to
+	# .../claude-workflow-core/<version>/hooks/<name>.sh — a version-pinned path
+	# that 404s once that version is GC'd, and silently runs a stale build until
+	# then. That is how 51 registrations ended up frozen at 0.34.108 while the
+	# cache had advanced to 0.34.121. A launcher re-resolves at RUN TIME instead.
+	# Falls back to $hook when no launcher is present (fresh install before
+	# install-hook-launchers.sh has run) — version-pinned, but registered.
+	_reg="$hook"
+	if declare -f pcr_launcher_path >/dev/null 2>&1; then
+		_cand=$(pcr_launcher_path "$base")
+		[ -x "$_cand" ] && _reg="$_cand"
+	fi
+	TGT_HOOK+=("$_reg")
 done
 shopt -u nullglob
 

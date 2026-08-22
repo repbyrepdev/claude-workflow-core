@@ -247,3 +247,56 @@ _pinned_count() {
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
 }
+
+# --- the two resolvers that WRITE settings.json ---------------------------
+# Generating launchers is only half the fix: if register-hook.sh and
+# install-hooks.sh keep emitting version-pinned paths, every NEW registration
+# re-introduces the exact bug the launchers exist to remove.
+
+@test "register-hook.sh registers the LAUNCHER path when one exists (#2536)" {
+	"$SCRIPT" --generate
+	printf '{}' >"$CLAUDE_SETTINGS_FILE"
+	run env CLAUDE_SETTINGS_FILE="$CLAUDE_SETTINGS_FILE" \
+		"${BATS_TEST_DIRNAME}/../../../scripts/register-hook.sh" --dry-run \
+		hooks/phase1-directive-pending-guard.sh
+	[ "$status" -eq 0 ]
+	[[ $output == *"$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"* ]]
+	# and NOT a version-pinned cache path
+	[[ $output != *"claude-workflow-core/0."*"/hooks/"* ]]
+}
+
+@test "register-hook.sh falls back to a pinned path when no launcher exists" {
+	# A fresh install before install-hook-launchers.sh has run must still
+	# register the hook — version-pinned is worse than a launcher, but far
+	# better than refusing to register at all.
+	rm -rf "$PLUGIN_LAUNCHER_DIR"
+	printf '{}' >"$CLAUDE_SETTINGS_FILE"
+	run env CLAUDE_SETTINGS_FILE="$CLAUDE_SETTINGS_FILE" \
+		"${BATS_TEST_DIRNAME}/../../../scripts/register-hook.sh" --dry-run \
+		hooks/phase1-directive-pending-guard.sh
+	[ "$status" -eq 0 ]
+	[[ $output == *"phase1-directive-pending-guard.sh"* ]]
+	# Must NOT be a launcher path — the launcher dir was just removed, so any
+	# reference to it would mean we registered something that does not exist.
+	[[ $output != *"$PLUGIN_LAUNCHER_DIR"* ]]
+}
+
+@test 'install-hooks.sh registers launcher paths, not its own $BASH_SOURCE dir' {
+	"$SCRIPT" --generate
+	mkdir -p "$TEST_TMP/home/.claude"
+	printf '{}' >"$TEST_TMP/home/.claude/settings.json"
+	run env HOME="$TEST_TMP/home" PLUGIN_LAUNCHER_DIR="$PLUGIN_LAUNCHER_DIR" \
+		"${BATS_TEST_DIRNAME}/../../../hooks/install-hooks.sh"
+	[ "$status" -eq 0 ]
+	# Assert against $PLUGIN_LAUNCHER_DIR, NOT the literal "/plugin-hooks/" —
+	# that substring is only in the production default; the fixture overrides
+	# the dir, so a literal check silently passes for the wrong reason.
+	run jq -r --arg d "$PLUGIN_LAUNCHER_DIR" \
+		'[.. | strings | select(startswith($d + "/"))] | length' \
+		"$TEST_TMP/home/.claude/settings.json"
+	[ "$output" -gt 0 ]
+	# nothing may remain pinned to a concrete cache version
+	run jq -r '[.. | strings | select(test("claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/"))] | length' \
+		"$TEST_TMP/home/.claude/settings.json"
+	[ "$output" = "0" ]
+}

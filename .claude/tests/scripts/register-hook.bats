@@ -67,9 +67,15 @@ teardown() {
 	run "$SCRIPT" hooks/cr-auto-parse-poll.sh
 	[ "$status" -eq 0 ]
 	[[ $output == *"event=SessionStart"* ]]
-	# Verify settings.json has the entry
+	# Verify settings.json has the entry.
+	# (#2536) Assert the BASENAME, not a `hooks/<name>.sh` substring: the command
+	# is now a version-agnostic launcher (`<launcher-dir>/<name>.sh`) whenever one
+	# exists, and only falls back to a `…/hooks/<name>.sh` path when it does not.
+	# The old substring encoded the version-pinned contract this change removes.
 	registered=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")
-	[[ $registered == *"hooks/cr-auto-parse-poll.sh"* ]]
+	[[ $registered == */cr-auto-parse-poll.sh ]]
+	# whichever form it took, it must point at something real
+	[ -x "$registered" ]
 }
 
 @test "register hook with event + matcher frontmatter" {
