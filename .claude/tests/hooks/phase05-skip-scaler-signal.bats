@@ -364,8 +364,14 @@ _log_cr() { # $1=findings count for the latest CR entry
 	# clean branch. Vouching cr=0 there would silently lower the round cap.
 	sha=$(cd "$WORK" && git rev-parse main)
 	mkdir -p "$WORK/.claude/logs"
-	printf '{"sha":"%s","findings":"abc"}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
-	printf '{"sha":"%s","findings":"008"}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	# The STRING "0" is the dangerous one: jq string-interpolation renders it
+	# identically to the NUMBER 0, so without a type check it would pass the
+	# canonical-decimal guard as a valid 0 and vouch a clean branch (CR-in-CI).
+	{
+		printf '{"sha":"%s","findings":"abc"}\n' "$sha"
+		printf '{"sha":"%s","findings":"008"}\n' "$sha"
+		printf '{"sha":"%s","findings":"0"}\n' "$sha"
+	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"no usable findings values"* ]]

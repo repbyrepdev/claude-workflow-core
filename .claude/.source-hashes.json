@@ -104,7 +104,7 @@
     "hooks/phase1-post-agent-nudge.sh": "e6a72b385e13835f746dde88986c4cc8361caae5e734e87cde6d580023f911ed",
     "hooks/phase1-post-commit-resume.sh": "152a6e14c7aa860637923842c0231d0b3178fc212d17270d9c550837fa6686f1",
     "hooks/phase1-resume-message.sh": "0aad45ca709149d89495fb1c98207b409ae05d6cfc975eb81734949e65da4343",
-    "hooks/phase1-scaler.sh": "b6188d0ed2f7513128d7578bec7f9850eac923473c7d9504903c3baf7d446198",
+    "hooks/phase1-scaler.sh": "81766c582ee3f7cc400ce4d81d989325cdcc355381827f5d41caefa4cff79fdc",
     "hooks/post-commit-ship-cycle.sh": "c76866008d15fef5ac75c99a4288f2ebcc8a77a77b8af11c32c71cd6cc51fd69",
     "hooks/post-commit-template-lint.sh": "ab1e055cb2061d9666e2106660c646f0db482c353f40e9d7ea85b21b4e7e0d5d",
     "hooks/post-merge-clean-phase1-markers.sh": "a383a80c886e58f153fc098944154f0452c132a81ec5bc04e7adfc0cdaf70dfe",

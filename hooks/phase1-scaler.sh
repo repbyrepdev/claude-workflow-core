@@ -153,7 +153,12 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	# branch from a row that carried no count at all and defeating the
 	# fail-closed path below. Absent now renders as "null", which the canonical-
 	# decimal guard rejects, marking the row bad (CR).
-	if ! _cr_rows=$(tail -50 "$cr_log" 2>/dev/null | jq -r '"\(if (.sha | type) == "string" and (.sha | length) > 0 then .sha else "-" end) \(.findings)"' 2>/dev/null); then
+	# The findings value is TYPE-CHECKED in jq, not just rendered: string
+	# interpolation collapses the number 0 and the string "0" to the same text,
+	# so a wrong-typed value would sail through the canonical-decimal guard below
+	# as a valid 0 and vouch a clean branch. Anything that is not a JSON number
+	# renders as an explicit sentinel the guard rejects (CR).
+	if ! _cr_rows=$(tail -50 "$cr_log" 2>/dev/null | jq -r '"\(if (.sha | type) == "string" and (.sha | length) > 0 then .sha else "-" end) \(if (.findings | type) == "number" then .findings else "__invalid_findings__" end)"' 2>/dev/null); then
 		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
 		cr_count=1
 	elif [ -s "$cr_log" ] && [ -z "$_cr_rows" ]; then

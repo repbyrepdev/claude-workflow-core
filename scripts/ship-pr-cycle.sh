@@ -2368,8 +2368,9 @@ cmd_resume() {
 		fi
 		case "$prev" in
 		phase1 | phase2 | merge-gate | merged)
-			# Operator-input or terminal — stop here so the operator
-			# (or Claude session) can take over.
+			# Operator-input (phase1, phase2, merge-gate) or terminal
+			# (merged) — stop here so the operator (or Claude session)
+			# can take over.
 			#
 			# (#1848) phase2 is a stop stage because entering it emits the
 			# phase2 PREREAD gate. Without it the auto-walk could cross
