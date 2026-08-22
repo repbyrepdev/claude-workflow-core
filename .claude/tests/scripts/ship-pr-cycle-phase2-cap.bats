@@ -135,7 +135,11 @@ _seed_coverage() {
 	# 10/hr budget before the operator ever read the SKILL. phase2 is now a stop
 	# stage: resume returns with the stage still phase2 and no CR-CLI invoked.
 	_seed_stage phase2
-	_seed_log 3
+	# Seed FEWER runs than the cap (1 < 3) so the round-cap path is NOT already
+	# satisfied. With 3/3 the test would pass even if resume walked into phase2,
+	# because the cap branch would advance it anyway — the assertions would hold
+	# for the wrong reason (CR).
+	_seed_log 1
 	_seed_coverage 2
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3

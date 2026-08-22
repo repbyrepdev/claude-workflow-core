@@ -146,7 +146,14 @@ if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	# `length > 0` matters: an EMPTY-STRING sha would emit a leading blank, and
 	# `read -r _e_sha _e_find` strips leading whitespace — shifting the findings
 	# count into _e_sha and silently DROPPING the row (CR silent-failure-hunter).
-	if ! _cr_rows=$(jq -r '"\(if (.sha | type) == "string" and (.sha | length) > 0 then .sha else "-" end) \(.findings // 0)"' "$cr_log" 2>/dev/null | tail -50); then
+	# `tail -50` runs BEFORE jq so a malformed record in the older history cannot
+	# fail the parse of the whole file (the log is append-only and long-lived),
+	# and jq only ever reads the recent window. `.findings` is emitted RAW — the
+	# former `// 0` turned a MISSING/null field into a valid 0, vouching a clean
+	# branch from a row that carried no count at all and defeating the
+	# fail-closed path below. Absent now renders as "null", which the canonical-
+	# decimal guard rejects, marking the row bad (CR).
+	if ! _cr_rows=$(tail -50 "$cr_log" 2>/dev/null | jq -r '"\(if (.sha | type) == "string" and (.sha | length) > 0 then .sha else "-" end) \(.findings)"' 2>/dev/null); then
 		echo "phase1-scaler: WARN — jq failed reading $cr_log (corrupt log?); forcing minimal tier" >&2
 		cr_count=1
 	elif [ -s "$cr_log" ] && [ -z "$_cr_rows" ]; then
