@@ -127,6 +127,43 @@ _seed_coverage() {
 		>"$ROOT/.claude/audit/prove-yourself.jsonl"
 }
 
+@test "#1848: resume STOPS at phase2 instead of walking into the CR-CLI" {
+	# The phase2 PREREAD gate is emitted on ENTERING phase2. Before this fix
+	# cmd_resume only stopped on phase1|merge-gate|merged, so an auto-walk that
+	# reached phase2 (a graduated branch short-circuits phase0.5/phase1 inside a
+	# single cmd_next) would run the CR-CLI on the NEXT iteration — spending the
+	# 10/hr budget before the operator ever read the SKILL. phase2 is now a stop
+	# stage: resume returns with the stage still phase2 and no CR-CLI invoked.
+	_seed_stage phase2
+	# Seed FEWER runs than the cap (1 < 3) so the round-cap path is NOT already
+	# satisfied. With 3/3 the test would pass even if resume walked into phase2,
+	# because the cap branch would advance it anyway — the assertions would hold
+	# for the wrong reason (CR).
+	_seed_log 1
+	_seed_coverage 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" resume
+	[ "$status" -eq 0 ]
+	# Stage untouched — resume did not advance past the preread gate...
+	[ "$(_cur_stage)" = phase2 ]
+	# ...and none of the phase2 advance output appears (no CR-CLI walk).
+	[[ $output != *"advanced to push"* ]]
+	[[ $output != *"round-cap reached"* ]]
+	# Strongest assertion (CR): the stub drops .claude/.local-review-ran when it
+	# executes, so its ABSENCE proves the CR-CLI was never invoked — the whole
+	# point of stopping at the preread gate, and something output-matching alone
+	# cannot establish.
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ]
+	# NOT asserted here: that the preread ACK materializes. cmd_resume runs with
+	# SHIP_PR_IN_RESUME=1 (emitter prints to stdout, writes no ack file), so the
+	# stop branch re-emits with suppression off — but this fixture stubs only the
+	# CR-CLI and the scaler, not _lib/ship-cycle-directives.sh + _lib/hook-ack.sh,
+	# so no ack can be produced here regardless of the code being correct.
+	# Asserting it would fail for a fixture reason, not a behavioural one.
+	# Covering it needs a fixture extension — tracked in #1848's follow-up.
+}
+
 @test "phase2 at round-cap WITH all residuals addressed advances to push (#234/#238)" {
 	# 3 runs logged, cap=3 → 3>=3 AND every finding addressed (prove-yourself
 	# scoped to sha) → advance. #238: the cap now requires coverage to advance.

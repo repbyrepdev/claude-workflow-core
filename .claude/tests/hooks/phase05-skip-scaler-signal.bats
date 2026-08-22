@@ -328,6 +328,101 @@ _log_cr() { # $1=findings count for the latest CR entry
 	[[ $output == *"tier=minimal"* ]]
 }
 
+@test "#2523 scaler: a CR entry on THIS branch's lineage still escalates" {
+	# Baseline for the scoping tests below: an entry whose sha IS an ancestor of
+	# HEAD must be read exactly as before the branch-scoping change.
+	# Use a STRICT ancestor (main's tip, one commit behind feat/test) rather than
+	# HEAD itself — HEAD would pass under a naive sha-equality check too, so it
+	# cannot distinguish real ancestry validation from equality (CR).
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":4}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=4"* ]]
+}
+
+@test "#2523 scaler: a CR entry from a SIBLING branch is ignored (not an ancestor)" {
+	# The log is append-only and shared across branches, so a bare `tail -1`
+	# could read a sibling's entry and over-escalate this branch's tier. A
+	# commit on an unmerged sibling is NOT an ancestor of HEAD, so it is skipped.
+	other=$(cd "$WORK" && git checkout -q -b sibling/other main &&
+		printf 'sibling\n' >s.txt && git add -A && git commit -qm sibling &&
+		git rev-parse HEAD)
+	(cd "$WORK" && git checkout -q feat/test)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":9}\n' "$other" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	# 9 findings from the sibling must NOT leak in.
+	[[ $output != *"cr=9"* ]]
+	[[ $output == *"cr=0"* ]]
+}
+
+@test "#2523 scaler: ALL-malformed CR rows force the minimal tier (never vouch clean)" {
+	# Rows present but none yielding a usable count is an UNREADABLE log, not a
+	# clean branch. Vouching cr=0 there would silently lower the round cap.
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	# The STRING "0" is the dangerous one: jq string-interpolation renders it
+	# identically to the NUMBER 0, so without a type check it would pass the
+	# canonical-decimal guard as a valid 0 and vouch a clean branch (CR-in-CI).
+	{
+		printf '{"sha":"%s","findings":"abc"}\n' "$sha"
+		printf '{"sha":"%s","findings":"008"}\n' "$sha"
+		printf '{"sha":"%s","findings":"0"}\n' "$sha"
+	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"no usable findings values"* ]]
+	[[ $output == *"cr=1"* ]]
+	[[ $output != *"cr=0"* ]]
+}
+
+@test "#2523 scaler: an unattributable row FLOORS a lower ancestor count" {
+	# Unattributable rows (no resolvable sha) cannot be ordered against branch
+	# rows, so they are tracked separately and combined by MAX. A higher
+	# unattributable count must therefore raise the tier above a lower ancestor
+	# one — admitting those rows may never LOWER cr_count.
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":2}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_log_cr 9 # no .sha field → unattributable
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=9"* ]]
+	[[ $output != *"cr=2"* ]]
+}
+
+@test "#2523 scaler: a malformed row alongside an ancestor 0 floors at cr=1" {
+	# The other fail-closed shape: a usable value EXISTS (0, from a clean
+	# ancestor) so the all-malformed branch does not fire, but a rejected row
+	# means the log was not fully readable — vouching clean would lower the cap.
+	sha=$(cd "$WORK" && git rev-parse main)
+	mkdir -p "$WORK/.claude/logs"
+	{
+		printf '{"sha":"%s","findings":0}\n' "$sha"
+		printf '{"sha":"%s","findings":"abc"}\n' "$sha"
+	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"flooring at the minimal tier"* ]]
+	[[ $output == *"cr=1"* ]]
+	[[ $output != *"cr=0"* ]]
+}
+
+@test "#2523 scaler: newest ANCESTOR entry wins over an older ancestor entry" {
+	# Forward walk keeps the LAST ancestor match, so a re-review on the same
+	# branch supersedes its earlier entry rather than the file order deciding.
+	sha=$(cd "$WORK" && git rev-parse HEAD)
+	mkdir -p "$WORK/.claude/logs"
+	printf '{"sha":"%s","findings":7}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":1}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	_scaler
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=1"* ]]
+}
+
 @test "scaler: MIXED malformed batch still sums the readable values" {
 	# The type filter stays defensive for partial corruption: one null +
 	# one numeric 4 -> sum 4, signal intact -> moderate tier.

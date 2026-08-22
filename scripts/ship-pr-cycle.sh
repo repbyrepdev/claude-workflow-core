@@ -2367,9 +2367,27 @@ cmd_resume() {
 			return "$state_rc"
 		fi
 		case "$prev" in
-		phase1 | merge-gate | merged)
-			# Operator-input or terminal — stop here so the operator
-			# (or Claude session) can take over.
+		phase1 | phase2 | merge-gate | merged)
+			# Operator-input (phase1, phase2, merge-gate) or terminal
+			# (merged) — stop here so the operator (or Claude session)
+			# can take over.
+			#
+			# (#1848) phase2 is a stop stage because entering it emits the
+			# phase2 PREREAD gate. Without it the auto-walk could cross
+			# straight into phase2 — a graduated branch short-circuits
+			# phase0.5/phase1 in a single cmd_next — and the following
+			# iteration would invoke the CR-CLI before the operator had
+			# read skills/ship-pr-cycle/SKILL.md, spending the 10/hr budget
+			# under exactly the discipline the preread exists to install.
+			# Stopping is not enough on its own: the walk emitted the
+			# preread under SHIP_PR_IN_RESUME=1, which prints to stdout
+			# but writes NO ack file, so the operator could run `next`
+			# straight into the CR-CLI having never acknowledged the gate.
+			# Re-emit it here with suppression OFF so the ack actually
+			# materializes and the gate holds (CR).
+			if [ "$prev" = "phase2" ]; then
+				SHIP_PR_IN_RESUME=0 _emit_stage_directive phase2-preread
+			fi
 			return 0
 			;;
 		esac
