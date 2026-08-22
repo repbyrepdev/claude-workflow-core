@@ -34,11 +34,15 @@ HOOKS_DIR="$SCRIPT_DIR/../hooks"
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 LAUNCHER_DIR=$(pcr_launcher_dir)
 
-DO_GENERATE=1 DO_MIGRATE=0 CHECK_ONLY=0 DRY_RUN=0
+DO_GENERATE=1 DO_MIGRATE=0 CHECK_ONLY=0 DRY_RUN=0 DO_VERIFY=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--generate) DO_GENERATE=1 ;;
 	--migrate) DO_MIGRATE=1 ;;
+	--verify)
+		DO_VERIFY=1
+		DO_GENERATE=0
+		;;
 	--check)
 		CHECK_ONLY=1
 		DO_MIGRATE=1
@@ -62,6 +66,74 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 _log() { echo "[install-hook-launchers] $*" >&2; }
+
+# ---- 0. verify ------------------------------------------------------------
+# Post-migration state check, as ONE command. Exists so verifying never requires
+# an ad-hoc `python3 -c '…read settings.json…' && stat && ls && jq` pipeline:
+# compound shell that reads the operator's global config is exactly what a
+# permission classifier refuses, and re-deriving the checks by hand each time is
+# how a check silently drifts from what it claims to test.
+# rc 0 = healthy · rc 1 = a problem worth acting on.
+if [ "$DO_VERIFY" -eq 1 ]; then
+	vrc=0
+	if [ ! -f "$SETTINGS" ]; then
+		_log "NOTE: $SETTINGS not found — nothing to verify"
+		exit 0
+	fi
+	if ! jq empty "$SETTINGS" 2>/dev/null; then
+		_log "✗ $SETTINGS is not valid JSON"
+		exit 1
+	fi
+	_log "✓ settings.json is valid JSON"
+
+	pinned=$(grep -coE 'claude-workflow-core/[0-9]+\.[0-9]+\.[0-9]+/hooks/' "$SETTINGS" || true)
+	if [ "${pinned:-0}" -gt 0 ]; then
+		_log "✗ $pinned version-pinned hook ref(s) remain — run --generate --migrate"
+		vrc=1
+	else
+		_log "✓ 0 version-pinned hook refs"
+	fi
+
+	# Every launcher reference must resolve to something executable. A ref
+	# pointing at a missing file is the exact failure this change exists to
+	# prevent, so it is checked explicitly rather than inferred.
+	total=0
+	bad=0
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		total=$((total + 1))
+		[ -x "$p" ] || {
+			_log "✗ launcher ref not executable: $p"
+			bad=$((bad + 1))
+		}
+	done < <(jq -r --arg d "$LAUNCHER_DIR" \
+		'[.. | strings | select(startswith($d + "/"))] | unique | .[]' "$SETTINGS" 2>/dev/null)
+	if [ "$bad" -gt 0 ]; then
+		_log "✗ $bad of $total launcher ref(s) unresolvable"
+		vrc=1
+	else
+		_log "✓ $total launcher ref(s), all executable"
+	fi
+
+	# End-to-end: prove a launcher actually forwards to a real hook, and report
+	# which cache version it lands on. A path existing is not the same as it
+	# working, and that version is the number that had hooks running a stale
+	# build for a whole session.
+	probe="$LAUNCHER_DIR/phase1-directive-pending-guard.sh"
+	if [ -x "$probe" ]; then
+		if printf '{"tool_name":"Bash","tool_input":{"command":"git diff"}}' |
+			"$probe" >/dev/null 2>&1; then
+			_log "✓ end-to-end: launcher executed a real hook payload (rc 0)"
+		else
+			_log "✗ end-to-end: launcher failed on a real hook payload"
+			vrc=1
+		fi
+		if _best=$(pcr_newest_complete "$(pcr_cache_root)" hooks/phase1-directive-pending-guard.sh); then
+			_log "✓ resolves to ${_best##*/}"
+		fi
+	fi
+	exit "$vrc"
+fi
 
 # ---- 1. generate launchers ------------------------------------------------
 # One launcher per auto-register hook. Idempotent: a launcher whose content is

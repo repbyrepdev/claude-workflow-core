@@ -231,6 +231,50 @@ _pinned_count() {
 	[[ $output == *"nothing to migrate"* ]]
 }
 
+# --- --verify ------------------------------------------------------------
+# One command replaces the ad-hoc `python3 -c '…settings.json…' && stat && ls
+# && jq` pipeline. That shape gets refused by the permission classifier (it
+# reads the operator's global config), and hand-rebuilding it each time is how
+# a check drifts from what it claims to test.
+
+@test "--verify passes on a fully migrated settings.json" {
+	"$SCRIPT" --generate
+	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
+	"$SCRIPT" --migrate
+	run "$SCRIPT" --verify
+	[ "$status" -eq 0 ]
+	[[ $output == *"0 version-pinned hook refs"* ]]
+	[[ $output == *"all executable"* ]]
+}
+
+@test "--verify FAILS while version-pinned refs remain" {
+	"$SCRIPT" --generate
+	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
+	run "$SCRIPT" --verify # not migrated yet
+	[ "$status" -eq 1 ]
+	[[ $output == *"version-pinned hook ref(s) remain"* ]]
+}
+
+@test "--verify FAILS when a launcher ref points at a missing file" {
+	# The failure this whole change exists to prevent: a registration that
+	# resolves to nothing. Must be caught explicitly, never inferred.
+	"$SCRIPT" --generate
+	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
+	"$SCRIPT" --migrate
+	rm -f "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
+	run "$SCRIPT" --verify
+	[ "$status" -eq 1 ]
+	[[ $output == *"not executable"* ]]
+}
+
+@test "--verify refuses corrupt settings.json without mutating it" {
+	printf 'not json {{{' >"$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --verify
+	[ "$status" -eq 1 ]
+	[[ $output == *"not valid JSON"* ]]
+	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "not json {{{" ]
+}
+
 @test "pcr_newest_complete honors semver ordering (0.10.0 beats 0.9.5)" {
 	mkdir -p "$PLUGIN_CACHE_ROOT/0.9.5/hooks" "$PLUGIN_CACHE_ROOT/0.10.0/hooks"
 	touch "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh" "$PLUGIN_CACHE_ROOT/0.10.0/hooks/x.sh"
