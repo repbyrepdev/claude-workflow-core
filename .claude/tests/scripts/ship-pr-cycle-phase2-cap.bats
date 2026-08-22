@@ -155,6 +155,13 @@ _seed_coverage() {
 	# point of stopping at the preread gate, and something output-matching alone
 	# cannot establish.
 	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ]
+	# NOT asserted here: that the preread ACK materializes. cmd_resume runs with
+	# SHIP_PR_IN_RESUME=1 (emitter prints to stdout, writes no ack file), so the
+	# stop branch re-emits with suppression off — but this fixture stubs only the
+	# CR-CLI and the scaler, not _lib/ship-cycle-directives.sh + _lib/hook-ack.sh,
+	# so no ack can be produced here regardless of the code being correct.
+	# Asserting it would fail for a fixture reason, not a behavioural one.
+	# Covering it needs a fixture extension — tracked in #1848's follow-up.
 }
 
 @test "phase2 at round-cap WITH all residuals addressed advances to push (#234/#238)" {
