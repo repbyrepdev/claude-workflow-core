@@ -331,7 +331,10 @@ _log_cr() { # $1=findings count for the latest CR entry
 @test "#2523 scaler: a CR entry on THIS branch's lineage still escalates" {
 	# Baseline for the scoping tests below: an entry whose sha IS an ancestor of
 	# HEAD must be read exactly as before the branch-scoping change.
-	sha=$(cd "$WORK" && git rev-parse HEAD)
+	# Use a STRICT ancestor (main's tip, one commit behind feat/test) rather than
+	# HEAD itself — HEAD would pass under a naive sha-equality check too, so it
+	# cannot distinguish real ancestry validation from equality (CR).
+	sha=$(cd "$WORK" && git rev-parse main)
 	mkdir -p "$WORK/.claude/logs"
 	printf '{"sha":"%s","findings":4}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
