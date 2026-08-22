@@ -418,6 +418,13 @@ done
 . "$(dirname "${BASH_SOURCE[0]}")/../_lib/phase05-auth-summary.sh"
 phase05_emit_auth_summary "copilot" "copilot login" "$ERRORED" "$ATTEMPTED" "$ERR_EXCERPTS"
 
+# (#2530) Backfill a run record when no copilot-callable agent ran (diff
+# matched only security-review — its unique .conf/.json extensions, e.g. a
+# version bump — which the loop skips above) so ship-pr-cycle's phase0.5
+# gate can advance. SHA normalization lives IN the helper (SSOT — every
+# prefilter gets it uniformly; #2530 CR), so pass $SHA through directly.
+phase05_log_no_reviewable_agents "copilot" "$SHA" "$LOG" "$TS" "$ATTEMPTED"
+
 # Two-stage dedup (#817 + #823 + #827): phase1-dedup → audit-dedup.
 # Wiring extracted to .claude/_lib/phase05-dedupe.sh (sourced above).
 phase05_emit_findings "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK"

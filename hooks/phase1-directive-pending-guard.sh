@@ -234,6 +234,82 @@ if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:sp
 	exit 0
 fi
 
+# (#2531) Shared launder-screen for the two lib-independent single-verb escapes
+# below AND the general read-only block (which DELEGATES to it — #2531 CR r1).
+# Returns 0 if $1 contains a construct that could smuggle a mutation past a verb
+# allowlist: a statement separator / background / pipe / backtick, command/
+# process substitution, or a SURVIVING file redirect. Harmless discard/dup
+# redirects (2>/dev/null, 2>&1, >/dev/null, &>/dev/null) are STRIPPED FIRST
+# (#2531 CR r1 comment-analyzer) so a benign `… 2>/dev/null` is NOT flagged —
+# only a real file-writing redirect survives to the grep. Newlines fold to `;`
+# because grep is line-oriented — a second-line command (`… next`⏎`git commit`)
+# is otherwise invisible to a per-line reject. Extracted to ONE place so the
+# escapes + general block can't drift.
+_cmd_launders_mutation() {
+	printf '%s' "$1" |
+		sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
+		tr '\n' ';' |
+		grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'
+}
+
+# (#2531 CR r1) semgrep flags that WRITE a file, POST to a URL, or rewrite
+# source in place — rejected wherever a bare `semgrep scan` is admitted (the
+# lib-independent escape below AND the general allowlist's `semgrep` verb),
+# enumerated ONCE so the two can't drift. Matches short `-o`/`-oFILE` (the
+# attached form evaded the old boundary-anchored reject — #2531 CR r1 Finding
+# B), the whole `--<fmt>-output` family (--output/--json-output/--sarif-output/
+# …), `--autofix`, and `--allow-local-builds`. `-o` is screened HERE (verb-
+# aware), NOT in the general block, because it is a benign READ flag for grep
+# (-o=only-matching), find (-o=OR), and ls (-o) — a blanket reject there broke
+# those reads (#2531 CR r1 Finding A). The `--<fmt>-output` alternative is
+# BOUNDED (…output([[:space:]=]|$)) so semgrep's READ flag
+# --output-indicator-new/-old (a display glyph, not a file) is NOT rejected.
+_semgrep_has_write_flag() {
+	printf '%s' "$1" | grep -qE '(^|[[:space:]])-o|(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-local-builds)([[:space:]=]|$)'
+}
+
+# Allow the cycle-advance/report verbs `ship-pr-cycle.sh next|resume|status|
+# start`. These ONLY advance or report cycle state — during phase1 (the only
+# stage this guard fires in) `next` walks the round machinery; it never
+# commits/pushes/Edits (the productive work this guard exists to defer, all of
+# which lives at later stages where no phase1 marker exists). Without this the
+# operator can't run `next` to advance a round after firing agents, and because
+# `next` re-emits the directive marker, the round can never complete →
+# phase1_rounds stuck at 0 → the branch never graduates (the mid-phase1
+# advance deadlock). Plain grep (like the review-log allowlist above) so it
+# works even when the cmd-anchor / inline-sentinel libs fail to source from
+# $HOOK_DIR/../_lib (the environment in which the advertised
+# PHASE1_DIRECTIVE_GUARD_SKIP bypass silently no-ops). Anchored at `^` with NO
+# env-assignment prefix (a `BASH_ENV=`/`LD_PRELOAD=` prefix would be arbitrary
+# code exec — security-review) and screened by _cmd_launders_mutation, so
+# nothing can precede or trail the bare verb. The PATH is restricted to the
+# CANONICAL `(.claude/)?scripts/ship-pr-cycle.sh` (plugin + consumer forms, opt.
+# `./` / `bash ` prefix) — NOT an arbitrary `*/ship-pr-cycle.sh`, a `/tmp/…` or
+# `../` traversal path, or a bare PATH-resolved name — so the escape can't admit
+# a look-alike script planted elsewhere (#2531 CR-CLI critical).
+if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?scripts/ship-pr-cycle\.sh[[:space:]]+(next|resume|status|start)([[:space:]]|$)' &&
+	! _cmd_launders_mutation "$CMD"; then
+	exit 0
+fi
+
+# Allow a bare `semgrep scan …` (the round's static-analysis step). semgrep is
+# already in the read-only allowlist below, but that whole block is gated on
+# `declare -f match_cmd_at_anchor` and is silently skipped whenever the
+# cmd-anchor lib fails to source from $HOOK_DIR/../_lib (the same resolution
+# failure that no-ops the inline-sentinel bypass) — which strands the operator
+# mid-round: the 5 agents are logged but `semgrep` (required to complete the
+# round) is denied, so the round never finishes. This plain-grep escape is
+# lib-independent. Anchored `^` with no env-prefix (see above); _cmd_launders_
+# mutation blocks separators/redirects/subst; and _semgrep_has_write_flag (a
+# shared helper) rejects every output-writing / source-rewriting flag so the
+# escape and the general block below can't drift. (#followup: fix the
+# directive-guard _lib resolution at the root.)
+if printf '%s' "$CMD" | grep -qE '^semgrep[[:space:]]+scan([[:space:]]|$)' &&
+	! _cmd_launders_mutation "$CMD" &&
+	! _semgrep_has_write_flag "$CMD"; then
+	exit 0
+fi
+
 # v0.30.E (#191): allow a SINGLE, SIMPLE read-only INSPECTION command through
 # while a directive is pending. The guard's purpose is to stop the main loop
 # from doing PRODUCTIVE work (Edit/Write/commit/push) or stalling before
@@ -252,12 +328,6 @@ fi
 # file, or invoke a per-tool write action — and only THEN allowlist the
 # leading verb of what remains (which is now guaranteed a single simple cmd).
 if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
-	# Strip harmless discard/dup redirects (2>/dev/null, 2>&1, >/dev/null,
-	# &>/dev/null) so they don't trip the `>` reject; fold newlines to `;`
-	# so a multi-line command is caught by the separator reject below.
-	_resid=$(printf '%s' "$CMD" |
-		sed -E 's/2>&1/ /g; s/[0-9]*>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g; s/&>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
-		tr '\n' ';')
 	# THREAT MODEL (#191 P1 r1-r3): this guard is a WORKFLOW NUDGE for a
 	# cooperative agent — it stops the main loop from doing productive work
 	# (commit/push/Edit/Write) or stalling before firing Phase 1 agents. It is
@@ -270,26 +340,35 @@ if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
 	# (the local `find` is bfs with `-rm`, `grep` is ugrep with `--filter` —
 	# implementations vary and cannot all be enumerated).
 	#
-	# Reject if the residue contains ANY of:
-	#   [;&|`]      — statement separator / background / pipe / backtick-subst
-	#   $( <( >(    — command / process substitution
-	#   >           — a surviving file-writing redirect
+	# Reject when the command either (a) LAUNDERS a mutation via separator /
+	# background / pipe / backtick / command-or-process substitution / a
+	# surviving file redirect — DELEGATED to _cmd_launders_mutation so the
+	# laundering definition lives in ONE place (#2531 CR r1 code-simplifier;
+	# the helper pre-strips harmless 2>/dev/null|2>&1|&>/dev/null discards), or
+	# (b) carries a cross-tool write/exec-via-flag:
 	#   --*output=  — git --output + semgrep --json-output/--sarif-output/...
 	#                 (the whole --<fmt>-output family writes a file / POSTs to
-	#                 a URL). Anchored so the READ flag --output-indicator-* is
+	#                 a URL). BOUNDED so the READ flag --output-indicator-* is
 	#                 NOT false-rejected.
-	#   --autofix   — semgrep in-place source rewrite (#191 r3)
+	#   --autofix / --allow-local-builds — semgrep source rewrite / local exec
 	#   --pre / --hostname-bin — ripgrep exec-a-command flags (#191 r2)
 	#   -delete / -rm / -exec* / -ok* / -fprint* / -fls — find write/exec
 	#                 actions (-rm is the bfs alias for -delete, #191 r3)
-	# Anything matching is NOT a single simple read-only command → deny.
+	# semgrep's SHORT -o is NOT screened here — it is a benign read flag for
+	# grep (-o=only-matching) / find (-o=OR) / ls (-o); a blanket reject here
+	# regressed those reads (#2531 CR r1 Finding A). It is rejected VERB-AWARE
+	# in the allowlist loop below (via _semgrep_has_write_flag).
 	#
-	# RULE for adding a verb to the allowlist below: it must be a tool with NO
-	# subprocess-spawn / file-write FLAG in common implementations. cat/head/
-	# tail/ls/wc/grep qualify; rg/find/git-grep/semgrep-autofix did NOT (each
-	# found in r1-r3). git read subcmds qualify with --output screened.
-	if printf '%s' "$_resid" | grep -qE '[;&|`]|\$\(|<\(|>\(|>|(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-local-builds)([[:space:]=]|$)|(^|[[:space:]])--(pre|hostname-bin)([[:space:]=]|$)|(^|[[:space:]])-(delete|rm|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)([[:space:]]|$)'; then
-		: # compound / substitution / pipe / redirect / exec-or-write-flag — deny
+	# RULE for adding a verb to the allowlist below: its subprocess-spawn /
+	# file-write flags must be EITHER absent OR screened (universal above /
+	# per-verb below). cat/head/tail/ls/wc/grep qualify with no such flag;
+	# find + semgrep qualify because their write/exec flags ARE screened (find
+	# above; semgrep both above + verb-aware below); rg / git-grep did NOT
+	# (--pre / --open-files-in-pager exec). git read subcmds qualify with
+	# --output screened above.
+	if _cmd_launders_mutation "$CMD" ||
+		printf '%s' "$CMD" | grep -qE '(^|[[:space:]])--[a-z-]*output([[:space:]=]|$)|(^|[[:space:]])--(autofix|allow-local-builds)([[:space:]=]|$)|(^|[[:space:]])--(pre|hostname-bin)([[:space:]=]|$)|(^|[[:space:]])-(delete|rm|exec|execdir|ok|okdir|fprint|fprintf|fprint0|fls)([[:space:]]|$)'; then
+		: # laundered mutation / exec-or-write-flag — deny
 	else
 		# Single simple command: allowlist its leading read-only verb. git
 		# mutating verbs (commit/push/add/reset/...) are excluded — only read
@@ -320,6 +399,12 @@ if [ "$TOOL" = "Bash" ] && declare -f match_cmd_at_anchor >/dev/null 2>&1; then
 			'cat' 'head' 'tail' 'grep' 'find' 'ls' 'wc' 'semgrep' \
 			'([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(bash[[:space:]]+)?(\./)?scripts/test(-touched)?\.sh'; do
 			if match_cmd_at_anchor "$_ro" "$CMD"; then
+				# semgrep ALONE can write via its short -o (a benign read flag
+				# for the other verbs, so screened per-verb HERE — #2531 CR r1
+				# Finding A/B). Its long write flags are caught above.
+				if [ "$_ro" = 'semgrep' ] && _semgrep_has_write_flag "$CMD"; then
+					break # deny — semgrep with a write/exfil flag
+				fi
 				exit 0
 			fi
 		done
