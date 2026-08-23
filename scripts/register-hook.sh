@@ -136,7 +136,9 @@ SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 # is unavailable, _resolve_hook_command below falls back to its prior behavior —
 # version-pinned but still functional. A missing lib must never stop a hook from
 # registering at all.
-_RH_LIB="$(dirname "$0")/../_lib/plugin-cache-resolve.sh"
+# Resolve relative to THIS script's real location (BASH_SOURCE), not $0 — a
+# `bash register-hook.sh` invocation or a symlink makes $0 unreliable.
+_RH_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/plugin-cache-resolve.sh"
 if [ -r "$_RH_LIB" ]; then
 	# shellcheck source=../_lib/plugin-cache-resolve.sh
 	. "$_RH_LIB" ||

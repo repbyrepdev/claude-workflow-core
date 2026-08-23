@@ -178,9 +178,10 @@ reviews:
       instructions: >-
         The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a
         `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do
-        NOT flag that `rev:` as a non-existent or unverifiable tag (pricing-team-
-        toolkit#123) — its existence is verified by `pre-commit` install and CI
-        (CR-in-CI does not flag it; only the offline CLI sandbox does). Only flag
+        NOT flag that `rev:` as a non-existent or unverifiable tag — see
+        `pricing-team-toolkit#123` — its existence is verified by `pre-commit`
+        install and CI (CR-in-CI does not flag it; only the offline CLI sandbox
+        does). Only flag
         a `rev:` that is obviously malformed — i.e. not a semver-style
         `vMAJOR.MINOR.PATCH` tag (optionally with a `-prerelease` and/or `+build`
         suffix) and not a 40-char commit SHA — or one whose version disagrees

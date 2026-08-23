@@ -849,7 +849,13 @@ _phase2_detail_projection() {
 		] | .[0:$cap]
 	' "$filtered" 2>/dev/null) || out=""
 	rm -f "$filtered"
-	[ -n "$out" ] || out='[]'
+	if [ -z "$out" ]; then
+		# The count/find steps above already succeeded, so an empty projection
+		# here is a genuine jq failure on the projection filter — name it rather
+		# than silently degrading to count-only.
+		scm_warn "phase2 detail: projection jq failed on $f — recording the count with empty detail"
+		out='[]'
+	fi
 	printf '%s' "$out"
 }
 
