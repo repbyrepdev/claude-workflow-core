@@ -178,6 +178,46 @@ teardown() {
 	}
 }
 
+@test "--unregister run FROM A CONSUMER repo spares that consumer's hooks/ (#2540)" {
+	# REPO_ROOT resolves from the CALLER's cwd, so keying "plugin-owned" on it
+	# meant running this script from a consumer repo made THAT repo's hooks/ dir
+	# look like ours — and unregister would delete the consumer's own
+	# same-basename registration from the GLOBAL settings.json. Ownership must be
+	# derived from the script's own location (PLUGIN_ROOT via BASH_SOURCE).
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	# Build a CONSUMER repo with a same-named hook and register it by hand.
+	local consumer="$TEST_TMP/consumer"
+	mkdir -p "$consumer/hooks"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$consumer/hooks/cr-auto-parse-poll.sh"
+	chmod +x "$consumer/hooks/cr-auto-parse-poll.sh"
+	(cd "$consumer" && git init -q && git config user.email t@t && git config user.name t)
+	# Register the PHYSICAL path. On macOS $TMPDIR is /var/... while
+	# `git rev-parse --show-toplevel` (and pwd -P) return /private/var/..., so a
+	# registration written with the logical path can never string-match the
+	# script's resolved root — the comparison would be vacuously false and this
+	# test would pass no matter what the code does. Mutation testing caught
+	# exactly that: swapping PLUGIN_ROOT back to REPO_ROOT left the suite green.
+	local consumer_phys
+	consumer_phys=$(cd "$consumer" && pwd -P)
+	jq --arg c "$consumer_phys/hooks/cr-auto-parse-poll.sh" \
+		'.hooks.SessionStart[0].hooks += [{type:"command",command:$c}]' \
+		"$CLAUDE_SETTINGS_FILE" >"$TEST_TMP/s.json"
+	mv "$TEST_TMP/s.json" "$CLAUDE_SETTINGS_FILE"
+	# Invoke the plugin's script FROM INSIDE the consumer repo.
+	run bash -c "cd '$consumer' && '$SCRIPT' --unregister hooks/cr-auto-parse-poll.sh"
+	[ "$status" -eq 0 ] || return 1
+	# the CONSUMER's own hook must survive
+	run jq -r --arg c "$consumer_phys/hooks/cr-auto-parse-poll.sh" \
+		'[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $c)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "1" ] || {
+		echo "consumer's own hooks/ registration was wrongly deleted"
+		return 1
+	}
+}
+
 @test "--unregister spares a THIRD-PARTY tool that also uses a hooks/ dir (#2540)" {
 	# A bare `/hooks/` test is not "plugin-owned": plenty of tools keep their own
 	# hooks/ directory. Only the doubled plugin-cache segment + semver (the shape

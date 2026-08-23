@@ -130,6 +130,16 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "register-hook.sh: not in a git repo" >&2
 	exit 2
 }
+# PLUGIN_ROOT is the dir THIS SCRIPT lives in, derived from BASH_SOURCE — NOT
+# REPO_ROOT, which resolves from the CALLER's cwd. --unregister performs a
+# destructive edit on the global settings.json and treats `<root>/hooks/<name>.sh`
+# as plugin-owned; keying that on REPO_ROOT meant running the script from a
+# CONSUMER repo made that consumer's own hooks/ dir look like ours, so an
+# unregister could delete the consumer's same-basename registration
+# (CR-in-CI #2540: "Do not treat the caller repository as plugin-owned").
+# The script's own location is the only trustworthy answer to "which checkout am
+# I part of". Falls back to REPO_ROOT only if BASH_SOURCE cannot be resolved.
+PLUGIN_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd) || PLUGIN_ROOT="$REPO_ROOT"
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 
 # (#2536) Version-agnostic launcher resolution. Best-effort source: if the lib
@@ -286,10 +296,11 @@ _unregister_one() {
 	# is left alone.
 	local settings_json=$1 base=$2 ldir=""
 	if declare -f pcr_launcher_dir >/dev/null 2>&1; then ldir=$(pcr_launcher_dir); fi
-	# THIS repo's own hooks/ dir is plugin-owned too: _resolve_hook_command falls
-	# back to "$REPO_ROOT/hooks/<name>.sh" in dev / when the consumer IS the
-	# plugin, so registrations of that shape are ours and must be unregisterable.
-	printf '%s' "$settings_json" | jq --arg base "$base" --arg ld "$ldir" --arg rr "$REPO_ROOT" "$(_progtoken_jq)"'
+	# The PLUGIN's own hooks/ dir is plugin-owned too: _resolve_hook_command falls
+	# back to "<plugin>/hooks/<name>.sh" in dev / when the consumer IS the plugin,
+	# so registrations of that shape are ours. Keyed on PLUGIN_ROOT (BASH_SOURCE-
+	# derived), NEVER on REPO_ROOT — see the PLUGIN_ROOT note above.
+	printf '%s' "$settings_json" | jq --arg base "$base" --arg ld "$ldir" --arg rr "$PLUGIN_ROOT" "$(_progtoken_jq)"'
 		if (.hooks // {}) == {} then
 			.
 		else
