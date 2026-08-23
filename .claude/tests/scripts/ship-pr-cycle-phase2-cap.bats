@@ -475,13 +475,17 @@ _seed_cache_detail() {
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
-	[ "$status" -eq 0 ]
-	[[ $output == *"NOT all addressed"* ]]
-	[[ $output == *"Findings from that review:"* ]]
-	[[ $output == *"[major] hooks/foo.sh"* ]]
-	[[ $output == *"rc capture aborts under set -e"* ]]
-	[[ $output == *"[minor] scripts/bar.sh"* ]]
-	[ ! -f "$ROOT/.claude/.local-review-ran" ] # still must not burn CR budget
+	# `|| return 1` on every assertion — bats has no set -e, so a middle `[[ ]]`
+	# that fails is masked by the last command's status (CR-in-CI #2540). The
+	# detail-render assertions below are ALL middle lines; without this the whole
+	# #2493 render could break and the suite stay green.
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
+	[[ $output == *"Findings from that review:"* ]] || return 1
+	[[ $output == *"[major] hooks/foo.sh"* ]] || return 1
+	[[ $output == *"rc capture aborts under set -e"* ]] || return 1
+	[[ $output == *"[minor] scripts/bar.sh"* ]] || return 1
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1 # still must not burn CR budget
 }
 
 @test "#2493 a LEGACY count-only record still yields the count-only directive" {
@@ -493,10 +497,10 @@ _seed_cache_detail() {
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
-	[ "$status" -eq 0 ]
-	[[ $output == *"NOT all addressed"* ]]
-	[[ $output != *"Findings from that review:"* ]]
-	[ ! -f "$ROOT/.claude/.local-review-ran" ]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
+	[[ $output != *"Findings from that review:"* ]] || return 1
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1
 }
 
 @test "#2493 a record with findings_detail:[] also degrades to count-only" {
@@ -512,8 +516,8 @@ _seed_cache_detail() {
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
-	[ "$status" -eq 0 ]
-	[[ $output == *"NOT all addressed"* ]]
-	[[ $output != *"Findings from that review:"* ]]
-	[ ! -f "$ROOT/.claude/.local-review-ran" ]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
+	[[ $output != *"Findings from that review:"* ]] || return 1
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1
 }

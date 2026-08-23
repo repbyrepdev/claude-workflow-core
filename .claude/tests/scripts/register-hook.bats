@@ -158,7 +158,11 @@ teardown() {
 	# GC the launcher — _resolve_hook_command can now only return the fallback
 	rm -f "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
 	"$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
-	count=$(jq '.hooks.SessionStart // [] | length' "$CLAUDE_SETTINGS_FILE")
+	# Parenthesize so BOTH a missing key AND an existing empty array yield 0 —
+	# `.hooks.SessionStart // [] | length` without parens is fine in jq (// binds
+	# tighter than |), but the explicit group documents intent and is robust to a
+	# future filter change (CR-in-CI #2540).
+	count=$(jq '(.hooks.SessionStart // []) | length' "$CLAUDE_SETTINGS_FILE")
 	[ "$count" = "0" ] || return 1
 }
 

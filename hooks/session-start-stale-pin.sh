@@ -131,10 +131,22 @@ if [ "$higher" = "$CACHE_VER" ]; then
 	# Emit an ABSOLUTE, runnable path. At SessionStart the cwd is the CONSUMER
 	# repo, which does not ship install-hook-launchers.sh — a cwd-relative
 	# `scripts/…` gives `No such file or directory` and the warning repeats every
-	# session (CR-in-CI #2540). The script lives in the newest cache version we
-	# just resolved.
-	ihl="$CACHE_DIR/$CACHE_VER/scripts/install-hook-launchers.sh"
-	cat >&2 <<EOF
+	# session (CR-in-CI #2540). Pick the NEWEST cache version whose script is
+	# actually executable — not blindly $CACHE_VER, which may be a half-populated
+	# dir that ships no (or a non-executable) install-hook-launchers.sh, giving a
+	# remediation that still 404s (CR-in-CI #2540 phase2).
+	ihl=""
+	for _v in $(printf '%s\n' "${entries[@]:-}" | while IFS= read -r _e; do
+		_n=${_e##*/}
+		[[ $_n =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$_n"
+	done | sort -V -r); do
+		if [ -x "$CACHE_DIR/$_v/scripts/install-hook-launchers.sh" ]; then
+			ihl="$CACHE_DIR/$_v/scripts/install-hook-launchers.sh"
+			break
+		fi
+	done
+	if [ -n "$ihl" ]; then
+		cat >&2 <<EOF
 session-start-stale-pin: ⚠ plugin-cache drift detected
   settings.json refs: v$SETTINGS_VER
   latest cache dir:   v$CACHE_VER
@@ -144,6 +156,19 @@ session-start-stale-pin: ⚠ plugin-cache drift detected
   (Do NOT use migrate-settings.sh for this — it re-pins to v$CACHE_VER, which
   reintroduces the dangling-ref failure once that version is GC'd.)
 EOF
+	else
+		# No cache version ships a runnable remediation script — warn about the
+		# drift but do NOT print a command that would 404.
+		cat >&2 <<EOF
+session-start-stale-pin: ⚠ plugin-cache drift detected
+  settings.json refs: v$SETTINGS_VER
+  latest cache dir:   v$CACHE_VER
+  No cache version under $CACHE_DIR ships an executable
+  scripts/install-hook-launchers.sh — reinstall/repair the plugin via the
+  Claude Code plugin manager (\`/plugin reload claude-workflow-core\`), then
+  re-run it with --generate --migrate to un-pin these refs.
+EOF
+	fi
 else
 	# Inverse drift: settings > cache → hooks reference paths that
 	# don't exist. Likely a partial install or post-migrate race.

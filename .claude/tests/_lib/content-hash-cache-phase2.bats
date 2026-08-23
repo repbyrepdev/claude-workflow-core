@@ -13,7 +13,7 @@
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/content-hash-cache.sh"
-	[ -f "$LIB" ]
+	[ -f "$LIB" ] || return 1
 	command -v jq >/dev/null
 	command -v git >/dev/null
 	TEST_TMP=$(mktemp -d -t chcache.XXXXXX) || return 1
@@ -30,39 +30,39 @@ teardown() {
 
 @test "get on absent ledger → miss (empty, rc 0)" {
 	run phase2_review_cache_get deadbeef
-	[ "$status" -eq 0 ]
-	[ -z "$output" ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1
 }
 
 @test "put then get → hit (returns the count)" {
 	phase2_review_cache_put deadbeef 3 abc1234
 	run phase2_review_cache_get deadbeef
-	[ "$status" -eq 0 ]
-	[ "$output" = "3" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "3" ] || return 1
 }
 
 @test "latest entry wins for a key (most recent put)" {
 	phase2_review_cache_put deadbeef 3 abc1234
 	phase2_review_cache_put deadbeef 0 def5678
 	run phase2_review_cache_get deadbeef
-	[ "$output" = "0" ]
+	[ "$output" = "0" ] || return 1
 }
 
 @test "get for an unknown key → miss" {
 	phase2_review_cache_put deadbeef 3 abc1234
 	run phase2_review_cache_get otherkey
-	[ -z "$output" ]
+	[ -z "$output" ] || return 1
 }
 
 @test "put rejects non-numeric count (no ledger write, rc 0)" {
 	run phase2_review_cache_put somekey notanumber abc1234
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	[ ! -f "$LEDGER" ] || [ "$(wc -l <"$LEDGER" | tr -d ' ')" = "0" ]
 }
 
 @test "put rejects empty key (no ledger write, rc 0)" {
 	run phase2_review_cache_put "" 2 abc1234
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	[ ! -f "$LEDGER" ] || [ "$(wc -l <"$LEDGER" | tr -d ' ')" = "0" ]
 }
 
@@ -82,18 +82,18 @@ teardown() {
 		git commit -qm change
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	local K1="$output"
-	[ -n "$K1" ] # non-empty for a real (non-empty) diff
+	[ -n "$K1" ] || return 1 # non-empty for a real (non-empty) diff
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
-	[ "$output" = "$K1" ] # deterministic: same surface → same key
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "$K1" ] || return 1 # deterministic: same surface → same key
 	# A further commit that changes content must change the key (cache miss →
 	# fresh review), which is what stops a stale-cache false hit.
 	(cd "$TEST_TMP" && printf 'three\n' >>f.txt && git add f.txt && git commit -qm more)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
-	[ "$output" != "$K1" ] # content changed → key changed
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" != "$K1" ] || return 1 # content changed → key changed
 }
 
 @test "audit-ledger + session-state commits do NOT change the key (#2230 no treadmill)" {
@@ -118,9 +118,9 @@ teardown() {
 		git commit -qm change
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	local K1="$output"
-	[ -n "$K1" ]
+	[ -n "$K1" ] || return 1
 	# Commit ONLY audit/session-state bookkeeping — no change to f.txt.
 	(
 		cd "$TEST_TMP"
@@ -131,15 +131,15 @@ teardown() {
 		git commit -qm "audit: record finding"
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	# Key UNCHANGED: the excluded paths never enter the review-surface hash, so an
 	# audit-only commit is a cache HIT (no needless re-review).
-	[ "$output" = "$K1" ]
+	[ "$output" = "$K1" ] || return 1
 	# Sanity: a real code change still busts the key (exclude isn't over-broad).
 	(cd "$TEST_TMP" && printf 'three\n' >>f.txt && git add f.txt && git commit -qm real)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
-	[ "$output" != "$K1" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" != "$K1" ] || return 1
 }
 
 @test "exclude is file/dir-PRECISE: sibling paths inside the namespaces still bust the key (#2230 not over-broad)" {
@@ -168,9 +168,9 @@ teardown() {
 		git commit -qm change
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	local K1="$output"
-	[ -n "$K1" ]
+	[ -n "$K1" ] || return 1
 	# A SIBLING file under .claude/audit/ (NOT prove-yourself.jsonl) must change
 	# the key — only the named file is excluded, not the whole dir.
 	(
@@ -181,9 +181,9 @@ teardown() {
 		git commit -qm "audit: sibling file (not excluded)"
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	local K2="$output"
-	[ "$K2" != "$K1" ] # sibling under .claude/audit/ is reviewed → key changed
+	[ "$K2" != "$K1" ] || return 1 # sibling under .claude/audit/ is reviewed → key changed
 	# A non-session-state file directly under .claude/ must ALSO change the key —
 	# only .claude/.session-state/ is excluded, not all of .claude/.
 	(
@@ -193,8 +193,8 @@ teardown() {
 		git commit -qm "claude: non-session-state file (not excluded)"
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
-	[ "$output" != "$K2" ] # file directly under .claude/ is reviewed → key changed
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" != "$K2" ] || return 1 # file directly under .claude/ is reviewed → key changed
 }
 
 @test "standalone fallback: REPO_ROOT unset resolves to repo root, not parent" {
@@ -207,8 +207,8 @@ teardown() {
 	# mirrors the consumer-layout test below).
 	expected=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd -P)
 	run bash -c "unset REPO_ROOT; . '$LIB' && printf '%s' \"\$REPO_ROOT\""
-	[ "$status" -eq 0 ]
-	[ "$output" = "$expected" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "$expected" ] || return 1
 }
 
 @test "consumer layout: REPO_ROOT unset → git rev-parse root, CACHE_DIR not doubled .claude (#2224)" {
@@ -238,14 +238,14 @@ teardown() {
 	local expected
 	expected=$(cd "$crepo" && pwd -P)
 	run bash -c "unset REPO_ROOT; . '$crepo/.claude/_lib/content-hash-cache.sh' && printf '%s\n%s' \"\$REPO_ROOT\" \"\$CACHE_DIR\""
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	local got_root got_cache
 	got_root=$(printf '%s' "$output" | sed -n '1p')
 	got_cache=$(printf '%s' "$output" | sed -n '2p')
-	[ "$got_root" = "$expected" ]
-	[ "$got_cache" = "$expected/.claude/.review-cache" ]
+	[ "$got_root" = "$expected" ] || return 1
+	[ "$got_cache" = "$expected/.claude/.review-cache" ] || return 1
 	# Explicit anti-regression: the doubled-.claude path must NOT appear.
-	[[ $got_cache != *"/.claude/.claude/"* ]]
+	[[ $got_cache != *"/.claude/.claude/"* ]] || return 1
 	rm -rf "$crepo"
 }
 
@@ -256,11 +256,11 @@ teardown() {
 	printf '{"ts":"2000-01-01T00:00:00Z","content_hash":"old","sha":"a","findings":1}\n' >"$LEDGER"
 	printf '{"ts":"2099-01-01T00:00:00Z","content_hash":"new","sha":"b","findings":0}\n' >>"$LEDGER"
 	run cache_prune 30
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	run grep -c '"content_hash":"old"' "$LEDGER"
-	[ "$output" = "0" ] # ancient entry pruned
+	[ "$output" = "0" ] || return 1 # ancient entry pruned
 	run grep -c '"content_hash":"new"' "$LEDGER"
-	[ "$output" = "1" ] # recent entry kept
+	[ "$output" = "1" ] || return 1 # recent entry kept
 }
 
 @test "empty review surface → stable empty-blob key (not empty output)" {
@@ -276,19 +276,19 @@ teardown() {
 		git checkout -q -b feat # no new commits → main...HEAD diff is empty
 	)
 	run phase2_review_cache_key main
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	# An empty surface hashes to git's well-known empty-blob SHA — a stable,
 	# valid key. Two empty surfaces ARE genuinely identical, so a shared key is
 	# safe (and phase2 is only reached with >=1 commit ahead anyway).
-	[ "$output" = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" ]
+	[ "$output" = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" ] || return 1
 }
 
 @test "malformed ledger line → clean miss + stderr breadcrumb (never a crash)" {
 	mkdir -p "$(dirname "$LEDGER")"
 	printf 'this is not json\n' >"$LEDGER"
 	run phase2_review_cache_get somekey
-	[ "$status" -eq 0 ]                 # best-effort: never fails caller
-	[[ $output == *"jq read failed"* ]] # surfaces a breadcrumb (fail-safe → fresh review)
+	[ "$status" -eq 0 ] || return 1                 # best-effort: never fails caller
+	[[ $output == *"jq read failed"* ]] || return 1 # surfaces a breadcrumb (fail-safe → fresh review)
 }
 
 @test "put with an unwritable ledger → best-effort rc 0 + 'phase2 cache write failed' breadcrumb (#2230)" {
@@ -306,10 +306,10 @@ teardown() {
 	# Restore +w in teardown's reach: TEST_TMP rm -rf needs to recurse in.
 	export PHASE2_RESULT_LEDGER="$rodir/phase2-results.jsonl"
 	run phase2_review_cache_put goodkey 3 abc1234
-	chmod u+w "$rodir"                             # so teardown's rm -rf can recurse
-	[ "$status" -eq 0 ]                            # best-effort: a write miss never fails the cycle
-	[[ $output == *"phase2 cache write failed"* ]] # surfaces a breadcrumb
-	[ ! -s "$PHASE2_RESULT_LEDGER" ]               # nothing landed (write was denied)
+	chmod u+w "$rodir"                                         # so teardown's rm -rf can recurse
+	[ "$status" -eq 0 ] || return 1                            # best-effort: a write miss never fails the cycle
+	[[ $output == *"phase2 cache write failed"* ]] || return 1 # surfaces a breadcrumb
+	[ ! -s "$PHASE2_RESULT_LEDGER" ] || return 1               # nothing landed (write was denied)
 }
 
 # --- #2490/#2491: findings_detail round-trip ------------------------------
@@ -323,37 +323,37 @@ _detail2='[{"severity":"major","file":"a.sh","summary":"boom"},{"severity":"mino
 @test "put with detail → get_detail returns the array, get still returns the count (#2491)" {
 	phase2_review_cache_put k1 2 abc1234 "$_detail2"
 	run phase2_review_cache_get_detail k1
-	[ "$status" -eq 0 ]
-	[ "$output" = "$_detail2" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "$_detail2" ] || return 1
 	# The count accessor's contract is unchanged — a bare integer.
 	run phase2_review_cache_get k1
-	[ "$status" -eq 0 ]
-	[ "$output" = "2" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "2" ] || return 1
 }
 
 @test "legacy record with no findings_detail → get_detail empty, get unaffected (#2491)" {
 	mkdir -p "$(dirname "$LEDGER")"
 	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"legacy","sha":"old","findings":4}\n' >"$LEDGER"
 	run phase2_review_cache_get_detail legacy
-	[ "$status" -eq 0 ]
-	[ -z "$output" ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1
 	run phase2_review_cache_get legacy
-	[ "$output" = "4" ]
+	[ "$output" = "4" ] || return 1
 }
 
 @test "get_detail on an unknown key → empty, rc 0 (#2491)" {
 	phase2_review_cache_put k1 1 abc1234 "$_detail2"
 	run phase2_review_cache_get_detail nosuchkey
-	[ "$status" -eq 0 ]
-	[ -z "$output" ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1
 }
 
 @test "malformed detail still writes the COUNT, detail degrades to [] (#2491)" {
 	run phase2_review_cache_put k2 7 def5678 "{not an array}"
-	[ "$status" -eq 0 ]
-	[[ $output == *"findings_detail is not a single JSON array"* ]] # named, never silent
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"findings_detail is not a single JSON array"* ]] || return 1 # named, never silent
 	run phase2_review_cache_get k2
-	[ "$output" = "7" ] # the count — the thing cache-hit decisions run on — survived
+	[ "$output" = "7" ] || return 1 # the count — the thing cache-hit decisions run on — survived
 	run phase2_review_cache_get_detail k2
 	[ "$output" = "[]" ]
 }
@@ -375,7 +375,7 @@ _detail2='[{"severity":"major","file":"a.sh","summary":"boom"},{"severity":"mino
 @test "omitted detail arg writes [] and is backward compatible (#2491)" {
 	phase2_review_cache_put k5 3 ccc3333
 	run phase2_review_cache_get k5
-	[ "$output" = "3" ]
+	[ "$output" = "3" ] || return 1
 	run phase2_review_cache_get_detail k5
 	[ "$output" = "[]" ]
 }
@@ -386,17 +386,17 @@ _detail2='[{"severity":"major","file":"a.sh","summary":"boom"},{"severity":"mino
 	local pretty
 	pretty=$(printf '%s' "$_detail2" | jq .)
 	phase2_review_cache_put k6 2 ddd4444 "$pretty"
-	[ "$(wc -l <"$LEDGER" | tr -d ' ')" = "1" ]
-	[ "$(jq -s length "$LEDGER")" = "1" ]
+	[ "$(wc -l <"$LEDGER" | tr -d ' ')" = "1" ] || return 1
+	[ "$(jq -s length "$LEDGER")" = "1" ] || return 1
 	run phase2_review_cache_get_detail k6
-	[ "$output" = "$_detail2" ]
+	[ "$output" = "$_detail2" ] || return 1
 }
 
 @test "latest-wins applies to detail as well as count (#2491)" {
 	phase2_review_cache_put k7 2 eee5555 "$_detail2"
 	phase2_review_cache_put k7 0 fff6666 '[]'
 	run phase2_review_cache_get k7
-	[ "$output" = "0" ]
+	[ "$output" = "0" ] || return 1
 	run phase2_review_cache_get_detail k7
 	[ "$output" = "[]" ]
 }
@@ -405,6 +405,6 @@ _detail2='[{"severity":"major","file":"a.sh","summary":"boom"},{"severity":"mino
 	mkdir -p "$(dirname "$LEDGER")"
 	printf 'not json {{{\n' >"$LEDGER"
 	run phase2_review_cache_get_detail anykey
-	[ "$status" -eq 0 ]
-	[[ $output == *"jq read failed"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"jq read failed"* ]] || return 1
 }

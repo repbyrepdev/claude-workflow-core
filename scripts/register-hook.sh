@@ -145,6 +145,24 @@ if [ -r "$_RH_LIB" ]; then
 		echo "register-hook.sh: WARN: plugin-cache-resolve.sh failed to source — new registrations will be version-pinned" >&2
 fi
 
+# The program-token/basename jq SSOT (CR-in-CI #2540). --check's settings_refs
+# and --unregister both key on a hook's basename regardless of whether the ref is
+# a legacy `…/hooks/foo.sh` path or a version-agnostic `<launcher-dir>/foo.sh`
+# one; both reuse this so the rule can't drift. Prefer the lib's copy; fall back
+# to an inline duplicate only when the lib failed to source.
+_progtoken_jq() {
+	if declare -f pcr_progtoken_jq >/dev/null 2>&1; then
+		pcr_progtoken_jq
+	else
+		cat <<'JQ'
+  def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
+  def progtoken: _tail | split(" ")[0];
+  def progargs:  _tail | (split(" ")[1:] | join(" "));
+  def progbasename: progtoken | (split("/") | .[-1]);
+JQ
+	fi
+}
+
 # --- Frontmatter parsing ---------------------------------------------
 
 # Reads first 15 lines of $1 and prints `event=X matcher=Y` (matcher
@@ -258,8 +276,7 @@ _unregister_one() {
 	# OR version-agnostic launcher alike. `and` short-circuits so `_basename` is
 	# never applied to a non-string command.
 	local settings_json=$1 base=$2
-	printf '%s' "$settings_json" | jq --arg base "$base" '
-		def _basename: (split(" ")[0]) | (capture("/(?<f>[^/]+)$").f // .);
+	printf '%s' "$settings_json" | jq --arg base "$base" "$(_progtoken_jq)"'
 		if (.hooks // {}) == {} then
 			.
 		else
@@ -267,7 +284,7 @@ _unregister_one() {
 				.value |= map(
 					.hooks |= map(
 						if (.command | type) == "string"
-						   and ((.command | _basename) == $base)
+						   and ((.command | progbasename) == $base)
 						then empty else . end
 					)
 				) | .value |= map(select(.hooks | length > 0))
@@ -366,17 +383,19 @@ if [ "$CHECK" = "1" ]; then
 	# Accept both shapes and key on the basename, which is identical either way.
 	_check_ld=""
 	if declare -f pcr_launcher_dir >/dev/null 2>&1; then _check_ld=$(pcr_launcher_dir); fi
-	settings_refs=$(printf '%s' "$settings" | jq -r --arg ld "$_check_ld" '
+	settings_refs=$(printf '%s' "$settings" | jq -r --arg ld "$_check_ld" "$(_progtoken_jq)"'
 		[.hooks // {} | to_entries[] |
 		  .value[] | (.hooks // [])[] | .command |
 		  select(type == "string") |
-		  # Program token only — a registration may carry arguments
-		  # (".../hooks/foo.sh --strict"), and the trailing-$ anchors below would
-		  # otherwise never match, so --check silently saw zero registrations for
-		  # every arg-bearing hook and reported them all as unregistered drift.
-		  (split(" ")[0]) |
-		  select(test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/")))
-		  | capture("/(?<f>[^/]+\\.sh)$").f
+		  # Keep only hook refs — a legacy `…/hooks/foo.sh` path OR a
+		  # version-agnostic `<launcher-dir>/foo.sh` one — testing the PROGRAM
+		  # token (a registration may carry arguments like "… --strict", and the
+		  # trailing-$ anchor would otherwise never match, so --check saw zero
+		  # registrations for every arg-bearing hook and cried drift).
+		  select((split(" ")[0]) | (test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/"))))
+		  # Basename via the shared SSOT (progbasename) — identical for both the
+		  # /hooks/ and launcher-dir shapes, and the SAME rule --unregister uses.
+		  | progbasename
 		] | unique | .[]
 	')
 	# Hooks on disk with frontmatter — separately track sentinel hooks

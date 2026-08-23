@@ -318,18 +318,20 @@ printf '%s' "$pinned_json" |
 	jq -r '.[] | capture("claude-workflow-core/claude-workflow-core/(?<v>[0-9]+\\.[0-9]+\\.[0-9]+)/").v' |
 	sort | uniq -c | while read -r n v; do _log "    v$v — $n ref(s)"; done
 
-# SSOT for splitting a hook command string into its PROGRAM token and its
-# argument tail. Used by BOTH the completeness probe below AND the jq rewrite
-# further down, so the two can never disagree (CR-in-CI #2540 flagged that the
-# shell `${ref##*/}` and the jq `split("/hooks/")` implementations diverged for
-# args containing a slash — e.g. `.../hooks/foo.sh --path /x/y`, where `##*/`
-# wrongly yields `y`). Program = first whitespace-delimited token AFTER the final
-# `/hooks/` segment; the rest is verbatim args. Both jq invocations inject this.
-PROGTOKEN_JQ='
-  def _tail: (split("/hooks/") | .[-1]);
+# SSOT for splitting a hook command string into its PROGRAM token / arg tail /
+# basename — the SAME jq def block register-hook.sh uses, sourced from the lib so
+# the three sites can never disagree (CR-in-CI #2540). Falls back to an inline
+# copy only if the lib failed to source, keeping migrate functional lib-less.
+if declare -f pcr_progtoken_jq >/dev/null 2>&1; then
+	PROGTOKEN_JQ=$(pcr_progtoken_jq)
+else
+	PROGTOKEN_JQ='
+  def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
   def progtoken: _tail | split(" ")[0];
   def progargs:  _tail | (split(" ")[1:] | join(" "));
+  def progbasename: progtoken | (split("/") | .[-1]);
 '
+fi
 
 # Only migrate a ref whose basename has a launcher we actually installed —
 # otherwise the rewrite would point at a file that does not exist. This is the
@@ -342,14 +344,18 @@ missing=0
 have_list=""
 while IFS= read -r b; do
 	[ -n "$b" ] || continue
-	if [ -f "$LAUNCHER_DIR/$b" ]; then
+	# -x, NOT -f: --verify requires the launcher be executable and --generate
+	# always chmod 755's it. A non-executable launcher would migrate cleanly here
+	# and then fail to exec on every hook invocation — the same invariant the
+	# resolver's -x probe enforces (CR-in-CI #2540). Leave such a ref pinned.
+	if [ -x "$LAUNCHER_DIR/$b" ]; then
 		have_list="$have_list$b"$'\n'
 	else
-		_log "WARN: no launcher for $b — leaving its ref pinned (rewriting it would dangle)"
+		_log "WARN: no executable launcher for $b — leaving its ref pinned (rewriting it would dangle)"
 		missing=$((missing + 1))
 	fi
 done < <(printf '%s' "$pinned_json" | jq -r "$PROGTOKEN_JQ"' .[] | progtoken')
-# The exact set the jq rewrite below is allowed to touch. Built from real `-f`
+# The exact set the jq rewrite below is allowed to touch. Built from real `-x`
 # probes so the gate ENFORCES what the warning above claims — before this, the
 # walk rewrote every matching ref including the ones it had just warned it would
 # leave alone, which would have pointed settings.json at a nonexistent file.

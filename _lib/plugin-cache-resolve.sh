@@ -53,6 +53,32 @@ pcr_launcher_dir() {
 	printf '%s' "${PLUGIN_LAUNCHER_DIR:-$HOME/.claude/plugin-hooks/claude-workflow-core}"
 }
 
+# pcr_progtoken_jq — ONE SSOT for the jq that splits a hook COMMAND string into
+# its program token, its argument tail, and the program basename. Reused by
+# install-hook-launchers.sh (the migrate probe + rewrite) AND register-hook.sh
+# (--check's settings_refs + --unregister), so the rule can NEVER diverge across
+# the three sites (CR-in-CI #2540 — it had drifted into three inconsistent
+# copies). Echo it and inject with `jq "$(pcr_progtoken_jq)" '…use progtoken…'`.
+#
+#   progtoken   — first whitespace-delimited token AFTER the first `/hooks/`
+#                 segment (or the whole first token when there is no `/hooks/`).
+#   progargs    — the verbatim remainder after that token.
+#   progbasename— progtoken reduced to its final path component; this is the
+#                 launcher-dir-agnostic key both a `…/hooks/foo.sh` and a
+#                 `<launcher-dir>/foo.sh` registration share.
+#
+# `_tail` splits on the FIRST `/hooks/`, not the last (`.[1:] | join`), so an
+# argument that itself contains `/hooks/` (e.g. `--path /x/hooks/y`) is preserved
+# rather than truncated to its tail.
+pcr_progtoken_jq() {
+	cat <<'JQ'
+  def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
+  def progtoken: _tail | split(" ")[0];
+  def progargs:  _tail | (split(" ")[1:] | join(" "));
+  def progbasename: progtoken | (split("/") | .[-1]);
+JQ
+}
+
 # pcr_newest_complete <cache_root> [probe_rel_path ...]
 #   Echo the newest semver version dir under <cache_root> that contains EVERY
 #   probe path. With no probes, "contains" degrades to "is a semver dir".

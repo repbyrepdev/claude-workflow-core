@@ -21,7 +21,7 @@
 
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/phase1-log-pending-gate.sh"
-	[ -f "$HOOK" ]
+	[ -f "$HOOK" ] || return 1
 	command -v jq >/dev/null
 	TEST_TMP=$(mktemp -d -t lpgate.XXXXXX) || return 1
 	mkdir -p "$TEST_TMP/.claude/.session-state/phase1-log-pending"
@@ -58,7 +58,7 @@ _verdict() {
 
 @test "no pending files → everything allowed" {
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}'
-	[ "$output" = allow ]
+	[ "$output" = allow ] || return 1
 }
 
 # --- throughput fix: async agents ------------------------------------------
@@ -66,13 +66,13 @@ _verdict() {
 @test "Agent calls are ALLOWED while a log is pending (async parallel block)" {
 	_pend
 	run _verdict '{"tool_name":"Agent","tool_input":{"subagent_type":"pr-review-toolkit:code-reviewer"}}'
-	[ "$output" = allow ]
+	[ "$output" = allow ] || return 1
 }
 
 @test "Skill calls are ALLOWED while a log is pending" {
 	_pend
 	run _verdict '{"tool_name":"Skill","tool_input":{"command":"security-review"}}'
-	[ "$output" = allow ]
+	[ "$output" = allow ] || return 1
 }
 
 # --- #721 property preserved -----------------------------------------------
@@ -80,7 +80,7 @@ _verdict() {
 @test "Bash is still DENIED while a log is pending" {
 	_pend
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 }
 
 @test "deny message tells the operator Agent/Skill calls are permitted in parallel" {
@@ -100,9 +100,9 @@ _verdict() {
 @test "Edit and Write are still DENIED while a log is pending" {
 	_pend
 	run _verdict '{"tool_name":"Edit","tool_input":{"file_path":"x"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 	run _verdict '{"tool_name":"Write","tool_input":{"file_path":"x","content":"c"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 }
 
 # --- security: the review-log.sh escape ------------------------------------
@@ -112,9 +112,9 @@ _verdict() {
 	# $BASH_ENV before the script body — the prefix is arbitrary code execution.
 	_pend
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":"BASH_ENV=/tmp/evil.sh .claude/hooks/review-log.sh phase1 1 x 0 ok"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":"LD_PRELOAD=/tmp/e.so .claude/hooks/review-log.sh phase1 1 x 0 ok"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 }
 
 @test "a compound command ending in review-log.sh is DENIED (total bypass)" {
@@ -122,9 +122,9 @@ _verdict() {
 	# bound, so the whole compound was admitted.
 	_pend
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x; .claude/hooks/review-log.sh"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":".claude/hooks/review-log.sh phase1 1 x 0 ok && rm -rf /tmp/x"}}'
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 }
 
 @test "harmless discard redirects are ALLOWED — both gates agree (shared screen)" {
@@ -133,15 +133,15 @@ _verdict() {
 	# other. Both now source _lib/cmd-launder-screen.sh.
 	_pend
 	run _verdict "$(jq -nc '{tool_name:"Bash",tool_input:{command:".claude/hooks/review-log.sh phase1 1 x 0 ok 2>/dev/null"}}')"
-	[ "$output" = allow ]
+	[ "$output" = allow ] || return 1
 	run _verdict "$(jq -nc '{tool_name:"Bash",tool_input:{command:".claude/hooks/review-log.sh phase1 1 x 0 ok 2>&1"}}')"
-	[ "$output" = allow ]
+	[ "$output" = allow ] || return 1
 }
 
 @test "a REAL file redirect is still DENIED (stripping is discard-only)" {
 	_pend
 	run _verdict "$(jq -nc '{tool_name:"Bash",tool_input:{command:".claude/hooks/review-log.sh phase1 1 x 0 ok > /tmp/out"}}')"
-	[ "$output" = deny ]
+	[ "$output" = deny ] || return 1
 }
 
 @test "legitimate review-log.sh forms are still ALLOWED (the way out)" {

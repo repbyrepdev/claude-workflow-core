@@ -19,8 +19,8 @@
 setup() {
 	SCRIPT="${BATS_TEST_DIRNAME}/../../../scripts/install-hook-launchers.sh"
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/plugin-cache-resolve.sh"
-	[ -x "$SCRIPT" ]
-	[ -f "$LIB" ]
+	[ -x "$SCRIPT" ] || return 1
+	[ -f "$LIB" ] || return 1
 	command -v jq >/dev/null
 	TEST_TMP=$(mktemp -d -t launchers.XXXXXX) || return 1
 	export PLUGIN_LAUNCHER_DIR="$TEST_TMP/launchers"
@@ -62,8 +62,8 @@ _pinned_count() {
 
 @test "generates an executable launcher per hook" {
 	run "$SCRIPT" --generate
-	[ "$status" -eq 0 ]
-	[ -x "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh" ]
+	[ "$status" -eq 0 ] || return 1
+	[ -x "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh" ] || return 1
 }
 
 @test "launcher set is NOT gated on 'auto-register: true'" {
@@ -76,17 +76,17 @@ _pinned_count() {
 	# this script exists to end. Assert a hook that carries NO auto-register
 	# frontmatter still gets a launcher.
 	local hooks_dir="${BATS_TEST_DIRNAME}/../../../hooks"
-	[ -f "$hooks_dir/skill-bypass-guard.sh" ]
+	[ -f "$hooks_dir/skill-bypass-guard.sh" ] || return 1
 	run grep -cE '^#[[:space:]]*auto-register:[[:space:]]*true' "$hooks_dir/skill-bypass-guard.sh"
-	[ "$output" = "0" ] # precondition: this hook does NOT opt in
+	[ "$output" = "0" ] || return 1 # precondition: this hook does NOT opt in
 	"$SCRIPT" --generate
-	[ -x "$PLUGIN_LAUNCHER_DIR/skill-bypass-guard.sh" ]
+	[ -x "$PLUGIN_LAUNCHER_DIR/skill-bypass-guard.sh" ] || return 1
 }
 
 @test "helpers (_*) and installers (install-*) get no launcher" {
 	"$SCRIPT" --generate
 	run bash -c "ls -1 '$PLUGIN_LAUNCHER_DIR'/_* '$PLUGIN_LAUNCHER_DIR'/install-* 2>/dev/null | wc -l | tr -d ' '"
-	[ "$output" = "0" ]
+	[ "$output" = "0" ] || return 1
 }
 
 @test "launcher case-patterns are paren-balanced for the bash 3.2 parser" {
@@ -100,10 +100,10 @@ _pinned_count() {
 	# every `case`-pattern line ending in `)` inside the launcher body must open
 	# with `(` — grep for the un-parenthesised `[0-9]...)` form and assert none.
 	run grep -nE '^\s+\[0-9\][^(]*\)[^)]*;;' "$L"
-	[ "$status" -ne 0 ] # no un-parenthesised case pattern present
+	[ "$status" -ne 0 ] || return 1 # no un-parenthesised case pattern present
 	# and the balanced forms ARE present
 	run grep -qF '([0-9]*.[0-9]*.[0-9]*)' "$L"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "launcher parses under a real bash 3.2 when one is available" {
@@ -122,10 +122,15 @@ _pinned_count() {
 			;;
 		esac
 	done
-	[ -n "$bash32" ] || return 0 # covered statically above; not a skip
+	# Honest `skip` when no 3.2 interpreter exists (CI/Linux) — a silent `return 0`
+	# inflated the pass count with a no-op (CR-in-CI #2540). This is a PLATFORM-
+	# conditional skip, not a neutering one: on the 3.2 dev machine it runs for
+	# real, and the static paren-balance test above covers the regression where it
+	# does not. bats reports it as skipped, not a spurious pass.
+	[ -n "$bash32" ] || skip "no bash 3.2 interpreter available (static test covers the regression)"
 	"$SCRIPT" --generate
 	run "$bash32" -n "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "launcher resolves the newest version that ACTUALLY contains its hook" {
@@ -136,8 +141,8 @@ _pinned_count() {
 	pcr_launcher_body demo.sh >"$TEST_TMP/demo.sh"
 	chmod +x "$TEST_TMP/demo.sh"
 	run "$TEST_TMP/demo.sh"
-	[ "$status" -eq 0 ]
-	[ "$output" = "ran-0.34.108" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "ran-0.34.108" ] || return 1
 }
 
 @test "launcher forwards argv, stdin, and the real hook's exit status" {
@@ -147,7 +152,7 @@ _pinned_count() {
 	pcr_launcher_body demo.sh >"$TEST_TMP/demo.sh"
 	chmod +x "$TEST_TMP/demo.sh"
 	run bash -c "printf PAYLOAD | '$TEST_TMP/demo.sh' --flag a"
-	[ "$status" -eq 7 ]
+	[ "$status" -eq 7 ] || return 1
 	[ "$output" = "argv=[--flag a] stdin=[PAYLOAD]" ]
 }
 
@@ -157,18 +162,18 @@ _pinned_count() {
 	pcr_launcher_body demo.sh >"$TEST_TMP/demo.sh"
 	chmod +x "$TEST_TMP/demo.sh"
 	run "$TEST_TMP/demo.sh"
-	[ "$status" -eq 0 ]
-	[[ $output == *"no plugin-cache version"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"no plugin-cache version"* ]] || return 1
 }
 
 @test "migrate rewrites a pinned ref onto its launcher" {
 	"$SCRIPT" --generate
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
-	[ "$(_pinned_count)" = "0" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$(_pinned_count)" = "0" ] || return 1
 	run jq -r '[.. | strings | select(test("/launchers/"))] | length' "$CLAUDE_SETTINGS_FILE"
-	[ "$output" = "1" ]
+	[ "$output" = "1" ] || return 1
 }
 
 @test "defect 1: a ref with NO launcher is left pinned, never dangled" {
@@ -177,22 +182,22 @@ _pinned_count() {
 	"$SCRIPT" --generate
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh" "0.34.100:no-such-hook.sh"
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
-	[[ $output == *"no launcher for no-such-hook.sh"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"no executable launcher for no-such-hook.sh"* ]] || return 1
 	# the un-launchered ref is still pinned (safe), not pointing at a missing file
 	run grep -c "0.34.100/hooks/no-such-hook.sh" "$CLAUDE_SETTINGS_FILE"
-	[ "$output" = "1" ]
-	[ ! -e "$PLUGIN_LAUNCHER_DIR/no-such-hook.sh" ]
+	[ "$output" = "1" ] || return 1
+	[ ! -e "$PLUGIN_LAUNCHER_DIR/no-such-hook.sh" ] || return 1
 }
 
 @test "defect 2: a MIXED-version settings.json migrates every version, not just max" {
 	"$SCRIPT" --generate
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh" "0.34.100:ship-cycle-guard.sh"
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
-	[[ $output == *"v0.34.100"* ]] # per-version reporting, not an averaged max
-	[[ $output == *"v0.34.108"* ]]
-	[ "$(_pinned_count)" = "0" ]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"v0.34.100"* ]] || return 1 # per-version reporting, not an averaged max
+	[[ $output == *"v0.34.108"* ]] || return 1
+	[ "$(_pinned_count)" = "0" ] || return 1
 }
 
 @test "defect 4: file mode is preserved across the rewrite" {
@@ -203,9 +208,9 @@ _pinned_count() {
 	"$SCRIPT" --generate
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh" # chmods 644
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	run bash -c "stat -f '%Lp' '$CLAUDE_SETTINGS_FILE' 2>/dev/null || stat -c '%a' '$CLAUDE_SETTINGS_FILE'"
-	[ "$output" = "644" ]
+	[ "$output" = "644" ] || return 1
 }
 
 @test "migrate preserves hook command ARGUMENTS and non-.hooks subtrees" {
@@ -222,7 +227,7 @@ json.dump({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
 PY
 	chmod 644 "$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	# the permissions rule must be byte-identical (never in scope for rewriting)
 	run jq -r '.permissions.allow[0]' "$CLAUDE_SETTINGS_FILE"
 	# `|| return 1` on EVERY assertion: bats runs the test body WITHOUT `set -e`,
@@ -246,20 +251,20 @@ PY
 	"$SCRIPT" --migrate
 	"$SCRIPT" --migrate # second run: nothing pinned, must not create/clobber
 	run bash -c "ls -1 '$CLAUDE_SETTINGS_FILE'.bak-launchers.* 2>/dev/null | wc -l | tr -d ' '"
-	[ "$output" = "1" ]
+	[ "$output" = "1" ] || return 1
 	# and that one backup is still the PRE-migration content
 	run bash -c "diff -q '$TEST_TMP/original.json' \"\$(ls -1 '$CLAUDE_SETTINGS_FILE'.bak-launchers.*)\" >/dev/null && echo same"
-	[ "$output" = "same" ]
+	[ "$output" = "same" ] || return 1
 }
 
 @test "defect 6: corrupt settings.json is refused by name and left byte-identical" {
 	"$SCRIPT" --generate
 	printf 'not json {{{' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 3 ]
-	[[ $output == *"not valid JSON"* ]]
-	[[ $output == *"refusing to touch"* ]]
-	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "not json {{{" ]
+	[ "$status" -eq 3 ] || return 1
+	[[ $output == *"not valid JSON"* ]] || return 1
+	[[ $output == *"refusing to touch"* ]] || return 1
+	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "not json {{{" ] || return 1
 }
 
 @test "unrelated settings keys survive the rewrite" {
@@ -267,7 +272,7 @@ PY
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
 	"$SCRIPT" --migrate
 	run jq -r '.unrelated' "$CLAUDE_SETTINGS_FILE"
-	[ "$output" = "keep-me" ]
+	[ "$output" = "keep-me" ] || return 1
 }
 
 @test "migration is idempotent — a second run reports nothing pinned" {
@@ -275,8 +280,8 @@ PY
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
 	"$SCRIPT" --migrate
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
-	[[ $output == *"no version-pinned hook refs"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"no version-pinned hook refs"* ]] || return 1
 }
 
 @test "--check reports drift without mutating settings.json" {
@@ -285,15 +290,15 @@ PY
 	local before
 	before=$(cat "$CLAUDE_SETTINGS_FILE")
 	run "$SCRIPT" --check
-	[ "$status" -eq 1 ] # drift found
-	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "$before" ]
+	[ "$status" -eq 1 ] || return 1 # drift found
+	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "$before" ] || return 1
 }
 
 @test "absent settings.json is a no-op, not an error" {
 	rm -f "$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --migrate
-	[ "$status" -eq 0 ]
-	[[ $output == *"nothing to migrate"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"nothing to migrate"* ]] || return 1
 }
 
 # --- --verify ------------------------------------------------------------
@@ -316,11 +321,11 @@ _stock_cache_hook() {
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
 	"$SCRIPT" --migrate
 	run "$SCRIPT" --verify
-	[ "$status" -eq 0 ]
-	[[ $output == *"0 version-pinned hook refs"* ]]
-	[[ $output == *"all executable"* ]]
-	[[ $output == *"no fail-open"* ]]
-	[[ $output == *"resolves to 0.34.108"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"0 version-pinned hook refs"* ]] || return 1
+	[[ $output == *"all executable"* ]] || return 1
+	[[ $output == *"no fail-open"* ]] || return 1
+	[[ $output == *"resolves to 0.34.108"* ]] || return 1
 }
 
 @test "--verify FAILS when the launcher fails open (empty cache)" {
@@ -334,8 +339,8 @@ _stock_cache_hook() {
 	"$SCRIPT" --migrate
 	rm -rf "$PLUGIN_CACHE_ROOT" # cache GC'd: every hook is now a silent no-op
 	run "$SCRIPT" --verify
-	[ "$status" -eq 1 ]
-	[[ $output == *"FAILED OPEN"* ]]
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"FAILED OPEN"* ]] || return 1
 }
 
 @test "--verify FAILS when the cache hook exists but is NOT executable" {
@@ -362,16 +367,16 @@ _stock_cache_hook() {
 	"$SCRIPT" --generate
 	printf '{}' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --verify
-	[ "$status" -eq 1 ]
-	[[ $output == *"no launcher refs"* ]]
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"no launcher refs"* ]] || return 1
 }
 
 @test "--verify FAILS while version-pinned refs remain" {
 	"$SCRIPT" --generate
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
 	run "$SCRIPT" --verify # not migrated yet
-	[ "$status" -eq 1 ]
-	[[ $output == *"version-pinned hook ref(s) remain"* ]]
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"version-pinned hook ref(s) remain"* ]] || return 1
 }
 
 @test "--verify FAILS when a launcher ref points at a missing file" {
@@ -382,16 +387,16 @@ _stock_cache_hook() {
 	"$SCRIPT" --migrate
 	rm -f "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
 	run "$SCRIPT" --verify
-	[ "$status" -eq 1 ]
-	[[ $output == *"not executable"* ]]
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"not executable"* ]] || return 1
 }
 
 @test "--verify refuses corrupt settings.json without mutating it" {
 	printf 'not json {{{' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --verify
-	[ "$status" -eq 1 ]
-	[[ $output == *"not valid JSON"* ]]
-	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "not json {{{" ]
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"not valid JSON"* ]] || return 1
+	[ "$(cat "$CLAUDE_SETTINGS_FILE")" = "not json {{{" ] || return 1
 }
 
 @test "pcr_newest_complete honors semver ordering (0.10.0 beats 0.9.5)" {
@@ -402,8 +407,8 @@ _stock_cache_hook() {
 	chmod +x "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh" "$PLUGIN_CACHE_ROOT/0.10.0/hooks/x.sh"
 	. "$LIB"
 	run pcr_newest_complete "$PLUGIN_CACHE_ROOT" hooks/x.sh
-	[ "$status" -eq 0 ]
-	[[ $output == */0.10.0 ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == */0.10.0 ]] || return 1
 }
 
 @test "pcr_newest_complete SKIPS a version whose hook is not executable" {
@@ -416,8 +421,8 @@ _stock_cache_hook() {
 	chmod +x "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh"
 	. "$LIB"
 	run pcr_newest_complete "$PLUGIN_CACHE_ROOT" hooks/x.sh
-	[ "$status" -eq 0 ]
-	[[ $output == */0.9.5 ]] # falls back to the runnable one
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == */0.9.5 ]] || return 1 # falls back to the runnable one
 }
 
 @test "generated launcher also skips a non-executable hook and falls back" {
@@ -429,16 +434,16 @@ _stock_cache_hook() {
 	pcr_launcher_body demo.sh >"$TEST_TMP/demo.sh"
 	chmod +x "$TEST_TMP/demo.sh"
 	run "$TEST_TMP/demo.sh"
-	[ "$status" -eq 0 ]
-	[ "$output" = "ran-0.34.108" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "ran-0.34.108" ] || return 1
 }
 
 @test "pcr_newest_complete returns rc 1 when no version satisfies the probe" {
 	mkdir -p "$PLUGIN_CACHE_ROOT/0.9.5/hooks"
 	. "$LIB"
 	run pcr_newest_complete "$PLUGIN_CACHE_ROOT" hooks/absent.sh
-	[ "$status" -eq 1 ]
-	[ -z "$output" ]
+	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1
 }
 
 # --- the two resolvers that WRITE settings.json ---------------------------
@@ -452,10 +457,10 @@ _stock_cache_hook() {
 	run env CLAUDE_SETTINGS_FILE="$CLAUDE_SETTINGS_FILE" \
 		"${BATS_TEST_DIRNAME}/../../../scripts/register-hook.sh" --dry-run \
 		hooks/phase1-directive-pending-guard.sh
-	[ "$status" -eq 0 ]
-	[[ $output == *"$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"* ]] || return 1
 	# and NOT a version-pinned cache path
-	[[ $output != *"claude-workflow-core/0."*"/hooks/"* ]]
+	[[ $output != *"claude-workflow-core/0."*"/hooks/"* ]] || return 1
 }
 
 @test "register-hook.sh falls back to a pinned path when no launcher exists" {
@@ -467,11 +472,11 @@ _stock_cache_hook() {
 	run env CLAUDE_SETTINGS_FILE="$CLAUDE_SETTINGS_FILE" \
 		"${BATS_TEST_DIRNAME}/../../../scripts/register-hook.sh" --dry-run \
 		hooks/phase1-directive-pending-guard.sh
-	[ "$status" -eq 0 ]
-	[[ $output == *"phase1-directive-pending-guard.sh"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"phase1-directive-pending-guard.sh"* ]] || return 1
 	# Must NOT be a launcher path — the launcher dir was just removed, so any
 	# reference to it would mean we registered something that does not exist.
-	[[ $output != *"$PLUGIN_LAUNCHER_DIR"* ]]
+	[[ $output != *"$PLUGIN_LAUNCHER_DIR"* ]] || return 1
 }
 
 @test 'install-hooks.sh registers launcher paths, not its own $BASH_SOURCE dir' {
@@ -480,16 +485,16 @@ _stock_cache_hook() {
 	printf '{}' >"$TEST_TMP/home/.claude/settings.json"
 	run env HOME="$TEST_TMP/home" PLUGIN_LAUNCHER_DIR="$PLUGIN_LAUNCHER_DIR" \
 		"${BATS_TEST_DIRNAME}/../../../hooks/install-hooks.sh"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 	# Assert against $PLUGIN_LAUNCHER_DIR, NOT the literal "/plugin-hooks/" —
 	# that substring is only in the production default; the fixture overrides
 	# the dir, so a literal check silently passes for the wrong reason.
 	run jq -r --arg d "$PLUGIN_LAUNCHER_DIR" \
 		'[.. | strings | select(startswith($d + "/"))] | length' \
 		"$TEST_TMP/home/.claude/settings.json"
-	[ "$output" -gt 0 ]
+	[ "$output" -gt 0 ] || return 1
 	# nothing may remain pinned to a concrete cache version
 	run jq -r '[.. | strings | select(test("claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/"))] | length' \
 		"$TEST_TMP/home/.claude/settings.json"
-	[ "$output" = "0" ]
+	[ "$output" = "0" ] || return 1
 }
