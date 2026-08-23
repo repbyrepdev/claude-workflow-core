@@ -420,16 +420,18 @@ fi
 # blocked by THIS guard → an unrecoverable in-session deadlock").
 #
 # Same lib-independent plain-grep shape as the review-log.sh allowlist above, so
-# it works even when cmd-anchor did not load. Tightly bounded: anchored at `^`
-# with NO env-assignment prefix (a `BASH_ENV=`/`LD_PRELOAD=` prefix is arbitrary
-# code exec — security-review); EXACTLY ONE argument, which must sit under a
-# literal `.claude/.session-state/skip-approvals/` path segment and end in
-# `.txt`; the basename is restricted to the hash charset (no `/`, no spaces);
-# `..` anywhere is rejected so the segment cannot be reached via traversal; and
-# _cmd_launders_mutation still screens separators/pipes/substitutions/redirects.
-# Worst case this admits is creating one empty .txt file in an approvals dir —
-# and skip-env-approval-gate only ever reads the one under $REPO_ROOT.
-if printf '%s' "$CMD" | grep -qE '^touch[[:space:]]+"?([^"[:space:]]*/)?\.claude/\.session-state/skip-approvals/[A-Za-z0-9._-]+\.txt"?[[:space:]]*$' &&
+# it works even when cmd-anchor did not load. Tightly bounded (#2535 phase2 CR):
+# anchored at `^` with NO env-assignment prefix (a `BASH_ENV=`/`LD_PRELOAD=`
+# prefix is arbitrary code exec); EXACTLY ONE argument; the basename must be the
+# EXACT sha256 form skip-env-approval-gate writes — `[0-9a-f]{64}.txt`, not a
+# loose `[A-Za-z0-9._-]+` (the gate keys on sha256("$SKIP_VAR|$CMD"), so nothing
+# else is a real approval file); the path may be the canonical relative form or
+# an absolute path ENDING in that exact segment; `..` anywhere is rejected so the
+# segment cannot be reached via traversal; and _cmd_launders_mutation screens
+# separators/pipes/substitutions/redirects. Worst case this admits is creating
+# one empty hash.txt in a skip-approvals dir, and skip-env-approval-gate only
+# ever reads the one under $REPO_ROOT.
+if printf '%s' "$CMD" | grep -qE '^touch[[:space:]]+"?(/[^"[:space:]]*/)?\.claude/\.session-state/skip-approvals/[0-9a-f]{64}\.txt"?[[:space:]]*$' &&
 	! printf '%s' "$CMD" | grep -qF '..' &&
 	! _cmd_launders_mutation "$CMD"; then
 	exit 0

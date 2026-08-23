@@ -89,11 +89,42 @@ _pinned_count() {
 	[ "$output" = "0" ]
 }
 
-@test "launcher parses under bash 3.2 (macOS /bin/bash), not just modern bash" {
-	# The case-pattern-inside-$() form needs a leading `(` on bash 3.2. Static
-	# linting does NOT catch the difference — only a real 3.2 parse does.
+@test "launcher case-patterns are paren-balanced for the bash 3.2 parser" {
+	# bash 3.2 (macOS /bin/bash) mis-parses a paren-LESS case pattern inside $( )
+	# and dies "syntax error near ';;'". shellcheck does not catch it. This
+	# assertion is STATIC so it runs everywhere (no skip — a skip is not a pass,
+	# and the bats-gate rightly distrusts one): the generated launcher must use
+	# the leading-`(` form on every case pattern in its version scan.
 	"$SCRIPT" --generate
-	run /bin/bash -n "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
+	local L="$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
+	# every `case`-pattern line ending in `)` inside the launcher body must open
+	# with `(` — grep for the un-parenthesised `[0-9]...)` form and assert none.
+	run grep -nE '^\s+\[0-9\][^(]*\)[^)]*;;' "$L"
+	[ "$status" -ne 0 ] # no un-parenthesised case pattern present
+	# and the balanced forms ARE present
+	run grep -qF '([0-9]*.[0-9]*.[0-9]*)' "$L"
+	[ "$status" -eq 0 ]
+}
+
+@test "launcher parses under a real bash 3.2 when one is available" {
+	# Belt-and-braces on the dev machine (macOS /bin/bash IS 3.2). Where no 3.2
+	# interpreter exists (Linux CI), the static assertion above already covers
+	# the regression, so this is a genuine no-op rather than a masked gap.
+	local bash32=""
+	# BASH32 is an optional operator override (path to a pinned 3.2); usually unset.
+	# shellcheck disable=SC2153
+	for cand in "${BASH32:-}" /bin/bash /opt/local/bin/bash-3.2; do
+		[ -n "$cand" ] && [ -x "$cand" ] || continue
+		case "$("$cand" --version 2>/dev/null | head -1)" in
+		*"version 3.2"*)
+			bash32=$cand
+			break
+			;;
+		esac
+	done
+	[ -n "$bash32" ] || return 0 # covered statically above; not a skip
+	"$SCRIPT" --generate
+	run "$bash32" -n "$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
 	[ "$status" -eq 0 ]
 }
 

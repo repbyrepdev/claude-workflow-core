@@ -341,7 +341,14 @@ have_json=$(printf '%s' "$have_list" | jq -Rsc 'split("\n") | map(select(length 
 
 if [ "$CHECK_ONLY" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
 	_log "would rewrite $((pinned_count - missing)) ref(s) onto $LAUNCHER_DIR"
-	exit 1
+	# --check is a drift GATE: pinned refs remaining == drift == exit 1.
+	# --dry-run is a PLAN preview: it changed nothing and found nothing wrong, so
+	# it exits 0 regardless of how many refs it would rewrite. Conflating the two
+	# made `--dry-run` return the drift code and read as a failure to any wrapper.
+	if [ "$CHECK_ONLY" -eq 1 ] && [ "$((pinned_count - missing))" -gt 0 ]; then
+		exit 1
+	fi
+	exit 0
 fi
 
 # Serialize against concurrent sessions. settings.json is a global mutable file
@@ -353,17 +360,27 @@ LOCK="$LAUNCHER_DIR/.settings-migrate.lock"
 _lock_held=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
 	if mkdir "$LOCK" 2>/dev/null; then
+		printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null || true
 		_lock_held=1
 		break
+	fi
+	# STALE-LOCK RECOVERY (#2536 phase2 CR): the EXIT trap does not run on
+	# SIGKILL/OOM/power loss, so a dead run leaves the dir and wedges every
+	# future migration. If the recorded owner PID is no longer alive, reclaim it.
+	_owner=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+	if [ -n "$_owner" ] && ! kill -0 "$_owner" 2>/dev/null; then
+		_log "reclaiming stale migration lock (owner PID $_owner is gone)"
+		rm -rf "$LOCK" 2>/dev/null || true
+		continue
 	fi
 	sleep 0.3
 done
 [ "$_lock_held" -eq 1 ] || {
-	echo "install-hook-launchers: could not acquire $LOCK after ~3s — another migration is running; not touching $SETTINGS" >&2
+	echo "install-hook-launchers: could not acquire $LOCK after ~3s — another migration (PID $(cat "$LOCK/pid" 2>/dev/null || echo '?')) is running; not touching $SETTINGS" >&2
 	exit 3
 }
 # shellcheck disable=SC2064  # intentional: expand LOCK now, at trap-set time
-trap "rmdir '$LOCK' 2>/dev/null || true" EXIT
+trap "rm -rf '$LOCK' 2>/dev/null || true" EXIT
 
 # Backup, without ever clobbering an existing one. A deterministic name plus an
 # unconditional cp (the reverted attempt) overwrites the pristine backup with
@@ -438,6 +455,9 @@ if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
 	echo "install-hook-launchers: STEP=rewrite jq failed${_jqmsg:+ ($_jqmsg)} — $SETTINGS unchanged, backup at $bak" >&2
 	exit 3
 fi
+# jq_err is only the rewrite step's diagnostic; the rewrite has now succeeded, so
+# remove it here rather than leaking it on the success / revalidate / mv paths.
+[ "$jq_err" = /dev/null ] || rm -f "$jq_err"
 if ! jq empty "$tmp" 2>/dev/null; then
 	rm -f "$tmp"
 	echo "install-hook-launchers: STEP=revalidate produced invalid JSON — $SETTINGS unchanged, backup at $bak" >&2

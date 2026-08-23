@@ -719,20 +719,19 @@ _phase1_clean_streak() {
 	# Surfaces jq errors via scm_warn instead of silently masking with 0,
 	# so a malformed JSONL line doesn't quietly wedge convergence.
 	local sha=$1
+	# Optional $2: a pre-resolved expected-agent count (#2536 phase2 CR). The
+	# caller usually resolves it once and passes it here AND to the re-arm gate,
+	# so list-phase1-agents.sh spawns once per `next` rather than twice. When
+	# absent (direct callers / tests), resolve it here as before.
+	local expected_agents=${2:-}
 	local rlog="$REPO_ROOT/.claude/review-log/$sha.jsonl"
 	[ -f "$rlog" ] || {
 		printf '0\n'
 		return
 	}
-	# Resolve expected agent count via list-phase1-agents.sh SSOT. Capture
-	# stderr to a tmpfile (mirrors `_scaler_rounds` discipline) so a
-	# script regression — schema drift, jq missing, registry-yaml broken —
-	# surfaces a scm_warn instead of silently using the stale-default 7.
-	# Fallback default 7 chosen to match the DIRECTIVE block enumeration
-	# (5 parallel agents + security-review + semgrep) — keep in sync if
-	# the directive's agent list changes.
-	local expected_agents
-	expected_agents=$(_phase1_expected_agents)
+	# Resolve via the list-phase1-agents.sh SSOT when the caller didn't. Fallback
+	# default 7 = 5 parallel agents + security-review + semgrep.
+	[ -n "$expected_agents" ] || expected_agents=$(_phase1_expected_agents)
 	# Emit `<round>\t<sum>\t<distinct-agent-count>` per round, sorted
 	# DESCENDING (newest first) so the trailing-clean-streak counter
 	# below walks newest → oldest.
@@ -1491,7 +1490,13 @@ cmd_next() {
 		# delayed until here so a graduated branch never pays the cost
 		# of these calls (which can fail on missing review-config.yml).
 		cap=$(_scaler_rounds)
-		clean_streak=$(_phase1_clean_streak "$sha")
+		# Resolve the expected-agent count ONCE and reuse it (#2536 phase2 CR):
+		# _phase1_clean_streak and the re-arm gate below each called
+		# _phase1_expected_agents independently, spawning list-phase1-agents.sh
+		# twice per `next`. Pass the cached value to both.
+		local expected_agents
+		expected_agents=$(_phase1_expected_agents)
+		clean_streak=$(_phase1_clean_streak "$sha" "$expected_agents")
 		# v0.8.4 (#63): criterion is `>= cap from scaler`, not hardcoded 2.
 		# When scaler returns 1 (small/trivial diff), one clean round is
 		# enough; demanding 2 was costing extra rounds on every pin bump.
@@ -1570,7 +1575,7 @@ cmd_next() {
 			# any doubt re-arms exactly as before. Suppression needs positive
 			# evidence.
 			if command -v phase1_round_has_unapplied_findings >/dev/null 2>&1 &&
-				phase1_round_has_unapplied_findings "$sha" "$(_phase1_expected_agents)"; then
+				phase1_round_has_unapplied_findings "$sha" "$expected_agents"; then
 				_clear_phase1_directive_marker "$sha"
 				local _p1_cov
 				_p1_cov=$(phase1_round_coverage_summary "$sha" 2>/dev/null || echo "")

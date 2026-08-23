@@ -488,3 +488,24 @@ _seed_cache_detail() {
 	[[ $output != *"Findings from that review:"* ]]
 	[ ! -f "$ROOT/.claude/.local-review-ran" ]
 }
+
+@test "#2493 a record with findings_detail:[] also degrades to count-only" {
+	# Distinct from the missing-field case above: here the field EXISTS but is an
+	# empty array (e.g. detail projection returned [] because the file was
+	# pruned). Must render exactly like the legacy record, not a stray header.
+	_seed_stage phase2
+	(cd "$ROOT" && git branch -M main) || return 1
+	local key
+	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
+	mkdir -p "$ROOT/.claude/.review-cache"
+	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":2,"findings_detail":[]}\n' \
+		"$key" "$SHA_SHORT" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[[ $output == *"NOT all addressed"* ]]
+	[[ $output != *"Findings from that review:"* ]]
+	[ ! -f "$ROOT/.claude/.local-review-ran" ]
+}

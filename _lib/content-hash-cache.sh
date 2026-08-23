@@ -348,9 +348,18 @@ phase2_review_cache_get_detail() {
 	# -c (not -r): the value IS a JSON array, so compact-JSON is the wire form.
 	# Mirrors _get's latest-wins `.[-1]` selection so count and detail can never
 	# disagree about WHICH record they describe.
+	# Return the detail ONLY when it is genuinely an array. `// empty` alone
+	# accepts a legacy record with no field (correct) but would ALSO pass through
+	# a corrupt record whose findings_detail is a string/number/object, which the
+	# caller then tries to render as `.[]`. Explicit type check: array → emit;
+	# anything else (absent, or wrong type) → empty → caller falls back to
+	# count-only. (#2492 phase2 CR)
 	out=$(jq -cs --arg k "$key" '
 		map(select(.content_hash == $k))
-		| if length == 0 then empty else (.[-1].findings_detail // empty) end
+		| if length == 0 then empty
+		  else (.[-1].findings_detail // empty)
+		       | if type == "array" then . else empty end
+		  end
 	' "$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}") || jq_rc=$?
 	if [ "$jq_rc" -ne 0 ]; then
 		# Same fail-safe posture as _get: a corrupt ledger degrades to "no

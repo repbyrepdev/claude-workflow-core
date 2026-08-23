@@ -688,24 +688,43 @@ teardown() {
 # guard denied that touch, so the sanctioned bypass was unreachable from inside
 # a pending round — the second jaw of the #2531 deadlock. These pin the escape
 # open AND pin its bounds shut.
+#
+# The approval filename MUST be the exact sha256 form the gate writes —
+# `[0-9a-f]{64}.txt` (#2535 phase2 CR); a loose basename is no longer admitted.
+HASH64="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-@test "#2535: relative skip-approvals touch is ALLOWED while pending" {
+@test "#2535: relative skip-approvals touch (sha256 name) is ALLOWED while pending" {
 	_setup_pending_repo
-	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/abc123.txt"}}')
+	rc=$(_run_guard "$(jq -nc --arg c "touch .claude/.session-state/skip-approvals/$HASH64.txt" '{tool_name:"Bash",tool_input:{command:$c}}')")
 	[ "$rc" = allow ]
 }
 
-@test "#2535: absolute skip-approvals touch is ALLOWED while pending" {
+@test "#2535: absolute skip-approvals touch (sha256 name) is ALLOWED while pending" {
 	_setup_pending_repo
-	rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch \\\"$TDIR/.claude/.session-state/skip-approvals/deadbeef.txt\\\"\"}}")
+	rc=$(_run_guard "$(jq -nc --arg c "touch \"$TDIR/.claude/.session-state/skip-approvals/$HASH64.txt\"" '{tool_name:"Bash",tool_input:{command:$c}}')")
 	[ "$rc" = allow ]
+}
+
+@test "#2535: a NON-hash approval basename is DENIED (only sha256 names)" {
+	# skip-env-approval-gate keys on sha256("$SKIP_VAR|$CMD"), so nothing but a
+	# 64-hex name is a real approval file. A loose name is not the sanctioned form.
+	_setup_pending_repo
+	for c in \
+		"touch .claude/.session-state/skip-approvals/abc123.txt" \
+		"touch .claude/.session-state/skip-approvals/notahash.txt"; do
+		rc=$(_run_guard "$(jq -nc --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')")
+		[ "$rc" = deny ] || {
+			echo "expected deny for: $c (got $rc)"
+			return 1
+		}
+	done
 }
 
 @test "#2535: skip-approvals escape is LIB-INDEPENDENT (survives absent _lib)" {
 	# The whole point of the plain-grep shape: it must work in the exact
 	# environment where the general allowlist is skipped.
 	_setup_pending_repo
-	rc=$(_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/abc123.txt"}}')
+	rc=$(_run_guard_no_lib "$(jq -nc --arg c "touch .claude/.session-state/skip-approvals/$HASH64.txt" '{tool_name:"Bash",tool_input:{command:$c}}')")
 	[ "$rc" = allow ]
 }
 
@@ -713,9 +732,9 @@ teardown() {
 	_setup_pending_repo
 	for c in \
 		"touch /tmp/evil.txt" \
-		"touch .claude/.session-state/other/abc.txt" \
-		"touch abc.txt"; do
-		rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		"touch .claude/.session-state/other/$HASH64.txt" \
+		"touch $HASH64.txt"; do
+		rc=$(_run_guard "$(jq -nc --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')")
 		[ "$rc" = deny ] || {
 			echo "expected deny for: $c (got $rc)"
 			return 1
@@ -725,17 +744,17 @@ teardown() {
 
 @test "#2535: traversal out of the approvals dir is DENIED" {
 	_setup_pending_repo
-	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/../../../../etc/x.txt"}}')
+	rc=$(_run_guard "$(jq -nc --arg c "touch .claude/.session-state/skip-approvals/../../../../etc/$HASH64.txt" '{tool_name:"Bash",tool_input:{command:$c}}')")
 	[ "$rc" = deny ]
 }
 
 @test "#2535: approval touch with a laundered mutation is DENIED" {
 	_setup_pending_repo
 	for c in \
-		'touch .claude/.session-state/skip-approvals/a.txt; rm -rf /tmp/x' \
-		'touch .claude/.session-state/skip-approvals/a.txt && rm -rf /tmp/x' \
-		'touch .claude/.session-state/skip-approvals/a.txt > /tmp/out' \
-		'touch $(whoami)/.claude/.session-state/skip-approvals/a.txt'; do
+		"touch .claude/.session-state/skip-approvals/$HASH64.txt; rm -rf /tmp/x" \
+		"touch .claude/.session-state/skip-approvals/$HASH64.txt && rm -rf /tmp/x" \
+		"touch .claude/.session-state/skip-approvals/$HASH64.txt > /tmp/out" \
+		"touch \$(whoami)/.claude/.session-state/skip-approvals/$HASH64.txt"; do
 		rc=$(_run_guard "$(jq -nc --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')")
 		[ "$rc" = deny ] || {
 			echo "expected deny for: $c (got $rc)"
@@ -746,15 +765,15 @@ teardown() {
 
 @test "#2535: approval touch with a SECOND path argument is DENIED" {
 	_setup_pending_repo
-	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"touch .claude/.session-state/skip-approvals/a.txt /tmp/evil.txt"}}')
+	rc=$(_run_guard "$(jq -nc --arg c "touch .claude/.session-state/skip-approvals/$HASH64.txt /tmp/evil.txt" '{tool_name:"Bash",tool_input:{command:$c}}')")
 	[ "$rc" = deny ]
 }
 
 @test "#2535: env-prefixed approval touch is DENIED (no arbitrary-exec prefix)" {
-	# A BASH_ENV=/LD_PRELOAD= prefix is arbitrary code execution — this escape
-	# is anchored at ^ with no env-assignment prefix, unlike the review-log one.
+	# A BASH_ENV=/LD_PRELOAD= prefix is arbitrary code execution — BOTH approval
+	# escapes are anchored at ^ with no env-assignment prefix.
 	_setup_pending_repo
-	rc=$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"BASH_ENV=/tmp/x touch .claude/.session-state/skip-approvals/a.txt"}}')
+	rc=$(_run_guard "$(jq -nc --arg c "BASH_ENV=/tmp/x touch .claude/.session-state/skip-approvals/$HASH64.txt" '{tool_name:"Bash",tool_input:{command:$c}}')")
 	[ "$rc" = deny ]
 }
 

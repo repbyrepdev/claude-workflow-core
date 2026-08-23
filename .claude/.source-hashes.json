@@ -1,7 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
-    ".coderabbit.base.yaml": "bfc5fe994488f6f7dd5324caf95b78e7889360e204e886a6498327ce2c52d965",
+    ".coderabbit.base.yaml": "9feb1c104b92df3c60f9a62b04ecf4bf1b9adb4f67fc466a947fe6d1c577f575",
     ".codex/config.toml": "dc2544585ac5b695db435ec6d814005d311326d9814b82901c7bf46d9bdd9af3",
     ".gemini/policy.toml": "c9f74f98b608c1bd188d6c2bda7910bc405a23148a06bbe3339488f57c31729a",
     ".gemini/settings.json": "70d6b428283918e0fbc517798d815aac925fffcbba03c733f5182ba5e5727621",
@@ -24,7 +24,7 @@
     "_lib/cmd-anchor.sh": "482a1b171112d1b27db982b82e8e4e6ea1dd3f4f5e19579117ca82b214ccdca3",
     "_lib/cmd-launder-screen.sh": "8356e43a1bbbf7be0ebf6fc8ae60eb9c23bd87f5fa950b2cbce6c1918f0c48d8",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
-    "_lib/content-hash-cache.sh": "bab88588f52a0033ef821b66c31ff5cd9e92b6026ad9f45bf4f4809cba7311e8",
+    "_lib/content-hash-cache.sh": "d22c628356b195457fc2e7da5c2d10fb95cc0f9183be8f2bf4a4a388b754db13",
     "_lib/cr-phase2-coverage.sh": "b264646b81e07c18ec5eb01f10316a7b867c562b5f2e99ae5196d70772a85cd4",
     "_lib/dogfood-fingerprint.sh": "71eb4e8990307ccb52f9e45b90d77c2c9d6b0435b7e608c16982afd56a95b722",
     "_lib/epic-completeness-check.sh": "c95052f36570f73071394d51024f7db592eb70ddfd64d8ac03eb26a09e5f04c0",
@@ -101,7 +101,7 @@
     "hooks/phase1-dashboard.sh": "5541a15593c9c249eaf0b7ad0e2637088bcfd5208cbe858e2afb32e356db75f4",
     "hooks/phase1-dedup.sh": "ebc9ab3f72f5f2497060d946bc7edc739c9789236354889f60de484f95628d3a",
     "hooks/phase1-directive-emit.sh": "26ad9f4c4f54947484925e06b964ca6a60ae4b39dd799cc5cc69ca0ba6e43abf",
-    "hooks/phase1-directive-pending-guard.sh": "9dd34b050811240dd897a441aff18398cbe013df40a3cb951a71abbc1c20801d",
+    "hooks/phase1-directive-pending-guard.sh": "e7ddcc5a8f322e9a04d86e117ab7f868b309ed6e8ebd75fa9a06c47eb9d5df0b",
     "hooks/phase1-launch-completeness-gate.sh": "e2d95bb1f03466cfb3f43ee9b7653efd42e0528372afd06d5cd3b8ad50ff6d2e",
     "hooks/phase1-launcher.sh": "f15e73fc2135d395b63fb3d09a49f516ecaee09ff4546a9e3e9e90d6f739fb60",
     "hooks/phase1-log-pending-gate.sh": "e5fd0617032e6ae90dd0e5639a48f412a70c49e2d39e512abd57a94d038e3961",
