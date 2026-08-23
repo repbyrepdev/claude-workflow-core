@@ -151,8 +151,19 @@ esac
 # the one definition. Best-effort — if the lib is unreachable, fall back to a
 # STRICTER inline screen (no stripping), because a false deny on the escape
 # hatch is recoverable and a false allow is not.
-_LPG_LAUNDER="$HOOK_DIR/../_lib/cmd-launder-screen.sh"
-if [ -r "$_LPG_LAUNDER" ]; then
+# Resolve across both supported layouts (mirrors _resolve_guard_lib in the
+# sibling guard) rather than a single hardcoded hop that silently reverts to the
+# inline fallback elsewhere (CR-in-CI #2540). The inline fallback here is
+# deliberately STRICTER, so a miss fails safe — but resolving correctly means it
+# is rarely needed.
+_LPG_LAUNDER=""
+for _lpg_c in "$HOOK_DIR/../_lib/cmd-launder-screen.sh" "$HOOK_DIR/../../_lib/cmd-launder-screen.sh"; do
+	[ -r "$_lpg_c" ] && {
+		_LPG_LAUNDER="$_lpg_c"
+		break
+	}
+done
+if [ -n "$_LPG_LAUNDER" ]; then
 	# shellcheck source=../_lib/cmd-launder-screen.sh
 	. "$_LPG_LAUNDER" 2>/dev/null || true
 fi

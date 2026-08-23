@@ -51,6 +51,9 @@ teardown() {
 @test "get for an unknown key → miss" {
 	phase2_review_cache_put deadbeef 3 abc1234
 	run phase2_review_cache_get otherkey
+	# assert the READ exit status too, not just the empty payload — a miss is rc 0
+	# with no output; a crash would be non-zero and must not read as a clean miss.
+	[ "$status" -eq 0 ] || return 1
 	[ -z "$output" ] || return 1
 }
 

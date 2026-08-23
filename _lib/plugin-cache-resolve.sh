@@ -72,6 +72,7 @@ pcr_launcher_dir() {
 # rather than truncated to its tail.
 pcr_progtoken_jq() {
 	cat <<'JQ'
+  def progpath: split(" ")[0];
   def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
   def progtoken: _tail | split(" ")[0];
   def progargs:  _tail | (split(" ")[1:] | join(" "));

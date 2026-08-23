@@ -155,6 +155,7 @@ _progtoken_jq() {
 		pcr_progtoken_jq
 	else
 		cat <<'JQ'
+  def progpath: split(" ")[0];
   def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
   def progtoken: _tail | split(" ")[0];
   def progargs:  _tail | (split(" ")[1:] | join(" "));
@@ -392,7 +393,7 @@ if [ "$CHECK" = "1" ]; then
 		  # token (a registration may carry arguments like "… --strict", and the
 		  # trailing-$ anchor would otherwise never match, so --check saw zero
 		  # registrations for every arg-bearing hook and cried drift).
-		  select((split(" ")[0]) | (test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/"))))
+		  select(progpath | (test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/"))))
 		  # Basename via the shared SSOT (progbasename) — identical for both the
 		  # /hooks/ and launcher-dir shapes, and the SAME rule --unregister uses.
 		  | progbasename

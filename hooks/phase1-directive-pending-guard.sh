@@ -294,9 +294,13 @@ esac
 # admit review-log.sh, and an inline copy in the sibling had already drifted
 # (missing the discard-redirect stripping). Falls back to the inline body when
 # the lib is unreachable, keeping the guard functional in a lib-less layout.
-if [ -r "$HOOK_DIR/../_lib/cmd-launder-screen.sh" ]; then
+# Resolve via _resolve_guard_lib — the SAME layout-agnostic resolver used for
+# hook-deny.sh / hook-inline-sentinel.sh / cmd-anchor.sh above — not a hardcoded
+# single-layout `../_lib/` hop that silently reverts to the inline fallback in
+# any other layout (CR-in-CI #2540).
+if LIB_LAUNDER=$(_resolve_guard_lib cmd-launder-screen.sh); then
 	# shellcheck source=../_lib/cmd-launder-screen.sh
-	. "$HOOK_DIR/../_lib/cmd-launder-screen.sh" 2>/dev/null || true
+	. "$LIB_LAUNDER" 2>/dev/null || true
 fi
 _cmd_launders_mutation() {
 	if declare -f cmd_launders_mutation >/dev/null 2>&1; then

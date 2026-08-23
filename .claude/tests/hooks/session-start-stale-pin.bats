@@ -82,8 +82,13 @@ EOF
 	[[ $output == *"plugin-cache drift detected"* ]] || return 1
 	[[ $output == *"No cache version"* ]] || return 1
 	[[ $output == *"plugin reload claude-workflow-core"* ]] || return 1
-	# no absolute launcher-script command (which would not exist)
-	[[ $output != *"/scripts/install-hook-launchers.sh --generate --migrate\`"* ]] || return 1
+	# Reject ANY absolute launcher-script path — not just one with specific flags.
+	# None exists in any cache version here, so any `/…/scripts/install-hook-launchers.sh`
+	# in the output is a 404 the operator would run (CR-in-CI #2540). Matching the
+	# path (not the flag string) keeps this from passing if the remediation flags
+	# change but the dangling path remains. (The else-branch names the script in
+	# prose as ` scripts/…` with no leading slash, so this correctly does NOT trip.)
+	[[ $output != *"/scripts/install-hook-launchers.sh"* ]] || return 1
 }
 
 @test "up-to-date: settings v0.9.7 == cache v0.9.7 → silent" {

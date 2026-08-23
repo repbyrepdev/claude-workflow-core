@@ -102,6 +102,9 @@ _validate_section() {
 			# @test immediately on the FIRST wrongly-accepted input.
 			return 1
 		fi
+		# the validator is rc-only — assert it emits NOTHING on stdout, so a stray
+		# debug/error leak would be caught (CR-in-CI #2540: assert captured output).
+		[ -z "$output" ] || return 1
 	done
 }
 
@@ -112,6 +115,7 @@ _validate_section() {
 			echo "validator wrongly REJECTED valid event list: [$good]" >&2
 			return 1
 		fi
+		[ -z "$output" ] || return 1 # rc-only contract: no stray stdout
 	done
 }
 

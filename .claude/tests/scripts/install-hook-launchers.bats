@@ -153,7 +153,25 @@ _pinned_count() {
 	chmod +x "$TEST_TMP/demo.sh"
 	run bash -c "printf PAYLOAD | '$TEST_TMP/demo.sh' --flag a"
 	[ "$status" -eq 7 ] || return 1
-	[ "$output" = "argv=[--flag a] stdin=[PAYLOAD]" ]
+	[ "$output" = "argv=[--flag a] stdin=[PAYLOAD]" ] || return 1
+}
+
+@test 'launcher execs cleanly with ZERO argv (the ${1+"$@"} empty-args guard)' {
+	# Hooks are invoked with NO argv — payload on stdin. Under the launcher's
+	# `set -u`, a bare `"$@"` expanded empty aborts on bash <4.4 before exec, so
+	# every hook would silently no-op; the `${1+"$@"}` form fixes it. The bash-3.2
+	# parse test only PARSES, and it skips off-3.2 — so this EXECUTES the launcher
+	# with zero args on WHATEVER bash runs the suite (incl. CI), which is the only
+	# coverage that actually exercises the empty-args branch (CR-in-CI #2540).
+	printf '#!/usr/bin/env bash\necho "argc=[$#] stdin=[$(cat)]"\nexit 0\n' >"$CR/0.34.108/hooks/demo.sh"
+	chmod +x "$CR/0.34.108/hooks/demo.sh"
+	. "$LIB"
+	pcr_launcher_body demo.sh >"$TEST_TMP/demo.sh"
+	chmod +x "$TEST_TMP/demo.sh"
+	# NO argv, payload on stdin — exactly how a hook is called.
+	run bash -c "printf PAYLOAD | '$TEST_TMP/demo.sh'"
+	[ "$status" -eq 0 ] || return 1                        # did NOT abort on empty "$@"
+	[ "$output" = "argc=[0] stdin=[PAYLOAD]" ] || return 1 # reached the hook, 0 args, stdin intact
 }
 
 @test "launcher fails OPEN with a named warning when no cache version has the hook" {

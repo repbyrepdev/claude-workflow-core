@@ -326,6 +326,7 @@ if declare -f pcr_progtoken_jq >/dev/null 2>&1; then
 	PROGTOKEN_JQ=$(pcr_progtoken_jq)
 else
 	PROGTOKEN_JQ='
+  def progpath: split(" ")[0];
   def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
   def progtoken: _tail | split(" ")[0];
   def progargs:  _tail | (split(" ")[1:] | join(" "));
@@ -340,6 +341,14 @@ fi
 # command registered with arguments like ".../hooks/foo.sh --strict" must probe
 # for "foo.sh", not "foo.sh --strict", or the ref stays pinned forever and
 # --verify reports permanent unresolvable drift).
+# Extract the program tokens up front WITH an rc check. A process-substitution
+# `done < <(jq …)` discards jq's exit status, so a broken filter or unreadable
+# input would yield an empty loop and migrate NOTHING while still reporting
+# success — a silent fail-OPEN (CR-in-CI #2540). Capture, check, THEN iterate.
+_progtokens=$(printf '%s' "$pinned_json" | jq -r "$PROGTOKEN_JQ"' .[] | progtoken') || {
+	echo "install-hook-launchers: could not extract program tokens from pinned refs — refusing to migrate (fail-closed)" >&2
+	exit 3
+}
 missing=0
 have_list=""
 while IFS= read -r b; do
@@ -354,7 +363,9 @@ while IFS= read -r b; do
 		_log "WARN: no executable launcher for $b — leaving its ref pinned (rewriting it would dangle)"
 		missing=$((missing + 1))
 	fi
-done < <(printf '%s' "$pinned_json" | jq -r "$PROGTOKEN_JQ"' .[] | progtoken')
+done <<EOF
+$_progtokens
+EOF
 # The exact set the jq rewrite below is allowed to touch. Built from real `-x`
 # probes so the gate ENFORCES what the warning above claims — before this, the
 # walk rewrote every matching ref including the ones it had just warned it would
