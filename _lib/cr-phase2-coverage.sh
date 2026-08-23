@@ -37,8 +37,29 @@ cr_phase2_clean_for_sha() {
 	local short_sha
 	short_sha=$(printf '%s' "$sha" | cut -c1-7)
 	local latest_findings
+	# A PARTIAL / TIMED-OUT run is NOT evidence of a clean review (#2552).
+	#
+	# THE LAUNDERING THIS CLOSES: when the CR-CLI is killed before emitting a
+	# single finding, local-review.sh logs `{"findings":0,"timeout":true,
+	# "partial":true}` — truthfully reporting "0 findings were SEEN", not "0
+	# findings EXIST". This predicate read only `.findings`, so `0` meant CLEAN,
+	# and the pre-push gate then accepted a SHA whose local review never ran.
+	# Observed live: PR #2540's f21b3d1 pushed on exactly such an entry, and the
+	# operator was told the signal was clean.
+	#
+	# Mapping partial/timeout to -1 routes it through the existing non-numeric
+	# rejection below — same fail-closed exit as "no run at all", which is
+	# precisely what a review that produced no verdict IS. Prove-yourself
+	# coverage can still clear a partial run whose findings were salvaged and
+	# addressed, because that path records findings>0 rather than 0.
 	latest_findings=$(jq -rs --arg s "$short_sha" \
-		'[.[] | select(.sha==$s)] | if length > 0 then (last.findings // -1) else -1 end' \
+		'[.[] | select(.sha==$s)]
+		 | if length > 0 then
+		     (last as $l
+		      | if (($l.partial // false) == true) or (($l.timeout // false) == true)
+		        then -1
+		        else ($l.findings // -1) end)
+		   else -1 end' \
 		"$cr_log" 2>/dev/null || echo -1)
 	# Reject non-numeric / missing / negative BEFORE the coverage path. -1 means
 	# "no CR-CLI run for this SHA" — fail-closed, never whitewashed by old audit.
