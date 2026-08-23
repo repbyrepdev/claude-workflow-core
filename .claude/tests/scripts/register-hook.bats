@@ -73,9 +73,11 @@ teardown() {
 	# exists, and only falls back to a `…/hooks/<name>.sh` path when it does not.
 	# The old substring encoded the version-pinned contract this change removes.
 	registered=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")
-	[[ $registered == */cr-auto-parse-poll.sh ]]
+	# `|| return 1`: bats has no set -e, so this middle assertion would otherwise
+	# be masked by the `[ -x ]` that follows it (CR-in-CI #2540).
+	[[ $registered == */cr-auto-parse-poll.sh ]] || return 1
 	# whichever form it took, it must point at something real
-	[ -x "$registered" ]
+	[ -x "$registered" ] || return 1
 }
 
 @test "register hook with event + matcher frontmatter" {
@@ -157,7 +159,11 @@ teardown() {
 	[[ $output == "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh" ]] || return 1
 	# GC the launcher — _resolve_hook_command can now only return the fallback
 	rm -f "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
-	"$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	# Assert the unregister itself SUCCEEDED before trusting the count below — a
+	# non-zero exit with an unchanged settings.json would otherwise read as a pass
+	# via the count assertion alone (CR-in-CI #2540).
+	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
 	# Parenthesize so BOTH a missing key AND an existing empty array yield 0 —
 	# `.hooks.SessionStart // [] | length` without parens is fine in jq (// binds
 	# tighter than |), but the explicit group documents intent and is robust to a

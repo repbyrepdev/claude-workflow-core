@@ -375,13 +375,34 @@ have_json=$(printf '%s' "$have_list" | jq -Rsc 'split("\n") | map(select(length 
 	exit 3
 }
 
+# Count the refs that will ACTUALLY be rewritten by filtering pinned_json through
+# the same membership gate the jq rewrite uses, instead of the `pinned_count -
+# missing` arithmetic (CR-in-CI #2540). The subtraction assumed the two counters
+# stay in lockstep; deriving the number from the real predicate means the
+# reported figure cannot drift from what the rewrite does. Fail CLOSED.
+# NB: bind the token with `as $t` BEFORE the index() call. Inside `$have |
+# index(...)` the input `.` is the ARRAY, so applying `progtoken` there feeds it
+# an array and jq dies "split input and separator must be strings" — the same
+# reason the rewrite filter below binds `$b` first.
+rewritable=$(printf '%s' "$pinned_json" | jq -r --argjson have "$have_json" "$PROGTOKEN_JQ"'
+	[ .[] | (progtoken) as $t | select(($have | index($t)) != null) ] | length
+') || {
+	echo "install-hook-launchers: could not count rewritable refs — refusing to migrate (fail-closed)" >&2
+	exit 3
+}
+case "$rewritable" in '' | *[!0-9]*)
+	echo "install-hook-launchers: rewritable-ref count malformed — refusing to migrate (fail-closed)" >&2
+	exit 3
+	;;
+esac
+
 if [ "$CHECK_ONLY" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
-	_log "would rewrite $((pinned_count - missing)) ref(s) onto $LAUNCHER_DIR"
+	_log "would rewrite $rewritable ref(s) onto $LAUNCHER_DIR"
 	# --check is a drift GATE: pinned refs remaining == drift == exit 1.
 	# --dry-run is a PLAN preview: it changed nothing and found nothing wrong, so
 	# it exits 0 regardless of how many refs it would rewrite. Conflating the two
 	# made `--dry-run` return the drift code and read as a failure to any wrapper.
-	if [ "$CHECK_ONLY" -eq 1 ] && [ "$((pinned_count - missing))" -gt 0 ]; then
+	if [ "$CHECK_ONLY" -eq 1 ] && [ "$rewritable" -gt 0 ]; then
 		exit 1
 	fi
 	exit 0
@@ -523,6 +544,6 @@ if ! mv -f "$tmp" "$SETTINGS"; then
 	exit 3
 fi
 
-_log "✓ migrated $((pinned_count - missing)) hook ref(s) to $LAUNCHER_DIR (backup: $bak)"
+_log "✓ migrated $rewritable hook ref(s) to $LAUNCHER_DIR (backup: $bak)"
 _log "  these are now version-agnostic — a cache bump + GC can no longer dangle them"
 exit 0

@@ -49,11 +49,23 @@ HOOK_TIMEOUT="${HOOK_TIMEOUT:-5}"
 # (#2536) Version-agnostic launcher resolution. Best-effort: without it the
 # registration loop below falls back to version-pinned paths, which still work
 # until the referenced cache version is pruned.
-_IH_LIB="$SCRIPT_DIR/../_lib/plugin-cache-resolve.sh"
-if [ -r "$_IH_LIB" ]; then
+# Try BOTH supported layouts (../_lib and ../../_lib) before giving up — the
+# same candidate list the phase1 guards use. A single hardcoded hop silently
+# fell through to version-pinned registration in the other layout, which is the
+# exact dangling-ref failure #2536 exists to end (CR-in-CI #2540).
+_IH_LIB=""
+for _ih_c in "$SCRIPT_DIR/../_lib/plugin-cache-resolve.sh" "$SCRIPT_DIR/../../_lib/plugin-cache-resolve.sh"; do
+	[ -r "$_ih_c" ] && {
+		_IH_LIB="$_ih_c"
+		break
+	}
+done
+if [ -n "$_IH_LIB" ]; then
 	# shellcheck source=../_lib/plugin-cache-resolve.sh
 	. "$_IH_LIB" ||
 		echo "install-hooks: WARN: plugin-cache-resolve.sh failed to source — registrations will be version-pinned" >&2
+else
+	echo "install-hooks: WARN: plugin-cache-resolve.sh not found in either layout — registrations will be version-pinned" >&2
 fi
 
 # ---- preflight -----------------------------------------------------------

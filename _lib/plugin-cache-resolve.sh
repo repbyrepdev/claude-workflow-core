@@ -143,6 +143,25 @@ pcr_launcher_path() {
 #     "can't resolve" path in this plugin, which allows the call and warns.
 pcr_launcher_body() {
 	local base=$1
+	# VALIDATE before substitution. @@HOOK@@ is replaced into a script that is
+	# then written to disk and exec'd, and it lands inside DOUBLE quotes
+	# (`exec "$_best/hooks/@@HOOK@@"`) — so a basename carrying a quote, `$`,
+	# backtick, `;`, or newline would break out of that string and inject code
+	# into every generated launcher (CR-in-CI #2540). Accept only a real hook
+	# basename: alnum/dot/underscore/dash, ending .sh, no path separators, no
+	# leading dash (which would parse as a flag). Fail CLOSED — emitting nothing
+	# is strictly safer than emitting an injectable launcher.
+	case "$base" in
+	*[!A-Za-z0-9._-]* | -* | */* | "" | *..*)
+		echo "pcr_launcher_body: refusing unsafe hook basename: $base" >&2
+		return 2
+		;;
+	*.sh) ;;
+	*)
+		echo "pcr_launcher_body: hook basename must end in .sh: $base" >&2
+		return 2
+		;;
+	esac
 	# QUOTED heredoc + @@HOOK@@ placeholder: the body is emitted verbatim with
 	# zero shell expansion, so none of the launcher's own $-syntax needs
 	# escaping. (An unquoted heredoc here needed four levels of backslash

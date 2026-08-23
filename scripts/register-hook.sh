@@ -283,12 +283,22 @@ _unregister_one() {
 		else
 			.hooks |= with_entries(
 				.value |= map(
-					.hooks |= map(
+					# Shape-guard the nested iteration: an entry whose `hooks` is
+					# missing/null or not an array must pass through UNCHANGED —
+					# `null | map(...)` is a jq error that aborts the WHOLE rewrite
+					# (and unregister then silently no-ops). Mirrors the defensive
+					# object/has("hooks") check the migrate path uses (CR-in-CI #2540).
+					if (type == "object" and (.hooks | type) == "array")
+					then .hooks |= map(
 						if (.command | type) == "string"
 						   and ((.command | progbasename) == $base)
 						then empty else . end
 					)
-				) | .value |= map(select(.hooks | length > 0))
+					else . end
+				)
+				# Drop only entries we actually emptied; anything without a hooks
+				# ARRAY is left alone rather than being pruned as "length 0".
+				| .value |= map(select((.hooks | type) != "array" or (.hooks | length > 0)))
 			)
 		end
 	'

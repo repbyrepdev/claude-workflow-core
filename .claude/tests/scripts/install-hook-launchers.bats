@@ -174,6 +174,31 @@ _pinned_count() {
 	[ "$output" = "argc=[0] stdin=[PAYLOAD]" ] || return 1 # reached the hook, 0 args, stdin intact
 }
 
+@test "pcr_launcher_body REFUSES an unsafe hook basename (no injection into the generated script)" {
+	# @@HOOK@@ is substituted into `exec "$_best/hooks/@@HOOK@@"` — inside double
+	# quotes — and the result is written to disk and exec'd. A basename carrying a
+	# quote/`$`/backtick/`;`/newline or a path separator would break out of that
+	# string and inject code into EVERY generated launcher (CR-in-CI #2540).
+	# Must fail closed (rc 2, nothing emitted).
+	. "$LIB"
+	for bad in 'a";rm -rf /;x.sh' 'a$(id).sh' 'a`id`.sh' '../evil.sh' 'sub/dir.sh' '-rf.sh' '' 'noext'; do
+		run pcr_launcher_body "$bad"
+		[ "$status" -ne 0 ] || {
+			echo "accepted unsafe basename: [$bad]"
+			return 1
+		}
+		# and it must not have emitted a launcher body
+		[[ $output != *"exec "* ]] || {
+			echo "emitted a body for unsafe basename: [$bad]"
+			return 1
+		}
+	done
+	# a legitimate basename still works
+	run pcr_launcher_body "phase1-directive-pending-guard.sh"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"hooks/phase1-directive-pending-guard.sh"* ]] || return 1
+}
+
 @test "launcher fails OPEN with a named warning when no cache version has the hook" {
 	# A hook we cannot locate must never wedge the session.
 	. "$LIB"
