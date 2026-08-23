@@ -55,10 +55,14 @@ HOOK_TIMEOUT="${HOOK_TIMEOUT:-5}"
 # exact dangling-ref failure #2536 exists to end (CR-in-CI #2540).
 _IH_LIB=""
 for _ih_c in "$SCRIPT_DIR/../_lib/plugin-cache-resolve.sh" "$SCRIPT_DIR/../../_lib/plugin-cache-resolve.sh"; do
-	[ -r "$_ih_c" ] && {
+	# Explicit if-then, NOT `[ -r x ] && { ...; }` — with `set -euo pipefail` on
+	# line 2, a loop whose last command is a failed AND-list leaves a non-zero
+	# status, and relying on the &&-exemption to survive it is a subtlety this
+	# installer should not depend on. (CR-in-CI #2540 phase2)
+	if [ -r "$_ih_c" ]; then
 		_IH_LIB="$_ih_c"
 		break
-	}
+	fi
 done
 if [ -n "$_IH_LIB" ]; then
 	# shellcheck source=../_lib/plugin-cache-resolve.sh

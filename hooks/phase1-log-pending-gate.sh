@@ -182,10 +182,16 @@ esac
 # is rarely needed.
 _LPG_LAUNDER=""
 for _lpg_c in "$HOOK_DIR/../_lib/cmd-launder-screen.sh" "$HOOK_DIR/../../_lib/cmd-launder-screen.sh"; do
-	[ -r "$_lpg_c" ] && {
+	# Explicit if-then, NOT `[ -r x ] && { ...; }`: when NEITHER path is readable
+	# the AND-list leaves the loop's exit status non-zero. Dogfooded — this file's
+	# `set -e` does not abort on it (the left operand of && is exempt) — but the
+	# construct makes the hook's survival depend on that subtlety, and a hook that
+	# aborts fails OPEN (the gate silently stops gating). Explicit form can never
+	# return non-zero. (CR-in-CI #2540 phase2)
+	if [ -r "$_lpg_c" ]; then
 		_LPG_LAUNDER="$_lpg_c"
 		break
-	}
+	fi
 done
 if [ -n "$_LPG_LAUNDER" ]; then
 	# shellcheck source=../_lib/cmd-launder-screen.sh
