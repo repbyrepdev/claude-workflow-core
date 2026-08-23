@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: hooks/phase1-log-pending-gate.sh
+# covers: hooks/phase1-log-pending-gate.sh _lib/cmd-launder-screen.sh
 #
 # v0.34.123 (#2535 r1): this gate had two defects, one security and one
 # throughput, and NO test file at all.
@@ -110,6 +110,23 @@ _verdict() {
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x; .claude/hooks/review-log.sh"}}'
 	[ "$output" = deny ]
 	run _verdict '{"tool_name":"Bash","tool_input":{"command":".claude/hooks/review-log.sh phase1 1 x 0 ok && rm -rf /tmp/x"}}'
+	[ "$output" = deny ]
+}
+
+@test "harmless discard redirects are ALLOWED — both gates agree (shared screen)" {
+	# The inline copy in this gate lacked the guard's discard-redirect stripping,
+	# so `review-log.sh … 2>/dev/null` was allowed by one gate and denied by the
+	# other. Both now source _lib/cmd-launder-screen.sh.
+	_pend
+	run _verdict "$(jq -nc '{tool_name:"Bash",tool_input:{command:".claude/hooks/review-log.sh phase1 1 x 0 ok 2>/dev/null"}}')"
+	[ "$output" = allow ]
+	run _verdict "$(jq -nc '{tool_name:"Bash",tool_input:{command:".claude/hooks/review-log.sh phase1 1 x 0 ok 2>&1"}}')"
+	[ "$output" = allow ]
+}
+
+@test "a REAL file redirect is still DENIED (stripping is discard-only)" {
+	_pend
+	run _verdict "$(jq -nc '{tool_name:"Bash",tool_input:{command:".claude/hooks/review-log.sh phase1 1 x 0 ok > /tmp/out"}}')"
 	[ "$output" = deny ]
 }
 

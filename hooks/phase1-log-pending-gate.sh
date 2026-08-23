@@ -144,8 +144,25 @@ esac
 # had no `^` anchor or end bound, so `git commit -am x; .claude/hooks/review-log.sh`
 # was admitted whole. Anchored, env-prefix-free, canonical-path-only. Arguments
 # are still permitted — the call is `review-log.sh phase1 <round> <agent> <n> ok`.
+# The launder screen is SHARED with phase1-directive-pending-guard.sh (#2535
+# phase2). An inline copy here diverged from the guard's: it lacked the
+# discard-redirect stripping, so `review-log.sh … 2>/dev/null` was allowed by one
+# gate and denied by the other. Two copies of a security predicate drift; source
+# the one definition. Best-effort — if the lib is unreachable, fall back to a
+# STRICTER inline screen (no stripping), because a false deny on the escape
+# hatch is recoverable and a false allow is not.
+_LPG_LAUNDER="$HOOK_DIR/../_lib/cmd-launder-screen.sh"
+if [ -r "$_LPG_LAUNDER" ]; then
+	# shellcheck source=../_lib/cmd-launder-screen.sh
+	. "$_LPG_LAUNDER" 2>/dev/null || true
+fi
+if ! declare -f cmd_launders_mutation >/dev/null 2>&1; then
+	cmd_launders_mutation() {
+		printf '%s' "$1" | tr '\n' ';' | grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'
+	}
+fi
 if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?hooks/review-log\.sh([[:space:]]|$)' &&
-	! printf '%s' "$CMD" | tr '\n' ';' | grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'; then
+	! cmd_launders_mutation "$CMD"; then
 	exit 0
 fi
 

@@ -288,7 +288,21 @@ esac
 # because grep is line-oriented — a second-line command (`… next`⏎`git commit`)
 # is otherwise invisible to a per-line reject. Extracted to ONE place so the
 # escapes + general block can't drift.
+# (#2535 phase2) Delegates to the SHARED definition in
+# _lib/cmd-launder-screen.sh so this guard and phase1-log-pending-gate.sh can
+# never disagree about whether a given command launders a mutation — they both
+# admit review-log.sh, and an inline copy in the sibling had already drifted
+# (missing the discard-redirect stripping). Falls back to the inline body when
+# the lib is unreachable, keeping the guard functional in a lib-less layout.
+if [ -r "$HOOK_DIR/../_lib/cmd-launder-screen.sh" ]; then
+	# shellcheck source=../_lib/cmd-launder-screen.sh
+	. "$HOOK_DIR/../_lib/cmd-launder-screen.sh" 2>/dev/null || true
+fi
 _cmd_launders_mutation() {
+	if declare -f cmd_launders_mutation >/dev/null 2>&1; then
+		cmd_launders_mutation "$1"
+		return $?
+	fi
 	printf '%s' "$1" |
 		sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
 		tr '\n' ';' |

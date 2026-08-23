@@ -46,14 +46,14 @@ _validate_section() {
 		# describes. Validate each token so the enum still catches real typos.
 		ev=$(yq -r ".${section}[$i].event" "$CHECKS_YML")
 		if [ "$ev" != "null" ]; then
-			local _tok _saved_ifs=$IFS
+			local _tok _ntok=0 _saved_ifs=$IFS
 			IFS=','
 			for _tok in $ev; do
 				# strip surrounding whitespace from ", "-joined tokens
 				_tok=${_tok#"${_tok%%[![:space:]]*}"}
 				_tok=${_tok%"${_tok##*[![:space:]]}"}
 				case "$_tok" in
-				pull_request | push | schedule | workflow_dispatch) ;;
+				pull_request | push | schedule | workflow_dispatch) _ntok=$((_ntok + 1)) ;;
 				*)
 					IFS=$_saved_ifs
 					return 1
@@ -61,6 +61,11 @@ _validate_section() {
 				esac
 			done
 			IFS=$_saved_ifs
+			# An empty / whitespace-only / all-empty-field `event:` splits into
+			# ZERO words, so the enum above never runs and the value passes by
+			# default — a regression the pre-widening single-token form did not
+			# have (its `*)` arm rejected ""). Fail closed on it.
+			[ "$_ntok" -gt 0 ] || return 1
 		fi
 		# paired contract: workflow_file null IFF event null
 		[ "$wf" = "null" ] && [ "$ev" != "null" ] && return 1

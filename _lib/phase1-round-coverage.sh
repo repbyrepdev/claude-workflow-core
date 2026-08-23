@@ -151,10 +151,15 @@ phase1_round_coverage_summary() {
 	case "$round$all_total" in '' | *[!0-9]*) return 0 ;; esac
 
 	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl" covered
-	if ! covered=$(_p1rc_covered "$audit_log" "${sha:0:7}" 2>/dev/null); then
-		# Do NOT report an unreadable ledger as the affirmative "0 covered" — that
-		# renders to the operator as "none of your findings are covered", which is
-		# a claim, not an absence of data.
+	if [ ! -f "$audit_log" ]; then
+		# MISSING ledger is reportable as 0, matching the predicate's reading:
+		# findings exist and no record has been written, so nothing is covered
+		# yet. That is an absence of RECORDS, which 0 states accurately.
+		covered=0
+	elif ! covered=$(_p1rc_covered "$audit_log" "${sha:0:7}" 2>/dev/null); then
+		# An EXISTING but unreadable ledger is different: reporting 0 there would
+		# assert "none of your findings are covered" when the tool simply could
+		# not read the file. `unknown` is reserved for that.
 		printf '%s %s unknown' "$round" "$all_total"
 		return 0
 	fi

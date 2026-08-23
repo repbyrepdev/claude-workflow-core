@@ -316,7 +316,13 @@ missing=0
 have_list=""
 while IFS= read -r ref; do
 	[ -n "$ref" ] || continue
+	# Take only the PROGRAM token, not the whole tail (#2535 phase2). A command
+	# registered with arguments — ".../hooks/foo.sh --strict" — made `${ref##*/}`
+	# yield "foo.sh --strict", so the launcher probe never matched, the ref was
+	# left pinned forever, and --verify then reported permanent drift with a
+	# remedy that could not resolve it. Split on whitespace first.
 	b=${ref##*/}
+	b=${b%%[[:space:]]*}
 	if [ -f "$LAUNCHER_DIR/$b" ]; then
 		have_list="$have_list$b"$'\n'
 	else
@@ -393,7 +399,9 @@ tmp=$(mktemp "$(dirname "$SETTINGS")/.settings.XXXXXX") || {
 if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
   def relaunch:
     if type == "string" and test("claude-workflow-core/claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/")
-    then (split("/hooks/") | .[-1]) as $b
+    then # program token only, then re-append any arguments verbatim
+         ((split("/hooks/") | .[-1]) | split(" ")[0]) as $b
+       | ((split("/hooks/") | .[-1]) | (split(" ")[1:] | join(" "))) as $rest
          # Rewrite ONLY when a launcher for this basename actually exists.
          # Without this membership gate the walk relaunched every matching ref,
          # including ones the completeness check had just warned it would leave
@@ -401,7 +409,9 @@ if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
          # dogfooding: review-log.sh has no launcher (not auto-register) yet was
          # still rewritten, which would have pointed settings.json at a file that
          # does not exist. Leaving it pinned is strictly safer than dangling it.
-         | (if ($have | index($b)) then ($dir + "/" + $b) else . end)
+         | (if ($have | index($b))
+            then ($dir + "/" + $b + (if $rest == "" then "" else " " + $rest end))
+            else . end)
     else . end;
   # Scoped to .hooks[][].hooks[].command — NOT walk() over the whole document.
   # Anything outside .hooks (permissions rules, statusLine, MCP args) is left
