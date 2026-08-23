@@ -132,7 +132,31 @@ fi
 # written to enforce is preserved exactly.
 TOOL=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
 case "$TOOL" in
-Agent | Skill) exit 0 ;;
+Agent)
+	# Agent is unconditionally allowed: the whole point of the async fix is
+	# firing the round's review agents in PARALLEL, and an Agent cannot be
+	# logged until it returns.
+	exit 0
+	;;
+Skill)
+	# Skill is NOT blanket-allowed (CR-in-CI #2540 + phase2): a Skill can invoke
+	# Bash internally, so `Skill) exit 0` was a hole straight through the gate —
+	# exactly the productive-work path #721 exists to block. Restrict to the
+	# explicit review skills the phase-1 directive actually fires (SKILL.md step
+	# 4 fires security-review as a SEPARATE Skill call, so it must pass). Every
+	# other Skill is denied until the pending logs are recorded.
+	_SKILL_NAME=$(printf '%s' "$PAYLOAD" |
+		jq -r '.tool_input.command // .tool_input.skill // .tool_input.name // ""' 2>/dev/null || echo "")
+	# Strip any plugin namespace ("pr-review-toolkit:code-reviewer" → the tail)
+	# so the allowlist matches regardless of how the skill is addressed.
+	_SKILL_NAME=${_SKILL_NAME##*:}
+	case "$_SKILL_NAME" in
+	security-review | code-reviewer | code-simplifier | comment-analyzer | pr-test-analyzer | silent-failure-hunter)
+		exit 0
+		;;
+	esac
+	# fall through to the deny below
+	;;
 esac
 
 # Allow review-log.sh itself through (it's the way out of the lock).
@@ -194,6 +218,8 @@ hook_deny "phase1-log-pending-gate" \
 $pending_list
 Run for each: .claude/hooks/review-log.sh phase1 <round> <agent> <findings_count> ok
 (Agent/Skill calls ARE permitted while pending — fire the rest of the round's
-agents in parallel, then log each as it returns.)
+agents in parallel, then log each as it returns. Agent is unrestricted; Skill is
+limited to the review skills: security-review, code-reviewer, code-simplifier,
+comment-analyzer, pr-test-analyzer, silent-failure-hunter.)
 
 Bypass (audit-logged): PHASE1_LOG_PENDING_SKIP=1 <cmd>"

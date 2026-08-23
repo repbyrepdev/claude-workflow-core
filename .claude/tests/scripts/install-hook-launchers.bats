@@ -99,7 +99,11 @@ _pinned_count() {
 	local L="$PLUGIN_LAUNCHER_DIR/phase1-directive-pending-guard.sh"
 	# every `case`-pattern line ending in `)` inside the launcher body must open
 	# with `(` — grep for the un-parenthesised `[0-9]...)` form and assert none.
-	run grep -nE '^\s+\[0-9\][^(]*\)[^)]*;;' "$L"
+	# POSIX [[:space:]], not \s: `\s` is a GNU-grep extension with no meaning in
+	# POSIX ERE, so on a grep without it the pattern matches NOTHING and this
+	# assertion passes vacuously — a tautology guarding the bash-3.2 parse rule
+	# (CR-in-CI #2540). [[:space:]] is equivalent and portable.
+	run grep -nE '^[[:space:]]+\[0-9\][^(]*\)[^)]*;;' "$L"
 	[ "$status" -ne 0 ] || return 1 # no un-parenthesised case pattern present
 	# and the balanced forms ARE present
 	run grep -qF '([0-9]*.[0-9]*.[0-9]*)' "$L"

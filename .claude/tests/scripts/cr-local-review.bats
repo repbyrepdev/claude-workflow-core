@@ -103,7 +103,10 @@ _stub_coderabbit_lines() {
 	grep -q '"fileName":"a.sh"' "$detail" || return 1
 	grep -q '"fileName":"b.sh"' "$detail" || return 1
 	# and the audit log records the REAL partial count, not a lie of 0
-	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/"*.jsonl
+	# Target the SPECIFIC ledger, not a glob over every .jsonl in logs/ — a glob
+	# can match an unrelated log and make this assertion pass on the wrong file
+	# (CR-in-CI #2540 phase2).
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
 	[[ $output == *'"findings":2'* ]] || return 1
 	[[ $output == *'"partial":true'* ]] || return 1
 }

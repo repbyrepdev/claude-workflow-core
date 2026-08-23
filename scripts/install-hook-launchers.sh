@@ -35,9 +35,17 @@ SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 LAUNCHER_DIR=$(pcr_launcher_dir)
 
 DO_GENERATE=1 DO_MIGRATE=0 CHECK_ONLY=0 DRY_RUN=0 DO_VERIFY=0
+# Track EXPLICIT --generate separately from the default so `--verify --generate`
+# and `--generate --verify` are rejected identically. Order-dependence here meant
+# one order silently ran verify against launchers it had just rewritten, and the
+# other verified a stale set (CR-in-CI #2540 phase2).
+SAW_GENERATE=0
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--generate) DO_GENERATE=1 ;;
+	--generate)
+		DO_GENERATE=1
+		SAW_GENERATE=1
+		;;
 	--migrate) DO_MIGRATE=1 ;;
 	--verify)
 		DO_VERIFY=1
@@ -59,6 +67,16 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+
+# Reject --verify combined with an EXPLICIT --generate, in either order. --verify
+# is a read-only health check; letting it run after a generate means it inspects
+# launchers the same invocation just rewrote (self-confirming), and the reverse
+# order verified a stale set. Order-independent because SAW_GENERATE records the
+# explicit flag rather than the default (CR-in-CI #2540 phase2).
+if [ "$DO_VERIFY" -eq 1 ] && [ "$SAW_GENERATE" -eq 1 ]; then
+	echo "install-hook-launchers: --verify cannot be combined with --generate (verify is read-only; run them as separate invocations)" >&2
+	exit 2
+fi
 
 command -v jq >/dev/null 2>&1 || {
 	echo "install-hook-launchers: jq required but not found" >&2

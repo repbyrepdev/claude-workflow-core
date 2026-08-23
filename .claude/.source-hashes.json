@@ -104,7 +104,7 @@
     "hooks/phase1-directive-pending-guard.sh": "fb81d4ff8e99ec3de3964b2f219ab7f5d23e93feca81ab33cef5afbb4d68f095",
     "hooks/phase1-launch-completeness-gate.sh": "e2d95bb1f03466cfb3f43ee9b7653efd42e0528372afd06d5cd3b8ad50ff6d2e",
     "hooks/phase1-launcher.sh": "f15e73fc2135d395b63fb3d09a49f516ecaee09ff4546a9e3e9e90d6f739fb60",
-    "hooks/phase1-log-pending-gate.sh": "68db0e08b8051b8668c2d8afad3046c4349e9353b93803c39cc8f01eed24eb5b",
+    "hooks/phase1-log-pending-gate.sh": "65ccd85369cca30433bef9b3d2630e675845467947272c2bfc3a4835c66f6441",
     "hooks/phase1-post-agent-nudge.sh": "e6a72b385e13835f746dde88986c4cc8361caae5e734e87cde6d580023f911ed",
     "hooks/phase1-post-commit-resume.sh": "152a6e14c7aa860637923842c0231d0b3178fc212d17270d9c550837fa6686f1",
     "hooks/phase1-resume-message.sh": "0aad45ca709149d89495fb1c98207b409ae05d6cfc975eb81734949e65da4343",

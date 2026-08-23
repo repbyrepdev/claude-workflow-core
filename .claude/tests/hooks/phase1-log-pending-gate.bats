@@ -69,10 +69,32 @@ _verdict() {
 	[ "$output" = allow ] || return 1
 }
 
-@test "Skill calls are ALLOWED while a log is pending" {
+@test "REVIEW Skill calls are ALLOWED while a log is pending" {
+	# security-review is fired as a SEPARATE Skill call by the phase-1 directive
+	# (SKILL.md step 4), so it must pass the gate.
 	_pend
 	run _verdict '{"tool_name":"Skill","tool_input":{"command":"security-review"}}'
 	[ "$output" = allow ] || return 1
+	# namespaced form resolves to the same allowlist entry
+	run _verdict '{"tool_name":"Skill","tool_input":{"command":"pr-review-toolkit:code-reviewer"}}'
+	[ "$output" = allow ] || return 1
+}
+
+@test "a NON-review Skill is DENIED while a log is pending (no blanket bypass)" {
+	# `Skill) exit 0` was a hole straight through the gate: a Skill can invoke
+	# Bash internally, so a blanket allow let productive work proceed while logs
+	# were still pending — exactly what #721 blocks (CR-in-CI #2540 phase2).
+	_pend
+	for s in git-commit ship-pr-cycle bootstrap-repo arbitrary-thing; do
+		run _verdict "$(jq -nc --arg c "$s" '{tool_name:"Skill",tool_input:{command:$c}}')"
+		[ "$output" = deny ] || {
+			echo "non-review skill wrongly ALLOWED: $s (got $output)"
+			return 1
+		}
+	done
+	# an unnamed Skill payload must not slip through either
+	run _verdict '{"tool_name":"Skill","tool_input":{}}'
+	[ "$output" = deny ] || return 1
 }
 
 # --- #721 property preserved -----------------------------------------------
