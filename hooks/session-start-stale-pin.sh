@@ -128,13 +128,19 @@ if [ "$higher" = "$CACHE_VER" ]; then
 	# install-hook-launchers.sh UN-pins onto version-agnostic launchers instead,
 	# and is also the only writer here with a lock, a backup, post-write
 	# revalidation and mode preservation.
+	# Emit an ABSOLUTE, runnable path. At SessionStart the cwd is the CONSUMER
+	# repo, which does not ship install-hook-launchers.sh — a cwd-relative
+	# `scripts/…` gives `No such file or directory` and the warning repeats every
+	# session (CR-in-CI #2540). The script lives in the newest cache version we
+	# just resolved.
+	ihl="$CACHE_DIR/$CACHE_VER/scripts/install-hook-launchers.sh"
 	cat >&2 <<EOF
 session-start-stale-pin: ⚠ plugin-cache drift detected
   settings.json refs: v$SETTINGS_VER
   latest cache dir:   v$CACHE_VER
-  Remediation: run \`scripts/install-hook-launchers.sh --generate --migrate\`
+  Remediation: run \`$ihl --generate --migrate\`
   to UN-PIN these refs onto version-agnostic launchers, after which cache
-  bumps stop causing drift entirely. Verify with \`--verify\`.
+  bumps stop causing drift entirely. Verify with \`$ihl --verify\`.
   (Do NOT use migrate-settings.sh for this — it re-pins to v$CACHE_VER, which
   reintroduces the dangling-ref failure once that version is GC'd.)
 EOF

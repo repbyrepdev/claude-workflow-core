@@ -83,6 +83,20 @@ _verdict() {
 	[ "$output" = deny ]
 }
 
+@test "deny message tells the operator Agent/Skill calls are permitted in parallel" {
+	# _verdict drops stderr and reduces to allow/deny, so the deny TEXT — the
+	# operator-facing instruction that makes the async behavior usable — was
+	# unasserted (CR-in-CI #2540). Capture BOTH streams (hook_deny may route the
+	# reason to the stdout JSON or to stderr) and assert the instruction survives.
+	_pend
+	run bash -c "cd '$TEST_TMP' && printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi\"}}' | '$HOOK' 2>&1"
+	# It is a deny (JSON decision on stdout, or a non-zero fallback rc)…
+	# `{ ...; } || return 1` so this middle check aborts — bats has no set -e.
+	{ printf '%s' "$output" | grep -q '"permissionDecision":"deny"' || [ "$status" -eq 2 ]; } || return 1
+	# …and it states the async carve-out verbatim.
+	printf '%s' "$output" | grep -qF 'Agent/Skill calls ARE permitted while pending' || return 1
+}
+
 @test "Edit and Write are still DENIED while a log is pending" {
 	_pend
 	run _verdict '{"tool_name":"Edit","tool_input":{"file_path":"x"}}'

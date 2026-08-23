@@ -158,7 +158,18 @@ if [ -r "$_LPG_LAUNDER" ]; then
 fi
 if ! declare -f cmd_launders_mutation >/dev/null 2>&1; then
 	cmd_launders_mutation() {
-		printf '%s' "$1" | tr '\n' ';' | grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'
+		# SIGPIPE-safe: NO `grep -q` at the end of a pipe. This gate calls the
+		# predicate NEGATED (`! cmd_launders_mutation` below), and with the
+		# sourcing hook under `set -o pipefail` a `grep -q` early-match makes the
+		# upstream `tr` die with 141, the pipeline reports non-zero, `!` flips it
+		# to 0, and a real laundering command is ALLOWED (CR-in-CI #2540). Capture
+		# the transform, match in-shell, fail CLOSED. Deliberately STRICTER than
+		# the shared lib (no discard-redirect stripping): a false deny on the
+		# review-log.sh escape hatch is recoverable, a false allow is not.
+		local _screened
+		_screened=$(printf '%s' "$1" | tr '\n' ';') || return 0
+		local _re='[;&|`]|\$\(|<\(|[0-9]*>'
+		[[ $_screened =~ $_re ]]
 	}
 fi
 if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?hooks/review-log\.sh([[:space:]]|$)' &&

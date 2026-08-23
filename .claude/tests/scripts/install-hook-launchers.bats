@@ -225,7 +225,18 @@ PY
 	[ "$status" -eq 0 ]
 	# the permissions rule must be byte-identical (never in scope for rewriting)
 	run jq -r '.permissions.allow[0]' "$CLAUDE_SETTINGS_FILE"
-	[[ $output == *"0.34.108/hooks/phase1-directive-pending-guard.sh:*)"* ]]
+	# `|| return 1` on EVERY assertion: bats runs the test body WITHOUT `set -e`,
+	# so a bare `[[ ]]` that fails mid-test is masked by the last command's status
+	# — the middle-assert-passes-spuriously trap. Each check must abort on its own.
+	[[ $output == *"0.34.108/hooks/phase1-directive-pending-guard.sh:*)"* ]] || return 1
+	# and the HOOK command must be rewritten onto the launcher WITH its argument
+	# re-appended — the `$rest` join branch. Deleting that branch drops `--strict`
+	# and leaves this suite green otherwise, which is the mutation gap the test
+	# name promises to close (CR-in-CI #2540).
+	run jq -r '.hooks.PreToolUse[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE"
+	[[ $output == *"/phase1-directive-pending-guard.sh --strict" ]] || return 1
+	# rewritten onto the version-agnostic launcher dir, NOT a version-pinned path
+	[[ $output != *"/0.34.108/"* ]] || return 1
 }
 
 @test "defect 5: re-running keeps exactly ONE pristine backup (no self-overwrite)" {
@@ -335,7 +346,14 @@ _stock_cache_hook() {
 	"$SCRIPT" --migrate
 	chmod -x "$CR/0.34.108/hooks/phase1-directive-pending-guard.sh"
 	run "$SCRIPT" --verify
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
+	# Assert WHICH check failed, not just that SOMETHING did — --verify returns 1
+	# for six distinct conditions, so a bare status check passes even if the -x/-f
+	# distinction regresses, provided any other check trips (CR-in-CI #2540). The
+	# resolver only prints "executable" when it rejects a non-executable hook via
+	# `-x`; a regression to `-f` would resolve it and never emit this line.
+	# `|| return 1`: bats has no set -e, so a middle assertion must abort itself.
+	[[ $output == *"executable"* ]] || return 1
 }
 
 @test "--verify FAILS on a settings.json with zero launcher refs" {

@@ -303,10 +303,19 @@ _cmd_launders_mutation() {
 		cmd_launders_mutation "$1"
 		return $?
 	fi
-	printf '%s' "$1" |
-		sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
-		tr '\n' ';' |
-		grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'
+	# Fallback body kept BYTE-FOR-BYTE identical to cmd_launders_mutation in
+	# _lib/cmd-launder-screen.sh (incl. the discard-redirect stripping the sibling
+	# gate's copy once lacked) so an unreachable-lib layout can't reintroduce the
+	# drift the shared lib exists to end (CR-in-CI #2540). Same SIGPIPE-safe shape:
+	# capture the transform, match in-shell, fail CLOSED on transform failure.
+	local _screened
+	_screened=$(
+		printf '%s' "$1" |
+			sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
+			tr '\n' ';'
+	) || return 0
+	local _re='[;&|`]|\$\(|<\(|[0-9]*>'
+	[[ $_screened =~ $_re ]]
 }
 
 # (#2531 CR r1) semgrep flags that WRITE a file, POST to a URL, or rewrite

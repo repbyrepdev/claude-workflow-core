@@ -38,6 +38,10 @@ set -u
 #   resolution simply falls back to the newest version that has it.
 
 # Root of the versioned plugin cache. Env override exists for tests.
+# SSOT NOTE: the generated launcher (pcr_launcher_body, line ~141) is standalone
+# — it cannot source this lib — so it MUST repeat this exact default. The two
+# literals are drift-guarded by cache-root-default-parity.bats, which greps both
+# and asserts equality (CR-in-CI #2540). Change one → change the other.
 pcr_cache_root() {
 	printf '%s' "${PLUGIN_CACHE_ROOT:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 }
@@ -98,16 +102,6 @@ pcr_launcher_path() {
 	printf '%s/%s' "$(pcr_launcher_dir)" "$1"
 }
 
-# pcr_is_launcher_ref <command_string>
-#   rc 0 when the string already points at the version-agnostic launcher dir.
-#   Used by the healer to tell "already migrated" from "legacy version-pinned".
-pcr_is_launcher_ref() {
-	case "$1" in
-	"$(pcr_launcher_dir)"/*) return 0 ;;
-	*) return 1 ;;
-	esac
-}
-
 # pcr_launcher_body <hook_basename>
 #   Emit the forwarder script for one hook on stdout.
 #
@@ -138,6 +132,8 @@ set -uo pipefail
 # this hook, then execs it. No version is baked in, so a cache bump + GC can
 # never leave this dangling — which is exactly what made the old version-pinned
 # settings.json entries 404 en masse (#2536).
+# This default MUST byte-match pcr_cache_root() in the lib above — a standalone
+# launcher can't source it. cache-root-default-parity.bats fails if they drift.
 _root="${PLUGIN_CACHE_ROOT:-$HOME/.claude/plugins/cache/claude-workflow-core/claude-workflow-core}"
 _best=""
 if [ -d "$_root" ]; then
@@ -153,12 +149,18 @@ if [ -d "$_root" ]; then
 			# inside $( ) and dies with "syntax error near unexpected token
 			# ';;'". shellcheck does NOT catch this. Balanced form parses on
 			# 3.2 and 5.x alike.
-			# The first arm rejects anything with a non-[0-9.] character, so the
-			# accepted set matches pcr_newest_complete's strict `^[0-9]+(\.[0-9]+){2}$`
-			# instead of the loose glob alone — which also admitted `9 rm.0.0`
-			# and `1.2.3-rc1`, and those word-split into bogus candidates.
+			# Reject arms constrain the accepted set to strict X.Y.Z so it
+			# matches pcr_newest_complete's `^[0-9]+(\.[0-9]+){2}$` — not the
+			# loose final glob alone, which admitted `9 rm.0.0`, `1.2.3-rc1`
+			# (non-[0-9.]), AND — because `*` also matches `.` — `0.34.121.1`,
+			# `1.2.3.` and `1..2.3` (CR-in-CI #2540: launcher glob must not
+			# resolve a version the resolver regex rejects). Dotfiles can't
+			# reach here: `"$_root"/*/` never enumerates a leading-dot dir.
 			case "$_n" in
-			([0-9]*[!0-9.]*) ;;
+			([0-9]*[!0-9.]*) ;; # a non-[0-9.] char (1.2.3-rc1)
+			(*.*.*.*) ;;        # 4+ components — not X.Y.Z (0.34.121.1)
+			(*..*) ;;           # empty component (1..2.3)
+			(*.) ;;             # trailing dot (1.2.3.)
 			([0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$_n" ;;
 			esac
 		done 2>/dev/null | sort -V -r
@@ -191,7 +193,12 @@ fi
 # stdin is inherited (hooks read a JSON payload from it) and exec preserves the
 # real hook's exit status verbatim — the hook protocol encodes deny/allow in
 # status + stdout, so neither may be swallowed.
-exec "$_best/hooks/@@HOOK@@" "$@"
+# ${1+"$@"}, not "$@": hooks are invoked with NO argv (payload is on stdin), and
+# an empty "$@" under `set -u` aborts as an unbound variable on bash < 4.4 —
+# incl. the 3.2 macOS ships as /bin/bash — so the launcher would exit before
+# exec and every hook would silently no-op (CR-in-CI #2540). ${1+…} expands to
+# nothing when unset, so it is safe empty and forwards args verbatim when present.
+exec "$_best/hooks/@@HOOK@@" ${1+"$@"}
 LAUNCHER
 	)
 	printf '%s\n' "${tmpl//@@HOOK@@/$base}"

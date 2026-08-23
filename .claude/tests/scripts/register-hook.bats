@@ -139,6 +139,29 @@ teardown() {
 	[[ $output == *"no-op"* ]]
 }
 
+@test "--unregister removes a launcher-based entry even after the launcher is GC'd (#2540)" {
+	# Regression: _unregister_one matched the RESOLVED command path. Once a
+	# launcher is pruned, _resolve_hook_command returns a version-pinned fallback
+	# that no longer equals the registered launcher path, so unregister silently
+	# no-oped and left a stale registration active. Match by BASENAME instead.
+	# `|| return 1` on each assertion — bats has no set -e, middle checks must abort.
+	export PLUGIN_LAUNCHER_DIR="$TEST_TMP/launchers"
+	mkdir -p "$PLUGIN_LAUNCHER_DIR"
+	# a real, executable launcher so register resolves ONTO it
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	run "$SCRIPT" hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# the registered command must be the launcher path (proves the setup is real)
+	run jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE"
+	[[ $output == "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh" ]] || return 1
+	# GC the launcher — _resolve_hook_command can now only return the fallback
+	rm -f "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	count=$(jq '.hooks.SessionStart // [] | length' "$CLAUDE_SETTINGS_FILE")
+	[ "$count" = "0" ] || return 1
+}
+
 # --- --all-auto-register ----------------------------------------------
 
 @test "--all-auto-register registers only hooks with the sentinel" {

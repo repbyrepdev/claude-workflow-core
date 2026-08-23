@@ -164,11 +164,20 @@ if [ "$DO_VERIFY" -eq 1 ]; then
 		_log "✗ probe launcher missing: $probe (launchers not generated?)"
 		vrc=1
 	else
+		probe_rc=0
 		probe_err=$(printf '{"tool_name":"Bash","tool_input":{"command":"git diff"}}' |
-			"$probe" 2>&1 >/dev/null) || true
+			"$probe" 2>&1 >/dev/null) || probe_rc=$?
 		if printf '%s' "$probe_err" | grep -qF 'no plugin-cache version'; then
 			_log "✗ end-to-end: launcher FAILED OPEN — no cache version ships hooks/$probe_name"
 			_log "  every hook is currently a silent no-op; the gating layer is off"
+			vrc=1
+		elif [ "$probe_rc" -eq 126 ] || [ "$probe_rc" -eq 127 ]; then
+			# The LAUNCHER itself couldn't exec (non-executable target, missing
+			# interpreter, or its own shell aborted) — distinct from the hook
+			# running and returning its own verdict. 126/127 is a launcher
+			# failure, not health (CR-in-CI #2540). The hook's own deny (exit 2)
+			# is legitimate and deliberately ignored.
+			_log "✗ end-to-end: launcher could not execute (rc=$probe_rc) — $probe"
 			vrc=1
 		else
 			_log "✓ end-to-end: launcher forwarded to a real hook (no fail-open)"
@@ -309,27 +318,37 @@ printf '%s' "$pinned_json" |
 	jq -r '.[] | capture("claude-workflow-core/claude-workflow-core/(?<v>[0-9]+\\.[0-9]+\\.[0-9]+)/").v' |
 	sort | uniq -c | while read -r n v; do _log "    v$v — $n ref(s)"; done
 
+# SSOT for splitting a hook command string into its PROGRAM token and its
+# argument tail. Used by BOTH the completeness probe below AND the jq rewrite
+# further down, so the two can never disagree (CR-in-CI #2540 flagged that the
+# shell `${ref##*/}` and the jq `split("/hooks/")` implementations diverged for
+# args containing a slash — e.g. `.../hooks/foo.sh --path /x/y`, where `##*/`
+# wrongly yields `y`). Program = first whitespace-delimited token AFTER the final
+# `/hooks/` segment; the rest is verbatim args. Both jq invocations inject this.
+PROGTOKEN_JQ='
+  def _tail: (split("/hooks/") | .[-1]);
+  def progtoken: _tail | split(" ")[0];
+  def progargs:  _tail | (split(" ")[1:] | join(" "));
+'
+
 # Only migrate a ref whose basename has a launcher we actually installed —
 # otherwise the rewrite would point at a file that does not exist. This is the
-# completeness guard, and it is enforced per-ref rather than per-version.
+# completeness guard, and it is enforced per-ref rather than per-version. The
+# probe keys on `progtoken` — the SAME rule the rewrite uses (#2535 phase2: a
+# command registered with arguments like ".../hooks/foo.sh --strict" must probe
+# for "foo.sh", not "foo.sh --strict", or the ref stays pinned forever and
+# --verify reports permanent unresolvable drift).
 missing=0
 have_list=""
-while IFS= read -r ref; do
-	[ -n "$ref" ] || continue
-	# Take only the PROGRAM token, not the whole tail (#2535 phase2). A command
-	# registered with arguments — ".../hooks/foo.sh --strict" — made `${ref##*/}`
-	# yield "foo.sh --strict", so the launcher probe never matched, the ref was
-	# left pinned forever, and --verify then reported permanent drift with a
-	# remedy that could not resolve it. Split on whitespace first.
-	b=${ref##*/}
-	b=${b%%[[:space:]]*}
+while IFS= read -r b; do
+	[ -n "$b" ] || continue
 	if [ -f "$LAUNCHER_DIR/$b" ]; then
 		have_list="$have_list$b"$'\n'
 	else
 		_log "WARN: no launcher for $b — leaving its ref pinned (rewriting it would dangle)"
 		missing=$((missing + 1))
 	fi
-done < <(printf '%s' "$pinned_json" | jq -r '.[]')
+done < <(printf '%s' "$pinned_json" | jq -r "$PROGTOKEN_JQ"' .[] | progtoken')
 # The exact set the jq rewrite below is allowed to touch. Built from real `-f`
 # probes so the gate ENFORCES what the warning above claims — before this, the
 # walk rewrote every matching ref including the ones it had just warned it would
@@ -418,12 +437,13 @@ tmp=$(mktemp "$(dirname "$SETTINGS")/.settings.XXXXXX") || {
 # machine's pre-migration backup: 0 arg-bearing commands and 0 pinned
 # paths outside .hooks, so nothing was lost here — but it is luck, not
 # design.) Hook commands live under .hooks; nothing else may be touched.
-if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
+if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" "$PROGTOKEN_JQ"'
   def relaunch:
     if type == "string" and test("claude-workflow-core/claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/")
-    then # program token only, then re-append any arguments verbatim
-         ((split("/hooks/") | .[-1]) | split(" ")[0]) as $b
-       | ((split("/hooks/") | .[-1]) | (split(" ")[1:] | join(" "))) as $rest
+    then # program token only, then re-append any arguments verbatim — via the
+         # SAME progtoken/progargs SSOT the completeness probe used above.
+         (progtoken) as $b
+       | (progargs) as $rest
          # Rewrite ONLY when a launcher for this basename actually exists.
          # Without this membership gate the walk relaunched every matching ref,
          # including ones the completeness check had just warned it would leave
@@ -448,7 +468,12 @@ if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
   else . end
 ' "$SETTINGS" >"$tmp" 2>"$jq_err"; then
 	_jqmsg=$(head -c 200 "$jq_err" 2>/dev/null || echo "")
-	rm -f "$tmp" "$jq_err"
+	# NOT `rm -f "$tmp" "$jq_err"`: jq_err falls back to /dev/null when mktemp
+	# fails (line ~411), and `rm -f /dev/null` would delete the device node
+	# (CR-in-CI #2540). Remove the real tempfile unconditionally; the diagnostic
+	# only when it is a real file.
+	rm -f "$tmp"
+	[ "$jq_err" = /dev/null ] || rm -f "$jq_err"
 	# Include jq's own diagnostic: "STEP=rewrite jq failed" alone cannot tell a
 	# malformed filter from an unreadable input, which is the whole point of the
 	# STEP= tagging.

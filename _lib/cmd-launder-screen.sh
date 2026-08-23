@@ -27,8 +27,20 @@ set -u
 # Newlines fold to `;` because the match is line-oriented — a second-line command
 # (`… next`⏎`git commit`) is otherwise invisible to a per-line reject.
 cmd_launders_mutation() {
-	printf '%s' "$1" |
-		sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
-		tr '\n' ';' |
-		grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'
+	# NO `grep -q` at the END of a pipe: a sourcing hook may have `set -o
+	# pipefail`, and `grep -q` closes its stdin the instant it matches, so the
+	# upstream `tr`/`sed` dies with SIGPIPE (rc 141). Under pipefail the whole
+	# pipeline then reports 141 — non-zero — and a negated caller
+	# (`if ! cmd_launders_mutation`) reads a real MATCH as "clean" and ALLOWS the
+	# laundering command (CR-in-CI #2540). So: capture the transform (no early
+	# reader to SIGPIPE it), then match in-shell with `[[ =~ ]]` — no subprocess,
+	# no pipe, deterministic rc. If the transform itself fails, fail CLOSED.
+	local _screened
+	_screened=$(
+		printf '%s' "$1" |
+			sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
+			tr '\n' ';'
+	) || return 0
+	local _re='[;&|`]|\$\(|<\(|[0-9]*>'
+	[[ $_screened =~ $_re ]]
 }

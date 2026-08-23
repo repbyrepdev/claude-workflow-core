@@ -19,6 +19,38 @@ teardown() {
 	fi
 }
 
+# Returns 0 iff $1 is a comma-separated list of KNOWN events with NO empty
+# element — leading (",push"), interior ("a,,b"), or TRAILING ("push,"). Word
+# splitting silently DROPS a trailing empty field, so the token loop alone never
+# sees "push,"; the wrapped-comma guard catches it (CR-in-CI #2540). `null` is
+# the caller's concern; this helper only sees a real value. Extracted so the
+# malformed-list cases can assert it directly instead of only through the YAML.
+_event_list_ok() {
+	local ev=$1 _tok _ntok=0 _saved_ifs=$IFS
+	# Empty element anywhere → reject. `,$ev,` wraps the ends so a leading or
+	# trailing comma also produces the `,,` that this matches.
+	case ",$ev," in
+	*,,*) return 1 ;;
+	esac
+	IFS=','
+	for _tok in $ev; do
+		# strip surrounding whitespace from ", "-joined tokens
+		_tok=${_tok#"${_tok%%[![:space:]]*}"}
+		_tok=${_tok%"${_tok##*[![:space:]]}"}
+		case "$_tok" in
+		pull_request | push | schedule | workflow_dispatch) _ntok=$((_ntok + 1)) ;;
+		*)
+			IFS=$_saved_ifs
+			return 1
+			;;
+		esac
+	done
+	IFS=$_saved_ifs
+	# A whitespace-only value ("  ") splits into ZERO words, so the enum above
+	# never runs and it would pass by default — fail closed on it too.
+	[ "$_ntok" -gt 0 ]
+}
+
 # Validate every entry in a given section ($1 = "required" or "advisory")
 _validate_section() {
 	local section=$1
@@ -46,26 +78,7 @@ _validate_section() {
 		# describes. Validate each token so the enum still catches real typos.
 		ev=$(yq -r ".${section}[$i].event" "$CHECKS_YML")
 		if [ "$ev" != "null" ]; then
-			local _tok _ntok=0 _saved_ifs=$IFS
-			IFS=','
-			for _tok in $ev; do
-				# strip surrounding whitespace from ", "-joined tokens
-				_tok=${_tok#"${_tok%%[![:space:]]*}"}
-				_tok=${_tok%"${_tok##*[![:space:]]}"}
-				case "$_tok" in
-				pull_request | push | schedule | workflow_dispatch) _ntok=$((_ntok + 1)) ;;
-				*)
-					IFS=$_saved_ifs
-					return 1
-					;;
-				esac
-			done
-			IFS=$_saved_ifs
-			# An empty / whitespace-only / all-empty-field `event:` splits into
-			# ZERO words, so the enum above never runs and the value passes by
-			# default — a regression the pre-widening single-token form did not
-			# have (its `*)` arm rejected ""). Fail closed on it.
-			[ "$_ntok" -gt 0 ] || return 1
+			_event_list_ok "$ev" || return 1
 		fi
 		# paired contract: workflow_file null IFF event null
 		[ "$wf" = "null" ] && [ "$ev" != "null" ] && return 1
@@ -74,6 +87,31 @@ _validate_section() {
 		notes=$(yq -r ".${section}[$i].notes" "$CHECKS_YML")
 		[ -n "$notes" ]
 		[ "$notes" != "null" ]
+	done
+}
+
+@test "event-list validator rejects empty elements (leading, interior, trailing)" {
+	# Trailing "push," is the one word-splitting drops — the exact case CR-in-CI
+	# #2540 found accepted. Whitespace-only and unknown tokens must also fail.
+	for bad in "" " " ",push" "pull_request,,push" "push," "push, ,pull_request" "bogus" "push,bogus"; do
+		run _event_list_ok "$bad"
+		if [ "$status" -eq 0 ]; then
+			echo "validator wrongly ACCEPTED malformed event list: [$bad]" >&2
+			# `return 1`, not `false`: bats has no set -e, so a bare `false` mid-loop
+			# is masked by the loop's final iteration status. `return` aborts the
+			# @test immediately on the FIRST wrongly-accepted input.
+			return 1
+		fi
+	done
+}
+
+@test "event-list validator accepts valid single and multi-event lists" {
+	for good in "push" "pull_request" "pull_request, push" "pull_request,push" "schedule, workflow_dispatch"; do
+		run _event_list_ok "$good"
+		if [ "$status" -ne 0 ]; then
+			echo "validator wrongly REJECTED valid event list: [$good]" >&2
+			return 1
+		fi
 	done
 }
 

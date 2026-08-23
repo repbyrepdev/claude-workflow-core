@@ -249,14 +249,27 @@ _register_one() {
 }
 
 _unregister_one() {
-	local settings_json=$1 command=$2
-	printf '%s' "$settings_json" | jq --arg cmd "$command" '
+	# Match by hook BASENAME (program token), NOT a resolved command path.
+	# _resolve_hook_command returns a version-pinned FALLBACK once the launcher
+	# has been GC'd, so a path-equality match would silently no-op and leave the
+	# launcher registration active (CR-in-CI #2540). Reuse --check's rule: take
+	# the program token (a registration may carry args), then its basename, and
+	# drop every entry whose basename equals the target — legacy `/hooks/…` path
+	# OR version-agnostic launcher alike. `and` short-circuits so `_basename` is
+	# never applied to a non-string command.
+	local settings_json=$1 base=$2
+	printf '%s' "$settings_json" | jq --arg base "$base" '
+		def _basename: (split(" ")[0]) | (capture("/(?<f>[^/]+)$").f // .);
 		if (.hooks // {}) == {} then
 			.
 		else
 			.hooks |= with_entries(
 				.value |= map(
-					.hooks |= map(select(.command != $cmd))
+					.hooks |= map(
+						if (.command | type) == "string"
+						   and ((.command | _basename) == $base)
+						then empty else . end
+					)
 				) | .value |= map(select(.hooks | length > 0))
 			)
 		end
@@ -411,9 +424,11 @@ fi
 
 # --unregister mode: drop a specific hook from settings
 if [ -n "$UNREGISTER" ]; then
-	cmd_path=$(_resolve_hook_command "$UNREGISTER")
+	# Pass the BASENAME, not a resolved path — _unregister_one matches on it, so
+	# a GC'd launcher no longer makes unregister a silent no-op (CR-in-CI #2540).
+	unreg_base=${UNREGISTER##*/}
 	settings=$(_load_settings)
-	new=$(_unregister_one "$settings" "$cmd_path")
+	new=$(_unregister_one "$settings" "$unreg_base")
 	if [ "$settings" = "$new" ]; then
 		echo "  ✓ $UNREGISTER not referenced in $SETTINGS (no-op)"
 	else

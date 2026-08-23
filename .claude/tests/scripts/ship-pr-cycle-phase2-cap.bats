@@ -376,17 +376,29 @@ STUB
 # dispatch REUSES the count without invoking the CR-CLI, then asserting the
 # advance-on-coverage decision.
 
-# Seed the phase2 review-result cache. $1 = cached findings count. Deliberately
-# force-renames the CURRENT branch (setup()'s feat-2354-cap) to main via
-# `git branch -M main`, repointing main onto HEAD — NOT idempotent: it makes
-# main==HEAD so the cache-key diff resolves. main...HEAD is then empty (the branch
-# commits are --allow-empty, so no content change), yielding the stable empty-blob
-# key computed here exactly as the lib does (empty stdin → git hash-object).
-_seed_cache() {
+# SSOT for the phase2 cache-key surface — the ONE place these tests recompute
+# what phase2_review_cache_key does. Deliberately force-renames the CURRENT
+# branch (setup()'s feat-2354-cap) to main via `git branch -M main`, repointing
+# main onto HEAD — NOT idempotent: it makes main==HEAD so the cache-key diff
+# resolves. main...HEAD is then empty (the branch commits are --allow-empty, so
+# no content change), yielding the stable empty-blob key exactly as the lib does
+# (empty stdin → git hash-object). Also ensures the cache dir. Echoes the key.
+#
+# Collapsed from three copies (CR-in-CI #2540): three independent recomputations
+# silently desync into permanent cache MISS if the key surface changes (e.g. the
+# `:(exclude)` pathspecs in phase2_review_cache_key), and a MISS still prints
+# "NOT all addressed" — so the negative assertions below would pass for the WRONG
+# reason. One helper means one place to keep in lockstep with the lib.
+_phase2_cache_key() {
 	(cd "$ROOT" && git branch -M main) || return 1
-	local key
-	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
 	mkdir -p "$ROOT/.claude/.review-cache"
+	(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
+}
+
+# Seed the phase2 review-result cache. $1 = cached findings count.
+_seed_cache() {
+	local key
+	key=$(_phase2_cache_key) || return 1
 	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":%s}\n' \
 		"$key" "$SHA_SHORT" "$1" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
 }
@@ -450,10 +462,8 @@ _seed_cache() {
 
 # Seed a cache record that ALSO carries findings_detail (what put() now writes).
 _seed_cache_detail() {
-	(cd "$ROOT" && git branch -M main) || return 1
 	local key
-	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
-	mkdir -p "$ROOT/.claude/.review-cache"
+	key=$(_phase2_cache_key) || return 1
 	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":2,"findings_detail":[{"severity":"major","file":"hooks/foo.sh","summary":"rc capture aborts under set -e"},{"severity":"minor","file":"scripts/bar.sh","summary":"prefer mktemp over a PID-derived name"}]}\n' \
 		"$key" "$SHA_SHORT" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
 }
@@ -494,10 +504,8 @@ _seed_cache_detail() {
 	# empty array (e.g. detail projection returned [] because the file was
 	# pruned). Must render exactly like the legacy record, not a stray header.
 	_seed_stage phase2
-	(cd "$ROOT" && git branch -M main) || return 1
 	local key
-	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
-	mkdir -p "$ROOT/.claude/.review-cache"
+	key=$(_phase2_cache_key) || return 1
 	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":2,"findings_detail":[]}\n' \
 		"$key" "$SHA_SHORT" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
 	_seed_log 1

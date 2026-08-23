@@ -1750,7 +1750,13 @@ EOF
 			# detail is an operator convenience, never a correctness input.
 			local _p2_detail=""
 			if command -v phase2_review_cache_get_detail >/dev/null 2>&1; then
-				_p2_detail=$(phase2_review_cache_get_detail "$p2_ckey" 2>/dev/null || echo "")
+				# Do NOT swallow stderr: phase2_review_cache_get_detail returns
+				# empty + rc 0 on every failure, so its stderr line is the ONLY
+				# signal that the ledger is corrupt (content-hash-cache.sh emits it
+				# for exactly that). `2>/dev/null` would degrade a persistently
+				# corrupt ledger to count-only forever with no operator trace — the
+				# silent-failure pattern this PR removes elsewhere (CR-in-CI #2540).
+				_p2_detail=$(phase2_review_cache_get_detail "$p2_ckey") || _p2_detail=""
 			fi
 			if [ -n "$_p2_detail" ] && [ "$_p2_detail" != "[]" ]; then
 				printf '\n  Findings from that review:\n'
