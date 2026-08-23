@@ -286,7 +286,10 @@ _unregister_one() {
 	# is left alone.
 	local settings_json=$1 base=$2 ldir=""
 	if declare -f pcr_launcher_dir >/dev/null 2>&1; then ldir=$(pcr_launcher_dir); fi
-	printf '%s' "$settings_json" | jq --arg base "$base" --arg ld "$ldir" "$(_progtoken_jq)"'
+	# THIS repo's own hooks/ dir is plugin-owned too: _resolve_hook_command falls
+	# back to "$REPO_ROOT/hooks/<name>.sh" in dev / when the consumer IS the
+	# plugin, so registrations of that shape are ours and must be unregisterable.
+	printf '%s' "$settings_json" | jq --arg base "$base" --arg ld "$ldir" --arg rr "$REPO_ROOT" "$(_progtoken_jq)"'
 		if (.hooks // {}) == {} then
 			.
 		else
@@ -301,11 +304,21 @@ _unregister_one() {
 					then .hooks |= map(
 						if (.command | type) == "string"
 						   and ((.command | progbasename) == $base)
-						   # …AND the path is one of ours: under the launcher dir,
-						   # or a legacy `…/hooks/<name>.sh` pinned path.
+						   # …AND the path is PLUGIN-OWNED. Two shapes qualify:
+						   #   1. under the version-agnostic launcher dir, or
+						   #   2. a legacy VERSION-PINNED plugin-cache path, i.e.
+						   #      …/claude-workflow-core/claude-workflow-core/<semver>/hooks/<name>.sh
+						   # A bare `/hooks/` test is NOT sufficient (CR-in-CI #2540): it
+						   # matches any third-party layout that happens to use a hooks/
+						   # dir — an operator'"'"'s own ~/their-tool/hooks/foo.sh — and this
+						   # is a DESTRUCTIVE edit to their global settings.json. Anchor
+						   # on the doubled plugin-cache segment + semver, the same shape
+						   # install-hook-launchers.sh migrates.
+						   #   3. this repo'"'"'s own hooks/ dir (the dev fallback).
 						   and ((.command | progpath) as $p
 						        | (($ld != "") and ($p | startswith($ld + "/")))
-						          or ($p | test("/hooks/[^/]+$")))
+						          or ($p | test("/claude-workflow-core/claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/[^/]+$"))
+						          or (($rr != "") and ($p | startswith($rr + "/hooks/"))))
 						then empty else . end
 					)
 					else . end

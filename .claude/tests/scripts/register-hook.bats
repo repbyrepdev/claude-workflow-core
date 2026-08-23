@@ -178,6 +178,36 @@ teardown() {
 	}
 }
 
+@test "--unregister spares a THIRD-PARTY tool that also uses a hooks/ dir (#2540)" {
+	# A bare `/hooks/` test is not "plugin-owned": plenty of tools keep their own
+	# hooks/ directory. Only the doubled plugin-cache segment + semver (the shape
+	# install-hook-launchers.sh migrates) counts as legacy-ours.
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	local third="$TEST_TMP/some-other-tool/hooks/cr-auto-parse-poll.sh"
+	local ours_legacy="$TEST_TMP/c/claude-workflow-core/claude-workflow-core/0.34.108/hooks/cr-auto-parse-poll.sh"
+	mkdir -p "$(dirname "$third")" "$(dirname "$ours_legacy")"
+	jq --arg t "$third" --arg o "$ours_legacy" \
+		'.hooks.SessionStart[0].hooks += [{type:"command",command:$t},{type:"command",command:$o}]' \
+		"$CLAUDE_SETTINGS_FILE" >"$TEST_TMP/s.json"
+	mv "$TEST_TMP/s.json" "$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# the THIRD-PARTY hooks/ path must survive — it is not ours
+	run jq -r --arg t "$third" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $t)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$output" = "1" ] || {
+		echo "third-party hooks/ path was wrongly deleted"
+		return 1
+	}
+	# our LEGACY version-pinned plugin-cache path must be removed
+	run jq -r --arg o "$ours_legacy" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $o)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$output" = "0" ] || {
+		echo "our legacy pinned path was NOT removed"
+		return 1
+	}
+}
+
 @test "--unregister removes a launcher-based entry even after the launcher is GC'd (#2540)" {
 	# Regression: _unregister_one matched the RESOLVED command path. Once a
 	# launcher is pruned, _resolve_hook_command returns a version-pinned fallback

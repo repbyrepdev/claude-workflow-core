@@ -107,6 +107,10 @@ _stub_coderabbit_lines() {
 	# can match an unrelated log and make this assertion pass on the wrong file
 	# (CR-in-CI #2540 phase2).
 	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	# assert the READ succeeded too — a missing ledger would give status 1 with
+	# empty output, and the content checks below would then fail for the wrong
+	# reason (CR-in-CI #2540).
+	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'"findings":2'* ]] || return 1
 	[[ $output == *'"partial":true'* ]] || return 1
 }
