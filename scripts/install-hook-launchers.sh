@@ -378,6 +378,11 @@ cp "$SETTINGS" "$bak" || {
 	exit 3
 }
 
+# Capture jq's stderr so a rewrite failure can name its cause — "STEP=rewrite jq
+# failed" alone cannot distinguish a malformed filter from unreadable input,
+# which is the point of the STEP= tagging. mktemp failure is non-fatal here:
+# fall back to /dev/null and lose only the diagnostic.
+jq_err=$(mktemp -t ihl-jqerr.XXXXXX 2>/dev/null) || jq_err=/dev/null
 tmp=$(mktemp "$(dirname "$SETTINGS")/.settings.XXXXXX") || {
 	echo "install-hook-launchers: mktemp for rewrite failed (backup at $bak) — $SETTINGS unchanged" >&2
 	exit 3
@@ -424,9 +429,13 @@ if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
                            then .command |= relaunch else . end)
         else . end))
   else . end
-' "$SETTINGS" >"$tmp" 2>/dev/null; then
-	rm -f "$tmp"
-	echo "install-hook-launchers: STEP=rewrite jq failed — $SETTINGS unchanged, backup at $bak" >&2
+' "$SETTINGS" >"$tmp" 2>"$jq_err"; then
+	_jqmsg=$(head -c 200 "$jq_err" 2>/dev/null || echo "")
+	rm -f "$tmp" "$jq_err"
+	# Include jq's own diagnostic: "STEP=rewrite jq failed" alone cannot tell a
+	# malformed filter from an unreadable input, which is the whole point of the
+	# STEP= tagging.
+	echo "install-hook-launchers: STEP=rewrite jq failed${_jqmsg:+ ($_jqmsg)} — $SETTINGS unchanged, backup at $bak" >&2
 	exit 3
 fi
 if ! jq empty "$tmp" 2>/dev/null; then

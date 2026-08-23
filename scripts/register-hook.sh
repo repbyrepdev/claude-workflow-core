@@ -355,6 +355,11 @@ if [ "$CHECK" = "1" ]; then
 		[.hooks // {} | to_entries[] |
 		  .value[] | (.hooks // [])[] | .command |
 		  select(type == "string") |
+		  # Program token only — a registration may carry arguments
+		  # (".../hooks/foo.sh --strict"), and the trailing-$ anchors below would
+		  # otherwise never match, so --check silently saw zero registrations for
+		  # every arg-bearing hook and reported them all as unregistered drift.
+		  (split(" ")[0]) |
 		  select(test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/")))
 		  | capture("/(?<f>[^/]+\\.sh)$").f
 		] | unique | .[]
