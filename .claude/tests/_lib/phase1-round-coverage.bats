@@ -61,6 +61,7 @@ _add_round() { # $1=round $2=findings_per_agent
 @test "missing review-log → rc 1 (fail-closed, re-arm as before)" {
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "unresolvable REPO_ROOT → rc 1 (never falls back to pwd)" {
@@ -72,20 +73,24 @@ _add_round() { # $1=round $2=findings_per_agent
 	_seed_round 1 1
 	run phase1_round_has_unapplied_findings "$SHA" "abc"
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 	run phase1_round_has_unapplied_findings "$SHA" 0
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "complete round with 0 findings → rc 1 (nothing to apply)" {
 	_seed_round 1 0
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "complete round with findings and NO audit log → rc 0 (suppress)" {
 	_seed_round 1 1
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "complete round fully covered → rc 1 (re-arm; findings addressed)" {
@@ -93,6 +98,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover phase1 "$SHORT" 7
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "complete round PARTIALLY covered → rc 0 (suppress)" {
@@ -100,6 +106,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover phase1 "$SHORT" 3
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "coverage from source=cr does NOT satisfy a phase1 round" {
@@ -109,6 +116,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover cr "$SHORT" 7
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "coverage scoped to a DIFFERENT sha does not count" {
@@ -116,6 +124,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover phase1 9999999 7
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "INCOMPLETE round (subset of agents) → rc 1 (round still in flight)" {
@@ -129,6 +138,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	done
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "phase2 + accept-with-reason rows do not poison round grouping" {
@@ -139,6 +149,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	printf '{"ts":"t","sha":"%s","phase":1,"kind":"accept-with-reason","reason":"x"}\n' "$SHA" >>"$RLOG"
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "an earlier round's UNCOVERED findings still count after a clean round" {
@@ -152,12 +163,14 @@ _add_round() { # $1=round $2=findings_per_agent
 	_add_round 2 0  # round 2: clean
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1 # SUPPRESS — 35 findings are still outstanding
+	[ -z "$output" ] || return 1    # predicate is rc-only; stray stdout is a regression
 }
 
 @test "corrupt review-log → rc 1 (fail-closed, never a crash)" {
 	printf 'not json {{{\n' >"$RLOG"
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "corrupt audit log → rc 1 (fail-closed)" {
@@ -165,6 +178,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	printf 'not json {{{\n' >"$AUDIT"
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "coverage_summary emits '<round> <findings> <covered>'" {
@@ -190,6 +204,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_add_round 2 1
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1 # SUPPRESS — findings outstanding
+	[ -z "$output" ] || return 1    # predicate is rc-only; stray stdout is a regression
 }
 
 @test "round 2 fully covered cumulatively → re-arm as normal" {
@@ -199,6 +214,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover phase1 "$SHORT" 7 # coverage for round 2 as well (14 total)
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "round 3 partial coverage across rounds → suppress" {
@@ -208,6 +224,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover phase1 "$SHORT" 10
 	run phase1_round_has_unapplied_findings "$SHA" 7
 	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1 # predicate is rc-only; stray stdout is a regression
 }
 
 @test "coverage_summary reports the CUMULATIVE findings the gate compares" {
