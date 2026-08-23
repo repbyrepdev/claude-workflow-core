@@ -10,7 +10,7 @@
 
 setup() {
 	LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase1-round-coverage.sh"
-	[ -f "$LIB" ]
+	[ -f "$LIB" ] || return 1
 	command -v jq >/dev/null
 	TEST_TMP=$(mktemp -d -t p1cov.XXXXXX) || return 1
 	export REPO_ROOT="$TEST_TMP"
@@ -60,46 +60,46 @@ _add_round() { # $1=round $2=findings_per_agent
 
 @test "missing review-log → rc 1 (fail-closed, re-arm as before)" {
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "unresolvable REPO_ROOT → rc 1 (never falls back to pwd)" {
 	run env -u REPO_ROOT bash -c ". '$LIB'; cd /; phase1_round_has_unapplied_findings '$SHA' 7"
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "non-numeric expected_agents → rc 1 (fail-closed)" {
 	_seed_round 1 1
 	run phase1_round_has_unapplied_findings "$SHA" "abc"
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 	run phase1_round_has_unapplied_findings "$SHA" 0
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "complete round with 0 findings → rc 1 (nothing to apply)" {
 	_seed_round 1 0
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "complete round with findings and NO audit log → rc 0 (suppress)" {
 	_seed_round 1 1
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "complete round fully covered → rc 1 (re-arm; findings addressed)" {
 	_seed_round 1 1
 	_cover phase1 "$SHORT" 7
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "complete round PARTIALLY covered → rc 0 (suppress)" {
 	_seed_round 1 1
 	_cover phase1 "$SHORT" 3
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "coverage from source=cr does NOT satisfy a phase1 round" {
@@ -108,14 +108,14 @@ _add_round() { # $1=round $2=findings_per_agent
 	_seed_round 1 1
 	_cover cr "$SHORT" 7
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "coverage scoped to a DIFFERENT sha does not count" {
 	_seed_round 1 1
 	_cover phase1 9999999 7
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "INCOMPLETE round (subset of agents) → rc 1 (round still in flight)" {
@@ -128,7 +128,7 @@ _add_round() { # $1=round $2=findings_per_agent
 			"$SHA" "$a" >>"$RLOG"
 	done
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "phase2 + accept-with-reason rows do not poison round grouping" {
@@ -138,7 +138,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	printf '{"ts":"t","sha":"%s","phase":2,"findings":9,"status":"ok"}\n' "$SHA" >>"$RLOG"
 	printf '{"ts":"t","sha":"%s","phase":1,"kind":"accept-with-reason","reason":"x"}\n' "$SHA" >>"$RLOG"
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "an earlier round's UNCOVERED findings still count after a clean round" {
@@ -151,28 +151,28 @@ _add_round() { # $1=round $2=findings_per_agent
 	_seed_round 1 5 # round 1: 5 findings x 7 agents = 35, none covered
 	_add_round 2 0  # round 2: clean
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ] # SUPPRESS — 35 findings are still outstanding
+	[ "$status" -eq 0 ] || return 1 # SUPPRESS — 35 findings are still outstanding
 }
 
 @test "corrupt review-log → rc 1 (fail-closed, never a crash)" {
 	printf 'not json {{{\n' >"$RLOG"
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "corrupt audit log → rc 1 (fail-closed)" {
 	_seed_round 1 1
 	printf 'not json {{{\n' >"$AUDIT"
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "coverage_summary emits '<round> <findings> <covered>'" {
 	_seed_round 3 1
 	_cover phase1 "$SHORT" 2
 	run phase1_round_coverage_summary "$SHA"
-	[ "$status" -eq 0 ]
-	[ "$output" = "3 7 2" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "3 7 2" ] || return 1
 }
 
 # --- ROUND 2+ (#2535 r1): the case the original fixture could not express ----
@@ -189,7 +189,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_cover phase1 "$SHORT" 7
 	_add_round 2 1
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ] # SUPPRESS — findings outstanding
+	[ "$status" -eq 0 ] || return 1 # SUPPRESS — findings outstanding
 }
 
 @test "round 2 fully covered cumulatively → re-arm as normal" {
@@ -198,7 +198,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_add_round 2 1
 	_cover phase1 "$SHORT" 7 # coverage for round 2 as well (14 total)
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
 }
 
 @test "round 3 partial coverage across rounds → suppress" {
@@ -207,7 +207,7 @@ _add_round() { # $1=round $2=findings_per_agent
 	_add_round 3 1  # 21 cumulative
 	_cover phase1 "$SHORT" 10
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "coverage_summary reports the CUMULATIVE findings the gate compares" {
@@ -217,8 +217,8 @@ _add_round() { # $1=round $2=findings_per_agent
 	_add_round 2 1
 	_cover phase1 "$SHORT" 3
 	run phase1_round_coverage_summary "$SHA"
-	[ "$status" -eq 0 ]
-	[ "$output" = "2 14 3" ]
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "2 14 3" ] || return 1
 }
 
 @test "coverage_summary reports 'unknown', not 0, when the audit log is corrupt" {
@@ -227,12 +227,12 @@ _add_round() { # $1=round $2=findings_per_agent
 	_seed_round 1 1
 	printf 'not json {{{\n' >"$AUDIT"
 	run phase1_round_coverage_summary "$SHA"
-	[ "$status" -eq 0 ]
-	[[ $output == *unknown* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *unknown* ]] || return 1
 }
 
 @test "coverage_summary is silent when there is no review-log" {
 	run phase1_round_coverage_summary "$SHA"
-	[ "$status" -eq 0 ]
-	[ -z "$output" ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ] || return 1
 }
