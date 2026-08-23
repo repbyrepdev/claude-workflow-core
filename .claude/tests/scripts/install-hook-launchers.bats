@@ -165,13 +165,36 @@ _pinned_count() {
 }
 
 @test "defect 4: file mode is preserved across the rewrite" {
+	# Assert the SEEDED 644 survives — do NOT chmod 600 first. 600 is mktemp's
+	# own default, so the original version of this test passed with the entire
+	# mode-preservation block deleted: it asserted the value the temp file
+	# already had. 644 can only survive if chmod --reference actually runs.
 	"$SCRIPT" --generate
-	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
-	chmod 600 "$CLAUDE_SETTINGS_FILE"
+	_seed_settings "0.34.108:phase1-directive-pending-guard.sh" # chmods 644
 	run "$SCRIPT" --migrate
 	[ "$status" -eq 0 ]
 	run bash -c "stat -f '%Lp' '$CLAUDE_SETTINGS_FILE' 2>/dev/null || stat -c '%a' '$CLAUDE_SETTINGS_FILE'"
-	[ "$output" = "600" ]
+	[ "$output" = "644" ]
+}
+
+@test "migrate preserves hook command ARGUMENTS and non-.hooks subtrees" {
+	# The walk() used to replace the ENTIRE matched string, silently dropping
+	# arguments and mangling pinned paths embedded in permissions rules.
+	"$SCRIPT" --generate
+	python3 - "$CLAUDE_SETTINGS_FILE" "$CR" <<'PY'
+import json,sys
+p,cr=sys.argv[1],sys.argv[2]
+json.dump({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
+  {"type":"command","command":f"{cr}/0.34.108/hooks/phase1-directive-pending-guard.sh --strict"}]}]},
+  "permissions":{"allow":[f"Bash({cr}/0.34.108/hooks/phase1-directive-pending-guard.sh:*)"]}},
+  open(p,"w"))
+PY
+	chmod 644 "$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --migrate
+	[ "$status" -eq 0 ]
+	# the permissions rule must be byte-identical (never in scope for rewriting)
+	run jq -r '.permissions.allow[0]' "$CLAUDE_SETTINGS_FILE"
+	[[ $output == *"0.34.108/hooks/phase1-directive-pending-guard.sh:*)"* ]]
 }
 
 @test "defect 5: re-running keeps exactly ONE pristine backup (no self-overwrite)" {
@@ -237,14 +260,61 @@ _pinned_count() {
 # reads the operator's global config), and hand-rebuilding it each time is how
 # a check drifts from what it claims to test.
 
+# The fixture cache must actually SHIP the probe hook, executable, or the
+# launcher fails open — which is now a verify FAILURE, and was previously a
+# silent false pass hiding inside this very test.
+_stock_cache_hook() {
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$CR/0.34.108/hooks/phase1-directive-pending-guard.sh"
+	chmod +x "$CR/0.34.108/hooks/phase1-directive-pending-guard.sh"
+}
+
 @test "--verify passes on a fully migrated settings.json" {
 	"$SCRIPT" --generate
+	_stock_cache_hook
 	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
 	"$SCRIPT" --migrate
 	run "$SCRIPT" --verify
 	[ "$status" -eq 0 ]
 	[[ $output == *"0 version-pinned hook refs"* ]]
 	[[ $output == *"all executable"* ]]
+	[[ $output == *"no fail-open"* ]]
+	[[ $output == *"resolves to 0.34.108"* ]]
+}
+
+@test "--verify FAILS when the launcher fails open (empty cache)" {
+	# THE headline regression. rc 0 is shared by "hook ran" and "failed open",
+	# so the original probe passed for the exact condition it was written to
+	# detect — and the fixture's cache was empty, so the passing test above
+	# contained that false positive.
+	"$SCRIPT" --generate
+	_stock_cache_hook
+	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
+	"$SCRIPT" --migrate
+	rm -rf "$PLUGIN_CACHE_ROOT" # cache GC'd: every hook is now a silent no-op
+	run "$SCRIPT" --verify
+	[ "$status" -eq 1 ]
+	[[ $output == *"FAILED OPEN"* ]]
+}
+
+@test "--verify FAILS when the cache hook exists but is NOT executable" {
+	# -f passes, -x does not; exec would die 126 rather than failing open.
+	"$SCRIPT" --generate
+	_stock_cache_hook
+	_seed_settings "0.34.108:phase1-directive-pending-guard.sh"
+	"$SCRIPT" --migrate
+	chmod -x "$CR/0.34.108/hooks/phase1-directive-pending-guard.sh"
+	run "$SCRIPT" --verify
+	[ "$status" -eq 1 ]
+}
+
+@test "--verify FAILS on a settings.json with zero launcher refs" {
+	# '0 refs, all executable' is vacuously true and read as a pass, blessing
+	# the single most catastrophic state: nothing registered at all.
+	"$SCRIPT" --generate
+	printf '{}' >"$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --verify
+	[ "$status" -eq 1 ]
+	[[ $output == *"no launcher refs"* ]]
 }
 
 @test "--verify FAILS while version-pinned refs remain" {
@@ -277,11 +347,41 @@ _pinned_count() {
 
 @test "pcr_newest_complete honors semver ordering (0.10.0 beats 0.9.5)" {
 	mkdir -p "$PLUGIN_CACHE_ROOT/0.9.5/hooks" "$PLUGIN_CACHE_ROOT/0.10.0/hooks"
+	# chmod +x is REQUIRED now: the probe is -x, not -e, because every caller
+	# probes a hook it intends to execute.
 	touch "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh" "$PLUGIN_CACHE_ROOT/0.10.0/hooks/x.sh"
+	chmod +x "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh" "$PLUGIN_CACHE_ROOT/0.10.0/hooks/x.sh"
 	. "$LIB"
 	run pcr_newest_complete "$PLUGIN_CACHE_ROOT" hooks/x.sh
 	[ "$status" -eq 0 ]
 	[[ $output == */0.10.0 ]]
+}
+
+@test "pcr_newest_complete SKIPS a version whose hook is not executable" {
+	# -e (the original) was satisfied by a non-executable file — and even by a
+	# directory — so resolution could stop on a version that cannot run, and the
+	# launcher would exec it and die 126 instead of falling back.
+	mkdir -p "$PLUGIN_CACHE_ROOT/0.9.5/hooks" "$PLUGIN_CACHE_ROOT/0.10.0/hooks"
+	touch "$PLUGIN_CACHE_ROOT/0.10.0/hooks/x.sh" # newer, NOT executable
+	touch "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh"
+	chmod +x "$PLUGIN_CACHE_ROOT/0.9.5/hooks/x.sh"
+	. "$LIB"
+	run pcr_newest_complete "$PLUGIN_CACHE_ROOT" hooks/x.sh
+	[ "$status" -eq 0 ]
+	[[ $output == */0.9.5 ]] # falls back to the runnable one
+}
+
+@test "generated launcher also skips a non-executable hook and falls back" {
+	mkdir -p "$CR/0.34.121/hooks"
+	printf '#!/usr/bin/env bash\necho ran-0.34.108\n' >"$CR/0.34.108/hooks/demo.sh"
+	chmod +x "$CR/0.34.108/hooks/demo.sh"
+	printf '#!/usr/bin/env bash\necho ran-0.34.121\n' >"$CR/0.34.121/hooks/demo.sh" # newer, no +x
+	. "$LIB"
+	pcr_launcher_body demo.sh >"$TEST_TMP/demo.sh"
+	chmod +x "$TEST_TMP/demo.sh"
+	run "$TEST_TMP/demo.sh"
+	[ "$status" -eq 0 ]
+	[ "$output" = "ran-0.34.108" ]
 }
 
 @test "pcr_newest_complete returns rc 1 when no version satisfies the probe" {

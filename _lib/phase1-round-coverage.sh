@@ -2,37 +2,79 @@
 set -u
 # NB: sourced lib → `set -u` (nounset) ONLY, intentionally NOT `set -euo
 # pipefail`. -e/-o pipefail would mutate the CALLERS' errexit (this is sourced
-# into ship-pr-cycle.sh, already -euo pipefail). Mirrors the sourced-lib
-# convention established by _lib/cr-phase2-coverage.sh.
+# into ship-pr-cycle.sh, already -euo pipefail). Matches the sourced-lib
+# convention of _lib/cr-phase2-coverage.sh.
 #
-# v0.34.122 (#2535): SSOT for "has the latest COMPLETE phase-1 round produced
-# findings that are not yet applied (or rejected with evidence)?"
+# v0.34.123 (#2535): SSOT for "has phase 1 produced findings on this sha that
+# are not yet applied (or rejected with evidence)?"
 #
 # WHY THIS EXISTS — the re-arm deadlock:
-#   `ship-pr-cycle.sh next` at the phase1 stage re-writes the phase1-directive
+#   `ship-pr-cycle.sh next` at the phase1 stage re-wrote the phase1-directive
 #   marker on EVERY invocation while clean_streak < cap. The marker makes
-#   hooks/phase1-directive-pending-guard.sh deny Edit/Write/commit. So once a
-#   round returns findings, the operator must Edit to apply them — but the
-#   marker blocks Edit, and the marker only clears on round-complete or a stage
-#   transition, both of which need the fixes applied. Circular. The operator had
-#   to `rm` the marker by hand 4x in one session.
-#
-#   The fix is at the RE-ARM SITE, not in the guard: while the prior round's
-#   findings are still unapplied, `next` must not re-arm. The guard's round
-#   check is deliberately left UNTOUCHED — weakening it was tried and it
-#   un-gated rounds 2+, which is the failure mode this must not reproduce.
+#   hooks/phase1-directive-pending-guard.sh deny Edit/Write. So once a round
+#   returned findings, applying them required Edit, the marker blocked Edit, and
+#   the marker only cleared on round-complete or a stage transition — both of
+#   which need the fixes already applied. Circular.
 #
 # phase1_round_has_unapplied_findings <sha> <expected_agents>
-#   rc 0 = YES — the latest round is COMPLETE, produced findings, and coverage
-#                is short. Caller should SUPPRESS the re-arm so Edit is possible.
+#   rc 0 = YES — findings exist on this sha and coverage is short. Caller should
+#          SUPPRESS the re-arm so Edit is possible.
 #   rc 1 = NO  — no findings, fully covered, round still in flight, or the
-#                verdict cannot be determined.
+#          verdict cannot be determined.
 #
-# FAIL-CLOSED means rc 1 here. Re-arming is the status quo that keeps the guard
-# strict, so every unresolvable case (missing logs, missing jq, unparseable
-# round, incomplete round) returns 1 and the caller re-arms exactly as before.
-# Suppression requires POSITIVE evidence of a complete round with short
-# coverage; it is never the fallback.
+# FAIL-CLOSED means rc 1. Re-arming is the status quo that keeps the guard
+# strict, so every unresolvable case returns 1 and the caller re-arms exactly as
+# before. Suppression requires POSITIVE evidence; it is never the fallback.
+
+# --- private primitives ----------------------------------------------------
+# Both public functions below need the SAME two queries. They were duplicated
+# once (four jq programs, two of them byte-identical), which is how the
+# scope bug below survived a fix in one copy — extract so a fix lands once.
+# Each primitive is pure: it reports data or fails, and every rc POLICY decision
+# stays in the callers, which is what keeps the two behaviours distinct.
+
+# _p1rc_rounds <rlog> → "<latest_round>\t<latest_findings>\t<latest_agents>\t<all_rounds_findings>"
+# rc 1 on jq failure or no phase-1 rows.
+#
+# `.round != null` is load-bearing: the same JSONL also holds phase2 rows and
+# `accept-with-reason` rows, which are phase==1 but round-less and would
+# otherwise poison the grouping.
+_p1rc_rounds() {
+	local rlog=$1 row rc=0
+	row=$(jq -rs '
+		[ .[] | select(.phase == 1 and .round != null and (.findings // null) != null) ]
+		| if length == 0 then "" else
+			( max_by(.round) | .round ) as $r
+			| ( [ .[] | select(.round == $r) ] ) as $latest
+			| [ ($r | tostring),
+			    ([ $latest[].findings ] | add | tostring),
+			    ([ $latest[].agent ] | unique | length | tostring),
+			    ([ .[].findings ] | add | tostring) ]
+			| @tsv
+		  end
+	' "$rlog" 2>/dev/null) || rc=$?
+	[ "$rc" -eq 0 ] || return 1
+	[ -n "$row" ] || return 1
+	printf '%s' "$row"
+}
+
+# _p1rc_covered <audit_log> <short_sha> → integer. rc 1 on jq failure.
+# Caller decides what a MISSING log means (this returns rc 1 for that too, so a
+# caller that wants "0" must say so explicitly).
+_p1rc_covered() {
+	local audit_log=$1 short_sha=$2 out rc=0
+	[ -f "$audit_log" ] || return 1
+	out=$(jq -rs --arg s "$short_sha" '
+		[ .[] | select((.source // "phase1") == "phase1")
+		      | select((.covered_sha // "") | startswith($s)) ]
+		| map(.covers_count // 1) | add // 0
+	' "$audit_log" 2>/dev/null) || rc=$?
+	[ "$rc" -eq 0 ] || return 1
+	case "$out" in '' | *[!0-9]*) return 1 ;; esac
+	printf '%s' "$out"
+}
+
+# --- public ----------------------------------------------------------------
 
 phase1_round_has_unapplied_findings() {
 	local sha=$1 expected_agents=${2:-0}
@@ -45,58 +87,56 @@ phase1_round_has_unapplied_findings() {
 	local rlog="$repo_root/.claude/review-log/$sha.jsonl"
 	[ -f "$rlog" ] || return 1
 
-	# Latest round, its summed findings, and its DISTINCT agent count, in one
-	# pass. `.round != null` is load-bearing: the same JSONL also holds phase2
-	# rows and `accept-with-reason` rows which are phase==1 but round-less, and
-	# they would otherwise poison the grouping.
 	local row
-	row=$(jq -rs '
-		[ .[] | select(.phase == 1 and .round != null and (.findings // null) != null) ]
-		| if length == 0 then "" else
-			( max_by(.round) | .round ) as $r
-			| [ .[] | select(.round == $r) ]
-			| [ ($r | tostring),
-			    ([ .[].findings ] | add | tostring),
-			    ([ .[].agent ] | unique | length | tostring) ]
-			| @tsv
-		  end
-	' "$rlog" 2>/dev/null) || return 1
-	[ -n "$row" ] || return 1
-
-	local round total agents
-	IFS=$'\t' read -r round total agents <<<"$row"
-	case "$round$total$agents" in '' | *[!0-9]*) return 1 ;; esac
+	row=$(_p1rc_rounds "$rlog") || return 1
+	local round latest_total agents all_total
+	IFS=$'\t' read -r round latest_total agents all_total <<<"$row"
+	case "$round$latest_total$agents$all_total" in '' | *[!0-9]*) return 1 ;; esac
 
 	# Round still in flight → the marker is doing its job; re-arm.
 	[ "$agents" -ge "$expected_agents" ] || return 1
-	# Clean round → nothing to apply; let the normal convergence path run.
-	[ "$total" -gt 0 ] || return 1
+	# Nothing found on this sha at all → let the normal convergence path run.
+	[ "$all_total" -gt 0 ] || return 1
 
-	# findings>0 on a complete round → unapplied IFF coverage is short. Coverage
-	# is the sum of .covers_count over phase1-sourced prove-yourself records
-	# scoped to THIS sha by .covered_sha prefix — the same shape
-	# cr_phase2_clean_for_sha uses for phase 2, so the two cannot drift.
+	# COMPARE CUMULATIVE TO CUMULATIVE (#2535 r1 — the bug this fix exists for).
+	# The prove-yourself record carries no round discriminator (only source,
+	# covered_sha and covers_count — see skills/prove-yourself-audit/run.sh), so
+	# `covered` is inherently the sum across EVERY round on this sha. The first
+	# version compared it against the LATEST round's findings alone, which made
+	# the two sides describe different sets: round 1 with 10 findings fully
+	# covered, then round 2 with 3 new findings, computed 10 < 3 = false → rc 1 →
+	# re-arm, reproducing the exact deadlock this lib removes, from round 2
+	# onward. Summing findings across all rounds puts both sides on the same
+	# basis. (Scoping coverage per-round instead would need a round stamped on
+	# the prove-yourself record at the writer — a larger change, tracked
+	# separately; cumulative-vs-cumulative is correct today and strictly better
+	# than the round-1-only behaviour it replaces.)
 	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl"
-	# No audit log at all + findings>0 ⇒ nothing can have been applied yet.
-	local covered=0
+	local covered
 	if [ -f "$audit_log" ]; then
-		local short_sha
-		short_sha=$(printf '%s' "$sha" | cut -c1-7)
-		covered=$(jq -rs --arg s "$short_sha" '
-			[ .[] | select((.source // "") == "phase1")
-			      | select((.covered_sha // "") | startswith($s)) ]
-			| map(.covers_count // 1) | add // 0
-		' "$audit_log" 2>/dev/null) || return 1
-		case "$covered" in '' | *[!0-9]*) return 1 ;; esac
+		covered=$(_p1rc_covered "$audit_log" "${sha:0:7}") || return 1
+	else
+		# findings>0 with no audit log at all ⇒ nothing can have been applied yet.
+		# NOTE this is deliberately DIFFERENT from cr_phase2_clean_for_sha, which
+		# hard-returns 1 on a missing audit log. Phase 2 is asking "may I advance?"
+		# (fail-closed = don't advance); phase 1 here is asking "are findings
+		# outstanding?" and a missing ledger is positive evidence that they are.
+		# The two are not interchangeable — do not "align" them without re-reading
+		# both call sites.
+		covered=0
 	fi
 
-	[ "$covered" -lt "$total" ] && return 0
+	[ "$covered" -lt "$all_total" ] && return 0
 	return 1
 }
 
 # Human-readable one-line summary for the operator directive. Echoes
-# "<round> <findings> <covered>" for the latest round, or nothing when
-# undeterminable. Kept separate so the predicate above stays side-effect-free.
+# "<round> <findings> <covered>" for the sha, or nothing when undeterminable.
+#
+# `findings` here is the SAME cumulative total the predicate compares against,
+# so the operator's readout and the gate's decision can never disagree — an
+# earlier version printed the latest round's count beside an all-rounds coverage
+# sum, which could render nonsense like "round 4 / 3 findings / 21 covered".
 phase1_round_coverage_summary() {
 	local sha=$1
 	local repo_root="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "")}"
@@ -105,26 +145,18 @@ phase1_round_coverage_summary() {
 	local rlog="$repo_root/.claude/review-log/$sha.jsonl"
 	[ -f "$rlog" ] || return 0
 	local row
-	row=$(jq -rs '
-		[ .[] | select(.phase == 1 and .round != null and (.findings // null) != null) ]
-		| if length == 0 then "" else
-			( max_by(.round) | .round ) as $r
-			| [ .[] | select(.round == $r) ]
-			| [ ($r | tostring), ([ .[].findings ] | add | tostring) ] | @tsv
-		  end
-	' "$rlog" 2>/dev/null) || return 0
-	[ -n "$row" ] || return 0
-	local round total
-	IFS=$'\t' read -r round total <<<"$row"
-	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl" covered=0
-	if [ -f "$audit_log" ]; then
-		local short_sha
-		short_sha=$(printf '%s' "$sha" | cut -c1-7)
-		covered=$(jq -rs --arg s "$short_sha" '
-			[ .[] | select((.source // "") == "phase1")
-			      | select((.covered_sha // "") | startswith($s)) ]
-			| map(.covers_count // 1) | add // 0
-		' "$audit_log" 2>/dev/null) || covered=0
+	row=$(_p1rc_rounds "$rlog") || return 0
+	local round latest_total agents all_total
+	IFS=$'\t' read -r round latest_total agents all_total <<<"$row"
+	case "$round$all_total" in '' | *[!0-9]*) return 0 ;; esac
+
+	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl" covered
+	if ! covered=$(_p1rc_covered "$audit_log" "${sha:0:7}" 2>/dev/null); then
+		# Do NOT report an unreadable ledger as the affirmative "0 covered" — that
+		# renders to the operator as "none of your findings are covered", which is
+		# a claim, not an absence of data.
+		printf '%s %s unknown' "$round" "$all_total"
+		return 0
 	fi
-	printf '%s %s %s' "$round" "$total" "$covered"
+	printf '%s %s %s' "$round" "$all_total" "$covered"
 }

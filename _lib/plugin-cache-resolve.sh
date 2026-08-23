@@ -76,7 +76,11 @@ pcr_newest_complete() {
 		[ -n "$name" ] || continue
 		ok=1
 		for probe in "$@"; do
-			[ -e "$root/$name/$probe" ] || {
+			# -x, not -e: every caller probes a hook it intends to EXECUTE, and
+			# `-e` is satisfied by a directory or a non-executable file. Keeping
+			# this in step with the generated launcher's own probe matters —
+			# otherwise --verify can report a version the launcher would skip.
+			[ -x "$root/$name/$probe" ] || {
 				ok=0
 				break
 			}
@@ -149,17 +153,34 @@ if [ -d "$_root" ]; then
 			# inside $( ) and dies with "syntax error near unexpected token
 			# ';;'". shellcheck does NOT catch this. Balanced form parses on
 			# 3.2 and 5.x alike.
+			# The first arm rejects anything with a non-[0-9.] character, so the
+			# accepted set matches pcr_newest_complete's strict `^[0-9]+(\.[0-9]+){2}$`
+			# instead of the loose glob alone — which also admitted `9 rm.0.0`
+			# and `1.2.3-rc1`, and those word-split into bogus candidates.
 			case "$_n" in
+			([0-9]*[!0-9.]*) ;;
 			([0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$_n" ;;
 			esac
 		done 2>/dev/null | sort -V -r
 	)
-	for _v in $_vers; do
-		if [ -f "$_root/$_v/hooks/@@HOOK@@" ]; then
+	# QUOTED read loop, not `for _v in $_vers`: an unquoted expansion word-splits
+	# on IFS and glob-expands, so a version dir containing a space or `*` is
+	# split into bogus candidates or matched against the cwd.
+	while IFS= read -r _v; do
+		[ -n "$_v" ] || continue
+		# -x, NOT -f: this path is about to be exec'd. `-f` passes for a
+		# non-executable file, which halts the search on a version that cannot
+		# run, skips the fail-open branch below, and makes exec die with 126 —
+		# the exact opposite of the fail-open contract documented above. A cache
+		# copy that drops the exec bit is a real case; install-hook-launchers.sh
+		# has to chmod 755 its own launchers for the same reason.
+		if [ -x "$_root/$_v/hooks/@@HOOK@@" ]; then
 			_best="$_root/$_v"
 			break
 		fi
-	done
+	done <<VERS
+$_vers
+VERS
 fi
 if [ -z "$_best" ]; then
 	# Fail OPEN: a hook we cannot locate must never wedge the session. Mirrors

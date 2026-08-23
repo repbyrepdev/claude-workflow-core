@@ -116,13 +116,27 @@ fi
 # (lex sort would invert).
 higher=$(printf '%s\n%s\n' "$SETTINGS_VER" "$CACHE_VER" | sort -V | tail -1)
 if [ "$higher" = "$CACHE_VER" ]; then
-	# Forward drift: cache > settings → operator should migrate.
+	# Forward drift: cache > settings.
+	#
+	# (#2536 r1 code-simplifier) The remediation here USED to be
+	# `scripts/migrate-settings.sh`, which rewrites
+	# `/claude-workflow-core/<from>/` → `/claude-workflow-core/<to>/` — i.e. it
+	# RE-PINS to a concrete version. That is the exact opposite of what #2536
+	# established: following that advice recreates the version-pinned state whose
+	# GC left 58 registrations 404'ing, and it fired on EVERY SessionStart that
+	# detected drift, so the advice actively undid the fix on a loop.
+	# install-hook-launchers.sh UN-pins onto version-agnostic launchers instead,
+	# and is also the only writer here with a lock, a backup, post-write
+	# revalidation and mode preservation.
 	cat >&2 <<EOF
 session-start-stale-pin: ⚠ plugin-cache drift detected
   settings.json refs: v$SETTINGS_VER
   latest cache dir:   v$CACHE_VER
-  Remediation: run \`scripts/migrate-settings.sh\` to update
-  ~/.claude/settings.json plugin paths to v$CACHE_VER.
+  Remediation: run \`scripts/install-hook-launchers.sh --generate --migrate\`
+  to UN-PIN these refs onto version-agnostic launchers, after which cache
+  bumps stop causing drift entirely. Verify with \`--verify\`.
+  (Do NOT use migrate-settings.sh for this — it re-pins to v$CACHE_VER, which
+  reintroduces the dangling-ref failure once that version is GC'd.)
 EOF
 else
 	# Inverse drift: settings > cache → hooks reference paths that

@@ -798,12 +798,45 @@ _phase2_detail_projection() {
 		printf '[]'
 		return 0
 	}
+	# PRE-FILTER to JSON-shaped lines before jq touches the file (#2492 r1
+	# comment-analyzer). The detail file is NOT a clean JSON stream: local-review.sh
+	# runs `coderabbit review … 2>&1 | tee "$TEE_OUT"` and copies TEE_OUT verbatim,
+	# so it carries stderr and banner text interleaved with the JSON. local-review.sh
+	# says so at its line 195 ("TEE_OUT contains stderr + banner noise that would
+	# break a bare `jq -rs` slurp"), and _phase2_run_cr_cli already anchors on a
+	# leading `{` for exactly this reason. Without this, BOTH jq calls below die with
+	# "Invalid numeric literal" on the first banner line and the whole #2490-#2493
+	# detail feature silently degrades to [] on every real review — verified by
+	# running jq -rs against a banner-bearing fixture.
+	local cap=40 total out filtered
+	filtered=$(mktemp -t ship-cycle-p2detail.XXXXXX) || {
+		printf '[]'
+		return 0
+	}
+	# grep rc 1 == "no matching lines", which is a legitimately empty detail, not
+	# an error — only a real failure (rc >1) is worth abandoning on.
+	local grep_rc=0
+	grep -E '^\{' "$f" >"$filtered" 2>/dev/null || grep_rc=$?
+	if [ "$grep_rc" -gt 1 ]; then
+		scm_warn "phase2 detail: could not read $f (grep rc=$grep_rc) — recording the count with empty detail"
+		rm -f "$filtered"
+		printf '[]'
+		return 0
+	fi
+
 	# Cap the array so an enormous review cannot bloat an append-only ledger that
 	# is never compacted. The cap is REPORTED, not silent — a truncated detail
 	# that looked complete would be worse than no detail at all.
-	local cap=40 total out
-	total=$(jq -rs '[.[] | select(.type == "finding")] | length' "$f" 2>/dev/null) || total=0
-	case "$total" in '' | *[!0-9]*) total=0 ;; esac
+	local total_rc=0
+	total=$(jq -rs '[.[] | select(.type == "finding")] | length' "$filtered" 2>/dev/null) || total_rc=$?
+	if [ "$total_rc" -ne 0 ] || ! [[ $total =~ ^[0-9]+$ ]]; then
+		# Named, not silent: a jq failure here previously suppressed the cap warning
+		# below while the projection still truncated.
+		scm_warn "phase2 detail: could not count findings in $f (jq rc=$total_rc) — recording the count with empty detail"
+		rm -f "$filtered"
+		printf '[]'
+		return 0
+	fi
 	if [ "$total" -gt "$cap" ]; then
 		scm_warn "phase2 detail: $total findings exceeds the $cap-entry cache cap — storing the first $cap; full stream stays at $f"
 	fi
@@ -815,7 +848,8 @@ _phase2_detail_projection() {
 		      summary:  ((.codegenInstructions // "" | split("\n\n") | (.[1] // .[0] // ""))[0:200])
 		    }
 		] | .[0:$cap]
-	' "$f" 2>/dev/null) || out=""
+	' "$filtered" 2>/dev/null) || out=""
+	rm -f "$filtered"
 	[ -n "$out" ] || out='[]'
 	printf '%s' "$out"
 }

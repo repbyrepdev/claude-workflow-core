@@ -39,8 +39,23 @@ _seed_round() {
 	done
 }
 
+# APPEND, never truncate (#2535 r1 pr-test-analyzer). The original used `>`, so
+# the audit log could only ever hold ONE coverage record — which made the
+# round-2 scope bug literally unrepresentable in this fixture and is why 16
+# tests reported green over it.
 _cover() { # $1=source $2=covered_sha $3=covers_count
-	printf '{"source":"%s","covered_sha":"%s","covers_count":%s}\n' "$1" "$2" "$3" >"$AUDIT"
+	printf '{"source":"%s","covered_sha":"%s","covers_count":%s}\n' "$1" "$2" "$3" >>"$AUDIT"
+}
+
+# Append one more round of agent rows WITHOUT truncating earlier rounds, so a
+# multi-round history on a single sha can be expressed at all.
+_add_round() { # $1=round $2=findings_per_agent
+	local a
+	for a in code-reviewer code-simplifier comment-analyzer pr-test-analyzer \
+		silent-failure-hunter semgrep security-review; do
+		printf '{"ts":"t","sha":"%s","phase":1,"round":%s,"agent":"%s","findings":%s,"status":"ok"}\n' \
+			"$SHA" "$1" "$a" "$2" >>"$RLOG"
+	done
 }
 
 @test "missing review-log → rc 1 (fail-closed, re-arm as before)" {
@@ -126,16 +141,17 @@ _cover() { # $1=source $2=covered_sha $3=covers_count
 	[ "$status" -eq 0 ]
 }
 
-@test "only the LATEST round is evaluated (an older dirty round is ignored)" {
-	_seed_round 1 5 # older dirty round
-	local a
-	for a in code-reviewer code-simplifier comment-analyzer pr-test-analyzer \
-		silent-failure-hunter semgrep security-review; do
-		printf '{"ts":"t","sha":"%s","phase":1,"round":2,"agent":"%s","findings":0,"status":"ok"}\n' \
-			"$SHA" "$a" >>"$RLOG"
-	done
+@test "an earlier round's UNCOVERED findings still count after a clean round" {
+	# This test previously asserted the opposite ("only the LATEST round is
+	# evaluated"), which encoded the very bug #2535 r1 found: scoping to the
+	# latest round let a clean round 2 mask 35 unapplied findings from round 1
+	# and re-arm the marker, denying Edit. Findings do not stop needing action
+	# because a later round happened to come back clean — a clean round is not
+	# absolution for an earlier dirty one.
+	_seed_round 1 5 # round 1: 5 findings x 7 agents = 35, none covered
+	_add_round 2 0  # round 2: clean
 	run phase1_round_has_unapplied_findings "$SHA" 7
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 0 ] # SUPPRESS — 35 findings are still outstanding
 }
 
 @test "corrupt review-log → rc 1 (fail-closed, never a crash)" {
@@ -157,6 +173,62 @@ _cover() { # $1=source $2=covered_sha $3=covers_count
 	run phase1_round_coverage_summary "$SHA"
 	[ "$status" -eq 0 ]
 	[ "$output" = "3 7 2" ]
+}
+
+# --- ROUND 2+ (#2535 r1): the case the original fixture could not express ----
+# The predicate compared LATEST-round findings against ALL-ROUNDS coverage, so
+# coverage earned in round 1 permanently satisfied every later round and the
+# gate silently reverted to always-re-arm — the exact deadlock this lib removes.
+
+@test "round 2 with NEW uncovered findings still suppresses (the round-2 bug)" {
+	# Round 1: 7 findings, fully covered. Round 2: 7 more, no new coverage.
+	# Under the old latest-round-vs-all-rounds comparison this computed
+	# total=7 (round 2) vs covered=7 (round 1) → 7 < 7 false → rc 1 → re-arm,
+	# denying Edit while 7 findings sat unapplied.
+	_seed_round 1 1
+	_cover phase1 "$SHORT" 7
+	_add_round 2 1
+	run phase1_round_has_unapplied_findings "$SHA" 7
+	[ "$status" -eq 0 ] # SUPPRESS — findings outstanding
+}
+
+@test "round 2 fully covered cumulatively → re-arm as normal" {
+	_seed_round 1 1
+	_cover phase1 "$SHORT" 7
+	_add_round 2 1
+	_cover phase1 "$SHORT" 7 # coverage for round 2 as well (14 total)
+	run phase1_round_has_unapplied_findings "$SHA" 7
+	[ "$status" -eq 1 ]
+}
+
+@test "round 3 partial coverage across rounds → suppress" {
+	_seed_round 1 1 # 7
+	_add_round 2 1  # 14
+	_add_round 3 1  # 21 cumulative
+	_cover phase1 "$SHORT" 10
+	run phase1_round_has_unapplied_findings "$SHA" 7
+	[ "$status" -eq 0 ]
+}
+
+@test "coverage_summary reports the CUMULATIVE findings the gate compares" {
+	# Must match the predicate's basis, or the operator readout and the gate
+	# decision disagree (an earlier version could print "round 2 / 7 / 14").
+	_seed_round 1 1
+	_add_round 2 1
+	_cover phase1 "$SHORT" 3
+	run phase1_round_coverage_summary "$SHA"
+	[ "$status" -eq 0 ]
+	[ "$output" = "2 14 3" ]
+}
+
+@test "coverage_summary reports 'unknown', not 0, when the audit log is corrupt" {
+	# "0 covered" is an affirmative claim; an unreadable ledger is an absence of
+	# data and must not render as one.
+	_seed_round 1 1
+	printf 'not json {{{\n' >"$AUDIT"
+	run phase1_round_coverage_summary "$SHA"
+	[ "$status" -eq 0 ]
+	[[ $output == *unknown* ]]
 }
 
 @test "coverage_summary is silent when there is no review-log" {

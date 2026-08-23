@@ -273,11 +273,9 @@ Agent | Skill)
 	;;
 esac
 
-# Allow review-log.sh explicitly (the way to clear the directive after
-# agents return). Mirrors phase1-log-pending-gate's escape hatch.
-if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)\.?/?\.claude/hooks/review-log\.sh'; then
-	exit 0
-fi
+# NOTE: the review-log.sh escape used to live HERE, above the shared screens,
+# which is exactly why it never got them — see the hardened version further down,
+# placed with its siblings after _cmd_launders_mutation is defined.
 
 # (#2531) Shared launder-screen for the two lib-independent single-verb escapes
 # below AND the general read-only block (which DELEGATES to it — #2531 CR r1).
@@ -362,6 +360,35 @@ fi
 if printf '%s' "$CMD" | grep -qE '^semgrep[[:space:]]+scan([[:space:]]|$)' &&
 	! _cmd_launders_mutation "$CMD" &&
 	! _semgrep_has_write_flag "$CMD"; then
+	exit 0
+fi
+
+# Allow review-log.sh — the way to clear the directive after agents return.
+#
+# SECURITY (#2535 r1 security-review): this escape previously sat ABOVE the
+# shared screens and was the guard's most permissive path. Two bypasses were
+# CONFIRMED empirically against the old regex
+# `((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=...)*)\.?/?\.claude/hooks/review-log\.sh`:
+#
+#   1. ARBITRARY CODE EXECUTION via env prefix. The `NAME=value` group admitted
+#      `BASH_ENV=/tmp/evil.sh .claude/hooks/review-log.sh …`. review-log.sh has a
+#      `#!/bin/bash` shebang, so running it starts a NON-INTERACTIVE bash, which
+#      sources $BASH_ENV before the script body — attacker code runs with the
+#      session's full privileges. (LD_PRELOAD is the Linux-consumer equivalent.)
+#   2. TOTAL BYPASS via compound command. The `(^|[;&|]…)` alternative meant the
+#      match could begin after ANY separator, and there was no end anchor, so
+#      `git commit -am pwned; .claude/hooks/review-log.sh` was admitted whole.
+#
+# Both are the exact classes the sibling escapes were already hardened against —
+# the ship-pr-cycle escape's own comment reasons that "a BASH_ENV=/LD_PRELOAD=
+# prefix would be arbitrary code exec". This one predated that reasoning and was
+# never retrofitted, and its position above _cmd_launders_mutation's definition
+# is why. Now anchored at ^ with NO env-assignment prefix, restricted to the
+# canonical path, and screened by the same shared launder check. Arguments are
+# still allowed (the call is `review-log.sh phase1 <round> <agent> <n> ok`) —
+# _cmd_launders_mutation is what keeps them from smuggling a second command.
+if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?hooks/review-log\.sh([[:space:]]|$)' &&
+	! _cmd_launders_mutation "$CMD"; then
 	exit 0
 fi
 

@@ -111,18 +111,50 @@ if hook_inline_sentinel_check "PHASE1_LOG_PENDING_SKIP" "$CMD" "phase1-log-pendi
 	exit 0
 fi
 
+# (#2535 r1 security-review) ALLOW Agent/Skill while a log is pending.
+#
+# This gate exists to stop the main loop doing PRODUCTIVE work (or narrating)
+# before logging an agent's findings. Firing another REVIEW agent is not
+# productive work — it is the review itself, and the directive explicitly asks
+# for "5 parallel Agent calls".
+#
+# Blocking Agent here made that impossible, because agents are ASYNC: the
+# PostToolUse nudge writes the pending file when the Agent tool call returns —
+# i.e. at LAUNCH — while the findings count only exists ~10 minutes later when
+# the agent actually completes. So the gate demanded a number that could not yet
+# exist, and refused every call (including the next Agent) until it was given.
+# The designed parallel-5 block collapsed into a serialized
+# fire → block → wait → log chain, ~5x the wall-clock, with the operator wedged
+# between each step and no permitted action at all.
+#
+# Bash/Edit/Write/MultiEdit/NotebookEdit stay blocked, so productive work still
+# cannot proceed until every pending agent is logged — the property #721 was
+# written to enforce is preserved exactly.
+TOOL=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+case "$TOOL" in
+Agent | Skill) exit 0 ;;
+esac
+
 # Allow review-log.sh itself through (it's the way out of the lock).
-# Anchored match — start-of-command or after shell-separator, with
-# optional env-var prefixes. Mirrors the anchor pattern used in
-# pr-trigger.sh / cr-pause-detector.sh.
-if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)\.?/?\.claude/hooks/review-log\.sh'; then
+#
+# SECURITY (#2535 r1): the previous pattern here was the same one confirmed
+# exploitable in phase1-directive-pending-guard.sh — it admitted an arbitrary
+# `NAME=value` env prefix (so `BASH_ENV=/tmp/evil.sh .claude/hooks/review-log.sh`
+# sourced attacker code, review-log.sh having a `#!/bin/bash` shebang), and it
+# had no `^` anchor or end bound, so `git commit -am x; .claude/hooks/review-log.sh`
+# was admitted whole. Anchored, env-prefix-free, canonical-path-only. Arguments
+# are still permitted — the call is `review-log.sh phase1 <round> <agent> <n> ok`.
+if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?hooks/review-log\.sh([[:space:]]|$)' &&
+	! printf '%s' "$CMD" | tr '\n' ';' | grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'; then
 	exit 0
 fi
 
 # Refuse with listing of pending agents.
 hook_deny "phase1-log-pending-gate" \
-	"$pending_count Phase 1 agent return(s) need review-log.sh BEFORE the next tool call:
+	"$pending_count Phase 1 agent return(s) need review-log.sh BEFORE the next Bash/Edit/Write call:
 $pending_list
 Run for each: .claude/hooks/review-log.sh phase1 <round> <agent> <findings_count> ok
+(Agent/Skill calls ARE permitted while pending — fire the rest of the round's
+agents in parallel, then log each as it returns.)
 
 Bypass (audit-logged): PHASE1_LOG_PENDING_SKIP=1 <cmd>"

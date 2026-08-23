@@ -763,15 +763,54 @@ teardown() {
 # regresses, agents cannot be logged → the round cannot complete → deadlock.
 # Dogfood-verified working but unpinned until now.
 
-@test "#2535: review-log.sh allowlist accepts bare / ./-relative / env-prefixed forms" {
+@test "#2535: review-log.sh allowlist accepts bare and ./-relative forms" {
+	# NOTE: an earlier version of this test also asserted the ENV-PREFIXED form
+	# was allowed — i.e. it pinned the vulnerability open as intended behaviour.
+	# The env-prefix case is now a denial test below.
 	_setup_pending_repo
 	for c in \
 		".claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok" \
 		"./.claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok" \
-		"FOO=bar .claude/hooks/review-log.sh phase1 1 code-reviewer 0 ok"; do
+		"hooks/review-log.sh phase1 1 code-reviewer 0 ok"; do
 		rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
 		[ "$rc" = allow ] || {
 			echo "expected allow for: $c (got $rc)"
+			return 1
+		}
+	done
+}
+
+@test "#2535 SECURITY: env-prefixed review-log.sh is DENIED (BASH_ENV = ACE)" {
+	# CONFIRMED exploitable before this fix: the old regex admitted an arbitrary
+	# `NAME=value` prefix, and review-log.sh has a #!/bin/bash shebang, so a
+	# non-interactive bash sources $BASH_ENV before the script body — attacker
+	# code runs with the session's full privileges, during the exact window this
+	# guard exists to lock down. Both sibling escapes already denied this.
+	_setup_pending_repo
+	for c in \
+		"BASH_ENV=/tmp/evil.sh .claude/hooks/review-log.sh phase1 1 x 0 ok" \
+		"LD_PRELOAD=/tmp/evil.so .claude/hooks/review-log.sh phase1 1 x 0 ok" \
+		"FOO=bar .claude/hooks/review-log.sh phase1 1 x 0 ok"; do
+		rc=$(_run_guard "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"}}")
+		[ "$rc" = deny ] || {
+			echo "expected deny for: $c (got $rc)"
+			return 1
+		}
+	done
+}
+
+@test "#2535 SECURITY: a compound command ending in review-log.sh is DENIED" {
+	# The old pattern could begin matching after ANY `;`/`&`/`|` and had no end
+	# bound, so the ENTIRE compound was admitted — a total bypass of the guard.
+	_setup_pending_repo
+	for c in \
+		'rm -rf /tmp/x; .claude/hooks/review-log.sh' \
+		'.claude/hooks/review-log.sh phase1 1 x 0 ok && rm -rf /tmp/x' \
+		'.claude/hooks/review-log.sh phase1 1 x 0 ok | sh' \
+		'.claude/hooks/review-log.sh phase1 1 x 0 ok > /tmp/out'; do
+		rc=$(_run_guard "$(jq -nc --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')")
+		[ "$rc" = deny ] || {
+			echo "expected deny for: $c (got $rc)"
 			return 1
 		}
 	done
