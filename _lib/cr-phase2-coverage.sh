@@ -36,7 +36,8 @@ cr_phase2_clean_for_sha() {
 	command -v jq >/dev/null 2>&1 || return 1
 	local short_sha
 	short_sha=$(printf '%s' "$sha" | cut -c1-7)
-	local latest_findings
+	local latest_findings jq_err
+	jq_err=$(mktemp) || return 1
 	# A PARTIAL / TIMED-OUT run is NOT evidence of a clean review (#2544).
 	#
 	# THE LAUNDERING THIS CLOSES: when the CR-CLI is killed before emitting a
@@ -75,7 +76,22 @@ cr_phase2_clean_for_sha() {
 		        then -1
 		        else ($l.findings // -1) end)
 		   else -1 end' \
-		"$cr_log" 2>/dev/null || echo -1)
+		"$cr_log" 2>"$jq_err") || {
+		# A jq failure here is NOT a verdict — it means the ledger is
+		# unreadable (malformed JSONL from a torn concurrent write, a schema
+		# change, jq itself broken). The old `2>/dev/null || echo -1` form
+		# returned the same silent rc 1 as a legitimate "not clean", so an
+		# operator staring at a refused push had no way to tell a real finding
+		# from a corrupt log file. Fail closed AND say why.
+		#
+		# This is the documented exception to the silent contract: normal
+		# clean/not-clean verdicts stay silent (callers narrate those), but a
+		# broken input is not a verdict and must be loud.
+		echo "cr_phase2_clean_for_sha: jq failed reading $cr_log — refusing (not a clean verdict): $(head -c 200 "$jq_err" 2>/dev/null)" >&2
+		rm -f "$jq_err"
+		return 1
+	}
+	rm -f "$jq_err"
 	# NON-STICKY, deliberately: `last` keys on the newest entry for the SHA
 	# only. A partial run followed by a complete one reads CLEAN off the
 	# complete entry. Making the rejection sticky would strand a branch whose

@@ -107,6 +107,43 @@ _log_partial_only() {
 	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
+@test "#2544 a non-boolean truthy TIMEOUT flag is still NOT clean (fail-closed)" {
+	# Symmetric to the partial:"true" case — both disjuncts get the same
+	# non-boolean treatment, so neither can regress to strict equality alone.
+	printf '{"sha":"abc1234","findings":0,"timeout":"true"}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo 'an entry flagged timeout:"true" (string) was accepted as CLEAN'
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 a NUMERIC 1 flag is still NOT clean (fail-closed)" {
+	# The lib comment names `1` specifically as a value that must not slip
+	# past the guard. Pin the claim so the comment cannot go stale.
+	printf '{"sha":"abc1234","findings":0,"partial":1}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "an entry flagged partial:1 (numeric) was accepted as CLEAN"
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 mixed flags (partial:false, timeout:true) is NOT clean" {
+	# The flags are independent: one being explicitly false must not vouch
+	# for the other. A naive `and` — or reading only the first flag — passes
+	# every other test in this file but fails this one.
+	printf '{"sha":"abc1234","findings":0,"partial":false,"timeout":true}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "partial:false alongside timeout:true was accepted as CLEAN"
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
 @test "#2544 an explicit partial:false is clean (no over-rejection)" {
 	# The other side of `!= false`: a completed run that spells the flag out
 	# must not be caught by the guard.
@@ -196,6 +233,24 @@ _log_partial_only() {
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]
 	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 a CORRUPT ledger fails closed AND explains why (not silently)" {
+	# The one documented exception to the silent contract. A malformed ledger
+	# is not a verdict — it means the input is broken. Returning the same mute
+	# rc 1 as a real finding left the operator unable to tell a refused push
+	# caused by CR findings from one caused by a torn log write.
+	printf '{"sha":"abc1234","findings":0}\n{"sha":"abc12\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "a corrupt ledger was accepted as CLEAN"
+		return 1
+	}
+	# `run` merges stdout+stderr into $output.
+	[[ $output == *"jq failed reading"* ]] || {
+		echo "corrupt ledger refused SILENTLY — no diagnostic. output: '$output'"
+		return 1
+	}
 }
 
 @test "no cr-local-review.jsonl at all → NOT clean (fail-closed)" {
