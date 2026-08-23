@@ -14,6 +14,13 @@ setup() {
 	# Isolated settings.json + isolated hook directory per test
 	export CLAUDE_SETTINGS_FILE="$TEST_TMP/settings.json"
 	echo '{}' >"$CLAUDE_SETTINGS_FILE"
+	# Isolated launcher dir for EVERY test, set once here rather than exported
+	# per-test: registration resolves onto a launcher when one exists, so without
+	# isolation a test would depend on the developer's real ~/.claude launcher
+	# dir. Hoisting it also avoids SC2030/SC2031 (each @test is a subshell, so a
+	# per-test export is local to it and shellcheck flags the pattern).
+	export PLUGIN_LAUNCHER_DIR="$TEST_TMP/launchers"
+	mkdir -p "$PLUGIN_LAUNCHER_DIR"
 }
 
 teardown() {
@@ -141,14 +148,42 @@ teardown() {
 	[[ $output == *"no-op"* ]]
 }
 
+@test "--unregister does NOT delete a same-named hook from an unrelated path (#2540)" {
+	# Basename-only matching over-matches: an operator's own hook that merely
+	# shares a filename lives in a path we do not own, and unregister must not
+	# reach into the global settings.json and delete it. Only paths under the
+	# launcher dir, or legacy `…/hooks/<name>.sh` pinned paths, are ours.
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	# Add a FOREIGN registration with the SAME basename, under a path we don't own.
+	local foreign="$TEST_TMP/my-own-tools/cr-auto-parse-poll.sh"
+	mkdir -p "$TEST_TMP/my-own-tools"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$foreign"
+	chmod +x "$foreign"
+	jq --arg f "$foreign" \
+		'.hooks.SessionStart[0].hooks += [{type:"command",command:$f}]' \
+		"$CLAUDE_SETTINGS_FILE" >"$TEST_TMP/s.json"
+	mv "$TEST_TMP/s.json" "$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# ours is gone…
+	run jq -r '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(test("/launchers/"))) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$output" = "0" ] || return 1
+	# …and the FOREIGN one survives untouched
+	run jq -r --arg f "$foreign" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $f)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$output" = "1" ] || {
+		echo "foreign same-named hook was wrongly deleted"
+		return 1
+	}
+}
+
 @test "--unregister removes a launcher-based entry even after the launcher is GC'd (#2540)" {
 	# Regression: _unregister_one matched the RESOLVED command path. Once a
 	# launcher is pruned, _resolve_hook_command returns a version-pinned fallback
 	# that no longer equals the registered launcher path, so unregister silently
 	# no-oped and left a stale registration active. Match by BASENAME instead.
 	# `|| return 1` on each assertion — bats has no set -e, middle checks must abort.
-	export PLUGIN_LAUNCHER_DIR="$TEST_TMP/launchers"
-	mkdir -p "$PLUGIN_LAUNCHER_DIR"
 	# a real, executable launcher so register resolves ONTO it
 	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
 	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"

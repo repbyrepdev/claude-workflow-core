@@ -276,8 +276,17 @@ _unregister_one() {
 	# drop every entry whose basename equals the target — legacy `/hooks/…` path
 	# OR version-agnostic launcher alike. `and` short-circuits so `_basename` is
 	# never applied to a non-string command.
-	local settings_json=$1 base=$2
-	printf '%s' "$settings_json" | jq --arg base "$base" "$(_progtoken_jq)"'
+	# SCOPE the basename match to paths we actually own (CR-in-CI #2540 phase2).
+	# Basename alone over-matches: an unrelated registration that merely shares a
+	# filename — e.g. an operator's own ~/my-hooks/review-log.sh — would be
+	# deleted from the global settings.json by an unregister aimed at ours. That
+	# is a destructive edit to a file we do not own, so the match additionally
+	# requires the program path to be under the launcher dir OR contain a
+	# `/hooks/` segment (the legacy pinned shape). Both are ours; anything else
+	# is left alone.
+	local settings_json=$1 base=$2 ldir=""
+	if declare -f pcr_launcher_dir >/dev/null 2>&1; then ldir=$(pcr_launcher_dir); fi
+	printf '%s' "$settings_json" | jq --arg base "$base" --arg ld "$ldir" "$(_progtoken_jq)"'
 		if (.hooks // {}) == {} then
 			.
 		else
@@ -292,6 +301,11 @@ _unregister_one() {
 					then .hooks |= map(
 						if (.command | type) == "string"
 						   and ((.command | progbasename) == $base)
+						   # …AND the path is one of ours: under the launcher dir,
+						   # or a legacy `…/hooks/<name>.sh` pinned path.
+						   and ((.command | progpath) as $p
+						        | (($ld != "") and ($p | startswith($ld + "/")))
+						          or ($p | test("/hooks/[^/]+$")))
 						then empty else . end
 					)
 					else . end
