@@ -40,6 +40,15 @@ _cover() { printf '{"source":"cr","covered_sha":"%s","covers_count":%s}\n' "$SHA
 _log_partial() {
 	printf '{"sha":"abc1234","findings":%s,"timeout":true,"partial":true}\n' "$1" >>"$CR_LOG"
 }
+# The guard ORs two INDEPENDENT flags. _log_partial sets both, so on its own it
+# would leave either branch free to be deleted with the suite still green. These
+# two write exactly one flag each so each disjunct is pinned by its own test.
+_log_timeout_only() {
+	printf '{"sha":"abc1234","findings":%s,"timeout":true}\n' "$1" >>"$CR_LOG"
+}
+_log_partial_only() {
+	printf '{"sha":"abc1234","findings":%s,"partial":true}\n' "$1" >>"$CR_LOG"
+}
 
 @test "findings=0 → clean (rc 0)" {
 	_log 0
@@ -48,7 +57,7 @@ _log_partial() {
 	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
-@test "#2552 partial/timeout run with findings=0 is NOT clean (laundering guard)" {
+@test "#2544 partial/timeout run with findings=0 is NOT clean (laundering guard)" {
 	# THE BUG: a review killed before emitting anything logs findings:0 —
 	# "0 findings were SEEN", not "0 findings EXIST". Reading only .findings
 	# made that CLEAN, so the pre-push gate accepted a SHA whose local review
@@ -59,12 +68,63 @@ _log_partial() {
 		echo "a timed-out review with 0 findings was accepted as CLEAN"
 		return 1
 	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
-@test "#2552 partial/timeout run is NOT clean even with findings>0 and full coverage" {
+@test "#2544 timeout:true ALONE (no partial flag) is NOT clean" {
+	# Pins the first disjunct: deleting the .timeout test from the guard must
+	# turn this red even though .partial is absent from the entry.
+	_log_timeout_only 0
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "an entry flagged timeout:true (partial absent) was accepted as CLEAN"
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 partial:true ALONE (no timeout flag) is NOT clean" {
+	# Pins the second disjunct, symmetrically.
+	_log_partial_only 0
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "an entry flagged partial:true (timeout absent) was accepted as CLEAN"
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 a non-boolean truthy partial flag is still NOT clean (fail-closed)" {
+	# A strict `== true` would let the string "true" through and silently
+	# re-open the laundering hole. We control the only writer today, but the
+	# gate must not depend on that staying true.
+	printf '{"sha":"abc1234","findings":0,"partial":"true"}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo 'an entry flagged partial:"true" (string) was accepted as CLEAN'
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 an explicit partial:false is clean (no over-rejection)" {
+	# The other side of `!= false`: a completed run that spells the flag out
+	# must not be caught by the guard.
+	printf '{"sha":"abc1234","findings":0,"partial":false,"timeout":false}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -eq 0 ] || {
+		echo "an explicit partial:false/timeout:false run was wrongly refused"
+		return 1
+	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
+}
+
+@test "#2544 partial/timeout run is NOT clean even with findings>0 and full coverage" {
 	# A partial run cannot certify the SHA on its own: the findings it salvaged
 	# are the ones it happened to see before dying, so covering them proves
 	# nothing about the rest. Only a COMPLETE run can be coverage-cleared.
+	# This is the test that pins the mapping as UNCONDITIONAL — it must ignore
+	# .findings entirely rather than fall through to the coverage path.
 	_log_partial 2
 	_cover 2
 	run cr_phase2_clean_for_sha "$SHA"
@@ -72,9 +132,10 @@ _log_partial() {
 		echo "a timed-out review was coverage-cleared as CLEAN"
 		return 1
 	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
-@test "#2552 a COMPLETE run after a partial one still clears (partial is not sticky)" {
+@test "#2544 a COMPLETE run after a partial one still clears (partial is not sticky)" {
 	# The guard keys on the LATEST entry only. A partial run followed by a real
 	# completed run must clear — otherwise one timeout would poison the SHA
 	# forever and strand the branch.
@@ -85,6 +146,7 @@ _log_partial() {
 		echo "a completed run following a partial one was wrongly refused"
 		return 1
 	}
+	[ -z "$output" ] # silent-contract: no stdout/stderr leak
 }
 
 @test "findings>0 fully covered (covers_count >= findings) → clean" {

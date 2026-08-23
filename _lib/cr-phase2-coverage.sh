@@ -37,7 +37,7 @@ cr_phase2_clean_for_sha() {
 	local short_sha
 	short_sha=$(printf '%s' "$sha" | cut -c1-7)
 	local latest_findings
-	# A PARTIAL / TIMED-OUT run is NOT evidence of a clean review (#2552).
+	# A PARTIAL / TIMED-OUT run is NOT evidence of a clean review (#2544).
 	#
 	# THE LAUNDERING THIS CLOSES: when the CR-CLI is killed before emitting a
 	# single finding, local-review.sh logs `{"findings":0,"timeout":true,
@@ -48,19 +48,39 @@ cr_phase2_clean_for_sha() {
 	# operator was told the signal was clean.
 	#
 	# Mapping partial/timeout to -1 routes it through the existing non-numeric
-	# rejection below — same fail-closed exit as "no run at all", which is
-	# precisely what a review that produced no verdict IS. Prove-yourself
-	# coverage can still clear a partial run whose findings were salvaged and
-	# addressed, because that path records findings>0 rather than 0.
+	# rejection below — the same fail-closed exit as "no run at all", which is
+	# precisely what a review that produced no verdict IS.
+	#
+	# This is UNCONDITIONAL: the mapping ignores `.findings` entirely, so
+	# prove-yourself coverage can NOT clear a partial run even when findings
+	# were salvaged and every one of them was addressed. That is deliberate —
+	# covering the 3 findings CR happened to emit before the kill says nothing
+	# about the rest of the diff it never read. The only thing that clears a
+	# partial run is a subsequent COMPLETE run for the same SHA (see the
+	# non-sticky note below).
+	#
+	# `!= false` rather than `== true` on purpose. local-review.sh writes real
+	# JSON booleans (`--argjson partial true`), so `== true` matches today — but
+	# a writer that ever emitted the string "true", or 1, would slip straight
+	# past a strict equality test and re-open the exact laundering hole this
+	# closes. Absent/null degrades to false via `//` and stays clean, and an
+	# explicit `false` stays clean; anything else is treated as "flagged".
+	# For a fail-closed gate, over-rejecting a malformed entry is the safe
+	# direction — it costs a re-run, not a false green.
 	latest_findings=$(jq -rs --arg s "$short_sha" \
 		'[.[] | select(.sha==$s)]
 		 | if length > 0 then
 		     (last as $l
-		      | if (($l.partial // false) == true) or (($l.timeout // false) == true)
+		      | if (($l.partial // false) != false) or (($l.timeout // false) != false)
 		        then -1
 		        else ($l.findings // -1) end)
 		   else -1 end' \
 		"$cr_log" 2>/dev/null || echo -1)
+	# NON-STICKY, deliberately: `last` keys on the newest entry for the SHA
+	# only. A partial run followed by a complete one reads CLEAN off the
+	# complete entry. Making the rejection sticky would strand a branch whose
+	# re-run genuinely succeeded, with no way to clear it short of a new
+	# commit — the gate would stop being a signal and start being a wall.
 	# Reject non-numeric / missing / negative BEFORE the coverage path. -1 means
 	# "no CR-CLI run for this SHA" — fail-closed, never whitewashed by old audit.
 	case "$latest_findings" in
