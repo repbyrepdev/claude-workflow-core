@@ -128,7 +128,7 @@
     "hooks/session-start-consumer-pin-staleness.sh": "b830ea6f0fc41bab56618876282278e408962695f09f919c1382cf814b2c483a",
     "hooks/session-start-report.sh": "94ba7c9aafc906fb91f70c0b55df3fd0f8cc4f2730ad830d30927c16b1005f7d",
     "hooks/session-start-stale-marker-sweep.sh": "3af1d756a5209b237a9eb4c97068aad24000cbc7687666af207b8fcaff54a220",
-    "hooks/session-start-stale-pin.sh": "2d60d8ccf107e51f8a93ed96c06c5aaea0fa01738e095971a941989cc1a4b4d8",
+    "hooks/session-start-stale-pin.sh": "2d4a0fdd27b8f5cbf4b77aa881351729d3471767e4e41479939b75a34da2e9be",
     "hooks/ship-cycle-director-gate.sh": "93c1fe6ec042ebdb67b9ce890deeb75978141cc0f5245d3b39e4a7f8b7da4411",
     "hooks/ship-cycle-guard.sh": "289547c345013177e63457dae77910810a4e7e006e809d3e7aef9b199d0213b2",
     "hooks/skill-bypass-guard.sh": "f470eb19af261d81cc5cf3fd27d3712d94bf03ca7396c598a987918e837941ec",

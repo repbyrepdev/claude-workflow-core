@@ -135,16 +135,36 @@ if [ "$higher" = "$CACHE_VER" ]; then
 	# actually executable — not blindly $CACHE_VER, which may be a half-populated
 	# dir that ships no (or a non-executable) install-hook-launchers.sh, giving a
 	# remediation that still 404s (CR-in-CI #2540 phase2).
+	# Reuse the shared resolver: pcr_newest_complete already does exactly this —
+	# newest semver dir whose probe path is EXECUTABLE (-x) — so hand-rolling the
+	# scan here is a second copy of a predicate that must not drift (CR-in-CI
+	# #2540). Best-effort source across BOTH supported layouts; the inline loop
+	# stays as a fallback so a SessionStart hook is never wedged by a missing lib.
 	ihl=""
-	for _v in $(printf '%s\n' "${entries[@]:-}" | while IFS= read -r _e; do
-		_n=${_e##*/}
-		[[ $_n =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$_n"
-	done | sort -V -r); do
-		if [ -x "$CACHE_DIR/$_v/scripts/install-hook-launchers.sh" ]; then
-			ihl="$CACHE_DIR/$_v/scripts/install-hook-launchers.sh"
+	_sp_lib=""
+	for _sp_c in "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/plugin-cache-resolve.sh" \
+		"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../_lib/plugin-cache-resolve.sh"; do
+		if [ -r "$_sp_c" ]; then
+			_sp_lib="$_sp_c"
 			break
 		fi
 	done
+	# shellcheck source=../_lib/plugin-cache-resolve.sh
+	if [ -n "$_sp_lib" ] && . "$_sp_lib" 2>/dev/null && declare -f pcr_newest_complete >/dev/null 2>&1; then
+		if _vdir=$(pcr_newest_complete "$CACHE_DIR" "scripts/install-hook-launchers.sh"); then
+			ihl="$_vdir/scripts/install-hook-launchers.sh"
+		fi
+	else
+		for _v in $(printf '%s\n' "${entries[@]:-}" | while IFS= read -r _e; do
+			_n=${_e##*/}
+			[[ $_n =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$_n"
+		done | sort -V -r); do
+			if [ -x "$CACHE_DIR/$_v/scripts/install-hook-launchers.sh" ]; then
+				ihl="$CACHE_DIR/$_v/scripts/install-hook-launchers.sh"
+				break
+			fi
+		done
+	fi
 	if [ -n "$ihl" ]; then
 		cat >&2 <<EOF
 session-start-stale-pin: ⚠ plugin-cache drift detected
