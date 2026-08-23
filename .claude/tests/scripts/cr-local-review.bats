@@ -60,6 +60,74 @@ _stub_coderabbit() {
 	chmod +x "$TEST_TMP/bin/coderabbit"
 }
 
+# Write a `coderabbit` stub that prints EVERY arg as its own JSON line, then
+# exits with the LAST arg. Needed for the streamed-findings-then-timeout case:
+# CR emits findings incrementally and the timeout arrives after them.
+_stub_coderabbit_lines() {
+	local rc="${*: -1}" line
+	{
+		echo '#!/usr/bin/env bash'
+		for line in "${@:1:$#-1}"; do
+			printf 'printf "%%s\\n" %q\n' "$line"
+		done
+		printf 'exit %s\n' "$rc"
+	} >"$TEST_TMP/bin/coderabbit"
+	chmod +x "$TEST_TMP/bin/coderabbit"
+}
+
+@test "local-review: a review that streams findings THEN times out SALVAGES them (#2540)" {
+	# The paid-for-then-discarded bug: CR streams each finding as it goes, so a
+	# timeout on a large diff means findings ALREADY arrived — but the exit-4 path
+	# persisted nothing and logged findings:0, throwing away a review that consumed
+	# one of the prepaid 10/hr CR-CLI slots. It must still exit 4 (defer to the
+	# authoritative CR-in-CI) while PERSISTING what we bought.
+	_stub_coderabbit_lines \
+		'{"type":"finding","severity":"major","fileName":"a.sh"}' \
+		'{"type":"finding","severity":"minor","fileName":"b.sh"}' \
+		'{"type":"error","errorType":"timeout","recoverable":false}' \
+		0
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	# still defers to CR-in-CI…
+	[ "$status" -eq 4 ] || return 1
+	[[ $output == *"timed out"* ]] || return 1
+	# …but announces + persists the salvage rather than discarding it
+	[[ $output == *"salvaged 2 finding"* ]] || return 1
+	local sha detail
+	sha=$(git rev-parse --short HEAD)
+	detail="$TEST_TMP/.claude/logs/cr-local-review-${sha}-detail.jsonl"
+	[ -f "$detail" ] || {
+		echo "detail file NOT persisted: $detail"
+		return 1
+	}
+	grep -q '"fileName":"a.sh"' "$detail" || return 1
+	grep -q '"fileName":"b.sh"' "$detail" || return 1
+	# and the audit log records the REAL partial count, not a lie of 0
+	# Target the SPECIFIC ledger, not a glob over every .jsonl in logs/ — a glob
+	# can match an unrelated log and make this assertion pass on the wrong file
+	# (CR-in-CI #2540 phase2).
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	# assert the READ succeeded too — a missing ledger would give status 1 with
+	# empty output, and the content checks below would then fail for the wrong
+	# reason (CR-in-CI #2540).
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'"findings":2'* ]] || return 1
+	[[ $output == *'"partial":true'* ]] || return 1
+}
+
+@test "local-review: a timeout with NO findings streamed persists nothing (#2540)" {
+	# Guard the other direction: salvage must not invent a detail file when the
+	# review timed out before emitting anything.
+	_stub_coderabbit '{"type":"error","errorType":"timeout","recoverable":false}' 0
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 4 ] || return 1
+	[[ $output != *"salvaged"* ]] || return 1
+	local sha
+	sha=$(git rev-parse --short HEAD)
+	[ ! -f "$TEST_TMP/.claude/logs/cr-local-review-${sha}-detail.jsonl" ] || return 1
+}
+
 @test "local-review: CR server-side timeout event → exit 4 (#234)" {
 	# CR_LOCAL_REVIEW_TIMEOUT=0 disables the client-side wrapper so this isolates
 	# the EVENT-detection path: CR emits its own timeout event then exits 0, and

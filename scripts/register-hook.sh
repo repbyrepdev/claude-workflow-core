@@ -130,7 +130,49 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "register-hook.sh: not in a git repo" >&2
 	exit 2
 }
+# PLUGIN_ROOT is the dir THIS SCRIPT lives in, derived from BASH_SOURCE — NOT
+# REPO_ROOT, which resolves from the CALLER's cwd. --unregister performs a
+# destructive edit on the global settings.json and treats `<root>/hooks/<name>.sh`
+# as plugin-owned; keying that on REPO_ROOT meant running the script from a
+# CONSUMER repo made that consumer's own hooks/ dir look like ours, so an
+# unregister could delete the consumer's same-basename registration
+# (CR-in-CI #2540: "Do not treat the caller repository as plugin-owned").
+# The script's own location is the only trustworthy answer to "which checkout am
+# I part of". Falls back to REPO_ROOT only if BASH_SOURCE cannot be resolved.
+PLUGIN_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd) || PLUGIN_ROOT="$REPO_ROOT"
 SETTINGS="${CLAUDE_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+
+# (#2536) Version-agnostic launcher resolution. Best-effort source: if the lib
+# is unavailable, _resolve_hook_command below falls back to its prior behavior —
+# version-pinned but still functional. A missing lib must never stop a hook from
+# registering at all.
+# Resolve relative to THIS script's real location (BASH_SOURCE), not $0 — a
+# `bash register-hook.sh` invocation or a symlink makes $0 unreliable.
+_RH_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/plugin-cache-resolve.sh"
+if [ -r "$_RH_LIB" ]; then
+	# shellcheck source=../_lib/plugin-cache-resolve.sh
+	. "$_RH_LIB" ||
+		echo "register-hook.sh: WARN: plugin-cache-resolve.sh failed to source — new registrations will be version-pinned" >&2
+fi
+
+# The program-token/basename jq SSOT (CR-in-CI #2540). --check's settings_refs
+# and --unregister both key on a hook's basename regardless of whether the ref is
+# a legacy `…/hooks/foo.sh` path or a version-agnostic `<launcher-dir>/foo.sh`
+# one; both reuse this so the rule can't drift. Prefer the lib's copy; fall back
+# to an inline duplicate only when the lib failed to source.
+_progtoken_jq() {
+	if declare -f pcr_progtoken_jq >/dev/null 2>&1; then
+		pcr_progtoken_jq
+	else
+		cat <<'JQ'
+  def progpath: split(" ")[0];
+  def _tail: (split("/hooks/") | (if length > 1 then (.[1:] | join("/hooks/")) else .[0] end));
+  def progtoken: _tail | split(" ")[0];
+  def progargs:  _tail | (split(" ")[1:] | join(" "));
+  def progbasename: progtoken | (split("/") | .[-1]);
+JQ
+	fi
+}
 
 # --- Frontmatter parsing ---------------------------------------------
 
@@ -172,11 +214,32 @@ _parse_frontmatter() {
 }
 
 _resolve_hook_command() {
-	# Convert repo-relative path to absolute path the plugin cache
-	# would use. Uses $PLUGIN_CACHE_DIR env if set (test mode); otherwise
-	# falls back to $REPO_ROOT/$path (works during dev / when consumer
-	# repo IS the plugin).
+	# The command string baked into settings.json for this hook.
+	#
+	# (#2536) PREFER the version-agnostic launcher. The two fallbacks below both
+	# bake an ABSOLUTE, version-pinned path, which is what left 51 registrations
+	# pointing at a pruned cache version on the operator's machine — 404'ing
+	# after GC, and silently running a stale build before it. A launcher
+	# re-resolves the newest cache version containing this hook at RUN TIME, so
+	# a cache bump plus GC has nothing to dangle.
+	#
+	# Falls through to the prior behavior when no launcher exists (fresh install
+	# before install-hook-launchers.sh has run, or the lib failed to source):
+	# version-pinned is worse, but it is better than refusing to register.
 	local path=$1
+	# Separate `local`: a same-statement `base=${path##*/}` reads the OUTER
+	# `path`, not the one being assigned beside it (SC2318).
+	local base=${path##*/}
+	local launcher
+	if declare -f pcr_launcher_path >/dev/null 2>&1; then
+		launcher=$(pcr_launcher_path "$base")
+		if [ -x "$launcher" ]; then
+			printf '%s' "$launcher"
+			return 0
+		fi
+	fi
+	# Uses $PLUGIN_CACHE_DIR env if set (test mode); otherwise falls back to
+	# $REPO_ROOT/$path (works during dev / when the consumer repo IS the plugin).
 	if [ -n "${PLUGIN_CACHE_DIR:-}" ]; then
 		echo "$PLUGIN_CACHE_DIR/$path"
 	else
@@ -215,15 +278,65 @@ _register_one() {
 }
 
 _unregister_one() {
-	local settings_json=$1 command=$2
-	printf '%s' "$settings_json" | jq --arg cmd "$command" '
+	# Match by hook BASENAME (program token), NOT a resolved command path.
+	# _resolve_hook_command returns a version-pinned FALLBACK once the launcher
+	# has been GC'd, so a path-equality match would silently no-op and leave the
+	# launcher registration active (CR-in-CI #2540). Reuse --check's rule: take
+	# the program token (a registration may carry args), then its basename, and
+	# drop every entry whose basename equals the target — legacy `/hooks/…` path
+	# OR version-agnostic launcher alike. `and` short-circuits so `_basename` is
+	# never applied to a non-string command.
+	# SCOPE the basename match to paths we actually own (CR-in-CI #2540 phase2).
+	# Basename alone over-matches: an unrelated registration that merely shares a
+	# filename — e.g. an operator's own ~/my-hooks/review-log.sh — would be
+	# deleted from the global settings.json by an unregister aimed at ours. That
+	# is a destructive edit to a file we do not own, so the match additionally
+	# requires the program path to be under the launcher dir OR contain a
+	# `/hooks/` segment (the legacy pinned shape). Both are ours; anything else
+	# is left alone.
+	local settings_json=$1 base=$2 ldir=""
+	if declare -f pcr_launcher_dir >/dev/null 2>&1; then ldir=$(pcr_launcher_dir); fi
+	# The PLUGIN's own hooks/ dir is plugin-owned too: _resolve_hook_command falls
+	# back to "<plugin>/hooks/<name>.sh" in dev / when the consumer IS the plugin,
+	# so registrations of that shape are ours. Keyed on PLUGIN_ROOT (BASH_SOURCE-
+	# derived), NEVER on REPO_ROOT — see the PLUGIN_ROOT note above.
+	printf '%s' "$settings_json" | jq --arg base "$base" --arg ld "$ldir" --arg rr "$PLUGIN_ROOT" "$(_progtoken_jq)"'
 		if (.hooks // {}) == {} then
 			.
 		else
 			.hooks |= with_entries(
 				.value |= map(
-					.hooks |= map(select(.command != $cmd))
-				) | .value |= map(select(.hooks | length > 0))
+					# Shape-guard the nested iteration: an entry whose `hooks` is
+					# missing/null or not an array must pass through UNCHANGED —
+					# `null | map(...)` is a jq error that aborts the WHOLE rewrite
+					# (and unregister then silently no-ops). Mirrors the defensive
+					# object/has("hooks") check the migrate path uses (CR-in-CI #2540).
+					if (type == "object" and (.hooks | type) == "array")
+					then .hooks |= map(
+						if (.command | type) == "string"
+						   and ((.command | progbasename) == $base)
+						   # …AND the path is PLUGIN-OWNED. Two shapes qualify:
+						   #   1. under the version-agnostic launcher dir, or
+						   #   2. a legacy VERSION-PINNED plugin-cache path, i.e.
+						   #      …/claude-workflow-core/claude-workflow-core/<semver>/hooks/<name>.sh
+						   # A bare `/hooks/` test is NOT sufficient (CR-in-CI #2540): it
+						   # matches any third-party layout that happens to use a hooks/
+						   # dir — an operator'"'"'s own ~/their-tool/hooks/foo.sh — and this
+						   # is a DESTRUCTIVE edit to their global settings.json. Anchor
+						   # on the doubled plugin-cache segment + semver, the same shape
+						   # install-hook-launchers.sh migrates.
+						   #   3. this repo'"'"'s own hooks/ dir (the dev fallback).
+						   and ((.command | progpath) as $p
+						        | (($ld != "") and ($p | startswith($ld + "/")))
+						          or ($p | test("/claude-workflow-core/claude-workflow-core/[0-9]+\\.[0-9]+\\.[0-9]+/hooks/[^/]+$"))
+						          or (($rr != "") and ($p | startswith($rr + "/hooks/"))))
+						then empty else . end
+					)
+					else . end
+				)
+				# Drop only entries we actually emptied; anything without a hooks
+				# ARRAY is left alone rather than being pruned as "length 0".
+				| .value |= map(select((.hooks | type) != "array" or (.hooks | length > 0)))
 			)
 		end
 	'
@@ -311,11 +424,27 @@ fi
 # --check mode: bidirectional drift between settings.json refs ↔ hook files
 if [ "$CHECK" = "1" ]; then
 	settings=$(_load_settings)
-	settings_refs=$(printf '%s' "$settings" | jq -r '
+	# (#2536) A registration is now EITHER a legacy `…/hooks/<name>.sh` path or a
+	# version-agnostic launcher `<launcher-dir>/<name>.sh`. The old pattern
+	# required a literal `/hooks/` segment immediately before the filename, which
+	# a launcher path does not have — so after the launcher migration --check saw
+	# ZERO registrations and reported every auto-register hook as unregistered.
+	# Accept both shapes and key on the basename, which is identical either way.
+	_check_ld=""
+	if declare -f pcr_launcher_dir >/dev/null 2>&1; then _check_ld=$(pcr_launcher_dir); fi
+	settings_refs=$(printf '%s' "$settings" | jq -r --arg ld "$_check_ld" "$(_progtoken_jq)"'
 		[.hooks // {} | to_entries[] |
-		  .value[] | (.hooks // [])[] |
-		  select(.command | test("/hooks/[^/]+\\.sh$"))
-		  | .command | capture("/hooks/(?<f>[^/]+\\.sh)$").f
+		  .value[] | (.hooks // [])[] | .command |
+		  select(type == "string") |
+		  # Keep only hook refs — a legacy `…/hooks/foo.sh` path OR a
+		  # version-agnostic `<launcher-dir>/foo.sh` one — testing the PROGRAM
+		  # token (a registration may carry arguments like "… --strict", and the
+		  # trailing-$ anchor would otherwise never match, so --check saw zero
+		  # registrations for every arg-bearing hook and cried drift).
+		  select(progpath | (test("/hooks/[^/]+\\.sh$") or (($ld != "") and startswith($ld + "/"))))
+		  # Basename via the shared SSOT (progbasename) — identical for both the
+		  # /hooks/ and launcher-dir shapes, and the SAME rule --unregister uses.
+		  | progbasename
 		] | unique | .[]
 	')
 	# Hooks on disk with frontmatter — separately track sentinel hooks
@@ -363,9 +492,11 @@ fi
 
 # --unregister mode: drop a specific hook from settings
 if [ -n "$UNREGISTER" ]; then
-	cmd_path=$(_resolve_hook_command "$UNREGISTER")
+	# Pass the BASENAME, not a resolved path — _unregister_one matches on it, so
+	# a GC'd launcher no longer makes unregister a silent no-op (CR-in-CI #2540).
+	unreg_base=${UNREGISTER##*/}
 	settings=$(_load_settings)
-	new=$(_unregister_one "$settings" "$cmd_path")
+	new=$(_unregister_one "$settings" "$unreg_base")
 	if [ "$settings" = "$new" ]; then
 		echo "  ✓ $UNREGISTER not referenced in $SETTINGS (no-op)"
 	else

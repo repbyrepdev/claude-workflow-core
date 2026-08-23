@@ -54,13 +54,41 @@ EOF
 
 @test "drift detected: settings v0.8.5 vs cache v0.9.7 → warn emitted" {
 	_write_settings_with_version "0.8.5"
-	mkdir -p "$CACHE_DIR/0.8.5" "$CACHE_DIR/0.9.7"
+	mkdir -p "$CACHE_DIR/0.8.5" "$CACHE_DIR/0.9.7/scripts"
+	# Provide an EXECUTABLE remediation script in the newest cache dir so the
+	# primary (launcher-based) remediation branch fires (CR-in-CI #2540 phase2:
+	# the hook now picks the newest version whose script is runnable, not a blind
+	# CACHE_VER that may ship no script).
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$CACHE_DIR/0.9.7/scripts/install-hook-launchers.sh"
+	chmod +x "$CACHE_DIR/0.9.7/scripts/install-hook-launchers.sh"
 	run bash "$SCRIPT" 2>&1
-	[ "$status" -eq 0 ]
-	[[ $output == *"plugin-cache drift detected"* ]]
-	[[ $output == *"v0.8.5"* ]]
-	[[ $output == *"v0.9.7"* ]]
-	[[ $output == *"migrate-settings.sh"* ]]
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"plugin-cache drift detected"* ]] || return 1
+	[[ $output == *"v0.8.5"* ]] || return 1
+	[[ $output == *"v0.9.7"* ]] || return 1
+	# remediation names the launcher tool by ABSOLUTE path + warns off migrate-settings.sh
+	[[ $output == *"0.9.7/scripts/install-hook-launchers.sh"* ]] || return 1
+	[[ $output == *"migrate-settings.sh"* ]] || return 1
+}
+
+@test "drift but NO executable remediation script → reinstall advice, no 404 command (#2540)" {
+	# When no cache version ships a runnable install-hook-launchers.sh, the hook
+	# must keep the drift warning but NOT print a remediation command that would
+	# 404 — it points at the plugin manager instead.
+	_write_settings_with_version "0.8.5"
+	mkdir -p "$CACHE_DIR/0.8.5" "$CACHE_DIR/0.9.7" # no scripts/ anywhere
+	run bash "$SCRIPT" 2>&1
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"plugin-cache drift detected"* ]] || return 1
+	[[ $output == *"No cache version"* ]] || return 1
+	[[ $output == *"plugin reload claude-workflow-core"* ]] || return 1
+	# Reject ANY absolute launcher-script path — not just one with specific flags.
+	# None exists in any cache version here, so any `/…/scripts/install-hook-launchers.sh`
+	# in the output is a 404 the operator would run (CR-in-CI #2540). Matching the
+	# path (not the flag string) keeps this from passing if the remediation flags
+	# change but the dangling path remains. (The else-branch names the script in
+	# prose as ` scripts/…` with no leading slash, so this correctly does NOT trip.)
+	[[ $output != *"/scripts/install-hook-launchers.sh"* ]] || return 1
 }
 
 @test "up-to-date: settings v0.9.7 == cache v0.9.7 → silent" {

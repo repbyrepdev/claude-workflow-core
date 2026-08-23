@@ -267,61 +267,20 @@ if [ "$_rate_limit_handled" -eq 1 ]; then
 	exit 3
 fi
 
-# v0.32.x (#234): timeout detection → exit 4 (SSOT contract, sibling to the
-# rate_limit exit-3 above). Either the client-side `timeout` killed CR
-# (rc=124 SIGTERM / 137 SIGKILL) OR CR emitted its own server-side
-# `{"type":"error","errorType":"timeout"}` event (recoverable:false). Both mean
-# the local review could not complete — a transient CR-backend limit on a large
-# diff, NOT a code defect. ship-pr-cycle's _phase2_run_cr_cli treats exit 4 as
-# "defer to the authoritative server-side CR-in-CI" (which re-reviews on push),
-# distinct from a hard failure (auth/malformed) or a findings count. Log the
-# attempt first (audit + round visibility), then exit 4.
-_timeout_detected=0
-if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
-	_timeout_detected=1
-elif [ -f "$TEE_OUT" ] && grep -qE '"errorType"[[:space:]]*:[[:space:]]*"timeout"' "$TEE_OUT"; then
-	_timeout_detected=1
-fi
-if [ "$_timeout_detected" -eq 1 ]; then
-	echo "" >&2
-	echo "local-review: CR review timed out (rc=$rc) — local review incomplete; deferring to authoritative server-side CR-in-CI (exit 4)" >&2
-	scm_log cr-local-review "$(jq -nc --arg base "$BASE" --argjson force "$FORCE" \
-		--argjson rc "$rc" --argjson findings 0 --argjson timeout true \
-		'{base: $base, force: $force, rc: $rc, findings: $findings, timeout: $timeout}')" || true
-	exit 4
-fi
-
-# v0.34.36 (#2249): phase2 hash-filter. Count CR-CLI findings EXCLUDING those on
-# canonical-mirror files (byte-identical to the pinned canonical → already
-# reviewed upstream + hash-drift-enforced → the verbatim treadmill). This is the
-# PRECISE local exclusion the coarse .coderabbit globs cannot express for MIXED
-# dirs like .claude/hooks/ (a glob can't tell a mirror from a consumer-authored
-# file). Fail-safe: predicate unavailable → nothing excluded → full count. Also
-# avoids the CR-CLI complete-event over-count by tallying finding LINES.
-_CRE_LIB="$(dirname "${BASH_SOURCE[0]}")/../../_lib/canonical-review-exclude.sh"
-if [ -r "$_CRE_LIB" ]; then
-	# shellcheck source=../../_lib/canonical-review-exclude.sh
-	. "$_CRE_LIB" || true
-fi
-if command -v canonical_review_filtered_finding_count >/dev/null 2>&1; then
-	findings=$(canonical_review_filtered_finding_count "$TEE_OUT")
-else
-	# Fallback (lib unavailable): prior behavior — complete event, then grep.
-	findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
-	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
-fi
-[[ $findings =~ ^[0-9]+$ ]] || findings=0
-
-# #2484: persist the review detail BEFORE the tee tmpfile is trap-removed.
-# The orchestrator's bg wrapper truncates stdout to a tail and the tmpfile
-# evaporates with the process, so findings>0 repeatedly became "count with
-# no detail" (6 occurrences on 2026-07-07/08) — forcing budget-burning
-# re-runs or blind converge-rejections. Keep the full JSONL per sha; loud
-# WARN (not fatal) if the copy fails.
-if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
+# #2484 / CR-in-CI #2540: persist the review detail BEFORE the tee tmpfile is
+# trap-removed. Extracted to a FUNCTION so the timeout path can call it too —
+# previously only the success path persisted, so a review that streamed findings
+# and THEN timed out threw all of them away (and logged findings:0), while still
+# consuming one of the prepaid 10/hr CR-CLI slots. We paid for those findings;
+# they must survive. $1 = finding count (no-op when 0).
+_persist_review_detail() {
+	local _pd_count=$1
+	[ "$_pd_count" -gt 0 ] || return 0
+	[ -f "$TEE_OUT" ] || return 0
 	# Bare --short (NOT --short=7): scm_log keys its jsonl line on bare
 	# --short (auto-abbrev), and consumers reconstruct this path from that
 	# sha — the two derivations must stay byte-identical at any repo size.
+	local _detail_sha _detail_dir _detail_file _detail_err _dtmp_file _dtmp_recorded
 	_detail_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 	_detail_dir="$REPO_ROOT/.claude/logs"
 	_detail_file="$_detail_dir/cr-local-review-${_detail_sha}-detail.jsonl"
@@ -358,7 +317,81 @@ if [ "$findings" -gt 0 ] && [ -f "$TEE_OUT" ]; then
 		fi
 		echo "local-review: WARN — could not persist findings detail to $_detail_file (${_detail_err:-no stderr}); the tee tmpfile dies with this process (#2484)" >&2
 	fi
+}
+
+# v0.32.x (#234): timeout detection → exit 4 (SSOT contract, sibling to the
+# rate_limit exit-3 above). Either the client-side `timeout` killed CR
+# (rc=124 SIGTERM / 137 SIGKILL) OR CR emitted its own server-side
+# `{"type":"error","errorType":"timeout"}` event (recoverable:false). Both mean
+# the local review could not complete — a transient CR-backend limit on a large
+# diff, NOT a code defect. ship-pr-cycle's _phase2_run_cr_cli treats exit 4 as
+# "defer to the authoritative server-side CR-in-CI" (which re-reviews on push),
+# distinct from a hard failure (auth/malformed) or a findings count. Log the
+# attempt first (audit + round visibility), then exit 4.
+_timeout_detected=0
+if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
+	_timeout_detected=1
+elif [ -f "$TEE_OUT" ] && grep -qE '"errorType"[[:space:]]*:[[:space:]]*"timeout"' "$TEE_OUT"; then
+	_timeout_detected=1
 fi
+if [ "$_timeout_detected" -eq 1 ]; then
+	echo "" >&2
+	echo "local-review: CR review timed out (rc=$rc) — local review incomplete; deferring to authoritative server-side CR-in-CI (exit 4)" >&2
+	# SALVAGE the partial findings (CR-in-CI #2540). A timeout means the review
+	# never emitted its `complete` event — NOT that it found nothing. CR streams
+	# each finding as it goes, so by the time it times out on a large diff the
+	# findings are already in $TEE_OUT. The old path persisted nothing and logged
+	# `findings: 0`, so a review the operator ALREADY PAID FOR (it consumes one of
+	# the prepaid 10/hr CR-CLI slots) was thrown away and re-derived server-side.
+	# Persist them and log the real partial count; still exit 4 so the orchestrator
+	# defers to the authoritative CR-in-CI, but the operator can now act on what we
+	# bought. Count is the raw finding-line tally (the canonical-mirror filter is
+	# sourced further down and may not be loaded yet) — flagged `partial: true` so
+	# no consumer mistakes it for a complete, filtered count.
+	_partial_findings=0
+	if [ -f "$TEE_OUT" ]; then
+		_partial_findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+		[[ $_partial_findings =~ ^[0-9]+$ ]] || _partial_findings=0
+	fi
+	if [ "$_partial_findings" -gt 0 ]; then
+		echo "local-review: salvaged $_partial_findings finding(s) streamed before the timeout — persisting so the paid-for review is not discarded" >&2
+		_persist_review_detail "$_partial_findings"
+	fi
+	scm_log cr-local-review "$(jq -nc --arg base "$BASE" --argjson force "$FORCE" \
+		--argjson rc "$rc" --argjson findings "$_partial_findings" --argjson timeout true \
+		--argjson partial true \
+		'{base: $base, force: $force, rc: $rc, findings: $findings, timeout: $timeout, partial: $partial}')" || true
+	exit 4
+fi
+
+# v0.34.36 (#2249): phase2 hash-filter. Count CR-CLI findings EXCLUDING those on
+# canonical-mirror files (byte-identical to the pinned canonical → already
+# reviewed upstream + hash-drift-enforced → the verbatim treadmill). This is the
+# PRECISE local exclusion the coarse .coderabbit globs cannot express for MIXED
+# dirs like .claude/hooks/ (a glob can't tell a mirror from a consumer-authored
+# file). Fail-safe: predicate unavailable → nothing excluded → full count. Also
+# avoids the CR-CLI complete-event over-count by tallying finding LINES.
+_CRE_LIB="$(dirname "${BASH_SOURCE[0]}")/../../_lib/canonical-review-exclude.sh"
+if [ -r "$_CRE_LIB" ]; then
+	# shellcheck source=../../_lib/canonical-review-exclude.sh
+	. "$_CRE_LIB" || true
+fi
+if command -v canonical_review_filtered_finding_count >/dev/null 2>&1; then
+	findings=$(canonical_review_filtered_finding_count "$TEE_OUT")
+else
+	# Fallback (lib unavailable): prior behavior — complete event, then grep.
+	findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
+	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+fi
+[[ $findings =~ ^[0-9]+$ ]] || findings=0
+
+# #2484: persist the review detail BEFORE the tee tmpfile is trap-removed.
+# The orchestrator's bg wrapper truncates stdout to a tail and the tmpfile
+# evaporates with the process, so findings>0 repeatedly became "count with
+# no detail" (6 occurrences on 2026-07-07/08) — forcing budget-burning
+# re-runs or blind converge-rejections. Shared with the timeout path via
+# _persist_review_detail so a partial (paid-for) review is never discarded.
+_persist_review_detail "$findings"
 
 # scm_log injects `sha` (bare --short HEAD, auto-abbrev) into the log line — that's the
 # key the pre-push gate matches against. This fields object provides the

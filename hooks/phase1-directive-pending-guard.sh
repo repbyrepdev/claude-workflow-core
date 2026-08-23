@@ -27,9 +27,50 @@ set -euo pipefail
 # Bypass: PHASE1_DIRECTIVE_GUARD_SKIP=1 inline sentinel (audit-logged).
 
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-LIB_DENY="$HOOK_DIR/../_lib/hook-deny.sh"
-LIB_SENTINEL="$HOOK_DIR/../_lib/hook-inline-sentinel.sh"
-if [ -f "$LIB_DENY" ]; then
+
+# (#2531) LAYOUT-AGNOSTIC _lib resolution.
+#
+# WHAT THIS IS *NOT*: the original #2531 theory was that `$HOOK_DIR/../_lib`
+# fails to resolve, silently stranding the read-only allowlist and the
+# advertised PHASE1_DIRECTIVE_GUARD_SKIP bypass. That theory was DOGFOOD-
+# DISPROVEN on 2026-08-22: `hooks/../_lib/cmd-anchor.sh` and
+# `.claude/hooks/../_lib/cmd-anchor.sh` both exist, sourcing either defines
+# `match_cmd_at_anchor`, rc=0, and every cached plugin version ships _lib/.
+# The REAL cause of the observed deadlock was plugin-cache VERSION SKEW —
+# ~/.claude/settings.json had all 58 hooks pinned to a cache version that
+# PREDATED the escapes, so the harness executed an old copy of this file. That
+# root cause is fixed by the version-agnostic registration work (#2536), not
+# here.
+#
+# WHAT THIS *IS*: two real robustness gaps that survived that diagnosis.
+#   1. Consumer layout. `$HOOK_DIR/../_lib` is correct in the plugin, where
+#      `.claude/hooks` + `.claude/_lib` are symlinks to the repo-root dirs. A
+#      real consumer mirrors hooks into `.claude/hooks/` with `_lib` at
+#      `.claude/_lib/` — the same relative hop — but a consumer that installs
+#      hooks anywhere else has no second candidate. Try both explicitly.
+#   2. SILENT degradation. When cmd-anchor did not load, the entire read-only
+#      allowlist was skipped by a bare `declare -f` test with NO signal, so the
+#      guard silently became far stricter than documented and the operator saw
+#      an inexplicable deny. Name the failure instead.
+# NB: candidates are HOOK_DIR-relative ONLY. REPO_ROOT is deliberately not
+# consulted — it is not resolved until further down this file (the git
+# rev-parse block), so a `$REPO_ROOT/.claude/_lib` candidate here would be a
+# dead probe against `/` on every invocation.
+#   ../_lib     → plugin repo (hooks/../_lib) AND the standard consumer mirror
+#                 (.claude/hooks/../_lib = .claude/_lib)
+#   ../../_lib  → a consumer that installs hooks one level deeper
+_resolve_guard_lib() {
+	local rel=$1 c
+	for c in "$HOOK_DIR/../_lib/$rel" "$HOOK_DIR/../../_lib/$rel"; do
+		[ -f "$c" ] && {
+			printf '%s' "$c"
+			return 0
+		}
+	done
+	return 1
+}
+
+if LIB_DENY=$(_resolve_guard_lib hook-deny.sh); then
 	# shellcheck source=../_lib/hook-deny.sh
 	source "$LIB_DENY"
 else
@@ -38,17 +79,21 @@ else
 		exit 2
 	}
 fi
-if [ -f "$LIB_SENTINEL" ]; then
+if LIB_SENTINEL=$(_resolve_guard_lib hook-inline-sentinel.sh); then
 	# shellcheck source=../_lib/hook-inline-sentinel.sh
 	source "$LIB_SENTINEL"
 else
+	# The advertised bypass is UNAVAILABLE, not merely inert — say so, because
+	# the deny message below still advertises it.
+	echo "phase1-directive-pending-guard: WARN: _lib/hook-inline-sentinel.sh not found (searched $HOOK_DIR/../_lib, $HOOK_DIR/../../_lib) — the PHASE1_DIRECTIVE_GUARD_SKIP bypass is UNAVAILABLE in this invocation" >&2
 	hook_inline_sentinel_check() { return 1; }
 fi
 # v0.30.E (#191): cmd-anchor for the read-only allowlist below.
-LIB_ANCHOR="$HOOK_DIR/../_lib/cmd-anchor.sh"
-if [ -f "$LIB_ANCHOR" ]; then
+if LIB_ANCHOR=$(_resolve_guard_lib cmd-anchor.sh); then
 	# shellcheck source=../_lib/cmd-anchor.sh
 	source "$LIB_ANCHOR"
+else
+	echo "phase1-directive-pending-guard: WARN: _lib/cmd-anchor.sh not found (searched $HOOK_DIR/../_lib, $HOOK_DIR/../../_lib) — the read-only inspection allowlist is DISABLED; reads will be denied while a directive is pending" >&2
 fi
 
 # Outside-git-repo: allow (hook can fire anywhere). Capture stderr to
@@ -228,11 +273,9 @@ Agent | Skill)
 	;;
 esac
 
-# Allow review-log.sh explicitly (the way to clear the directive after
-# agents return). Mirrors phase1-log-pending-gate's escape hatch.
-if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)\.?/?\.claude/hooks/review-log\.sh'; then
-	exit 0
-fi
+# NOTE: the review-log.sh escape used to live HERE, above the shared screens,
+# which is exactly why it never got them — see the hardened version further down,
+# placed with its siblings after _cmd_launders_mutation is defined.
 
 # (#2531) Shared launder-screen for the two lib-independent single-verb escapes
 # below AND the general read-only block (which DELEGATES to it — #2531 CR r1).
@@ -245,11 +288,38 @@ fi
 # because grep is line-oriented — a second-line command (`… next`⏎`git commit`)
 # is otherwise invisible to a per-line reject. Extracted to ONE place so the
 # escapes + general block can't drift.
+# (#2535 phase2) Delegates to the SHARED definition in
+# _lib/cmd-launder-screen.sh so this guard and phase1-log-pending-gate.sh can
+# never disagree about whether a given command launders a mutation — they both
+# admit review-log.sh, and an inline copy in the sibling had already drifted
+# (missing the discard-redirect stripping). Falls back to the inline body when
+# the lib is unreachable, keeping the guard functional in a lib-less layout.
+# Resolve via _resolve_guard_lib — the SAME layout-agnostic resolver used for
+# hook-deny.sh / hook-inline-sentinel.sh / cmd-anchor.sh above — not a hardcoded
+# single-layout `../_lib/` hop that silently reverts to the inline fallback in
+# any other layout (CR-in-CI #2540).
+if LIB_LAUNDER=$(_resolve_guard_lib cmd-launder-screen.sh); then
+	# shellcheck source=../_lib/cmd-launder-screen.sh
+	. "$LIB_LAUNDER" 2>/dev/null || true
+fi
 _cmd_launders_mutation() {
-	printf '%s' "$1" |
-		sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
-		tr '\n' ';' |
-		grep -qE '[;&|`]|\$\(|<\(|[0-9]*>'
+	if declare -f cmd_launders_mutation >/dev/null 2>&1; then
+		cmd_launders_mutation "$1"
+		return $?
+	fi
+	# Fallback body kept BYTE-FOR-BYTE identical to cmd_launders_mutation in
+	# _lib/cmd-launder-screen.sh (incl. the discard-redirect stripping the sibling
+	# gate's copy once lacked) so an unreachable-lib layout can't reintroduce the
+	# drift the shared lib exists to end (CR-in-CI #2540). Same SIGPIPE-safe shape:
+	# capture the transform, match in-shell, fail CLOSED on transform failure.
+	local _screened
+	_screened=$(
+		printf '%s' "$1" |
+			sed -E 's/2>&1/ /g; s/(&|[0-9]*)>>?[[:space:]]*\/dev\/null([[:space:]]|$)/ /g' |
+			tr '\n' ';'
+	) || return 0
+	local _re='[;&|`]|\$\(|<\(|[0-9]*>'
+	[[ $_screened =~ $_re ]]
 }
 
 # (#2531 CR r1) semgrep flags that WRITE a file, POST to a URL, or rewrite
@@ -317,6 +387,66 @@ fi
 if printf '%s' "$CMD" | grep -qE '^semgrep[[:space:]]+scan([[:space:]]|$)' &&
 	! _cmd_launders_mutation "$CMD" &&
 	! _semgrep_has_write_flag "$CMD"; then
+	exit 0
+fi
+
+# Allow review-log.sh — the way to clear the directive after agents return.
+#
+# SECURITY (#2535 r1 security-review): this escape previously sat ABOVE the
+# shared screens and was the guard's most permissive path. Two bypasses were
+# CONFIRMED empirically against the old regex
+# `((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=...)*)\.?/?\.claude/hooks/review-log\.sh`:
+#
+#   1. ARBITRARY CODE EXECUTION via env prefix. The `NAME=value` group admitted
+#      `BASH_ENV=/tmp/evil.sh .claude/hooks/review-log.sh …`. review-log.sh has a
+#      `#!/bin/bash` shebang, so running it starts a NON-INTERACTIVE bash, which
+#      sources $BASH_ENV before the script body — attacker code runs with the
+#      session's full privileges. (LD_PRELOAD is the Linux-consumer equivalent.)
+#   2. TOTAL BYPASS via compound command. The `(^|[;&|]…)` alternative meant the
+#      match could begin after ANY separator, and there was no end anchor, so
+#      `git commit -am pwned; .claude/hooks/review-log.sh` was admitted whole.
+#
+# Both are the exact classes the sibling escapes were already hardened against —
+# the ship-pr-cycle escape's own comment reasons that "a BASH_ENV=/LD_PRELOAD=
+# prefix would be arbitrary code exec". This one predated that reasoning and was
+# never retrofitted, and its position above _cmd_launders_mutation's definition
+# is why. Now anchored at ^ with NO env-assignment prefix, restricted to the
+# canonical path, and screened by the same shared launder check. Arguments are
+# still allowed (the call is `review-log.sh phase1 <round> <agent> <n> ok`) —
+# _cmd_launders_mutation is what keeps them from smuggling a second command.
+if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?hooks/review-log\.sh([[:space:]]|$)' &&
+	! _cmd_launders_mutation "$CMD"; then
+	exit 0
+fi
+
+# (#2535) Allow the sanctioned-bypass APPROVAL WRITE:
+#   touch <...>/.claude/.session-state/skip-approvals/<hash>.txt
+#
+# WHY: hooks/skip-env-approval-gate.sh is the SSOT for authorizing a `*_SKIP=1`
+# bypass. It only ever CONSUMES an approval file; creating one is delegated to
+# the operator, and its own deny message instructs `touch "$APPROVAL_FILE"`.
+# But `touch` is not a read-only verb, so while a phase1 directive marker was
+# pending THIS guard denied that touch — making the entire sanctioned bypass
+# unreachable at exactly the moment it is needed. That is the second jaw of the
+# #2531 deadlock: the escape hatch could not be opened from inside. This guard's
+# own comments already name it ("the bypass's approval-file write is itself
+# blocked by THIS guard → an unrecoverable in-session deadlock").
+#
+# Same lib-independent plain-grep shape as the review-log.sh allowlist above, so
+# it works even when cmd-anchor did not load. Tightly bounded (#2535 phase2 CR):
+# anchored at `^` with NO env-assignment prefix (a `BASH_ENV=`/`LD_PRELOAD=`
+# prefix is arbitrary code exec); EXACTLY ONE argument; the basename must be the
+# EXACT sha256 form skip-env-approval-gate writes — `[0-9a-f]{64}.txt`, not a
+# loose `[A-Za-z0-9._-]+` (the gate keys on sha256("$SKIP_VAR|$CMD"), so nothing
+# else is a real approval file); the path may be the canonical relative form or
+# an absolute path ENDING in that exact segment; `..` anywhere is rejected so the
+# segment cannot be reached via traversal; and _cmd_launders_mutation screens
+# separators/pipes/substitutions/redirects. Worst case this admits is creating
+# one empty hash.txt in a skip-approvals dir, and skip-env-approval-gate only
+# ever reads the one under $REPO_ROOT.
+if printf '%s' "$CMD" | grep -qE '^touch[[:space:]]+"?(/[^"[:space:]]*/)?\.claude/\.session-state/skip-approvals/[0-9a-f]{64}\.txt"?[[:space:]]*$' &&
+	! printf '%s' "$CMD" | grep -qF '..' &&
+	! _cmd_launders_mutation "$CMD"; then
 	exit 0
 fi
 

@@ -324,15 +324,99 @@ phase2_review_cache_get() {
 	printf '%s' "$out"
 }
 
+# Emit the cached per-finding DETAIL array for a content-hash key (latest entry
+# wins); empty on miss. Always returns 0 — like its count sibling, a miss is
+# normal, not an error.
+#
+# #2490/#2491: the count-only cache produced a directive that said "address EACH
+# of the N findings" while handing the operator nothing but N. This is the read
+# path that closes that gap. Deliberately SEPARATE from phase2_review_cache_get
+# rather than folded into it, so the count accessor's bats contract (a bare
+# integer on stdout) stays byte-stable.
+#
+# Returns empty — never an error — for ALL of: unknown key, absent ledger,
+# corrupt ledger, and a LEGACY record written before findings_detail existed
+# (`// empty` covers the null). Callers MUST treat empty as "no detail
+# available" and fall back to the count-only directive; detail is an operator
+# convenience, never a correctness input.
+phase2_review_cache_get_detail() {
+	local key=$1
+	[ -n "$key" ] || return 0
+	[ -f "$PHASE2_RESULT_LEDGER" ] || return 0
+	local out jq_err jq_rc=0
+	jq_err=$(mktemp 2>/dev/null) || jq_err=""
+	# -c (not -r): the value IS a JSON array, so compact-JSON is the wire form.
+	# Mirrors _get's latest-wins `.[-1]` selection so count and detail can never
+	# disagree about WHICH record they describe.
+	# Return the detail ONLY when it is genuinely an array. `// empty` alone
+	# accepts a legacy record with no field (correct) but would ALSO pass through
+	# a corrupt record whose findings_detail is a string/number/object, which the
+	# caller then tries to render as `.[]`. Explicit type check: array → emit;
+	# anything else (absent, or wrong type) → empty → caller falls back to
+	# count-only. (#2492 phase2 CR)
+	out=$(jq -cs --arg k "$key" '
+		map(select(.content_hash == $k))
+		| if length == 0 then empty
+		  else (.[-1].findings_detail // empty)
+		       | if type == "array" then . else empty end
+		  end
+	' "$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}") || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		# Same fail-safe posture as _get: a corrupt ledger degrades to "no
+		# detail" (the operator still gets the count-only directive) but leaves
+		# a breadcrumb so persistent corruption is visible.
+		if [ -n "$jq_err" ] && [ -s "$jq_err" ]; then
+			echo "phase2_review_cache_get_detail: jq read failed on $PHASE2_RESULT_LEDGER — no detail (count-only directive): $(head -c 160 "$jq_err")" >&2
+		else
+			echo "phase2_review_cache_get_detail: jq read failed on $PHASE2_RESULT_LEDGER — no detail (count-only directive)" >&2
+		fi
+		[ -n "$jq_err" ] && rm -f "$jq_err"
+		return 0
+	fi
+	[ -n "$jq_err" ] && rm -f "$jq_err"
+	printf '%s' "$out"
+}
+
 # Record a phase2 review result. Best-effort — a write failure must never fail
 # the review (worst case is a future miss → one extra review, not data loss).
+#
+# $4 (optional, #2490/#2492) — findings_detail: a JSON ARRAY of per-finding
+# objects. Best-effort on this argument ALONE: a malformed/absent/non-array
+# value degrades to `[]` and the count is STILL written. The count is the
+# source of truth for cache-hit decisions, so a bad detail blob must never cost
+# us the count record (that would silently re-enable the CR-CLI treadmill this
+# cache exists to stop).
+#
+# The caller owns SIZE. This ledger is append-only and never compacted, so the
+# producer passes a lean projection (severity/file/summary), not CR's raw
+# stream — see ship-pr-cycle.sh's _phase2_detail_projection.
 phase2_review_cache_put() {
-	local key=$1 findings=$2 sha=${3:-}
+	local key=$1 findings=$2 sha=${3:-} detail=${4:-}
 	[ -n "$key" ] || return 0
 	[[ $findings =~ ^[0-9]+$ ]] || return 0
 	_cache_init || return 0
 	local ts
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts=""
+	# Validate the detail blob BEFORE it reaches --argjson. Unvalidated text on
+	# --argjson is a parse hazard: jq would abort the whole append and we would
+	# lose the COUNT too. `-s` (slurp) is what makes this safe against a
+	# multi-value payload (`[1] [2]`) — it collapses the stream to one array, so
+	# `length == 1` rejects anything that wasn't exactly one JSON value. The
+	# `type == "array"` test rejects a bare object/scalar. `-c` guarantees the
+	# result is a SINGLE LINE, preserving the one-object-per-line JSONL
+	# invariant every jq -rs reader (and cache_prune's line filter) depends on.
+	local detail_json='[]'
+	if [ -n "$detail" ]; then
+		local _dj _dj_rc=0
+		_dj=$(printf '%s' "$detail" |
+			jq -cs 'if length == 1 and (.[0] | type) == "array" then .[0] else empty end' 2>/dev/null) || _dj_rc=$?
+		if [ "$_dj_rc" -eq 0 ] && [ -n "$_dj" ]; then
+			detail_json=$_dj
+		else
+			# Named failure (never silent): the count still lands below.
+			echo "phase2_review_cache_put: findings_detail is not a single JSON array — recording the count with empty detail" >&2
+		fi
+	fi
 	# v0.34.30 (#2230): mirror the _get/cache-key stderr hardening — a silent
 	# `2>/dev/null || return 0` swallowed jq-append failures (e.g. a read-only
 	# CACHE_DIR or a degraded jq), leaving the result cache silently never-written
@@ -342,7 +426,8 @@ phase2_review_cache_put() {
 	local jq_err jq_rc=0
 	jq_err=$(mktemp 2>/dev/null) || jq_err=""
 	jq -nc --arg k "$key" --argjson f "$findings" --arg s "$sha" --arg ts "$ts" \
-		'{ts:$ts, content_hash:$k, sha:$s, findings:$f}' >>"$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}" || jq_rc=$?
+		--argjson d "$detail_json" \
+		'{ts:$ts, content_hash:$k, sha:$s, findings:$f, findings_detail:$d}' >>"$PHASE2_RESULT_LEDGER" 2>"${jq_err:-/dev/null}" || jq_rc=$?
 	if [ "$jq_rc" -ne 0 ]; then
 		if [ -n "$jq_err" ] && [ -s "$jq_err" ]; then
 			echo "phase2 cache write failed: $(head -c 160 "$jq_err")" >&2

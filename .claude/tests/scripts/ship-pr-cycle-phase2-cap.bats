@@ -376,17 +376,29 @@ STUB
 # dispatch REUSES the count without invoking the CR-CLI, then asserting the
 # advance-on-coverage decision.
 
-# Seed the phase2 review-result cache. $1 = cached findings count. Deliberately
-# force-renames the CURRENT branch (setup()'s feat-2354-cap) to main via
-# `git branch -M main`, repointing main onto HEAD — NOT idempotent: it makes
-# main==HEAD so the cache-key diff resolves. main...HEAD is then empty (the branch
-# commits are --allow-empty, so no content change), yielding the stable empty-blob
-# key computed here exactly as the lib does (empty stdin → git hash-object).
-_seed_cache() {
+# SSOT for the phase2 cache-key surface — the ONE place these tests recompute
+# what phase2_review_cache_key does. Deliberately force-renames the CURRENT
+# branch (setup()'s feat-2354-cap) to main via `git branch -M main`, repointing
+# main onto HEAD — NOT idempotent: it makes main==HEAD so the cache-key diff
+# resolves. main...HEAD is then empty (the branch commits are --allow-empty, so
+# no content change), yielding the stable empty-blob key exactly as the lib does
+# (empty stdin → git hash-object). Also ensures the cache dir. Echoes the key.
+#
+# Collapsed from three copies (CR-in-CI #2540): three independent recomputations
+# silently desync into permanent cache MISS if the key surface changes (e.g. the
+# `:(exclude)` pathspecs in phase2_review_cache_key), and a MISS still prints
+# "NOT all addressed" — so the negative assertions below would pass for the WRONG
+# reason. One helper means one place to keep in lockstep with the lib.
+_phase2_cache_key() {
 	(cd "$ROOT" && git branch -M main) || return 1
-	local key
-	key=$(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
 	mkdir -p "$ROOT/.claude/.review-cache"
+	(cd "$ROOT" && git diff main...HEAD 2>/dev/null | git hash-object --stdin)
+}
+
+# Seed the phase2 review-result cache. $1 = cached findings count.
+_seed_cache() {
+	local key
+	key=$(_phase2_cache_key) || return 1
 	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":%s}\n' \
 		"$key" "$SHA_SHORT" "$1" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
 }
@@ -441,4 +453,71 @@ _seed_cache() {
 	[[ $output == *"NOT all addressed"* ]]
 	[ "$(_cur_stage)" = phase2 ]
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
+}
+
+# --- #2492/#2493: the cache carries finding DETAIL, not just a count -------
+# The unaddressed-cache-HIT directive asks for --severity / --finding-id /
+# --finding-text. Before this it supplied only N, so the operator had to either
+# burn CR budget re-reviewing identical content or reject blind.
+
+# Seed a cache record that ALSO carries findings_detail (what put() now writes).
+_seed_cache_detail() {
+	local key
+	key=$(_phase2_cache_key) || return 1
+	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":2,"findings_detail":[{"severity":"major","file":"hooks/foo.sh","summary":"rc capture aborts under set -e"},{"severity":"minor","file":"scripts/bar.sh","summary":"prefer mktemp over a PID-derived name"}]}\n' \
+		"$key" "$SHA_SHORT" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
+}
+
+@test "#2493 cache HIT with unaddressed findings RENDERS the detail" {
+	_seed_stage phase2
+	_seed_cache_detail
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	# `|| return 1` on every assertion — bats has no set -e, so a middle `[[ ]]`
+	# that fails is masked by the last command's status (CR-in-CI #2540). The
+	# detail-render assertions below are ALL middle lines; without this the whole
+	# #2493 render could break and the suite stay green.
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
+	[[ $output == *"Findings from that review:"* ]] || return 1
+	[[ $output == *"[major] hooks/foo.sh"* ]] || return 1
+	[[ $output == *"rc capture aborts under set -e"* ]] || return 1
+	[[ $output == *"[minor] scripts/bar.sh"* ]] || return 1
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1 # still must not burn CR budget
+}
+
+@test "#2493 a LEGACY count-only record still yields the count-only directive" {
+	# Records written before findings_detail existed must degrade cleanly —
+	# detail is an operator convenience, never a correctness input.
+	_seed_stage phase2
+	_seed_cache 2 # no findings_detail field at all
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
+	[[ $output != *"Findings from that review:"* ]] || return 1
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1
+}
+
+@test "#2493 a record with findings_detail:[] also degrades to count-only" {
+	# Distinct from the missing-field case above: here the field EXISTS but is an
+	# empty array (e.g. detail projection returned [] because the file was
+	# pruned). Must render exactly like the legacy record, not a stray header.
+	_seed_stage phase2
+	local key
+	key=$(_phase2_cache_key) || return 1
+	printf '{"ts":"2026-01-01T00:00:00Z","content_hash":"%s","sha":"%s","findings":2,"findings_detail":[]}\n' \
+		"$key" "$SHA_SHORT" >"$ROOT/.claude/.review-cache/phase2-results.jsonl"
+	_seed_log 1
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
+	[[ $output != *"Findings from that review:"* ]] || return 1
+	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1
 }

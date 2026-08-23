@@ -59,6 +59,17 @@ files:
   - path: .codex/config.toml
     mode: "644"
     hashed: true
+  # markdownlint SSOT (pricing-team-toolkit#114 / #116) — byte-identical in
+  # every repo. Disables MD013 (line-length), which is unsatisfiable on prose
+  # docs and on threat-model TABLE rows (a table row cannot be wrapped without
+  # breaking the table) and was therefore blocking edits to CLAUDE.md /
+  # SECURITY.md at commit time. Repo-AGNOSTIC — no per-repo ignores live here,
+  # those belong in each repo's .markdownlintignore — so full verbatim
+  # byte-SSOT: hashed: true ⇒ hash-drift gates it + refresh-from-source
+  # propagates it.
+  - path: .markdownlint-cli2.jsonc
+    mode: "644"
+    hashed: true
   # Consumer-only shims: the plugin itself doesn't need these because
   # it IS the plugin (its real skills live under skills/ship-pr-cycle/).
   # --verify --scope=both checks consumer paths; --verify --scope=plugin skips them.

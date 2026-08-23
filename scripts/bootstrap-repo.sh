@@ -1306,6 +1306,47 @@ inherit = "core"
 exclude = ["AWS_*", "AZURE_*", "GCP_*", "GCLOUD_*", "DOCKER_*", "VAULT_*", "*_TOKEN", "*_KEY", "*_SECRET", "*_PASSWORD", "*_CREDENTIALS", "*_CERT*", "GH_TOKEN", "GITHUB_TOKEN", "DATABASE_URL", "AGE_*", "SOPS_*", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
 EOF
 
+_write .markdownlint-cli2.jsonc 644 <<'EOF'
+{
+  // Canonical markdownlint-cli2 configuration — byte-SSOT, propagated to every
+  // consumer via scripts/bootstrap-manifest.yml (`hashed: true`) and healed by
+  // scripts/refresh-from-source.sh.
+  //
+  // WHY MD013 is off (pricing-team-toolkit#114 / #116):
+  //   MD013 is the line-length rule. This process ships long-form prose in
+  //   CLAUDE.md / SKILL.md / AGENTS.md — judgment rules, directive text, and
+  //   threat-model TABLE rows. Table rows in particular CANNOT be wrapped
+  //   without breaking the table, so MD013 is unsatisfiable there rather than
+  //   merely noisy. Leaving it on made markdownlint-cli2 fail on pre-existing
+  //   long lines, which blocked ANY edit to those files at commit time — the
+  //   rule was gating unrelated work instead of improving it. (Measured: 152
+  //   non-code, non-table prose lines already exceed 200 chars, the longest
+  //   863 — all single-logical-line directive text where a wrap changes meaning
+  //   or is pure churn.)
+  //
+  // WHY NOT a path-scoped exception (CR-in-CI plugin#2540):
+  //   CR asked to replace the global disable with a file-scoped one. That
+  //   cannot work HERE without breaking a hard invariant: this file is a
+  //   BYTE-SSOT — hashed:true in bootstrap-manifest.yml and healed to be
+  //   byte-identical in every bootstrapped consumer repo. A path glob would
+  //   have to name either (a) the plugin's own doc paths, which do not exist in
+  //   a consumer, or (b) per-repo paths, which makes the file differ per repo —
+  //   the exact drift the byte-SSOT design forbids. A configured MD013
+  //   (line_length + code_blocks/tables:false) is the other option, but any
+  //   ceiling low enough to be meaningful (<=500) re-flags 14+ existing
+  //   directive lines across consumers, and one high enough to avoid that
+  //   (>=900) is a limit in name only. So the rule stays off, deliberately.
+  //
+  // Scope discipline: this file stays MINIMAL and repo-AGNOSTIC. It is
+  // byte-identical in every repo, so per-repo ignores belong in that repo's
+  // .markdownlintignore (or a declared entry in .claude/local-overrides.yml),
+  // never here.
+  "config": {
+    "MD013": false
+  }
+}
+EOF
+
 _write .coderabbit.base.yaml 644 <<'EOF'
 # CodeRabbit BASE config — canonical, repo-AGNOSTIC SSOT (#234, Wave H).
 # Docs: https://docs.coderabbit.ai/reference/configuration
@@ -1487,12 +1528,14 @@ reviews:
       instructions: >-
         The `repo:` entry for github.com/repbyrepdev/claude-workflow-core pins a
         `rev:` tag in a PRIVATE repository the review sandbox cannot fetch. Do
-        NOT flag that `rev:` as a non-existent or unverifiable tag — its
-        existence is verified by `pre-commit` install and CI (CR-in-CI does not
-        flag it; only the offline CLI sandbox does). Only flag a `rev:` that is
-        obviously malformed — i.e. not a semver-style `vMAJOR.MINOR.PATCH` tag
-        (optionally with a `-prerelease` and/or `+build` suffix) and not a
-        40-char commit SHA.
+        NOT flag that `rev:` as a non-existent or unverifiable tag — see
+        `pricing-team-toolkit#123` — its existence is verified by `pre-commit`
+        install and CI (CR-in-CI does not flag it; only the offline CLI sandbox
+        does). Only flag
+        a `rev:` that is obviously malformed — i.e. not a semver-style
+        `vMAJOR.MINOR.PATCH` tag (optionally with a `-prerelease` and/or `+build`
+        suffix) and not a 40-char commit SHA — or one whose version disagrees
+        with the same plugin's version referenced elsewhere in the repo.
 
   tools:
     shellcheck:

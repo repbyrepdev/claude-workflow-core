@@ -118,10 +118,21 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"likely auth"* ]]
 	[[ $output == *"copilot login"* ]]
+	# (#2535 item 4b) STREAM-SEPARATED: bats `run` merges stderr into $output, so
+	# the assertions above pass whether the hint went to stdout or stderr. The
+	# advisory MUST go to stderr — phase0.5 consumers parse stdout as a data
+	# stream, so a summary leaking there corrupts it. Capture stdout alone.
+	local only_stdout
+	only_stdout=$(phase05_emit_auth_summary "copilot" "copilot login" 2 2 "401 unauthorized" 2>/dev/null)
+	[ -z "$only_stdout" ]
 }
 
 @test "auth-summary: partial errors, no auth pattern → generic hint" {
 	run phase05_emit_auth_summary "gemini" "gemini login" 1 3 "network reset"
 	[ "$status" -eq 0 ]
 	[[ $output == *"see prior stderr lines"* ]]
+	# Same stream-separation contract as above.
+	local only_stdout
+	only_stdout=$(phase05_emit_auth_summary "gemini" "gemini login" 1 3 "network reset" 2>/dev/null)
+	[ -z "$only_stdout" ]
 }

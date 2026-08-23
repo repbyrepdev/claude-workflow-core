@@ -111,18 +111,121 @@ if hook_inline_sentinel_check "PHASE1_LOG_PENDING_SKIP" "$CMD" "phase1-log-pendi
 	exit 0
 fi
 
+# (#2535 r1 security-review) ALLOW Agent/Skill while a log is pending.
+#
+# This gate exists to stop the main loop doing PRODUCTIVE work (or narrating)
+# before logging an agent's findings. Firing another REVIEW agent is not
+# productive work — it is the review itself, and the directive explicitly asks
+# for "5 parallel Agent calls".
+#
+# Blocking Agent here made that impossible, because agents are ASYNC: the
+# PostToolUse nudge writes the pending file when the Agent tool call returns —
+# i.e. at LAUNCH — while the findings count only exists ~10 minutes later when
+# the agent actually completes. So the gate demanded a number that could not yet
+# exist, and refused every call (including the next Agent) until it was given.
+# The designed parallel-5 block collapsed into a serialized
+# fire → block → wait → log chain, ~5x the wall-clock, with the operator wedged
+# between each step and no permitted action at all.
+#
+# Bash/Edit/Write/MultiEdit/NotebookEdit stay blocked, so productive work still
+# cannot proceed until every pending agent is logged — the property #721 was
+# written to enforce is preserved exactly.
+TOOL=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+case "$TOOL" in
+Agent)
+	# Agent is unconditionally allowed: the whole point of the async fix is
+	# firing the round's review agents in PARALLEL, and an Agent cannot be
+	# logged until it returns.
+	exit 0
+	;;
+Skill)
+	# Skill is NOT blanket-allowed (CR-in-CI #2540 + phase2): a Skill can invoke
+	# Bash internally, so `Skill) exit 0` was a hole straight through the gate —
+	# exactly the productive-work path #721 exists to block. Restrict to the
+	# explicit review skills the phase-1 directive actually fires (SKILL.md step
+	# 4 fires security-review as a SEPARATE Skill call, so it must pass). Every
+	# other Skill is denied until the pending logs are recorded.
+	_SKILL_NAME=$(printf '%s' "$PAYLOAD" |
+		jq -r '.tool_input.command // .tool_input.skill // .tool_input.name // ""' 2>/dev/null || echo "")
+	# Strip any plugin namespace ("pr-review-toolkit:code-reviewer" → the tail)
+	# so the allowlist matches regardless of how the skill is addressed.
+	_SKILL_NAME=${_SKILL_NAME##*:}
+	case "$_SKILL_NAME" in
+	security-review | code-reviewer | code-simplifier | comment-analyzer | pr-test-analyzer | silent-failure-hunter)
+		exit 0
+		;;
+	esac
+	# fall through to the deny below
+	;;
+esac
+
 # Allow review-log.sh itself through (it's the way out of the lock).
-# Anchored match — start-of-command or after shell-separator, with
-# optional env-var prefixes. Mirrors the anchor pattern used in
-# pr-trigger.sh / cr-pause-detector.sh.
-if printf '%s' "$CMD" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)\.?/?\.claude/hooks/review-log\.sh'; then
+#
+# SECURITY (#2535 r1): the previous pattern here was the same one confirmed
+# exploitable in phase1-directive-pending-guard.sh — it admitted an arbitrary
+# `NAME=value` env prefix (so `BASH_ENV=/tmp/evil.sh .claude/hooks/review-log.sh`
+# sourced attacker code, review-log.sh having a `#!/bin/bash` shebang), and it
+# had no `^` anchor or end bound, so `git commit -am x; .claude/hooks/review-log.sh`
+# was admitted whole. Anchored, env-prefix-free, canonical-path-only. Arguments
+# are still permitted — the call is `review-log.sh phase1 <round> <agent> <n> ok`.
+# The launder screen is SHARED with phase1-directive-pending-guard.sh (#2535
+# phase2). An inline copy here diverged from the guard's: it lacked the
+# discard-redirect stripping, so `review-log.sh … 2>/dev/null` was allowed by one
+# gate and denied by the other. Two copies of a security predicate drift; source
+# the one definition. Best-effort — if the lib is unreachable, fall back to a
+# STRICTER inline screen (no stripping), because a false deny on the escape
+# hatch is recoverable and a false allow is not.
+# Resolve across both supported layouts (mirrors _resolve_guard_lib in the
+# sibling guard) rather than a single hardcoded hop that silently reverts to the
+# inline fallback elsewhere (CR-in-CI #2540). The inline fallback here is
+# deliberately STRICTER, so a miss fails safe — but resolving correctly means it
+# is rarely needed.
+_LPG_LAUNDER=""
+for _lpg_c in "$HOOK_DIR/../_lib/cmd-launder-screen.sh" "$HOOK_DIR/../../_lib/cmd-launder-screen.sh"; do
+	# Explicit if-then, NOT `[ -r x ] && { ...; }`: when NEITHER path is readable
+	# the AND-list leaves the loop's exit status non-zero. Dogfooded — this file's
+	# `set -e` does not abort on it (the left operand of && is exempt) — but the
+	# construct makes the hook's survival depend on that subtlety, and a hook that
+	# aborts fails OPEN (the gate silently stops gating). Explicit form can never
+	# return non-zero. (CR-in-CI #2540 phase2)
+	if [ -r "$_lpg_c" ]; then
+		_LPG_LAUNDER="$_lpg_c"
+		break
+	fi
+done
+if [ -n "$_LPG_LAUNDER" ]; then
+	# shellcheck source=../_lib/cmd-launder-screen.sh
+	. "$_LPG_LAUNDER" 2>/dev/null || true
+fi
+if ! declare -f cmd_launders_mutation >/dev/null 2>&1; then
+	cmd_launders_mutation() {
+		# SIGPIPE-safe: NO `grep -q` at the end of a pipe. This gate calls the
+		# predicate NEGATED (`! cmd_launders_mutation` below), and with the
+		# sourcing hook under `set -o pipefail` a `grep -q` early-match makes the
+		# upstream `tr` die with 141, the pipeline reports non-zero, `!` flips it
+		# to 0, and a real laundering command is ALLOWED (CR-in-CI #2540). Capture
+		# the transform, match in-shell, fail CLOSED. Deliberately STRICTER than
+		# the shared lib (no discard-redirect stripping): a false deny on the
+		# review-log.sh escape hatch is recoverable, a false allow is not.
+		local _screened
+		_screened=$(printf '%s' "$1" | tr '\n' ';') || return 0
+		local _re='[;&|`]|\$\(|<\(|[0-9]*>'
+		[[ $_screened =~ $_re ]]
+	}
+fi
+if printf '%s' "$CMD" | grep -qE '^(bash[[:space:]]+)?(\./)?(\.claude/)?hooks/review-log\.sh([[:space:]]|$)' &&
+	! cmd_launders_mutation "$CMD"; then
 	exit 0
 fi
 
 # Refuse with listing of pending agents.
 hook_deny "phase1-log-pending-gate" \
-	"$pending_count Phase 1 agent return(s) need review-log.sh BEFORE the next tool call:
+	"$pending_count Phase 1 agent return(s) need review-log.sh BEFORE the next Bash/Edit/Write call:
 $pending_list
 Run for each: .claude/hooks/review-log.sh phase1 <round> <agent> <findings_count> ok
+(Agent/Skill calls ARE permitted while pending — fire the rest of the round's
+agents in parallel, then log each as it returns. Agent is unrestricted; Skill is
+limited to the review skills: security-review, code-reviewer, code-simplifier,
+comment-analyzer, pr-test-analyzer, silent-failure-hunter.)
 
 Bypass (audit-logged): PHASE1_LOG_PENDING_SKIP=1 <cmd>"

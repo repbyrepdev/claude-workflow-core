@@ -116,14 +116,79 @@ fi
 # (lex sort would invert).
 higher=$(printf '%s\n%s\n' "$SETTINGS_VER" "$CACHE_VER" | sort -V | tail -1)
 if [ "$higher" = "$CACHE_VER" ]; then
-	# Forward drift: cache > settings → operator should migrate.
-	cat >&2 <<EOF
+	# Forward drift: cache > settings.
+	#
+	# (#2536 r1 code-simplifier) The remediation here USED to be
+	# `scripts/migrate-settings.sh`, which rewrites
+	# `/claude-workflow-core/<from>/` → `/claude-workflow-core/<to>/` — i.e. it
+	# RE-PINS to a concrete version. That is the exact opposite of what #2536
+	# established: following that advice recreates the version-pinned state whose
+	# GC left 58 registrations 404'ing, and it fired on EVERY SessionStart that
+	# detected drift, so the advice actively undid the fix on a loop.
+	# install-hook-launchers.sh UN-pins onto version-agnostic launchers instead,
+	# and is also the only writer here with a lock, a backup, post-write
+	# revalidation and mode preservation.
+	# Emit an ABSOLUTE, runnable path. At SessionStart the cwd is the CONSUMER
+	# repo, which does not ship install-hook-launchers.sh — a cwd-relative
+	# `scripts/…` gives `No such file or directory` and the warning repeats every
+	# session (CR-in-CI #2540). Pick the NEWEST cache version whose script is
+	# actually executable — not blindly $CACHE_VER, which may be a half-populated
+	# dir that ships no (or a non-executable) install-hook-launchers.sh, giving a
+	# remediation that still 404s (CR-in-CI #2540 phase2).
+	# Reuse the shared resolver: pcr_newest_complete already does exactly this —
+	# newest semver dir whose probe path is EXECUTABLE (-x) — so hand-rolling the
+	# scan here is a second copy of a predicate that must not drift (CR-in-CI
+	# #2540). Best-effort source across BOTH supported layouts; the inline loop
+	# stays as a fallback so a SessionStart hook is never wedged by a missing lib.
+	ihl=""
+	_sp_lib=""
+	for _sp_c in "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/plugin-cache-resolve.sh" \
+		"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../_lib/plugin-cache-resolve.sh"; do
+		if [ -r "$_sp_c" ]; then
+			_sp_lib="$_sp_c"
+			break
+		fi
+	done
+	# shellcheck source=../_lib/plugin-cache-resolve.sh
+	if [ -n "$_sp_lib" ] && . "$_sp_lib" 2>/dev/null && declare -f pcr_newest_complete >/dev/null 2>&1; then
+		if _vdir=$(pcr_newest_complete "$CACHE_DIR" "scripts/install-hook-launchers.sh"); then
+			ihl="$_vdir/scripts/install-hook-launchers.sh"
+		fi
+	else
+		for _v in $(printf '%s\n' "${entries[@]:-}" | while IFS= read -r _e; do
+			_n=${_e##*/}
+			[[ $_n =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$_n"
+		done | sort -V -r); do
+			if [ -x "$CACHE_DIR/$_v/scripts/install-hook-launchers.sh" ]; then
+				ihl="$CACHE_DIR/$_v/scripts/install-hook-launchers.sh"
+				break
+			fi
+		done
+	fi
+	if [ -n "$ihl" ]; then
+		cat >&2 <<EOF
 session-start-stale-pin: ⚠ plugin-cache drift detected
   settings.json refs: v$SETTINGS_VER
   latest cache dir:   v$CACHE_VER
-  Remediation: run \`scripts/migrate-settings.sh\` to update
-  ~/.claude/settings.json plugin paths to v$CACHE_VER.
+  Remediation: run \`$ihl --generate --migrate\`
+  to UN-PIN these refs onto version-agnostic launchers, after which cache
+  bumps stop causing drift entirely. Verify with \`$ihl --verify\`.
+  (Do NOT use migrate-settings.sh for this — it re-pins to v$CACHE_VER, which
+  reintroduces the dangling-ref failure once that version is GC'd.)
 EOF
+	else
+		# No cache version ships a runnable remediation script — warn about the
+		# drift but do NOT print a command that would 404.
+		cat >&2 <<EOF
+session-start-stale-pin: ⚠ plugin-cache drift detected
+  settings.json refs: v$SETTINGS_VER
+  latest cache dir:   v$CACHE_VER
+  No cache version under $CACHE_DIR ships an executable
+  scripts/install-hook-launchers.sh — reinstall/repair the plugin via the
+  Claude Code plugin manager (\`/plugin reload claude-workflow-core\`), then
+  re-run it with --generate --migrate to un-pin these refs.
+EOF
+	fi
 else
 	# Inverse drift: settings > cache → hooks reference paths that
 	# don't exist. Likely a partial install or post-migrate race.

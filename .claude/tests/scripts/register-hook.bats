@@ -14,6 +14,13 @@ setup() {
 	# Isolated settings.json + isolated hook directory per test
 	export CLAUDE_SETTINGS_FILE="$TEST_TMP/settings.json"
 	echo '{}' >"$CLAUDE_SETTINGS_FILE"
+	# Isolated launcher dir for EVERY test, set once here rather than exported
+	# per-test: registration resolves onto a launcher when one exists, so without
+	# isolation a test would depend on the developer's real ~/.claude launcher
+	# dir. Hoisting it also avoids SC2030/SC2031 (each @test is a subshell, so a
+	# per-test export is local to it and shellcheck flags the pattern).
+	export PLUGIN_LAUNCHER_DIR="$TEST_TMP/launchers"
+	mkdir -p "$PLUGIN_LAUNCHER_DIR"
 }
 
 teardown() {
@@ -67,9 +74,17 @@ teardown() {
 	run "$SCRIPT" hooks/cr-auto-parse-poll.sh
 	[ "$status" -eq 0 ]
 	[[ $output == *"event=SessionStart"* ]]
-	# Verify settings.json has the entry
+	# Verify settings.json has the entry.
+	# (#2536) Assert the BASENAME, not a `hooks/<name>.sh` substring: the command
+	# is now a version-agnostic launcher (`<launcher-dir>/<name>.sh`) whenever one
+	# exists, and only falls back to a `…/hooks/<name>.sh` path when it does not.
+	# The old substring encoded the version-pinned contract this change removes.
 	registered=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")
-	[[ $registered == *"hooks/cr-auto-parse-poll.sh"* ]]
+	# `|| return 1`: bats has no set -e, so this middle assertion would otherwise
+	# be masked by the `[ -x ]` that follows it (CR-in-CI #2540).
+	[[ $registered == */cr-auto-parse-poll.sh ]] || return 1
+	# whichever form it took, it must point at something real
+	[ -x "$registered" ] || return 1
 }
 
 @test "register hook with event + matcher frontmatter" {
@@ -131,6 +146,140 @@ teardown() {
 	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
 	[ "$status" -eq 0 ]
 	[[ $output == *"no-op"* ]]
+}
+
+@test "--unregister does NOT delete a same-named hook from an unrelated path (#2540)" {
+	# Basename-only matching over-matches: an operator's own hook that merely
+	# shares a filename lives in a path we do not own, and unregister must not
+	# reach into the global settings.json and delete it. Only paths under the
+	# launcher dir, or legacy `…/hooks/<name>.sh` pinned paths, are ours.
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	# Add a FOREIGN registration with the SAME basename, under a path we don't own.
+	local foreign="$TEST_TMP/my-own-tools/cr-auto-parse-poll.sh"
+	mkdir -p "$TEST_TMP/my-own-tools"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$foreign"
+	chmod +x "$foreign"
+	jq --arg f "$foreign" \
+		'.hooks.SessionStart[0].hooks += [{type:"command",command:$f}]' \
+		"$CLAUDE_SETTINGS_FILE" >"$TEST_TMP/s.json"
+	mv "$TEST_TMP/s.json" "$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# ours is gone…
+	run jq -r '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(test("/launchers/"))) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
+	[ "$output" = "0" ] || return 1
+	# …and the FOREIGN one survives untouched
+	run jq -r --arg f "$foreign" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $f)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
+	[ "$output" = "1" ] || {
+		echo "foreign same-named hook was wrongly deleted"
+		return 1
+	}
+}
+
+@test "--unregister run FROM A CONSUMER repo spares that consumer's hooks/ (#2540)" {
+	# REPO_ROOT resolves from the CALLER's cwd, so keying "plugin-owned" on it
+	# meant running this script from a consumer repo made THAT repo's hooks/ dir
+	# look like ours — and unregister would delete the consumer's own
+	# same-basename registration from the GLOBAL settings.json. Ownership must be
+	# derived from the script's own location (PLUGIN_ROOT via BASH_SOURCE).
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	# Build a CONSUMER repo with a same-named hook and register it by hand.
+	local consumer="$TEST_TMP/consumer"
+	mkdir -p "$consumer/hooks"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$consumer/hooks/cr-auto-parse-poll.sh"
+	chmod +x "$consumer/hooks/cr-auto-parse-poll.sh"
+	(cd "$consumer" && git init -q && git config user.email t@t && git config user.name t)
+	# Register the PHYSICAL path. On macOS $TMPDIR is /var/... while
+	# `git rev-parse --show-toplevel` (and pwd -P) return /private/var/..., so a
+	# registration written with the logical path can never string-match the
+	# script's resolved root — the comparison would be vacuously false and this
+	# test would pass no matter what the code does. Mutation testing caught
+	# exactly that: swapping PLUGIN_ROOT back to REPO_ROOT left the suite green.
+	local consumer_phys
+	consumer_phys=$(cd "$consumer" && pwd -P)
+	jq --arg c "$consumer_phys/hooks/cr-auto-parse-poll.sh" \
+		'.hooks.SessionStart[0].hooks += [{type:"command",command:$c}]' \
+		"$CLAUDE_SETTINGS_FILE" >"$TEST_TMP/s.json"
+	mv "$TEST_TMP/s.json" "$CLAUDE_SETTINGS_FILE"
+	# Invoke the plugin's script FROM INSIDE the consumer repo.
+	run bash -c "cd '$consumer' && '$SCRIPT' --unregister hooks/cr-auto-parse-poll.sh"
+	[ "$status" -eq 0 ] || return 1
+	# the CONSUMER's own hook must survive
+	run jq -r --arg c "$consumer_phys/hooks/cr-auto-parse-poll.sh" \
+		'[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $c)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" = "1" ] || {
+		echo "consumer's own hooks/ registration was wrongly deleted"
+		return 1
+	}
+}
+
+@test "--unregister spares a THIRD-PARTY tool that also uses a hooks/ dir (#2540)" {
+	# A bare `/hooks/` test is not "plugin-owned": plenty of tools keep their own
+	# hooks/ directory. Only the doubled plugin-cache segment + semver (the shape
+	# install-hook-launchers.sh migrates) counts as legacy-ours.
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	"$SCRIPT" hooks/cr-auto-parse-poll.sh
+	local third="$TEST_TMP/some-other-tool/hooks/cr-auto-parse-poll.sh"
+	local ours_legacy="$TEST_TMP/c/claude-workflow-core/claude-workflow-core/0.34.108/hooks/cr-auto-parse-poll.sh"
+	mkdir -p "$(dirname "$third")" "$(dirname "$ours_legacy")"
+	jq --arg t "$third" --arg o "$ours_legacy" \
+		'.hooks.SessionStart[0].hooks += [{type:"command",command:$t},{type:"command",command:$o}]' \
+		"$CLAUDE_SETTINGS_FILE" >"$TEST_TMP/s.json"
+	mv "$TEST_TMP/s.json" "$CLAUDE_SETTINGS_FILE"
+	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# the THIRD-PARTY hooks/ path must survive — it is not ours
+	run jq -r --arg t "$third" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $t)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
+	[ "$output" = "1" ] || {
+		echo "third-party hooks/ path was wrongly deleted"
+		return 1
+	}
+	# our LEGACY version-pinned plugin-cache path must be removed
+	run jq -r --arg o "$ours_legacy" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $o)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
+	[ "$output" = "0" ] || {
+		echo "our legacy pinned path was NOT removed"
+		return 1
+	}
+}
+
+@test "--unregister removes a launcher-based entry even after the launcher is GC'd (#2540)" {
+	# Regression: _unregister_one matched the RESOLVED command path. Once a
+	# launcher is pruned, _resolve_hook_command returns a version-pinned fallback
+	# that no longer equals the registered launcher path, so unregister silently
+	# no-oped and left a stale registration active. Match by BASENAME instead.
+	# `|| return 1` on each assertion — bats has no set -e, middle checks must abort.
+	# a real, executable launcher so register resolves ONTO it
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	chmod +x "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	run "$SCRIPT" hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# the registered command must be the launcher path (proves the setup is real)
+	run jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
+	[[ $output == "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh" ]] || return 1
+	# GC the launcher — _resolve_hook_command can now only return the fallback
+	rm -f "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
+	# Assert the unregister itself SUCCEEDED before trusting the count below — a
+	# non-zero exit with an unchanged settings.json would otherwise read as a pass
+	# via the count assertion alone (CR-in-CI #2540).
+	run "$SCRIPT" --unregister hooks/cr-auto-parse-poll.sh
+	[ "$status" -eq 0 ] || return 1
+	# Parenthesize so BOTH a missing key AND an existing empty array yield 0 —
+	# `.hooks.SessionStart // [] | length` without parens is fine in jq (// binds
+	# tighter than |), but the explicit group documents intent and is robust to a
+	# future filter change (CR-in-CI #2540).
+	count=$(jq '(.hooks.SessionStart // []) | length' "$CLAUDE_SETTINGS_FILE")
+	[ "$count" = "0" ] || return 1
 }
 
 # --- --all-auto-register ----------------------------------------------
