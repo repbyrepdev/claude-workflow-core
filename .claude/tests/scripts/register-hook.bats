@@ -169,9 +169,11 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	# ours is gone…
 	run jq -r '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(test("/launchers/"))) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
 	[ "$output" = "0" ] || return 1
 	# …and the FOREIGN one survives untouched
 	run jq -r --arg f "$foreign" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $f)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
 	[ "$output" = "1" ] || {
 		echo "foreign same-named hook was wrongly deleted"
 		return 1
@@ -236,12 +238,14 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	# the THIRD-PARTY hooks/ path must survive — it is not ours
 	run jq -r --arg t "$third" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $t)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
 	[ "$output" = "1" ] || {
 		echo "third-party hooks/ path was wrongly deleted"
 		return 1
 	}
 	# our LEGACY version-pinned plugin-cache path must be removed
 	run jq -r --arg o "$ours_legacy" '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(. == $o)) | length' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
 	[ "$output" = "0" ] || {
 		echo "our legacy pinned path was NOT removed"
 		return 1
@@ -261,6 +265,7 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	# the registered command must be the launcher path (proves the setup is real)
 	run jq -r '.hooks.SessionStart[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE"
+	[ "$status" -eq 0 ] || return 1 # jq itself must succeed, not just match
 	[[ $output == "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh" ]] || return 1
 	# GC the launcher — _resolve_hook_command can now only return the fallback
 	rm -f "$PLUGIN_LAUNCHER_DIR/cr-auto-parse-poll.sh"
