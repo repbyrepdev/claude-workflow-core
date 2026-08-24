@@ -350,17 +350,26 @@ if [ "$_timeout_detected" -eq 1 ]; then
 	# no consumer mistakes it for a complete, filtered count.
 	_partial_findings=0
 	if [ -f "$TEE_OUT" ]; then
-		_partial_findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+		# Same `|| true` reasoning as the main counter below: grep -c ALREADY
+		# prints 0 on no-match and then exits 1, so `|| echo 0` appended a
+		# second 0 and the capture became "0\n0". Here the regex clamp on the
+		# next line silently rescued it — which is why the twin bug survived
+		# the first fix. `--argjson findings` would reject "0\n0" outright, so
+		# the salvage log line would have been lost entirely on a zero-finding
+		# timeout had the clamp ever been removed.
+		_partial_findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || true)
 		[[ $_partial_findings =~ ^[0-9]+$ ]] || _partial_findings=0
 	fi
 	if [ "$_partial_findings" -gt 0 ]; then
 		echo "local-review: salvaged $_partial_findings finding(s) streamed before the timeout — persisting so the paid-for review is not discarded" >&2
 		_persist_review_detail "$_partial_findings"
 	fi
+	# #2544: `complete:false` is the load-bearing field — timeout/partial are
+	# kept for diagnostics and back-compat, but the gate keys on completeness.
 	scm_log cr-local-review "$(jq -nc --arg base "$BASE" --argjson force "$FORCE" \
 		--argjson rc "$rc" --argjson findings "$_partial_findings" --argjson timeout true \
-		--argjson partial true \
-		'{base: $base, force: $force, rc: $rc, findings: $findings, timeout: $timeout, partial: $partial}')" || true
+		--argjson partial true --argjson complete false \
+		'{base: $base, force: $force, rc: $rc, findings: $findings, timeout: $timeout, partial: $partial, complete: $complete}')" || true
 	exit 4
 fi
 
@@ -381,9 +390,26 @@ if command -v canonical_review_filtered_finding_count >/dev/null 2>&1; then
 else
 	# Fallback (lib unavailable): prior behavior — complete event, then grep.
 	findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
-	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+	# `|| true`, NOT `|| echo 0`: grep -c ALREADY prints 0 on no-match and then
+	# exits 1, so `|| echo 0` appended a second 0 and the capture became "0\n0".
+	# That was harmless while the next line clamped anything unparseable to 0 —
+	# but now that unparseable means INCOMPLETE, it would mark every genuinely
+	# clean fallback review as a non-review. Found by CR on this very commit.
+	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || true)
 fi
-[[ $findings =~ ^[0-9]+$ ]] || findings=0
+# #2544: an UNPARSEABLE count is not a count of zero. The old `|| findings=0`
+# turned every extraction failure — most realistically a CR-CLI output-format
+# change breaking the grep/jq above — into `findings:0`, which the pre-push
+# gate reads as CLEAN. That is the #2540 laundering bug living in the PRODUCER:
+# the consumer's `// -1` only defends against an ABSENT key, and no fail-closed
+# logic downstream can tell "genuinely clean" from "the counter broke".
+# Mark it as a non-count and let the completeness flag below carry the truth.
+_findings_parsed=1
+[[ $findings =~ ^[0-9]+$ ]] || {
+	echo "local-review: could not parse a finding count from CR output (got '${findings:-}') — recording this run as INCOMPLETE, not clean. CR's output format may have changed." >&2
+	findings=-1
+	_findings_parsed=0
+}
 
 # #2484: persist the review detail BEFORE the tee tmpfile is trap-removed.
 # The orchestrator's bg wrapper truncates stdout to a tail and the tmpfile
@@ -396,9 +422,31 @@ _persist_review_detail "$findings"
 # scm_log injects `sha` (bare --short HEAD, auto-abbrev) into the log line — that's the
 # key the pre-push gate matches against. This fields object provides the
 # NEW fields: base/force/rc (pre-existing) + findings (v4.24-Q2 #609 addition).
+# #2544 — POSITIVE completion signal. `complete:true` is the ONLY thing that
+# licenses the pre-push gate to treat this entry as a real review.
+#
+# Why positive rather than flagging failures: the gate previously inferred
+# "clean" from `findings:0`, and we tried to patch that by flagging the known
+# bad paths (timeout, partial). That cannot be made correct — you cannot
+# enumerate every way a review fails to happen. Any path we forgot writes an
+# unflagged `findings:0` and reads as CLEAN. Confirmed live: only rc 124/137
+# and CR's own timeout event reach the flagged writer above; auth failure,
+# rate limit, network error, bad config and CLI crash ALL fall through here.
+#
+# Inverted, the default is safe: a writer that forgets to set `complete`, or an
+# older writer that doesn't know the field, fails CLOSED at the consumer.
+#
+# rc 0 = ran, no findings. rc 1 = ran, found things (CR's findings-exit).
+# Both are genuine completions. Anything else means CR did not finish, so rc
+# alone is not a usable test — it must be paired with a parsed count.
+_cr_complete=false
+if { [ "$rc" = "0" ] || [ "$rc" = "1" ]; } && [ "$_findings_parsed" = "1" ]; then
+	_cr_complete=true
+fi
 scm_log cr-local-review "$(jq -nc --arg base "$BASE" \
 	--argjson force "$FORCE" --argjson rc "$rc" --argjson findings "$findings" \
-	'{base: $base, force: $force, rc: $rc, findings: $findings}')"
+	--argjson complete "$_cr_complete" \
+	'{base: $base, force: $force, rc: $rc, findings: $findings, complete: $complete}')"
 
 # v4.28-W3-C (#673): also fire review-log.sh phase2 so the SHA-keyed
 # review log records Phase 2 ran. Pre-push-pipeline-gate walks this log

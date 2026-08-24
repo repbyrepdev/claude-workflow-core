@@ -89,7 +89,10 @@ _stub_coderabbit_lines() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	# still defers to CR-in-CI…
-	[ "$status" -eq 4 ] || return 1
+	[ "$status" -eq 4 ] || {
+		echo "salvaged timeout did not exit 4 (got $status). output: $output"
+		return 1
+	}
 	[[ $output == *"timed out"* ]] || return 1
 	# …but announces + persists the salvage rather than discarding it
 	[[ $output == *"salvaged 2 finding"* ]] || return 1
@@ -121,7 +124,10 @@ _stub_coderabbit_lines() {
 	_stub_coderabbit '{"type":"error","errorType":"timeout","recoverable":false}' 0
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
-	[ "$status" -eq 4 ] || return 1
+	[ "$status" -eq 4 ] || {
+		echo "no-findings timeout did not exit 4 (got $status). output: $output"
+		return 1
+	}
 	[[ $output != *"salvaged"* ]] || return 1
 	local sha
 	sha=$(git rev-parse --short HEAD)
@@ -167,6 +173,91 @@ _stub_coderabbit_lines() {
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 1 ]
 	[[ $output != *"timed out"* ]]
+}
+
+@test "#2544 DOGFOOD: a CR CRASH writes complete:false to the ledger" {
+	# The hole the blocklist missed. Only rc 124/137 and CR's own timeout event
+	# reach the flagged writer; an auth failure / rate limit / network error /
+	# CLI crash lands in the PLAIN logger. Before #2544 that wrote an unflagged
+	# findings:0 which the pre-push gate read as CLEAN.
+	# This drives the REAL script — not a fixture — and asserts on what actually
+	# lands in the ledger the gate reads.
+	_stub_coderabbit '{"type":"error","errorType":"auth","recoverable":false}' 2
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	# Assert the script's OWN outcome before the next `run` clobbers $status.
+	# A crashed CR must not exit 0 — otherwise the orchestrator treats the
+	# stage as successful regardless of what the ledger says.
+	[ "$status" -ne 0 ] || {
+		echo "local-review exited 0 on a crashed CR run"
+		return 1
+	}
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "no ledger entry written for a crashed run"
+		return 1
+	}
+	[[ $output == *'"complete":false'* ]] || {
+		echo "a CRASHED review was recorded WITHOUT complete:false — the gate would read it as clean. entry: $output"
+		return 1
+	}
+}
+
+@test "#2544 DOGFOOD: a ZERO-finding timeout still writes a valid ledger entry" {
+	# CR round 4 caught the twin of the grep -c double-zero: the timeout path
+	# had the same `|| echo 0`, rescued only by a regex clamp on the next line.
+	# scm_log builds the entry with `--argjson findings`, which REJECTS "0\n0"
+	# outright — so a zero-finding timeout would have lost its ledger line
+	# entirely, and a SHA with no entry reads as "no review" rather than a
+	# recorded incomplete one. Pin both the count and the completeness flag.
+	_stub_coderabbit '{"type":"error","errorType":"timeout","recoverable":false}' 0
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 4 ] || {
+		echo "zero-finding timeout did not exit 4 (got $status). output: $output"
+		return 1
+	}
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "zero-finding timeout wrote NO ledger entry — the sha would read as 'never reviewed'"
+		return 1
+	}
+	[[ $output == *'"findings":0'* ]] || {
+		echo "zero-finding timeout did not record findings:0. entry: $output"
+		return 1
+	}
+	[[ $output == *'"complete":false'* ]] || {
+		echo "timeout entry missing complete:false — the gate would read it as clean. entry: $output"
+		return 1
+	}
+}
+
+@test "#2544 DOGFOOD: a genuine 0-findings review writes complete:true" {
+	# The other direction, and the one the grep -c double-zero regression broke:
+	# a real clean review must still be recorded as COMPLETE, or the gate walls
+	# off every good push. Drives the real script end-to-end.
+	_stub_coderabbit '{"type":"complete","findings":0}' 0
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	# Assert the script's OWN exit before the next `run` clobbers $status —
+	# a genuinely clean review must exit 0.
+	[ "$status" -eq 0 ] || {
+		echo "local-review did not exit 0 on a clean review. output: $output"
+		return 1
+	}
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "no ledger entry written for a clean run"
+		return 1
+	}
+	[[ $output == *'"complete":true'* ]] || {
+		echo "a genuinely CLEAN review was not recorded complete:true — every good push would be refused. entry: $output"
+		return 1
+	}
+	[[ $output == *'"findings":0'* ]] || {
+		echo "clean review did not record findings:0 (grep -c double-zero regression?). entry: $output"
+		return 1
+	}
 }
 
 @test "local-review: findings count uses the textual hash-filter (survives noisy TEE_OUT) (#2249)" {

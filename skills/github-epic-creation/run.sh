@@ -157,6 +157,13 @@ while [ $# -gt 0 ]; do
 		grep '^#' "$0" | sed 's/^# \?//'
 		exit 0
 		;;
+	--yes | --approve)
+		# #2544: non-interactive approval WITHOUT an env-var prefix. See
+		# skc_approve_or_exit in ../_lib/skill-common.sh.
+		# shellcheck disable=SC2034 # read by skc_approve_or_exit (sourced lib)
+		SKC_ASSUME_YES=1
+		shift
+		;;
 	*)
 		echo "unknown arg: $1" >&2
 		exit 2
@@ -178,7 +185,7 @@ fi
 # Validate --parent value early so we fail BEFORE creating the epic.
 if [ -n "$OUTER_PARENT" ]; then
 	# v4.30 #779 PR1 CR-in-CI r3 minor: reject zero (issue numbers start at 1).
-	if ! [[ "$OUTER_PARENT" =~ ^[1-9][0-9]*$ ]]; then
+	if ! [[ $OUTER_PARENT =~ ^[1-9][0-9]*$ ]]; then
 		echo "error: --parent requires a positive issue number (got: $OUTER_PARENT)" >&2
 		exit 2
 	fi
@@ -414,7 +421,7 @@ for l in "${PARENT_LABELS[@]}"; do GH_ARGS+=(--label "$l"); done
 
 PARENT_URL=$(gh "${GH_ARGS[@]}")
 PARENT_NUM=$(printf '%s' "$PARENT_URL" | grep -oE '[0-9]+$')
-if ! [[ "$PARENT_NUM" =~ ^[0-9]+$ ]]; then
+if ! [[ $PARENT_NUM =~ ^[0-9]+$ ]]; then
 	echo "Failed to parse parent issue number from: $PARENT_URL" >&2
 	exit 2
 fi
@@ -536,7 +543,7 @@ for i in "${!SUB_TITLES[@]}"; do
 	[ -n "$MILESTONE" ] && SUB_ARGS+=(--milestone "$MILESTONE")
 	sub_url=$(gh "${SUB_ARGS[@]}")
 	sub_num=$(printf '%s' "$sub_url" | grep -oE '[0-9]+$')
-	if ! [[ "$sub_num" =~ ^[0-9]+$ ]]; then
+	if ! [[ $sub_num =~ ^[0-9]+$ ]]; then
 		echo "Failed to parse sub-issue number from: $sub_url (title: $sub_title)" >&2
 		echo "Parent #$PARENT_NUM left open; earlier subs may be unlinked." >&2
 		exit 2
