@@ -160,9 +160,10 @@ CodeRabbit sometimes converges without posting the record (evidence
 table in the policy file): when `_pr-cr-findings.sh` reports all four
 buckets clean AND the pinned head carries a positive review signal —
 a policy-bot review record on that exact sha, or the sha inside a
-policy-bot comment that is NOT CodeRabbit's rate-limit notice (that
-notice quotes the head sha while announcing the review did NOT run;
-the fail-open CodeRabbit *check* is equally untrusted) — the gate
+policy-bot comment, in NEITHER case carrying CodeRabbit's rate-limit
+notice (that notice quotes the head sha while announcing the review
+did NOT run — both legs exclude it since r2; the fail-open CodeRabbit
+*check* is equally untrusted) — the gate
 posts `@coderabbitai approve` and waits for the real record. It never
 nudges a findings-bearing or unreviewed head — that would launder the
 state it exists to block. NOTE: the nudge is a public PR comment posted

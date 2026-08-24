@@ -165,7 +165,7 @@ if [ -z "$NUDGE_COMMENT" ]; then
 	# (e.g. copilot-only), leave NUDGE_COMMENT empty: the APPROVED fast
 	# path still works, and the NUDGE site refuses-before-posting instead
 	# of leaving a no-op public comment and timing out (r2 finding).
-	if printf '%s\n' "$APPROVERS" | grep -qxF "coderabbitai[bot]"; then
+	if grep -qxF "coderabbitai[bot]" <<<"$APPROVERS"; then
 		NUDGE_COMMENT="@coderabbitai approve"
 		echo "approval-gate: NOTE — nudge_comment absent from policy; using built-in default '$NUDGE_COMMENT'"
 	fi
@@ -286,8 +286,10 @@ if ! "$FINDINGS_BIN" "$PR"; then
 	exit 2
 fi
 
-# CodeRabbit stamps its rate-limit notice with this HTML marker — the
-# EXACT string both witness legs exclude on. The notice quotes the head
+# CodeRabbit stamps its rate-limit notice with an HTML comment
+# CONTAINING this substring — the EXACT needle both witness legs
+# exclude on (do not paste the full <!-- --> comment here: contains()
+# would then require the whole thing verbatim). The notice quotes the head
 # sha while announcing the review did NOT run (Phase 1 critical
 # finding): matching it would nudge-approve an unreviewed head, the
 # exact laundering the witness exists to prevent. Single point of
@@ -356,7 +358,7 @@ fi
 # explicit nudge_comment: nothing meaningful to post — refuse BEFORE the
 # public write instead of leaving a no-op comment and timing out.
 if [ -z "$NUDGE_COMMENT" ]; then
-	echo "approval-gate: REFUSING — converged-but-unrecorded, but the policy has no nudge_comment and its approvers do not include coderabbitai[bot] (the built-in default's target). Set nudge_comment in the policy, or wait for an approver record." >&2
+	echo "approval-gate: REFUSING — converged-but-unrecorded, but the policy has no usable nudge_comment and no EXACT coderabbitai[bot] approver line (the built-in default's target; check for whitespace/padding in the policy). Set nudge_comment in the policy, or wait for an approver record." >&2
 	exit 2
 fi
 echo "approval-gate: converged-but-unrecorded (findings clean + head $HEAD_SHA reviewed) — posting nudge and waiting for the APPROVED record (timeout ${NUDGE_TIMEOUT}s)"

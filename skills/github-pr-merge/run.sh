@@ -175,7 +175,15 @@ if [ "$AUTO" = "1" ]; then
 	# governed solely by the repo's delete-branch-on-merge setting — the
 	# outcome echo below tells the truth per that setting.
 	[ "$DELETE_BRANCH" = "1" ] && MERGE_ARGS+=(--delete-branch)
-	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
+	# rc-captured for the same designed-TOCTOU framing as the immediate
+	# path (#2567 r3): an arm-time --match-head-commit refusal means the
+	# head moved since gate verification.
+	arm_rc=0
+	SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}" || arm_rc=$?
+	if [ "$arm_rc" -ne 0 ]; then
+		echo "gh pr merge --auto failed (rc=$arm_rc). If the error above says the head branch was modified: the head moved past the gate-verified sha $HEAD_OID — re-run this skill to re-gate the new head." >&2
+		exit 2
+	fi
 	# Verify the outcome instead of asserting it: gh rc 0 covers BOTH
 	# "armed" and "merged immediately" (clean-status fallback).
 	# #2489: rc-capture — the merge/arm side effect ALREADY HAPPENED, so a
@@ -310,7 +318,7 @@ elif [ "$STRANDED" != "0" ]; then
 	echo "⚠ $STRANDED stranded review thread(s) (isResolved=false + isOutdated=true) — consider resolving via GraphQL before merge" >&2
 fi
 
-# #2567: approving-review gate (SSOT: merge target's
+# #2567: approving-review gate (SSOT: the default branch's
 # .github/approval-policy.yml). Refuses without an APPROVED bot review
 # at the final head; when CR has verifiably converged but skipped the
 # record, the gate nudges (`@coderabbitai approve`) and waits for the

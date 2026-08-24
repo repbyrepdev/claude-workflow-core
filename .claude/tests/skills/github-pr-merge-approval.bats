@@ -64,9 +64,11 @@ _shim_bin_setup() {
 # gh shim for driving the GATE directly. Reviews payload comes from
 # FAKE_REVIEWS_FILE; after a nudge (`pr comment`) is posted, subsequent
 # reviews calls serve FAKE_REVIEWS_AFTER_FILE when set (the record
-# "landing"). Comments from FAKE_COMMENTS_FILE. The merge-target policy
-# read is served by the contents arms: FAKE_CONTENTS_MODE=404|err|ok
-# with FAKE_REMOTE_POLICY_FILE for ok. Unknown calls are LOUD failures.
+# "landing"). Comments from FAKE_COMMENTS_FILE. The default-branch
+# policy read is served by the contents arms:
+# FAKE_CONTENTS_MODE=404|proxy404|err|ok, with FAKE_REMOTE_POLICY_FILE
+# for ok. FAKE_COMMENT_FAIL=1 makes the nudge post fail. Unknown calls
+# are LOUD failures.
 _install_gh_shim() {
 	_shim_bin_setup
 	cat >"$TEST_TMP/bin/gh" <<'SHIM'
@@ -127,7 +129,7 @@ SHIM
 }
 
 # gh shim for driving run.sh end-to-end. Implements --jq with real jq so
-# run.sh's own queries (stranded-threads graphql, owner slug, headRefOid,
+# run.sh's own queries (stranded-threads graphql, owner slug,
 # mergeCommit) behave. FAKE_STATE is served raw and PRE-SHAPED (the
 # post-jq object run.sh expects) — its arm does not apply --jq. The
 # gate's queries hit the same reviews/comments fixtures as the unit shim
@@ -165,6 +167,10 @@ if [ "$1 $2" = "pr comment" ]; then
 	exit 0
 fi
 if [ "$1 $2" = "pr merge" ]; then
+	if [ "${FAKE_MERGE_FAIL:-0}" = "1" ]; then
+		echo "GraphQL: Head branch was modified. Review and try the merge again." >&2
+		exit 1
+	fi
 	echo "MERGE-FIRED"
 	exit 0
 fi
@@ -174,7 +180,6 @@ case "$*" in
 *"/pulls/"*"/reviews"*) cat "$FAKE_REVIEWS_FILE" ;;
 *"/issues/"*"/comments"*) cat "${FAKE_COMMENTS_FILE:-/dev/null}" ;;
 *graphql*) emit '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
-*headRefOid*) emit "{\"headRefOid\":\"$HEAD_SHA\"}" ;;
 *mergeCommit*) emit '{"mergeCommit":{"oid":"cafecafe0000111122223333444455556666cafe"}}' ;;
 *deleteBranchOnMerge*) emit '{"deleteBranchOnMerge":false}' ;;
 *)
@@ -207,6 +212,11 @@ _comments_with_head_witness() {
 	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
 }
 
+_reviews_after_approved_at_head() {
+	printf '[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"%s","submitted_at":"2026-08-24T16:31:00Z","body":""}]' "$HEAD_SHA" >"$TEST_TMP/reviews-after.json"
+	export FAKE_REVIEWS_AFTER_FILE="$TEST_TMP/reviews-after.json"
+}
+
 _comments_without_witness() {
 	printf '[{"user":{"login":"coderabbitai[bot]"},"body":"Reviewing files between oldold1111 and beefbeef2222."}]' >"$TEST_TMP/comments.json"
 	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
@@ -227,7 +237,7 @@ _run_gate() {
 	[ ! -f "$GH_ARGS_LOG" ]
 }
 
-@test "merge-target policy: fetched from default branch and honored (require:false)" {
+@test "default-branch policy: fetched and honored (require:false)" {
 	_install_gh_shim
 	unset APPROVAL_GATE_POLICY
 	_write_policy 1 false
@@ -238,7 +248,7 @@ _run_gate() {
 	grep -q "contents-query" "$GH_ARGS_LOG"
 }
 
-@test "merge-target policy 404: not adopted, gate disabled loudly" {
+@test "default-branch policy 404: not adopted, gate disabled loudly" {
 	_install_gh_shim
 	unset APPROVAL_GATE_POLICY
 	export FAKE_CONTENTS_MODE=404
@@ -247,7 +257,7 @@ _run_gate() {
 	[[ $output == *"DISABLED"* ]]
 }
 
-@test "merge-target policy fetch error (non-404) fails CLOSED" {
+@test "default-branch policy fetch error (non-404) fails CLOSED" {
 	_install_gh_shim
 	unset APPROVAL_GATE_POLICY
 	export FAKE_CONTENTS_MODE=err
@@ -465,8 +475,7 @@ EOF
 	_comments_without_witness
 	_write_findings 0
 	_write_policy 5
-	printf '[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"%s","submitted_at":"2026-08-24T16:31:00Z","body":""}]' "$HEAD_SHA" >"$TEST_TMP/reviews-after.json"
-	export FAKE_REVIEWS_AFTER_FILE="$TEST_TMP/reviews-after.json"
+	_reviews_after_approved_at_head
 	_run_gate
 	[ "$status" -eq 0 ]
 	grep -q "pr comment" "$GH_ARGS_LOG"
@@ -625,8 +634,7 @@ EOF
 	_write_policy 5
 	printf '[{"user":{"login":"coderabbitai[bot]"},"body":null},{"user":{"login":"coderabbitai[bot]"},"body":"Reviewing files between oldold1111 and %s."}]' "$HEAD_SHA" >"$TEST_TMP/comments.json"
 	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
-	printf '[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"%s","submitted_at":"2026-08-24T16:31:00Z","body":""}]' "$HEAD_SHA" >"$TEST_TMP/reviews-after.json"
-	export FAKE_REVIEWS_AFTER_FILE="$TEST_TMP/reviews-after.json"
+	_reviews_after_approved_at_head
 	_run_gate
 	[ "$status" -eq 0 ]
 	[ -f "$NUDGE_MARKER" ]
@@ -679,4 +687,14 @@ EOF
 	_reviews_approved_at_head
 	_run_gate
 	[ "$status" -eq 0 ]
+}
+
+@test "run.sh: immediate-merge failure is framed as the designed TOCTOU refusal, rc 2" {
+	_install_runsh_gh_shim
+	_reviews_approved_at_head
+	export FAKE_MERGE_FAIL=1
+	run "$RUNSH" --pr 99 --yes
+	[ "$status" -eq 2 ]
+	[[ $output == *"re-run this skill to re-gate"* ]]
+	[[ $output != *"✓ Merged"* ]]
 }
