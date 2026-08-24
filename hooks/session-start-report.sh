@@ -517,8 +517,17 @@ if [ -f "$SKIP_LOG" ]; then
 	# which makes the [ ... -gt 3 ] arithmetic test below silently fail.
 	today_count=$(grep -c "\"ts\":\"$today" "$SKIP_LOG" 2>/dev/null || true)
 	if [ "${today_count:-0}" -gt 3 ]; then
+		# #2545: the log now carries rows from TWO producers (pre-push
+		# bypasses and phase2 round-cap overrides — distinguished by the
+		# `gate` field; rows predating the field were all written by the
+		# pre-push hook). Segment the warning so a day of deliberate cap
+		# overrides is not misread as push-gate bypass abuse. Best-effort:
+		# jq absent/failing degrades to the un-segmented total.
+		gate_breakdown=$(jq -rs --arg today "$today" \
+			'[.[] | select(.ts | startswith($today))] | group_by(.gate // "pre-push") | map("\(.[0].gate // "pre-push")=\(length)") | join(", ")' \
+			"$SKIP_LOG" 2>/dev/null || true)
 		bits="$bits
-• ⚠ PIPELINE_GATE_SKIP used $today_count time(s) today — emergency bypass is running routine. Review whether gate thresholds need adjustment (see v4.23-A scaler) or Phase 1 discipline slipped."
+• ⚠ PIPELINE_GATE_SKIP used $today_count time(s) today${gate_breakdown:+ ($gate_breakdown)} — emergency bypass is running routine. Review whether gate thresholds need adjustment (see v4.23-A scaler) or Phase 1 discipline slipped."
 	fi
 fi
 

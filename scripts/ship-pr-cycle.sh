@@ -115,6 +115,14 @@ if [ -n "$PLUGIN_LIB" ] && [ -f "$PLUGIN_LIB/resolve-plugin-helper.sh" ]; then
 		. "$PLUGIN_LIB/hook-ack.sh" ||
 			echo "ship-pr-cycle: WARN: hook-ack.sh source returned non-zero — #283 directives advisory-only" >&2
 	fi
+	# #2545: shared pipeline-skip audit writer (one row shape for every gate).
+	# Best-effort: if absent, the cap-override falls back to a loud UNLOGGED
+	# warning — the override itself is never blocked by audit plumbing.
+	if [ -r "$PLUGIN_LIB/pipeline-skip.sh" ]; then
+		# shellcheck source=../_lib/pipeline-skip.sh
+		. "$PLUGIN_LIB/pipeline-skip.sh" ||
+			echo "ship-pr-cycle: WARN: pipeline-skip.sh source returned non-zero — cap overrides will warn UNLOGGED" >&2
+	fi
 	if [ -r "$PLUGIN_LIB/ship-cycle-directives.sh" ]; then
 		# shellcheck source=../_lib/ship-cycle-directives.sh
 		. "$PLUGIN_LIB/ship-cycle-directives.sh" ||
@@ -1235,6 +1243,63 @@ _phase2_branch_run_count() {
 	printf '%s\n' "$p2runs"
 }
 
+_phase2_cap_gate() {
+	# #2545 (phase1 r1 — flagged independently by code-reviewer,
+	# code-simplifier AND silent-failure-hunter): the ONE at-cap decision,
+	# shared by the pre-invocation guard and the post-review branch so the
+	# two copies cannot drift. The first draft's guard treated a missing
+	# coverage lib as "residuals not addressed" — exactly the misleading
+	# degrade the #248 fail-closed contract forbids and the post-review twin
+	# already refused loudly. One implementation, one contract:
+	#   rc 0 → residuals covered; advanced to push (no review spent).
+	#   rc 2 → refusal: unaddressed residuals (hook-ack routed graduation
+	#          directive), missing coverage SSOT, or unresolvable HEAD.
+	# Both call sites therefore report the SAME state with the SAME message
+	# and the SAME exit code on consecutive `next` invocations (phase1 r1
+	# code-reviewer: rc 2 + "ENFORCED" from one path but rc 0 + "reached …
+	# but" from the other was two spellings of one operator state).
+	local cap="$1" runs="$2"
+	if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
+		echo "ship-pr-cycle: ERROR: coverage SSOT _lib/cr-phase2-coverage.sh did not load — cannot evaluate the Phase 2 round-cap. Fix the plugin install / PLUGIN_LIB resolution, then re-run. (NOT advancing.)" >&2
+		return 2
+	fi
+	local head_sha
+	if ! head_sha=$(git rev-parse --short HEAD 2>/dev/null); then
+		echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-parse --short HEAD failed" >&2
+		return 2
+	fi
+	if cr_phase2_clean_for_sha "$head_sha"; then
+		_set_stage "push"
+		echo "→ phase2 round-cap reached ($runs/$cap) + residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push WITHOUT spending another CR-CLI review"
+		return 0
+	fi
+	local _cap_body
+	_cap_body="ship-pr-cycle: phase2 round-cap ENFORCED ($runs/$cap) — REFUSING to spend another CR-CLI review on this branch; the residual finding(s) are NOT all addressed.
+Re-reviewing past the cap is the non-deterministic minor-tail treadmill (PR #2540 burned 6 rounds against a cap of 3). Graduate instead — address EACH residual from the last completed review, then re-run 'scripts/ship-pr-cycle.sh next':
+  - real issue → fix in-PR and commit, then spend ONE deliberate review on the new HEAD via the audited escape below (the pre-push gate requires a completed review of HEAD; the cap keeps that spend explicit, not drift)
+  - verified FALSE-POSITIVE → record a rejection with evidence (scoped to HEAD):
+      skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
+        --covers-count <N> --follow-up-issue <N — required for critical/high/medium> \\
+        --finding-id <id> --finding-text \"...\" \\
+        --dogfood-cmd \"...\" --dogfood-output \"...\" --dogfood-rc 0 --external-authority \"...\" --reason \"...\"
+  Once coverage clears cr_phase2_clean_for_sha for HEAD, 'next' advances to push WITHOUT another review.
+Deliberate extra round (audit-logged to pipeline-skip.jsonl):
+  PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON=\"why\" scripts/ship-pr-cycle.sh next"
+	printf '%s\n' "$_cap_body" >&2
+	# Route through hook-ack so the refusal cannot scroll past (#2545
+	# acceptance; sibling of #2547). Best-effort: an absent lib degrades to
+	# the stderr directive + rc 2 — the refusal never depends on ack
+	# plumbing.
+	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
+		command -v hook_ack_append >/dev/null 2>&1; then
+		local _cap_diag
+		if _cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p2cap" "phase2-round-cap-enforced" "$_cap_body"); then
+			hook_ack_append "ship-pr-cycle-p2cap" "phase2-round-cap-enforced" "$_cap_diag" || true
+		fi
+	fi
+	return 2
+}
+
 # ----- subcommands -----
 
 cmd_start() {
@@ -1267,14 +1332,28 @@ cmd_status() {
 	fi
 	# #2545: surface the phase2 round/cap position (this-branch CR-CLI runs
 	# vs the scaler cap) so the ceiling is visible without re-reading logs.
-	# Advisory render: a count failure degrades to <unavailable> (the
-	# helper's stderr still surfaces the cause) — the cap GATE in cmd_next
-	# keeps its own fail-closed check; status must never mask state with an
-	# abort of its own.
-	local _p2cap _p2runs
-	_p2cap=$(_scaler_rounds) || _p2cap=""
-	_p2runs=$(_phase2_branch_run_count) || _p2runs=""
-	echo "  P2 cap:      ${_p2runs:-<unavailable>}/${_p2cap:-<unavailable>} CR-CLI run(s) used on this branch (enforced pre-invocation, #2545)"
+	# Rendered ONLY at stage=phase2 (phase1 r1 code-reviewer: status is
+	# otherwise a cheap read-only dump; spawning the scaler + rev-list + jq
+	# at every stage made start/status heavyweight for a line that only
+	# means something inside phase2). Advisory render: a count failure
+	# degrades to <unavailable> (the helper's stderr still surfaces the
+	# cause) — the cap GATE in cmd_next keeps its own fail-closed check;
+	# status must never mask state with an abort of its own.
+	local _p2stage
+	_p2stage=$(jq -r '.stage // ""' "$sf" 2>/dev/null || echo "")
+	if [ "$_p2stage" = "phase2" ]; then
+		local _p2cap _p2runs
+		# No `||` guard on the scaler: _scaler_rounds has no failure channel
+		# (its error paths warn + print the fallback cap 2, rc 0 — phase1 r1
+		# code-simplifier flagged the dead branch).
+		_p2cap=$(_scaler_rounds)
+		# The `||` here IS load-bearing, not dead: the helper's failure
+		# paths return rc 2 with nothing on stdout, and without the guard
+		# the failing command substitution aborts cmd_status under set -e —
+		# exactly the abort the contract above forbids.
+		_p2runs=$(_phase2_branch_run_count) || _p2runs=""
+		echo "  P2 cap:      ${_p2runs:-<unavailable>}/$_p2cap CR-CLI run(s) used on this branch (enforced pre-invocation, #2545)"
+	fi
 }
 
 cmd_next() {
@@ -1712,7 +1791,11 @@ EOF
 		# reviews on one unchanged SHA). A new commit / main advancing → new
 		# hash → miss → fresh review. Best-effort: no key / no lib → exactly the
 		# prior always-review behavior.
-		local findings rc=0 p2_from_cache=0 p2_ckey="" p2_cached=""
+		local findings rc=0 p2_from_cache=0 p2_ckey="" p2_cached="" p2cap
+		# #2545 (phase1 r1 code-simplifier): resolve the scaler cap ONCE per
+		# invocation — it cannot change mid-`next`, and _scaler_rounds shells
+		# out to phase1-scaler.sh each call.
+		p2cap=$(_scaler_rounds)
 		if command -v phase2_review_cache_key >/dev/null 2>&1; then
 			p2_ckey=$(phase2_review_cache_key "$BASE_BRANCH")
 		fi
@@ -1731,67 +1814,27 @@ EOF
 			# still burned one of the 10/hr budget (PR #2540 ran 6 rounds
 			# against a cap of 3; the #2544 cycle read 9/2). A documented
 			# rule with no mechanical backstop is a suggestion: at the cap,
-			# `next` now refuses to invoke, exits non-zero, and routes the
-			# refusal through hook-ack so it cannot scroll past. Deliberate
-			# overrun stays possible via the SAME audited escape the
-			# pre-push gate honors (PIPELINE_GATE_SKIP=1 [+ _REASON],
-			# logged to pipeline-skip.jsonl).
-			local p2cap p2prior
-			p2cap=$(_scaler_rounds)
+			# `next` refuses to invoke via the shared _phase2_cap_gate
+			# (fail-closed, hook-ack routed, rc 2). Deliberate overrun
+			# stays possible via the SAME audited escape the pre-push gate
+			# honors (PIPELINE_GATE_SKIP=1 [+ _REASON]) — the shared
+			# variable is the #2545 spec ("consistent with the other
+			# gates"); the log row's `gate` field is what separates the two
+			# producers for reporting.
+			local p2prior
 			p2prior=$(_phase2_branch_run_count) || return 2
 			if [ "$p2prior" -ge "$p2cap" ]; then
 				if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 					echo "ship-pr-cycle: phase2 round-cap $p2prior/$p2cap OVERRIDDEN via PIPELINE_GATE_SKIP=1 — invoking the CR-CLI past the cap (audit-logged)" >&2
-					local _skip_log="$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" _skip_sha _skip_branch
-					mkdir -p "$(dirname "$_skip_log")" 2>/dev/null || true
-					_skip_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-					_skip_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-					jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_skip_sha" \
-						--arg branch "$_skip_branch" --arg reason "${PIPELINE_GATE_SKIP_REASON:-}" \
-						--arg gate "phase2-round-cap" \
-						'{ts: $ts, sha: $sha, branch: $branch, reason: $reason, gate: $gate}' \
-						>>"$_skip_log" 2>/dev/null || true
+					if command -v pipeline_skip_log >/dev/null 2>&1; then
+						pipeline_skip_log "phase2-round-cap" || true
+					else
+						echo "ship-pr-cycle: WARN: pipeline-skip.sh lib missing — cap override proceeding UNLOGGED" >&2
+					fi
 				else
-					# Graduation without another review: if every residual
-					# from the LAST completed review is addressed (the same
-					# shared coverage check the pre-push gate uses), advance
-					# — the cap's whole point is that coverage, not a lucky
-					# re-roll, is how a branch leaves phase2.
-					local p2head
-					if ! p2head=$(git rev-parse --short HEAD 2>/dev/null); then
-						echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-parse --short HEAD failed" >&2
-						return 2
-					fi
-					if command -v cr_phase2_clean_for_sha >/dev/null 2>&1 &&
-						cr_phase2_clean_for_sha "$p2head"; then
-						_set_stage "push"
-						echo "→ phase2 round-cap reached ($p2prior/$p2cap) + residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push WITHOUT spending another CR-CLI review"
-						return 0
-					fi
-					local _cap_body
-					_cap_body="ship-pr-cycle: phase2 round-cap ENFORCED ($p2prior/$p2cap) — REFUSING to invoke the CR-CLI again on this branch; the residual finding(s) are NOT all addressed.
-Re-reviewing past the cap is the non-deterministic minor-tail treadmill (PR #2540 burned 6 rounds against a cap of 3). Graduate instead — address EACH residual from the last completed review, then re-run 'scripts/ship-pr-cycle.sh next':
-  - real issue → fix in-PR and commit, then spend ONE deliberate review on the new HEAD via the audited escape below (the pre-push gate requires a completed review of HEAD; the cap keeps that spend explicit, not drift)
-  - verified FALSE-POSITIVE → record a rejection with evidence (scoped to HEAD):
-      skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
-        --covers-count <N> --finding-id <id> --finding-text \"...\" \\
-        --dogfood-cmd \"...\" --dogfood-output \"...\" --dogfood-rc 0 --external-authority \"...\" --reason \"...\"
-  Once coverage clears cr_phase2_clean_for_sha for HEAD, 'next' advances to push WITHOUT another review.
-Deliberate extra round (audit-logged to pipeline-skip.jsonl):
-  PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON=\"why\" scripts/ship-pr-cycle.sh next"
-					printf '%s\n' "$_cap_body" >&2
-					# Route through hook-ack so the refusal cannot scroll
-					# past (#2545 acceptance; sibling of #2547). Best-effort:
-					# an absent lib degrades to the stderr directive + rc 2 —
-					# the refusal itself never depends on the ack plumbing.
-					if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
-						command -v hook_ack_append >/dev/null 2>&1; then
-						local _cap_diag
-						if _cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p2cap" "phase2-round-cap-enforced" "$_cap_body"); then
-							hook_ack_append "ship-pr-cycle-p2cap" "phase2-round-cap-enforced" "$_cap_diag" || true
-						fi
-					fi
-					return 2
+					local gate_rc=0
+					_phase2_cap_gate "$p2cap" "$p2prior" || gate_rc=$?
+					return "$gate_rc"
 				fi
 			fi
 			findings=$(_phase2_run_cr_cli) || rc=$?
@@ -1921,70 +1964,26 @@ EOF
 			# Round-cap graduation (#234): phase2 CR-CLI findings on a large
 			# diff are a non-deterministic LLM minor-tail that need not hit 0
 			# even when the code is substantively clean. Mirror phase1's scaler
-			# cap — after the round budget, advance to push: the residual is
-			# diminishing-returns noise and the SERVER-SIDE CR-in-CI is the
-			# authoritative merge gate. Count this-BRANCH CR-CLI runs (#2354: per-branch, NOT per-SHA — a
-			# fix-commit's new HEAD must not reset the count, else the ROUNDS cap
-			# never bounds cross-commit phase2 churn) from the log
-			# (each _phase2_run_cr_cli appends one entry, incl. the current one).
-			local cap p2runs head_sha
-			cap=$(_scaler_rounds)
-			# git/jq failures must fail LOUD, not silently default the count
-			# (CR phase2 r1 CRITICAL): a masked failure could wrongly advance
-			# — vacuously satisfying a small cap — or loop forever. Resolve
-			# the sha first (fail-loud), then count via the #2545 extracted
-			# SSOT helper (identical fail-closed semantics, shared with the
-			# pre-invocation guard and `status`).
-			if ! head_sha=$(git rev-parse --short HEAD 2>/dev/null); then
-				echo "ship-pr-cycle: ERROR: phase2 round-cap — git rev-parse --short HEAD failed; cannot count CR-CLI runs" >&2
-				return 2
-			fi
-			p2runs=$(_phase2_branch_run_count) || return 2
-			if [ "$p2runs" -ge "$cap" ]; then
-				# #238: advance at the round budget ONLY if every residual finding
-				# is ADDRESSED — the SAME shared coverage check the pre-push gate
-				# uses (cr_phase2_clean_for_sha: findings=0 OR all covered by
-				# prove-yourself records scoped to this sha). This keeps the cap
-				# and the gate consistent (never advance to a push the gate
-				# refuses) and — unlike the prior unconditional advance — never
-				# rides past an UNADDRESSED finding of ANY severity. The cap thus
-				# means "after N rounds you must ADDRESS the residuals (fix in-PR,
-				# or verified-false-positive → reject with evidence), not re-roll
-				# for a lucky 0". Fail-CLOSED if the shared lib didn't load.
-				# #238 code-simplifier r1: reuse the already-resolved (fail-loud)
-				# head_sha — cr_phase2_clean_for_sha reduces its arg to short form
-				# internally, so a second `git rev-parse HEAD || echo ""` (a
-				# soft-fail the fail-loud head_sha resolution above deliberately
-				# rejects) would be redundant.
-				# #248 (CR major): the declared coverage SSOT is REQUIRED to make
-				# this cap decision. If it didn't load, fail CLOSED with a clear
-				# error — never the misleading "findings unaddressed" directive
-				# below, and never a silent advance. Scoped to the decision that
-				# needs it, so other stages (branch-ready/phase1/push/merge) still
-				# run (the pre-push gate independently fails-closed on the lib too).
-				if ! command -v cr_phase2_clean_for_sha >/dev/null 2>&1; then
-					echo "ship-pr-cycle: ERROR: coverage SSOT _lib/cr-phase2-coverage.sh did not load — cannot evaluate the Phase 2 round-cap. Fix the plugin install / PLUGIN_LIB resolution, then re-run. (NOT advancing.)" >&2
-					return 2
-				fi
-				if cr_phase2_clean_for_sha "$head_sha"; then
-					_set_stage "push"
-					echo "→ phase2 round-cap reached ($p2runs/$cap) + all $findings residual finding(s) addressed (prove-yourself, scoped to sha); advanced to push"
-					return 0
-				fi
-				cat <<EOF
-ship-pr-cycle: phase2 round-cap reached ($p2runs/$cap) but the $findings residual finding(s) are NOT all addressed — NOT advancing (the cap will not ride past unaddressed findings of any severity).
-  Address EACH residual, then re-run 'ship-pr-cycle.sh next':
-    - real issue → fix in-PR (commit; the new SHA re-reviews)
-    - verified FALSE-POSITIVE → record a rejection with evidence (covers this run's findings, scoped to HEAD):
-        skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
-          --covers-count $findings --follow-up-issue <N> --finding-id <id> --finding-text "..." \\
-          --dogfood-cmd "..." --dogfood-output "..." --dogfood-rc 0 --external-authority "..." --reason "..."
-  (covered_sha auto = HEAD; --covers-count now reaches the audit log per #238.)
-EOF
-				return 0
+			# cap. Count this-BRANCH CR-CLI runs (#2354: per-branch, NOT
+			# per-SHA — a fix-commit's new HEAD must not reset the count) from
+			# the log (each _phase2_run_cr_cli appends one entry, incl. the
+			# current one). #2545 (phase1 r1): the at-cap DECISION — #238
+			# coverage-or-refuse, #248 fail-closed on a missing lib — lives in
+			# the shared _phase2_cap_gate, so this path and the pre-invocation
+			# guard report the same state identically (same message, same rc)
+			# instead of two drifting spellings. This branch reaches the gate
+			# only on the round that arrives AT the cap (the guard refuses
+			# earlier rounds from exceeding it) or after an audited
+			# PIPELINE_GATE_SKIP override round.
+			local p2runs_post
+			p2runs_post=$(_phase2_branch_run_count) || return 2
+			if [ "$p2runs_post" -ge "$p2cap" ]; then
+				local gate_rc=0
+				_phase2_cap_gate "$p2cap" "$p2runs_post" || gate_rc=$?
+				return "$gate_rc"
 			fi
 			cat <<EOF
-ship-pr-cycle: phase2 round $p2runs/$cap — CR-CLI returned $findings finding(s)
+ship-pr-cycle: phase2 round $p2runs_post/$p2cap — CR-CLI returned $findings finding(s)
   DIRECTIVE FOR OPERATOR (Claude):
     Apply trivial fixes inline (regex tightening, mktemp /dev/null fallback,
     here-string idiom, comment fixes, log-msg updates, var renames).

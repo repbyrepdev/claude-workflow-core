@@ -210,9 +210,25 @@ _seed_coverage() {
 		echo "no enforcement message. output: $output"
 		return 1
 	}
-	[[ $output == *"REFUSING to invoke the CR-CLI"* ]]
-	[[ $output == *"record-rejection"* ]]
-	[[ $output == *"PIPELINE_GATE_SKIP=1"* ]] # the audited escape must be named
+	# phase1 r1 pr-test-analyzer (conf 9, probed empirically): a failing
+	# MIDDLE [[ ]] is masked by the next command's status — every content
+	# assertion below carries its own || return 1.
+	[[ $output == *"REFUSING to spend another CR-CLI review"* ]] || {
+		echo "refusal does not name the spend it refuses. output: $output"
+		return 1
+	}
+	[[ $output == *"record-rejection"* ]] || {
+		echo "graduation directive lost the record-rejection route. output: $output"
+		return 1
+	}
+	[[ $output == *"--follow-up-issue"* ]] || {
+		echo "directive omits --follow-up-issue (hard-required for cr critical/high/medium). output: $output"
+		return 1
+	}
+	[[ $output == *"PIPELINE_GATE_SKIP=1"* ]] || {
+		echo "the audited escape is not named. output: $output"
+		return 1
+	}
 	[ "$(_cur_stage)" = phase2 ]
 	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] || {
 		echo "the CR-CLI RAN past the cap — the refusal did not refuse"
@@ -221,6 +237,98 @@ _seed_coverage() {
 	local diag_dir="$ROOT/.claude/.session-state/hook-ack/ship-pr-cycle-p2cap"
 	[ -d "$diag_dir" ] && [ -n "$(ls -A "$diag_dir" 2>/dev/null)" ] || {
 		echo "no hook-ack diagnostic written under $diag_dir"
+		return 1
+	}
+}
+
+@test "#2545 PIPELINE_GATE_SKIP=1 permits the review past the cap + logs the bypass" {
+	# The audited escape: a DELIBERATE extra round must still be possible —
+	# the CR-CLI runs (sentinel present) and the bypass lands in
+	# pipeline-skip.jsonl with gate + reason. The overridden round's result
+	# then hits the SAME shared cap gate post-review (still at cap, still no
+	# coverage) → rc 2, ENFORCED message, stage stays phase2: the override
+	# buys exactly ONE review, never a free advance past the coverage gate
+	# (phase1 r1 pr-test-analyzer: the stage assertion was missing, so an
+	# override that wrongly advanced to push would have kept the suite
+	# green).
+	_seed_stage phase2
+	_seed_log 3
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON="bats-2545-deliberate" run "$SCRIPT" next
+	[ "$status" -eq 2 ] || {
+		echo "post-override round did not land back at the enforced refusal (got rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"OVERRIDDEN via PIPELINE_GATE_SKIP=1"* ]] || {
+		echo "no override announcement. output: $output"
+		return 1
+	}
+	[ -e "$TEST_TMP/.claude/.local-review-ran" ] || {
+		echo "skip was set but the CR-CLI did NOT run"
+		return 1
+	}
+	[[ $output == *"round-cap ENFORCED (3/3)"* ]] || {
+		echo "overridden round's residuals did not re-enter the shared gate. output: $output"
+		return 1
+	}
+	[ "$(_cur_stage)" = phase2 ] || {
+		echo "override advanced the stage past the coverage gate (stage=$(_cur_stage))"
+		return 1
+	}
+	local skip_log="$ROOT/.claude/logs/pipeline-skip.jsonl"
+	[ -f "$skip_log" ] || {
+		echo "no pipeline-skip.jsonl written"
+		return 1
+	}
+	run jq -rs '[.[] | select(.gate=="phase2-round-cap")] | last | .reason' "$skip_log"
+	[ "$status" -eq 0 ]
+	[ "$output" = "bats-2545-deliberate" ] || {
+		echo "skip-log entry missing gate/reason. got: '$output'"
+		return 1
+	}
+}
+
+@test "#2545 status prints the P2 round/cap position" {
+	# Acceptance: the position against the ceiling is visible without
+	# re-reading logs. 2 runs seeded, cap 3 → "P2 cap: 2/3". Rendered only
+	# at stage=phase2 (status stays a cheap dump elsewhere).
+	_seed_stage phase2
+	_seed_log 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" status
+	[ "$status" -eq 0 ] || {
+		echo "status exited $status. output: $output"
+		return 1
+	}
+	[[ $output == *"P2 cap:"* ]] || {
+		echo "status has no P2 cap line. output: $output"
+		return 1
+	}
+	[[ $output == *"2/3"* ]] || {
+		echo "P2 cap line does not show 2/3. output: $output"
+		return 1
+	}
+}
+
+@test "#2545 status DEGRADES on a corrupt run-log instead of aborting" {
+	# The advisory-render contract (phase1 r1 pr-test-analyzer): a helper
+	# failure must degrade to <unavailable> — status never masks state with
+	# an abort of its own. Corrupt log → count helper rc 2 → status still 0,
+	# line renders <unavailable>/3.
+	_seed_stage phase2
+	mkdir -p "$ROOT/.claude/logs"
+	printf 'not valid json {{{\n' >"$ROOT/.claude/logs/cr-local-review.jsonl"
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" status
+	[ "$status" -eq 0 ] || {
+		echo "status ABORTED on a corrupt run-log (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"P2 cap:      <unavailable>/3"* ]] || {
+		echo "corrupt log did not degrade to <unavailable>/3. output: $output"
 		return 1
 	}
 }
@@ -286,12 +394,14 @@ _seed_coverage() {
 }
 
 @test "phase2 cap — git rev-parse --short HEAD failure fails closed (#234 CR r1)" {
-	# The sha is resolved before counting; a git failure must halt (rc 2), not
-	# feed an empty --arg to jq and silently miscount. Selective git stub: fail
-	# ONLY `rev-parse --short` (the cap's sole use — verified) and delegate
-	# everything else (rev-parse --show-toplevel / --abbrev-ref) to real git.
+	# A git failure while resolving the sha for the at-cap coverage decision
+	# must halt (rc 2), never silently mis-decide. #2545 moved the resolve
+	# INSIDE the shared _phase2_cap_gate (it is only needed at the cap), so
+	# the fixture seeds AT-cap — the pre-invocation guard reaches the gate,
+	# whose rev-parse then fails. Selective git stub: fail ONLY `rev-parse
+	# --short` and delegate everything else to real git.
 	_seed_stage phase2
-	_seed_log 1
+	_seed_log 3
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	local real_git
@@ -553,60 +663,6 @@ _seed_cache_detail() {
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1
 }
 
-@test "#2545 PIPELINE_GATE_SKIP=1 permits the review past the cap + logs the bypass" {
-	# The audited escape: a DELIBERATE extra round must still be possible —
-	# the CR-CLI runs (sentinel present), the bypass lands in
-	# pipeline-skip.jsonl with gate + reason, and the run then flows into the
-	# normal post-review cap handling (rc 0, directive, stays — no coverage).
-	_seed_stage phase2
-	_seed_log 3
-	cd "$TEST_TMP" || return 1
-	export STUB_ROUNDS=3
-	PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON="bats-2545-deliberate" run "$SCRIPT" next
-	[ "$status" -eq 0 ] || {
-		echo "skip-permitted round did not exit 0 (got $status). output: $output"
-		return 1
-	}
-	[[ $output == *"OVERRIDDEN via PIPELINE_GATE_SKIP=1"* ]]
-	[ -e "$TEST_TMP/.claude/.local-review-ran" ] || {
-		echo "skip was set but the CR-CLI did NOT run"
-		return 1
-	}
-	local skip_log="$ROOT/.claude/logs/pipeline-skip.jsonl"
-	[ -f "$skip_log" ] || {
-		echo "no pipeline-skip.jsonl written"
-		return 1
-	}
-	run jq -rs '[.[] | select(.gate=="phase2-round-cap")] | last | .reason' "$skip_log"
-	[ "$status" -eq 0 ]
-	[ "$output" = "bats-2545-deliberate" ] || {
-		echo "skip-log entry missing gate/reason. got: '$output'"
-		return 1
-	}
-}
-
-@test "#2545 status prints the P2 round/cap position" {
-	# Acceptance: the position against the ceiling is visible without
-	# re-reading logs. 2 runs seeded, cap 3 → "P2 cap: 2/3".
-	_seed_stage phase2
-	_seed_log 2
-	cd "$TEST_TMP" || return 1
-	export STUB_ROUNDS=3
-	run "$SCRIPT" status
-	[ "$status" -eq 0 ] || {
-		echo "status exited $status. output: $output"
-		return 1
-	}
-	[[ $output == *"P2 cap:"* ]] || {
-		echo "status has no P2 cap line. output: $output"
-		return 1
-	}
-	[[ $output == *"2/3"* ]] || {
-		echo "P2 cap line does not show 2/3. output: $output"
-		return 1
-	}
-}
-
 @test "#2545 cache-HIT reconcile row satisfies the #2544 completeness gate" {
 	# #284 deadlock regression: the reconcile synthesizes a run-log row for a
 	# sha whose identical content was reviewed under ANOTHER sha. #2544 made
@@ -624,7 +680,10 @@ _seed_cache_detail() {
 		echo "reconcile advance failed (rc=$status). output: $output"
 		return 1
 	}
-	[[ $output == *"cache HIT"* ]]
+	[[ $output == *"cache HIT"* ]] || {
+		echo "cache did not HIT — the reconcile path never ran. output: $output"
+		return 1
+	}
 	[[ $output == *"advanced to push"* ]] || {
 		echo "did not advance — the reconcile row failed the completeness gate? output: $output"
 		return 1

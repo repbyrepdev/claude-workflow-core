@@ -491,14 +491,21 @@ if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 	# v4.23-O (#561): log each bypass so routine use surfaces. Routine
 	# bypass = defeating the point of the gate; data from this log feeds
 	# the session-start-report warning + the I/J/K enforcement design.
-	SKIP_LOG="${SKIP_LOG:-$REPO_ROOT/.claude/logs/pipeline-skip.jsonl}"
-	mkdir -p "$(dirname "$SKIP_LOG")" 2>/dev/null || true
-	_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-	_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$_sha" \
-		--arg branch "$_branch" --arg reason "${PIPELINE_GATE_SKIP_REASON:-}" \
-		'{ts: $ts, sha: $sha, branch: $branch, reason: $reason}' \
-		>>"$SKIP_LOG" 2>/dev/null || true
+	# #2545: the append moved to the shared _lib/pipeline-skip.sh writer —
+	# one row shape for every gate (this producer emits gate:"pre-push",
+	# the phase2 round-cap emits gate:"phase2-round-cap") so the report
+	# can segment overrides instead of conflating them. A missing lib
+	# degrades to a LOUD unlogged warning, never a blocked bypass.
+	_ppg_skip_lib="$PPG_DIR/../_lib/pipeline-skip.sh"
+	if [ -r "$_ppg_skip_lib" ]; then
+		# shellcheck source=../_lib/pipeline-skip.sh
+		. "$_ppg_skip_lib" 2>/dev/null || true
+	fi
+	if command -v pipeline_skip_log >/dev/null 2>&1; then
+		pipeline_skip_log "pre-push" || true
+	else
+		echo "pre-push-pipeline-gate: WARN: _lib/pipeline-skip.sh unavailable — bypass proceeding UNLOGGED" >&2
+	fi
 	exit 0
 fi
 
