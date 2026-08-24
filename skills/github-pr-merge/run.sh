@@ -115,6 +115,14 @@ STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRoll
 echo "=== Pre-merge state for PR #$PR ==="
 printf '%s\n' "$STATE" | jq .
 
+# #2567: hoisted once — the gate pins this exact sha, and the merge
+# calls pass it to --match-head-commit so GitHub refuses if the head
+# moved after the gate verified it (TOCTOU close, both paths). Guarded
+# assignments: a failing substitution here must abort loudly, not feed
+# the gate an empty arg it misreports as a policy refusal.
+HEAD_OID=$(printf '%s' "$STATE" | jq -r '.head')
+OWNER_NAME=$(skc_repo_owner_name)
+
 # --auto (#2487): ARM platform auto-merge and exit. The immediate path's
 # gates below (the mergeable bail, the FAILED-check warn that refuses under
 # non-interactive APPROVE=1, the stranded-thread check) do not run — GitHub
@@ -144,8 +152,7 @@ if [ "$AUTO" = "1" ]; then
 	# native ruleset requires an approving review, an armed PR would merge
 	# on green checks alone; the wrapper is the only place the policy holds.
 	if ! "$SCRIPT_DIR/_approval-gate.sh" --pr "$PR" \
-		--head "$(printf '%s' "$STATE" | jq -r '.head')" \
-		--owner-name "$(skc_repo_owner_name)"; then
+		--head "$HEAD_OID" --owner-name "$OWNER_NAME"; then
 		echo "approval gate refused — not arming auto-merge for PR #$PR" >&2
 		exit 2
 	fi
@@ -154,8 +161,7 @@ if [ "$AUTO" = "1" ]; then
 	# this approval and the platform merge would otherwise merge a commit
 	# nobody reviewed (arm-time TOCTOU). --match-head-commit makes GitHub
 	# refuse the merge if the head has moved past the approved sha.
-	arm_head=$(printf '%s' "$STATE" | jq -r '.head')
-	MERGE_ARGS=(pr merge "$PR" "$METHOD" --auto --match-head-commit "$arm_head")
+	MERGE_ARGS=(pr merge "$PR" "$METHOD" --auto --match-head-commit "$HEAD_OID")
 	# Kept for the clean-status fallback (an immediate merge DOES honor it).
 	# On a genuinely armed PR gh exits before any merge, so deletion is
 	# governed solely by the repo's delete-branch-on-merge setting — the
@@ -279,7 +285,7 @@ fi
 
 # Stranded-thread check (isResolved=false + isOutdated=true means CR
 # flagged something that's now been fixed but not marked resolved).
-OWNER_NAME=$(skc_repo_owner_name)
+# OWNER_NAME hoisted to the top with HEAD_OID (#2567).
 OWNER="${OWNER_NAME%/*}"
 NAME="${OWNER_NAME#*/}"
 if ! STRANDED=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$NAME\") { pullRequest(number: $PR) { reviewThreads(first: 100) { nodes { isResolved isOutdated } } } } }" \
@@ -295,15 +301,16 @@ elif [ "$STRANDED" != "0" ]; then
 	echo "⚠ $STRANDED stranded review thread(s) (isResolved=false + isOutdated=true) — consider resolving via GraphQL before merge" >&2
 fi
 
-# #2567: approving-review gate (SSOT: .github/approval-policy.yml).
-# Refuses without an APPROVED bot review at the final head; when CR has
-# verifiably converged but skipped the record, the gate nudges
-# (`@coderabbitai approve`) and waits for the real record. Runs BEFORE
-# the operator approval so the prompt is only ever offered on a
-# policy-satisfying PR.
+# #2567: approving-review gate (SSOT: merge target's
+# .github/approval-policy.yml). Refuses without an APPROVED bot review
+# at the final head; when CR has verifiably converged but skipped the
+# record, the gate nudges (`@coderabbitai approve`) and waits for the
+# real record — NOTE that nudge is a public PR comment posted BEFORE the
+# operator prompt below (accepted trade-off: running this wrapper IS
+# merge intent; the prompt is only ever offered on a policy-satisfying
+# PR).
 if ! "$SCRIPT_DIR/_approval-gate.sh" --pr "$PR" \
-	--head "$(printf '%s' "$STATE" | jq -r '.head')" \
-	--owner-name "$OWNER_NAME"; then
+	--head "$HEAD_OID" --owner-name "$OWNER_NAME"; then
 	echo "approval gate refused — not merging PR #$PR" >&2
 	exit 2
 fi
@@ -311,8 +318,11 @@ fi
 echo ""
 skc_approve_or_exit "Merge PR #$PR ($METHOD)?"
 
-# Merge.
-MERGE_ARGS=(pr merge "$PR" "$METHOD")
+# Merge — pinned to the head the gate verified (#2567): a push landing
+# during the nudge poll or the prompt would otherwise merge a sha no bot
+# approved. GitHub refuses the merge if the head moved (same pin the
+# --auto arm path has always had).
+MERGE_ARGS=(pr merge "$PR" "$METHOD" --match-head-commit "$HEAD_OID")
 [ "$DELETE_BRANCH" = "1" ] && MERGE_ARGS+=(--delete-branch)
 # v0.27.0 #173 Layer 2 (Phase 1 r1 fix): resolve the PR's actual head ref
 # via gh BEFORE merge, NOT `git rev-parse HEAD`. The skill can be invoked

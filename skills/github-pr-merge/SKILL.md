@@ -122,7 +122,7 @@ CR is a required blocking status check as of v4.1 (enforced via branch protectio
 .claude/hooks/_pr-cr-findings.sh "$PR"
 ```
 
-Exit 0 = clean — ALL three buckets zero:
+Exit 0 = clean — ALL four buckets zero:
 - **Unresolved current threads** (on HEAD) — must be addressed in code.
 - **Stranded outdated threads** (`isResolved=false` + `isOutdated=true`) — v4.0 CR #354 lesson: CR's auto-resolve is imperfect. A fix may land but CR's heuristic misses the correlation, leaving the thread formally unresolved even as GitHub marks it outdated. "Outdated ≠ resolved" — skipping these hid a near-miss past an unaddressed finding. If any stranded thread appears, **explicitly resolve via GraphQL** after confirming the fix is live:
 
@@ -136,7 +136,7 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "PRRT_
 
 Non-zero exit halts. The `CodeRabbit` status check in branch protection is the required blocking gate (v4.1) — GitHub won't merge until CR posts its review. But the status-check pass/fail signals "review complete", not "findings=0". This helper is what counts findings + blocks on a non-zero total; repo policy ("any CR finding = local pipeline regression — fix + tighten") depends on the helper running. Don't skip it. Do NOT paper over stranded threads — manually resolving them IS the cleanup, not a workaround.
 
-### 4. Unresolved review threads (human reviewers)
+### 4a. Unresolved review threads (human reviewers)
 
 ```bash
 gh api "repos/$(gh repo view --json nameWithOwner -q '.nameWithOwner')/pulls/$PR/reviews" \
@@ -148,16 +148,26 @@ gh api "repos/$(gh repo view --json nameWithOwner -q '.nameWithOwner')/pulls/$PR
 ### 4b. Approving-review gate (#2567) — `_approval-gate.sh`
 
 `run.sh` refuses (both immediate and `--auto` paths) unless a bot listed
-in the SSOT policy `.github/approval-policy.yml` has an **APPROVED review
-record on the final head** (latest-per-reviewer, commit-pinned — a stale
-APPROVED on an earlier commit or one superseded by CHANGES_REQUESTED does
-not count). CodeRabbit sometimes converges without posting the record
-(evidence table in the policy file): when `_pr-cr-findings.sh` reports
-all four buckets clean AND the final head sha appears in CR's own
-reviews/comments (the fail-open CodeRabbit *check* is deliberately not
-trusted as the witness), the gate posts `@coderabbitai approve` and
-waits for the real record. It never nudges a findings-bearing or
-unreviewed head — that would launder the state it exists to block.
+in the SSOT policy `.github/approval-policy.yml` — **read from the merge
+target's default branch via the contents API, never the working tree**,
+so a PR branch cannot edit its own gate — has an **APPROVED review
+record on the final head** (latest *decisive* review per reviewer:
+APPROVED/CHANGES_REQUESTED/DISMISSED; COMMENTED records are ignored per
+GitHub's own semantics, commit-pinned — a stale APPROVED on an earlier
+commit or one superseded by CHANGES_REQUESTED does not count).
+CodeRabbit sometimes converges without posting the record (evidence
+table in the policy file): when `_pr-cr-findings.sh` reports all four
+buckets clean AND the pinned head carries a positive review signal —
+a policy-bot review record on that exact sha, or the sha inside a
+policy-bot comment that is NOT CodeRabbit's rate-limit notice (that
+notice quotes the head sha while announcing the review did NOT run;
+the fail-open CodeRabbit *check* is equally untrusted) — the gate
+posts `@coderabbitai approve` and waits for the real record. It never
+nudges a findings-bearing or unreviewed head — that would launder the
+state it exists to block. NOTE: the nudge is a public PR comment posted
+before the operator prompt (running the wrapper is merge intent). Both
+merge calls pass `--match-head-commit` with the gate-verified sha, so
+a head that moves after verification is refused platform-side.
 Audited escape: `APPROVAL_GATE_SKIP=1` (fail-closed if the skip cannot
 be audit-logged via `_lib/pipeline-skip.sh`).
 

@@ -14,22 +14,35 @@ set -euo pipefail
 # an approval onto an unreviewed or findings-bearing head would launder
 # the exact state the gate exists to block.
 #
-# Usage: _approval-gate.sh --pr <num> --head <sha> --owner-name <owner/name>
+# The policy is read from the MERGE TARGET (the repo's default branch,
+# via the GitHub contents API) — NOT the working tree. A PR branch must
+# not be able to neuter its own merge gate by editing the policy file on
+# that branch (Phase 1 security finding, 2026-08-24).
+#
+# Usage: _approval-gate.sh --pr <num> --head <sha40> --owner-name <owner/name>
 #
 # Exit codes:
 #   0 — gate satisfied (APPROVED record at head, possibly after nudge),
-#       or gate disabled by policy (absent file / require:false), or
-#       audited APPROVAL_GATE_SKIP.
+#       or gate disabled by policy (no policy on the merge target /
+#       require:false), or audited APPROVAL_GATE_SKIP.
 #   2 — refused: no record and not verifiably converged; nudge timed out;
-#       policy/tooling unusable (fail-closed).
+#       policy/tooling/query unusable (fail-closed).
 #
-# Test seams (bats): APPROVAL_GATE_POLICY (policy file path),
-# APPROVAL_GATE_FINDINGS_BIN (convergence checker), and
-# APPROVAL_GATE_POLL_SECONDS (nudge poll interval, default 10) —
-# production callers set none of them.
+# Test seams (bats only — production callers set none of these):
+# APPROVAL_GATE_POLICY (local policy file, bypasses the merge-target
+# read), APPROVAL_GATE_FINDINGS_BIN (convergence checker), and
+# APPROVAL_GATE_POLL_SECONDS (nudge poll interval, default 10).
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../../.." && pwd; })
+# Repo root for helper/lib resolution only — the POLICY deliberately does
+# not come from here (see header). Fallback: plugin root is two levels up
+# from skills/github-pr-merge/ (consumer: .claude/skills/<name>/ → .claude/).
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../.." && pwd; })
+
+usage() {
+	echo "Usage: $0 --pr <num> --head <40-hex sha> --owner-name <owner/name>" >&2
+	exit 2
+}
 
 PR=""
 HEAD_SHA=""
@@ -37,41 +50,77 @@ OWNER_NAME=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--pr)
-		PR="${2:-}"
+		[ $# -ge 2 ] || usage
+		PR="$2"
 		shift 2
 		;;
 	--head)
-		HEAD_SHA="${2:-}"
+		[ $# -ge 2 ] || usage
+		HEAD_SHA="$2"
 		shift 2
 		;;
 	--owner-name)
-		OWNER_NAME="${2:-}"
+		[ $# -ge 2 ] || usage
+		OWNER_NAME="$2"
 		shift 2
 		;;
 	*)
 		echo "approval-gate: unknown arg: $1" >&2
-		exit 2
+		usage
 		;;
 	esac
 done
-if [ -z "$PR" ] || ! [[ $PR =~ ^[0-9]+$ ]] || [ -z "$HEAD_SHA" ] || [ -z "$OWNER_NAME" ] || [[ $OWNER_NAME != */* ]]; then
-	echo "Usage: $0 --pr <num> --head <sha> --owner-name <owner/name>" >&2
-	exit 2
+# HEAD_SHA must be a full 40-hex sha: it is compared against commit_id
+# and grepped as a witness needle — a short/degenerate value ("null"
+# from a failed jq upstream) would false-match inside prose.
+if [ -z "$PR" ] || ! [[ $PR =~ ^[0-9]+$ ]] || ! [[ $HEAD_SHA =~ ^[0-9a-f]{40}$ ]] || [ -z "$OWNER_NAME" ] || [[ $OWNER_NAME != */* ]]; then
+	usage
 fi
 
-POLICY="${APPROVAL_GATE_POLICY:-$REPO_ROOT/.github/approval-policy.yml}"
+# Scratch dir for query payloads/stderr (payloads and diagnostics are
+# kept SEPARATE — merging stderr into a payload corrupts the parse).
+AG_TMP=$(mktemp -d "${TMPDIR:-/tmp}/approval-gate.XXXXXX") || {
+	echo "approval-gate: ERROR — mktemp failed; refusing (fail-closed)" >&2
+	exit 2
+}
+trap 'rm -rf "$AG_TMP"' EXIT
 
-# Policy absent = policy not adopted: gate off, but LOUDLY — a deleted
-# policy file must not read as a passing gate without a trace.
-if [ ! -f "$POLICY" ]; then
+# ---- Policy acquisition (merge target, not working tree) -------------
+POLICY="${APPROVAL_GATE_POLICY:-}"
+if [ -z "$POLICY" ]; then
+	if ! default_branch=$(gh api "repos/$OWNER_NAME" --jq '.default_branch' 2>"$AG_TMP/err"); then
+		echo "approval-gate: ERROR — cannot resolve default branch for $OWNER_NAME: $(cat "$AG_TMP/err")" >&2
+		echo "  Refusing (fail-closed) — the policy must be read from the merge target." >&2
+		exit 2
+	fi
+	if content=$(gh api "repos/$OWNER_NAME/contents/.github/approval-policy.yml?ref=$default_branch" --jq '.content' 2>"$AG_TMP/err"); then
+		if ! printf '%s' "$content" | base64 --decode >"$AG_TMP/policy.yml" 2>/dev/null; then
+			echo "approval-gate: ERROR — policy content on $default_branch is not decodable; refusing (fail-closed)" >&2
+			exit 2
+		fi
+		POLICY="$AG_TMP/policy.yml"
+	elif grep -qi "not found" "$AG_TMP/err"; then
+		echo "approval-gate: ⚠ no .github/approval-policy.yml on $OWNER_NAME@$default_branch — approving-review gate DISABLED (adopt via #2567)" >&2
+		exit 0
+	else
+		echo "approval-gate: ERROR — policy fetch from $default_branch failed: $(cat "$AG_TMP/err")" >&2
+		echo "  Refusing (fail-closed) — cannot distinguish 'not adopted' from an outage." >&2
+		exit 2
+	fi
+elif [ ! -f "$POLICY" ]; then
+	# Test-seam path pointing nowhere = the not-adopted shape, kept loud.
 	echo "approval-gate: ⚠ no policy file at $POLICY — approving-review gate DISABLED (adopt via #2567)" >&2
 	exit 0
 fi
 
-# Strict-format parse (contract documented in the policy file header).
-# Fail CLOSED on an unparseable adopted policy: a present-but-broken file
-# means someone intended a policy and the gate cannot know what it says.
-require=$(sed -n 's/^require_approving_review:[[:space:]]*//p' "$POLICY" | head -1)
+# ---- Policy parse (single-pass awk per key: first match wins, no
+# SIGPIPE, duplicates ignored deliberately; contract in the policy
+# header). Fail CLOSED on an unparseable adopted policy. ---------------
+_policy_scalar() {
+	awk -v k="$1" 'index($0, k ":") == 1 { sub("^" k ":[ \t]*", ""); print; exit }' "$POLICY"
+}
+
+require=$(_policy_scalar require_approving_review)
 case "$require" in
 false)
 	echo "approval-gate: policy sets require_approving_review: false — gate disabled"
@@ -79,25 +128,34 @@ false)
 	;;
 true) ;;
 *)
-	echo "approval-gate: ERROR — require_approving_review is '$require' (want true|false) in $POLICY; refusing (fail-closed)" >&2
+	echo "approval-gate: ERROR — require_approving_review is '$require' (want true|false) in the merge-target policy; refusing (fail-closed)" >&2
 	exit 2
 	;;
 esac
 
-# approvers: the two-space-indented `- login` block under the key.
-APPROVERS=$(awk '/^approvers:/{grab=1; next} grab && /^  - /{sub(/^  - /,""); print; next} grab{exit}' "$POLICY")
+# approvers block: `  - login` lines; blank and full-line-comment lines
+# INSIDE the block are skipped (not list-terminating); anything else
+# ends the block.
+APPROVERS=$(awk '
+	/^approvers:/ { grab = 1; next }
+	grab && /^  - / { sub(/^  - /, ""); print; next }
+	grab && (/^[ \t]*#/ || /^[ \t]*$/) { next }
+	grab { exit }' "$POLICY")
 if [ -z "$APPROVERS" ]; then
-	echo "approval-gate: ERROR — no approvers parsed from $POLICY; refusing (fail-closed)" >&2
+	echo "approval-gate: ERROR — no approvers parsed from the merge-target policy; refusing (fail-closed)" >&2
 	exit 2
 fi
-NUDGE_COMMENT=$(sed -n 's/^nudge_comment:[[:space:]]*//p' "$POLICY" | head -1 | sed 's/^"\(.*\)"$/\1/')
-NUDGE_TIMEOUT=$(sed -n 's/^nudge_timeout_seconds:[[:space:]]*//p' "$POLICY" | head -1)
-[ -n "$NUDGE_COMMENT" ] || NUDGE_COMMENT="@coderabbitai approve"
-if ! [[ ${NUDGE_TIMEOUT:-180} =~ ^[0-9]+$ ]]; then
-	echo "approval-gate: ERROR — nudge_timeout_seconds is '$NUDGE_TIMEOUT' (want integer) in $POLICY; refusing (fail-closed)" >&2
+NUDGE_COMMENT=$(_policy_scalar nudge_comment | sed 's/^"\(.*\)"$/\1/')
+if [ -z "$NUDGE_COMMENT" ]; then
+	NUDGE_COMMENT="@coderabbitai approve"
+	echo "approval-gate: NOTE — nudge_comment absent from policy; using built-in default '$NUDGE_COMMENT'"
+fi
+NUDGE_TIMEOUT=$(_policy_scalar nudge_timeout_seconds)
+[ -n "$NUDGE_TIMEOUT" ] || NUDGE_TIMEOUT=180
+if ! [[ $NUDGE_TIMEOUT =~ ^[0-9]+$ ]]; then
+	echo "approval-gate: ERROR — nudge_timeout_seconds is '$NUDGE_TIMEOUT' (want integer) in the merge-target policy; refusing (fail-closed)" >&2
 	exit 2
 fi
-NUDGE_TIMEOUT="${NUDGE_TIMEOUT:-180}"
 POLL="${APPROVAL_GATE_POLL_SECONDS:-10}"
 # A non-positive poll interval + nonzero timeout would spin forever
 # (waited never advances). Positive integer or fail closed.
@@ -106,18 +164,16 @@ if ! [[ $POLL =~ ^[0-9]+$ ]] || [ "$POLL" -lt 1 ]; then
 	exit 2
 fi
 
-# Audited escape — same posture as the other pipeline gates: the skip
-# spends ONLY after the audit row is durably written (fail-closed).
+# ---- Audited escape — fail-closed like the phase2 round-cap override
+# (NOT like the pre-push gate, which warns and proceeds): the skip
+# spends ONLY after the audit row is durably written. -----------------
 if [ "${APPROVAL_GATE_SKIP:-0}" = "1" ]; then
 	_ag_skip_lib="$SCRIPT_DIR/../../_lib/pipeline-skip.sh"
 	_ag_logged=0
-	if [ -f "$_ag_skip_lib" ]; then
-		# shellcheck source=../../_lib/pipeline-skip.sh
-		if source "$_ag_skip_lib" 2>/dev/null && command -v pipeline_skip_log >/dev/null 2>&1; then
-			if pipeline_skip_log "approval-gate"; then
-				_ag_logged=1
-			fi
-		fi
+	# shellcheck source=../../_lib/pipeline-skip.sh
+	if [ -f "$_ag_skip_lib" ] && source "$_ag_skip_lib" 2>/dev/null &&
+		command -v pipeline_skip_log >/dev/null 2>&1 && pipeline_skip_log "approval-gate"; then
+		_ag_logged=1
 	fi
 	if [ "$_ag_logged" != "1" ]; then
 		echo "approval-gate: ERROR — APPROVAL_GATE_SKIP=1 but the skip could not be audit-logged (lib: $_ag_skip_lib); refusing (fail-closed)" >&2
@@ -130,24 +186,34 @@ fi
 # jq array of approver logins, for exact user.login matching.
 APPROVERS_JSON=$(printf '%s\n' "$APPROVERS" | jq -R . | jq -cs .)
 
-# Does any policy approver's LATEST review read APPROVED at the final
-# head? Latest-per-reviewer is the axis (GitHub's own semantics): an
+# Fetches the reviews payload into $AG_TMP/reviews.json (shared with the
+# witness — one round-trip per attempt) and answers: does any policy
+# approver's LATEST decisive review read APPROVED at the final head?
+# "Decisive" = APPROVED/CHANGES_REQUESTED/DISMISSED — COMMENTED is
+# ignored, matching GitHub's own review-decision semantics (CodeRabbit
+# posts COMMENTED records for every thread-reply batch; those must not
+# displace a genuine approval). Latest-per-reviewer is the axis: an
 # APPROVED superseded by a later CHANGES_REQUESTED must not pass, and a
 # stale APPROVED on an earlier commit must not cover a new head.
+# jq -s + add normalizes BOTH payload shapes gh emits (--paginate pages
+# merged into one array on current gh; concatenated arrays on older gh).
 _approved_at_head() {
-	local reviews rc=0
-	reviews=$(gh api "repos/$OWNER_NAME/pulls/$PR/reviews" --paginate 2>&1) || rc=$?
+	local rc=0
+	gh api "repos/$OWNER_NAME/pulls/$PR/reviews" --paginate >"$AG_TMP/reviews.json" 2>"$AG_TMP/err" || rc=$?
 	if [ "$rc" -ne 0 ]; then
-		echo "approval-gate: ERROR — reviews query failed (rc=$rc): $reviews" >&2
+		echo "approval-gate: ERROR — reviews query failed (rc=$rc): $(cat "$AG_TMP/err")" >&2
 		return 2
 	fi
 	local ok
-	ok=$(printf '%s' "$reviews" | jq -r --argjson bots "$APPROVERS_JSON" --arg head "$HEAD_SHA" '
-		[.[] | select(.user.login as $l | $bots | index($l))]
+	ok=$(jq -rs --argjson bots "$APPROVERS_JSON" --arg head "$HEAD_SHA" '
+		add // []
+		| [.[] | select(.user.login as $l | $bots | index($l))
+			| select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
 		| group_by(.user.login)
 		| map(sort_by(.submitted_at) | last)
-		| any(.state == "APPROVED" and .commit_id == $head)') || {
-		echo "approval-gate: ERROR — reviews payload unparseable" >&2
+		| any(.state == "APPROVED" and .commit_id == $head)' "$AG_TMP/reviews.json" 2>"$AG_TMP/err") || {
+		echo "approval-gate: ERROR — reviews payload unparseable: $(cat "$AG_TMP/err")" >&2
+		echo "  Payload head: $(head -c 300 "$AG_TMP/reviews.json")" >&2
 		return 2
 	}
 	[ "$ok" = "true" ]
@@ -163,14 +229,21 @@ elif [ "$_ah_rc" -eq 2 ]; then
 fi
 
 # No record. Nudge ONLY if convergence is verified two ways:
-#   (a) zero findings across all four _pr-cr-findings.sh buckets, and
-#   (b) the final head sha appears in CodeRabbit's own output (summary
-#       "between <sha> and <sha>" edit, or any review record pinned to
-#       the head) — the CodeRabbit CHECK alone is fail-open ("Review
-#       rate limited" still flips it green), so it is deliberately NOT
-#       accepted as the witness.
+#   (a) zero findings across all four _pr-cr-findings.sh buckets
+#       (NOTE: that helper re-resolves the PR's LIVE head itself — a
+#       push racing this gate makes (a) evaluate a newer head than the
+#       pinned one; the record/witness legs still pin $HEAD_SHA, so the
+#       drift is refusal-side only), and
+#   (b) a positive review signal for the pinned head — see _head_witness.
+# The CodeRabbit CHECK alone is fail-open ("Review rate limited" still
+# flips it green), so it is deliberately NOT accepted as the witness.
 FINDINGS_BIN="${APPROVAL_GATE_FINDINGS_BIN:-}"
 if [ -z "$FINDINGS_BIN" ]; then
+	# Plugin-source layout first, consumer layout second. NOTE:
+	# hooks/pre-merge-cr-comments-gate.sh resolves the same helper in the
+	# REVERSE order (consumer override wins there); here the plugin copy
+	# wins because this wrapper ships with the plugin and its contract is
+	# pinned to the plugin's helper version.
 	for cand in "$REPO_ROOT/hooks/_pr-cr-findings.sh" "$REPO_ROOT/.claude/hooks/_pr-cr-findings.sh"; do
 		if [ -x "$cand" ]; then
 			FINDINGS_BIN="$cand"
@@ -178,45 +251,66 @@ if [ -z "$FINDINGS_BIN" ]; then
 		fi
 	done
 fi
-if [ -z "$FINDINGS_BIN" ] || [ ! -x "$FINDINGS_BIN" ]; then
+if [ ! -x "$FINDINGS_BIN" ]; then
 	echo "approval-gate: ERROR — no APPROVED bot review at head and _pr-cr-findings.sh not found/executable (looked under $REPO_ROOT); cannot verify convergence, refusing (fail-closed)" >&2
 	exit 2
 fi
 
 if ! "$FINDINGS_BIN" "$PR"; then
-	echo "approval-gate: REFUSING — no APPROVED bot review at final head $HEAD_SHA and CR findings are NOT clean (see counts above)." >&2
-	echo "  Address the findings; do NOT nudge an approval onto a findings-bearing head." >&2
+	echo "approval-gate: REFUSING — no APPROVED bot review at final head $HEAD_SHA and CR findings are NOT verified clean (findings present, or the findings query itself failed — see output above)." >&2
+	echo "  If findings are listed: address them — do NOT nudge an approval onto a findings-bearing head. If the query failed: re-run." >&2
 	exit 2
 fi
 
+# Positive review signal for the pinned head, two accepted forms:
+#   1. STRUCTURED: any policy-bot review record (any state) whose
+#      commit_id == head, from the payload _approved_at_head fetched.
+#   2. TEXT: the head sha inside a policy-bot comment body — but bodies
+#      carrying CodeRabbit's rate-limit notice are EXCLUDED first: that
+#      notice ("Review limit reached … between X and <head>") contains
+#      the head sha while announcing the review did NOT happen (Phase 1
+#      critical finding). Matching it would nudge-approve an unreviewed
+#      head — the exact laundering this witness exists to prevent.
 _head_witness() {
-	local bodies rc=0
-	# CR review bodies + commit pins from the reviews payload, plus CR
-	# issue comments (the walkthrough/summary lives there and is edited
-	# in place with the reviewed range).
-	bodies=$(
-		{
-			gh api "repos/$OWNER_NAME/pulls/$PR/reviews" --paginate --jq '.[] | select(.user.login as $l | '"$APPROVERS_JSON"' | index($l)) | "\(.commit_id) \(.body)"'
-			gh api "repos/$OWNER_NAME/issues/$PR/comments" --paginate --jq '.[] | select(.user.login as $l | '"$APPROVERS_JSON"' | index($l)) | .body'
-		} 2>&1
-	) || rc=$?
+	local pinned
+	pinned=$(jq -rs --argjson bots "$APPROVERS_JSON" --arg head "$HEAD_SHA" '
+		add // [] | [.[] | select(.user.login as $l | $bots | index($l)) | select(.commit_id == $head)] | length' \
+		"$AG_TMP/reviews.json" 2>"$AG_TMP/err") || {
+		echo "approval-gate: ERROR — witness parse of reviews payload failed: $(cat "$AG_TMP/err")" >&2
+		return 2
+	}
+	if [ "$pinned" -gt 0 ] 2>/dev/null; then
+		return 0
+	fi
+	local rc=0
+	gh api "repos/$OWNER_NAME/issues/$PR/comments" --paginate >"$AG_TMP/comments.json" 2>"$AG_TMP/err" || rc=$?
 	if [ "$rc" -ne 0 ]; then
-		echo "approval-gate: ERROR — head-witness query failed (rc=$rc)" >&2
+		echo "approval-gate: ERROR — comments query failed (rc=$rc): $(cat "$AG_TMP/err")" >&2
 		return 2
 	fi
-	printf '%s' "$bodies" | grep -qF "$HEAD_SHA"
+	jq -rs --argjson bots "$APPROVERS_JSON" '
+		add // [] | .[] | select(.user.login as $l | $bots | index($l))
+		| .body | select(contains("rate limited by coderabbit.ai") | not)' \
+		"$AG_TMP/comments.json" >"$AG_TMP/witness-bodies.txt" 2>"$AG_TMP/err" || {
+		echo "approval-gate: ERROR — witness parse of comments payload failed: $(cat "$AG_TMP/err")" >&2
+		return 2
+	}
+	grep -qF "$HEAD_SHA" "$AG_TMP/witness-bodies.txt"
 }
 
 _hw_rc=0
 _head_witness || _hw_rc=$?
-if [ "$_hw_rc" -ne 0 ]; then
-	echo "approval-gate: REFUSING — CR findings are clean but the final head $HEAD_SHA appears NOWHERE in CodeRabbit's reviews/comments: the final head is not verifiably reviewed." >&2
+if [ "$_hw_rc" -eq 2 ]; then
+	echo "approval-gate: REFUSING — witness query failed; cannot verify the final head was reviewed (fail-closed). No nudge was posted; re-run when the API recovers." >&2
+	exit 2
+elif [ "$_hw_rc" -ne 0 ]; then
+	echo "approval-gate: REFUSING — CR findings are clean but the final head $HEAD_SHA appears in NO policy-bot review record or non-rate-limited comment: the final head is not verifiably reviewed." >&2
 	echo "  Wait for CR-in-CI to review the head (its summary shows the reviewed range), then re-run. NOT nudging — '@coderabbitai approve' on an unreviewed head would launder it." >&2
 	exit 2
 fi
 
 echo "approval-gate: converged-but-unrecorded (findings clean + head $HEAD_SHA reviewed) — posting nudge and waiting for the APPROVED record (timeout ${NUDGE_TIMEOUT}s)"
-if ! gh pr comment "$PR" --body "$NUDGE_COMMENT"; then
+if ! gh pr comment "$PR" -R "$OWNER_NAME" --body "$NUDGE_COMMENT"; then
 	echo "approval-gate: ERROR — failed to post nudge comment; refusing" >&2
 	exit 2
 fi
@@ -228,7 +322,8 @@ while :; do
 		echo "approval-gate: ✓ APPROVED record landed at head $HEAD_SHA (after ${waited}s)"
 		exit 0
 	elif [ "$_ah_rc" -eq 2 ]; then
-		exit 2 # mid-poll query failure — fail closed rather than spin blind
+		echo "approval-gate: REFUSING — mid-poll query failure (fail-closed). NOTE: the nudge WAS already posted; the record may land on its own — re-run to pick it up." >&2
+		exit 2
 	fi
 	if [ "$waited" -ge "$NUDGE_TIMEOUT" ]; then
 		echo "approval-gate: REFUSING — nudge posted but no APPROVED record within ${NUDGE_TIMEOUT}s. Check the PR (bot may be rate-limited); re-run when the record lands." >&2

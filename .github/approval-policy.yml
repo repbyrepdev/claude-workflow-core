@@ -20,13 +20,25 @@
 # VERIFIABLY converged but skipped the record, nudge and wait for the
 # real one — never merge without it.
 #
-# FORMAT CONTRACT (parsed by _approval-gate.sh with grep/sed — no yq on
+# READ FROM THE MERGE TARGET: the gate fetches this file from the
+# repo's DEFAULT BRANCH via the GitHub contents API, never from the
+# working tree — a PR branch cannot neuter its own merge gate by
+# editing this file on that branch. Policy changes take effect only
+# once merged.
+#
+# FORMAT CONTRACT (parsed by _approval-gate.sh with awk/sed — no yq on
 # the merge path). Keep exactly this shape:
-#   - scalar keys at column 0:  `key: value`
+#   - scalar keys at column 0:  `key: value`; first occurrence wins if
+#     a key is duplicated
 #   - the approvers list: one `  - login` line per approver, two-space
-#     indent, immediately under `approvers:`
+#     indent, under `approvers:`; blank lines and full-line comments
+#     are allowed inside the block; NO trailing whitespace after a
+#     login (it would never match the API's user.login)
 #   - comments only on full lines (a trailing `# …` after a value would
-#     be read as part of the value)
+#     be read as part of the value; for require/timeout that fails
+#     closed loudly, for an approver it silently never matches)
+#   - `nudge_comment` is the one key with a built-in default: if the
+#     key is absent the gate uses "@coderabbitai approve" and says so
 #
 # Schema:
 #   require_approving_review: true|false — master switch for the gate.
