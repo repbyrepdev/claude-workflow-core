@@ -152,3 +152,34 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 		return 1
 	}
 }
+
+@test "#2547 clean yaml file: exit 0, NO sentinel entry" {
+	# phase1 r5 pr-test-analyzer: the enforcement-noise inverse was pinned
+	# only for the *.sh branch — a stray append or exit-1 landing in the
+	# yamllint PASS arm would block the operator's next call with every
+	# test green.
+	printf 'key: value\n' >"$ROOT/good.yml"
+	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/good.yml")"
+	[ "$status" -eq 0 ] || {
+		echo "clean yaml exited $status. output: $output"
+		return 1
+	}
+	if [ -s "$SENTINEL" ]; then
+		echo "a CLEAN yaml produced an ack entry. sentinel: $(cat "$SENTINEL")"
+		return 1
+	fi
+}
+
+@test "#2547 clean workflow file: exit 0, NO sentinel entry" {
+	mkdir -p "$ROOT/.github/workflows"
+	printf 'on: push\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n' >"$ROOT/.github/workflows/good.yml"
+	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/.github/workflows/good.yml")"
+	[ "$status" -eq 0 ] || {
+		echo "clean workflow exited $status. output: $output"
+		return 1
+	}
+	if [ -s "$SENTINEL" ]; then
+		echo "a CLEAN workflow produced an ack entry. sentinel: $(cat "$SENTINEL")"
+		return 1
+	fi
+}

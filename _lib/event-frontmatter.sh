@@ -24,6 +24,8 @@ set -u
 #       hooks must classify ($EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS)
 #   event_frontmatter_enforcement_valid <value>  — exit 0 iff enforce|inform
 #   event_frontmatter_enforcement <hook_path>  — validated value in one call
+#   event_frontmatter_hook_routes <hook_path>  — exit 0 iff a non-comment
+#       blocking call exists (the MEANING of enforce — #2547)
 #   event_frontmatter_registered_hooks <dir>  — registered universe, one
 #       path<TAB>event<TAB>enforcement record per hook; LOUD rc 1 on parse failure
 
@@ -150,12 +152,27 @@ event_frontmatter_enforcement_valid() {
 	esac
 }
 
-# Convenience composition kept for callers that want the validated value
-# in one call (the live-tree audit, tests): emits enforce|inform, rc 1 on
-# absent OR out-of-vocabulary. Callers already holding parse output should
-# read its 4th line + the predicate instead of re-reading the header. Field
-# extraction uses the documented read-into-array idiom (phase1 r4: this
-# accessor was the one consumer slicing with printf|sed).
+# #2547: the MEANING half of the enforce label — which mechanisms count as
+# "routes its failures". A hook routes iff a NON-comment line invokes
+# hook_ack_append (the universal sentinel) or emits a decision:block JSON
+# response. Lives in the lib (phase1 r5 code-reviewer: the vocabulary's
+# label half was SSOT here while its meaning sat in a test regex with a
+# prose mirror in the gate's error text — nothing caught divergence).
+# Known limitation, deliberate: the call must be visible in the hook file
+# itself; hoisting an ack wrapper into _lib later turns the audit RED
+# loudly, and the contract gets taught the new shape in the same PR.
+event_frontmatter_hook_routes() {
+	grep -qE '^[^#]*hook_ack_append' "$1" && return 0
+	grep -qE '^[^#]*"decision"[[:space:]]*:[[:space:]]*"block"' "$1"
+}
+
+# Convenience composition for callers wanting the validated value in one
+# call (today: the by-name pin test; the intended #2566 installer-migration
+# consumers): emits enforce|inform, rc 1 on absent OR out-of-vocabulary —
+# BOTH failure paths test-pinned. Callers already holding parse output
+# should read its 4th line + the predicate instead of re-reading the
+# header. Reads parse output line-by-line per the header contract (phase1
+# r5: the earlier comment claimed the array idiom and misnamed callers).
 event_frontmatter_enforcement() {
 	local hook="$1" _parse_out val
 	_parse_out=$(event_frontmatter_parse "$hook") || return 1

@@ -33,7 +33,7 @@ teardown() {
 # three reviewers: the re-parse guard was DEAD — a pipeline swallowed the
 # parser's rc, the exact silent shrink the emitter's contract forbids).
 # LOUD rc 1 propagates from the emitter on a parse failure.
-_posttooluse_hooks() {
+_classification_required_hooks() {
 	local list f event enf
 	list=$(event_frontmatter_registered_hooks "$1") || return 1
 	[ -n "$list" ] || return 0
@@ -43,20 +43,13 @@ _posttooluse_hooks() {
 	return 0
 }
 
-# A hook "routes" iff a NON-COMMENT line invokes an enumerated blocking
-# mechanism: hook_ack_append (the universal sentinel) or a decision:block
-# JSON response. Known limitation, deliberate: the call must be visible in
-# the hook file itself — hoisting an ack wrapper into _lib later turns this
-# RED loudly (fail-closed), at which point the contract gets taught the new
-# shape in the same PR (phase1 r3 code-reviewer).
-_hook_routes() {
-	grep -qE '^[^#]*hook_ack_append' "$1" && return 0
-	grep -qE '^[^#]*"decision"[[:space:]]*:[[:space:]]*"block"' "$1"
-}
+# The routing predicate lives in the lib (phase1 r5: label AND meaning
+# are one SSOT now); this thin alias keeps the audit tests readable.
+_hook_routes() { event_frontmatter_hook_routes "$1"; }
 
 @test "#2547 every registered live PostToolUse hook is classified enforce or inform" {
 	local list f enf missing=""
-	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
+	list=$(_classification_required_hooks "$HOOKS_DIR") || {
 		echo "discovery failed — see parse failure above"
 		return 1
 	}
@@ -75,7 +68,7 @@ _hook_routes() {
 
 @test "#2547 every enforce-classified hook routes via a non-comment blocking call" {
 	local list f enf unrouted=""
-	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
+	list=$(_classification_required_hooks "$HOOKS_DIR") || {
 		echo "discovery failed — see parse failure above"
 		return 1
 	}
@@ -95,7 +88,7 @@ _hook_routes() {
 	# reclassification would start blocking tool calls while its header
 	# still claims advisory, and every test stayed green.
 	local list f enf lying=""
-	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
+	list=$(_classification_required_hooks "$HOOKS_DIR") || {
 		echo "discovery failed — see parse failure above"
 		return 1
 	}
@@ -127,12 +120,20 @@ _hook_routes() {
 	# no test — deleting an auto-register:false line silently re-wires a
 	# hook documented as deadlock-broken. By-name pins, same rationale as
 	# the lint-dispatch pin above.
-	local h auto
+	local h _p auto
 	for h in phase1-log-pending-gate phase1-post-agent-nudge phase1-launch-completeness-gate phase1-directive-pending-guard; do
-		auto=$(event_frontmatter_parse "$HOOKS_DIR/$h.sh" | sed -n 3p) || {
+		# Capture parse rc BEFORE slicing (phase1 r5, four reviewers: the
+		# piped form's guard was dead — sed's rc masked the parser's — so a
+		# parse failure misreported as a lost opt-out).
+		_p=$(event_frontmatter_parse "$HOOKS_DIR/$h.sh") || {
 			echo "parse failed for $h.sh"
 			return 1
 		}
+		{
+			read -r _
+			read -r _
+			read -r auto
+		} <<<"$_p"
 		[ "$auto" = "false" ] || {
 			echo "$h.sh lost its auto-register:false — the installer WILL re-wire the deadlocking panel (see #2564)"
 			return 1
@@ -176,7 +177,7 @@ FIXEOF
 	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# auto-register: false\nexit 0\n' >"$TEST_TMP/hooks/optout.sh"
 	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# enforcement: inform — fixture\nexit 0\n' >"$TEST_TMP/hooks/reg.sh"
 	local list
-	list=$(_posttooluse_hooks "$TEST_TMP/hooks") || {
+	list=$(_classification_required_hooks "$TEST_TMP/hooks") || {
 		echo "fixture discovery failed"
 		return 1
 	}
@@ -208,8 +209,14 @@ FIXEOF
 @test "#2547 parse emits the raw enforcement value as line 4 (empty when absent)" {
 	mkdir -p "$TEST_TMP/hooks"
 	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# enforcement: advisory — bogus but raw\nexit 0\n' >"$TEST_TMP/hooks/raw.sh"
-	[ "$(event_frontmatter_parse "$TEST_TMP/hooks/raw.sh" | sed -n 4p)" = "advisory" ] || {
-		echo "raw out-of-vocabulary value not surfaced on parse line 4"
+	local _p line4
+	_p=$(event_frontmatter_parse "$TEST_TMP/hooks/raw.sh") || {
+		echo "parse failed for raw.sh"
+		return 1
+	}
+	line4=$(sed -n 4p <<<"$_p")
+	[ "$line4" = "advisory" ] || {
+		echo "raw out-of-vocabulary value not surfaced on parse line 4 (got '$line4')"
 		return 1
 	}
 	run event_frontmatter_enforcement_valid "advisory"
@@ -217,8 +224,25 @@ FIXEOF
 	run event_frontmatter_enforcement_valid "enforce"
 	[ "$status" -eq 0 ]
 	printf '#!/bin/bash\nset -u\n# event: PostToolUse\nexit 0\n' >"$TEST_TMP/hooks/none.sh"
-	[ -z "$(event_frontmatter_parse "$TEST_TMP/hooks/none.sh" | sed -n 4p)" ] || {
+	_p=$(event_frontmatter_parse "$TEST_TMP/hooks/none.sh") || {
+		echo "parse failed for none.sh"
+		return 1
+	}
+	[ -z "$(sed -n 4p <<<"$_p")" ] || {
 		echo "absent directive did not yield an empty line 4"
+		return 1
+	}
+	# The one-call accessor's FAILURE contract (phase1 r5 pr-test-analyzer:
+	# only the positive path was pinned — deleting its validity check left
+	# every test green while it emitted raw invalid values).
+	run event_frontmatter_enforcement "$TEST_TMP/hooks/raw.sh"
+	[ "$status" -ne 0 ] || {
+		echo "accessor accepted an out-of-vocabulary value: '$output'"
+		return 1
+	}
+	run event_frontmatter_enforcement "$TEST_TMP/hooks/none.sh"
+	[ "$status" -ne 0 ] || {
+		echo "accessor accepted an absent directive: '$output'"
 		return 1
 	}
 }
