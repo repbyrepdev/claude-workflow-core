@@ -134,7 +134,7 @@ fi
 # repo with core.autocrlf would otherwise fail-close on an invisible
 # character). Fail CLOSED on an unparseable adopted policy. ------------
 _policy_scalar() {
-	awk -v k="$1" 'index($0, k ":") == 1 { sub("^" k ":[ \t]*", ""); sub(/\r$/, ""); print; exit }' "$POLICY"
+	awk -v k="$1" 'index($0, k ":") == 1 { sub("^" k ":[ \t]*", ""); sub(/[ \t\r]+$/, ""); print; exit }' "$POLICY"
 }
 
 require=$(_policy_scalar require_approving_review)
@@ -155,7 +155,7 @@ esac
 # ends the block.
 APPROVERS=$(awk '
 	/^approvers:/ { grab = 1; next }
-	grab && /^  - / { sub(/^  - /, ""); sub(/\r$/, ""); print; next }
+	grab && /^  - / { sub(/^  - /, ""); sub(/[ \t\r]+$/, ""); print; next }
 	grab && (/^[ \t]*#/ || /^[ \t\r]*$/) { next }
 	grab { exit }' "$POLICY")
 if [ -z "$APPROVERS" ]; then

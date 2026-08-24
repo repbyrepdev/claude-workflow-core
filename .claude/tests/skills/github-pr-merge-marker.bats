@@ -42,7 +42,10 @@ teardown() {
 	[ "$status" -eq 0 ]
 	run grep -E 'MARKER_DIR/\$HEAD_OID\.phase1-directive' "$WRAPPER"
 	[ "$status" -eq 0 ]
-	run ! grep -E 'BRANCH_HEAD_SHA=\$\(git rev-parse' "$WRAPPER"
+	# Name-independent (CR-in-CI r1): ANY code line resolving `git
+	# rev-parse HEAD` is the hazard, whatever variable it lands in.
+	# Comment mentions are stripped before the match.
+	run ! grep -E '^[^#]*git rev-parse HEAD' "$WRAPPER"
 }
 
 # --- #2293 edge-case expansion: behavioral arg-validation (exit 2 before any

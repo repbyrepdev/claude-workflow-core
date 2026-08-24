@@ -33,11 +33,12 @@
 #     a key is duplicated
 #   - the approvers list: one `  - login` line per approver, two-space
 #     indent, under `approvers:`; blank lines and full-line comments
-#     are allowed inside the block; NO trailing whitespace after a
-#     login (it would never match the API's user.login)
+#     are allowed inside the block; trailing whitespace after a login
+#     is stripped by the parser (CR-in-CI r1 hardening)
 #   - comments only on full lines (a trailing `# …` after a value would
 #     be read as part of the value; for require/timeout that fails
-#     closed loudly, for an approver it silently never matches, and for
+#     closed loudly, for an approver it silently never matches — but a
+#     PURELY-whitespace pad is stripped — and for
 #     nudge_comment it would be POSTED verbatim to the PR — the worst
 #     of the four)
 #   - two keys have built-in defaults when absent: `nudge_comment` →

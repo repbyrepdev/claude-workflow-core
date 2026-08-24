@@ -368,8 +368,10 @@ echo "✓ Merged PR #$PR ($METHOD)"
 # the merge above is pinned to it via --match-head-commit (gh headRefOid
 # from the STATE fetch, 40-hex-validated), so the pre-#2567 re-query and
 # its `git rev-parse HEAD` fallback (the wrong-sha hazard its comment
-# warned about) are gone.
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# warned about) are gone. REPO_ROOT is the top-of-file resolution (its
+# fallback is the plugin-root ancestor, not the caller's cwd — a second
+# derivation here with a `pwd` fallback silently missed the marker when
+# run outside a work tree; CR-in-CI r1).
 MARKER_DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
 if [ -f "$MARKER_DIR/$HEAD_OID.phase1-directive.txt" ]; then
 	rm -f "$MARKER_DIR/$HEAD_OID.phase1-directive.txt"

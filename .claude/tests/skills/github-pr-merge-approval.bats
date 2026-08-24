@@ -74,6 +74,17 @@ _install_gh_shim() {
 	cat >"$TEST_TMP/bin/gh" <<'SHIM'
 #!/bin/bash
 log() { printf '%s\n' "$*" >>"$GH_ARGS_LOG"; }
+jqarg() {
+	local prev="" a
+	for a in "$@"; do
+		[ "$prev" = "--jq" ] && {
+			printf '%s' "$a"
+			return 0
+		}
+		prev="$a"
+	done
+	return 1
+}
 if [ "$1 $2" = "pr comment" ]; then
 	log "$@"
 	if [ "${FAKE_COMMENT_FAIL:-0}" = "1" ]; then
@@ -101,7 +112,18 @@ case "$*" in
 		echo "gh: boom (HTTP 500)" >&2
 		exit 1
 		;;
-	*) exec base64 <"$FAKE_REMOTE_POLICY_FILE" ;;
+	*)
+		# Realistic contents-API shape (CR-in-CI r1): a JSON body with
+		# base64 `content`, run through the caller's --jq — so the
+		# gate's real .content extraction AND decode are exercised,
+		# not shim-shortcut around.
+		body=$(printf '{"content":"%s"}' "$(base64 <"$FAKE_REMOTE_POLICY_FILE" | tr -d '\n')")
+		if q=$(jqarg "$@"); then
+			printf '%s\n' "$body" | jq -r "$q"
+		else
+			printf '%s\n' "$body"
+		fi
+		;;
 	esac
 	;;
 *" --jq .default_branch"*)
@@ -716,4 +738,29 @@ EOF
 	[[ $output == *"cleaned phase1-directive marker for $HEAD_SHA"* ]]
 	[ ! -f ".claude/.session-state/ship-cycle/$HEAD_SHA.phase1-directive.txt" ]
 	[ -f ".claude/.session-state/ship-cycle/beadbead000011112222333344445555666bead0.phase1-directive.txt" ]
+}
+
+@test "bundled findings helper resolves via SCRIPT_DIR when the seam is unset" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_comments_without_witness
+	unset APPROVAL_GATE_FINDINGS_BIN
+	# The REAL hooks/_pr-cr-findings.sh runs, hermetic via its own
+	# CR_TEST_MODE fixtures (empty defaults = all four buckets clean).
+	export CR_TEST_MODE=1 CR_TEST_HEAD="$HEAD_SHA"
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output != *"not executable"* ]]
+	[[ $output == *"not verifiably reviewed"* ]]
+}
+
+@test "policy decode path: CRLF policy survives the real content extraction + decode" {
+	_install_gh_shim
+	unset APPROVAL_GATE_POLICY
+	printf 'require_approving_review: true\r\napprovers:\r\n  - coderabbitai[bot]\r\nnudge_timeout_seconds: 1\r\n' >"$TEST_TMP/remote-policy.yml"
+	export FAKE_REMOTE_POLICY_FILE="$TEST_TMP/remote-policy.yml" FAKE_CONTENTS_MODE=ok
+	_reviews_approved_at_head
+	_run_gate
+	[ "$status" -eq 0 ]
+	grep -q "contents-query" "$GH_ARGS_LOG"
 }
