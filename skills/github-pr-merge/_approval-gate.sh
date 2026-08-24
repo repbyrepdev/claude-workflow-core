@@ -35,11 +35,11 @@ set -euo pipefail
 # read), APPROVAL_GATE_FINDINGS_BIN (convergence checker), and
 # APPROVAL_GATE_POLL_SECONDS (nudge poll interval, default 10).
 
+# Everything this gate resolves locally (findings helper, pipeline-skip
+# lib) anchors to SCRIPT_DIR — never a cwd-derived repo root, which
+# would resolve a DIFFERENT repo's files when invoked from an unrelated
+# cwd. The POLICY comes from the default branch via the API (see header).
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# Repo root for helper/lib resolution only — the POLICY deliberately does
-# not come from here (see header). Fallback: plugin root is two levels up
-# from skills/github-pr-merge/ (consumer: .claude/skills/<name>/ → .claude/).
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || { cd "$SCRIPT_DIR/../.." && pwd; })
 
 usage() {
 	echo "Usage: $0 --pr <num> --head <40-hex sha> --owner-name <owner/name>" >&2
@@ -265,22 +265,17 @@ fi
 #   (b) a positive review signal for the pinned head — see _head_witness.
 # The CodeRabbit CHECK alone is fail-open ("Review rate limited" still
 # flips it green), so it is deliberately NOT accepted as the witness.
-FINDINGS_BIN="${APPROVAL_GATE_FINDINGS_BIN:-}"
-if [ -z "$FINDINGS_BIN" ]; then
-	# Plugin-source layout first, consumer layout second. NOTE:
-	# hooks/pre-merge-cr-comments-gate.sh resolves the same helper in the
-	# REVERSE order (consumer override wins there); here the plugin copy
-	# wins because this wrapper ships with the plugin and its contract is
-	# pinned to the plugin's helper version.
-	for cand in "$REPO_ROOT/hooks/_pr-cr-findings.sh" "$REPO_ROOT/.claude/hooks/_pr-cr-findings.sh"; do
-		if [ -x "$cand" ]; then
-			FINDINGS_BIN="$cand"
-			break
-		fi
-	done
-fi
+# Anchored to SCRIPT_DIR, not a cwd-derived repo root: `git rev-parse`
+# from an unrelated cwd would resolve a DIFFERENT repo's helper. The
+# same relative path lands on the bundled copy in BOTH layouts (plugin:
+# skills/<name>/ → <root>/hooks/; consumer: .claude/skills/<name>/ →
+# .claude/hooks/). NOTE: hooks/pre-merge-cr-comments-gate.sh resolves
+# the same helper with consumer-override-first semantics; here the
+# bundled copy is deliberate — this wrapper's contract is pinned to the
+# helper version it ships with.
+FINDINGS_BIN="${APPROVAL_GATE_FINDINGS_BIN:-$SCRIPT_DIR/../../hooks/_pr-cr-findings.sh}"
 if [ ! -x "$FINDINGS_BIN" ]; then
-	echo "approval-gate: ERROR — no APPROVED bot review at head and _pr-cr-findings.sh not found/executable (looked under $REPO_ROOT); cannot verify convergence, refusing (fail-closed)" >&2
+	echo "approval-gate: ERROR — no APPROVED bot review at head and the findings helper is not executable at $FINDINGS_BIN; cannot verify convergence, refusing (fail-closed)" >&2
 	exit 2
 fi
 
