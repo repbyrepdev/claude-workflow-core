@@ -115,12 +115,20 @@ STATE=$(gh pr view "$PR" --json state,mergeable,mergeStateStatus,statusCheckRoll
 echo "=== Pre-merge state for PR #$PR ==="
 printf '%s\n' "$STATE" | jq .
 
-# #2567: hoisted once — the gate pins this exact sha, and the merge
-# calls pass it to --match-head-commit so GitHub refuses if the head
-# moved after the gate verified it (TOCTOU close, both paths). Guarded
-# assignments: a failing substitution here must abort loudly, not feed
-# the gate an empty arg it misreports as a policy refusal.
+# #2567: hoisted once — the gate pins this exact sha, and both merge
+# calls pass it to --match-head-commit. On the immediate path GitHub
+# refuses the merge if the head moved after gate verification; on the
+# --auto path the pin is validated at the ARM call only — once armed,
+# post-arm drift is governed by the branch ruleset (see the drift note
+# in SKILL.md). Guarded: rc failure aborts via set -e, and the 40-hex
+# check below catches the rc-0 degenerate (`jq -r` prints the STRING
+# "null" for a missing field) so a wrapper data bug is named here, not
+# misreported downstream as a policy refusal.
 HEAD_OID=$(printf '%s' "$STATE" | jq -r '.head')
+if ! [[ $HEAD_OID =~ ^[0-9a-f]{40}$ ]]; then
+	echo "error: headRefOid from gh pr view is '$HEAD_OID' (want 40-hex) — gh payload drift? STATE: $STATE" >&2
+	exit 2
+fi
 OWNER_NAME=$(skc_repo_owner_name)
 
 # --auto (#2487): ARM platform auto-merge and exit. The immediate path's
@@ -204,12 +212,13 @@ if [ "$AUTO" = "1" ]; then
 	# probe yields "unknown" + WARN — never coerced to false, which would
 	# escalate a successful enqueue into the exit-2 branch below).
 	probe_rc=0
-	_qq_owner_name=$(skc_repo_owner_name 2>/dev/null) || _qq_owner_name=""
+	# OWNER_NAME hoisted at the top (#2567) — guaranteed non-empty past
+	# that guarded assignment, so no re-resolution or empty-slug arm here.
 	# -f (raw string) for the String! vars — -F would type-coerce a numeric-
 	# looking owner/name into an Int and fail GraphQL validation; -F stays
 	# correct for the Int! PR number.
 	post_queued=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeQueueEntry{position}}}}' \
-		-f o="${_qq_owner_name%%/*}" -f r="${_qq_owner_name##*/}" \
+		-f o="${OWNER_NAME%%/*}" -f r="${OWNER_NAME##*/}" \
 		-F n="$PR" --jq '(.data.repository.pullRequest.mergeQueueEntry != null)' \
 		2>"${_verr:-/dev/null}") || probe_rc=$?
 	probe_err=""
@@ -217,7 +226,7 @@ if [ "$AUTO" = "1" ]; then
 		probe_err=$(cat "$_verr" 2>/dev/null)
 		rm -f "$_verr"
 	}
-	if [ "$probe_rc" -ne 0 ] || [ -z "$_qq_owner_name" ]; then
+	if [ "$probe_rc" -ne 0 ]; then
 		echo "⚠ merge-queue probe unavailable (rc=$probe_rc): ${probe_err:-no stderr}" >&2
 		post_queued="unknown"
 	elif [ "$post_queued" != "true" ]; then
@@ -324,32 +333,31 @@ skc_approve_or_exit "Merge PR #$PR ($METHOD)?"
 # --auto arm path has always had).
 MERGE_ARGS=(pr merge "$PR" "$METHOD" --match-head-commit "$HEAD_OID")
 [ "$DELETE_BRANCH" = "1" ] && MERGE_ARGS+=(--delete-branch)
-# v0.27.0 #173 Layer 2 (Phase 1 r1 fix): resolve the PR's actual head ref
-# via gh BEFORE merge, NOT `git rev-parse HEAD`. The skill can be invoked
-# from main, from a worktree on a different branch, or after `git checkout
-# main` already ran — `rev-parse HEAD` would return the wrong sha in
-# those cases and the Layer 2 marker rm below would no-op. gh's headRefOid
-# is canonical regardless of the operator's local branch state.
-BRANCH_HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
-# Fallback to local HEAD if gh fails (network/auth issue mid-flow). Note
-# the degraded path so the operator knows Layer 2 may not have fired.
-if [ -z "$BRANCH_HEAD_SHA" ]; then
-	BRANCH_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-	[ -n "$BRANCH_HEAD_SHA" ] && echo "  github-pr-merge: WARN — gh headRefOid lookup failed; falling back to git HEAD ($BRANCH_HEAD_SHA)" >&2
+# rc-captured: a --match-head-commit refusal is the DESIGNED TOCTOU
+# outcome (head moved between gate verification and merge), not an
+# anomaly — frame it instead of dying on gh's terse error alone (#2567).
+merge_rc=0
+SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}" || merge_rc=$?
+if [ "$merge_rc" -ne 0 ]; then
+	echo "gh pr merge failed (rc=$merge_rc). If the error above says the head branch was modified: the head moved past the gate-verified sha $HEAD_OID — re-run this skill to re-gate the new head." >&2
+	exit 2
 fi
-
-SKILL_WRAPPER=1 gh "${MERGE_ARGS[@]}"
 echo "✓ Merged PR #$PR ($METHOD)"
 
 # v0.27.0 #173 Layer 2: clear phase1-directive marker for the merged
 # branch HEAD sha. Without this, the marker stays orphaned until either
 # Layer 1 (phase1-directive-pending-guard self-heal) or Layer 3 (post-
 # merge git hook) catches it. Belt-and-suspenders: catch at the source.
+# #2567 (r2 simplifier): the merged head IS $HEAD_OID by construction —
+# the merge above is pinned to it via --match-head-commit (gh headRefOid
+# from the STATE fetch, 40-hex-validated), so the pre-#2567 re-query and
+# its `git rev-parse HEAD` fallback (the wrong-sha hazard its comment
+# warned about) are gone.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 MARKER_DIR="$REPO_ROOT/.claude/.session-state/ship-cycle"
-if [ -n "$BRANCH_HEAD_SHA" ] && [ -f "$MARKER_DIR/$BRANCH_HEAD_SHA.phase1-directive.txt" ]; then
-	rm -f "$MARKER_DIR/$BRANCH_HEAD_SHA.phase1-directive.txt"
-	echo "  cleaned phase1-directive marker for $BRANCH_HEAD_SHA (merged via this skill)"
+if [ -f "$MARKER_DIR/$HEAD_OID.phase1-directive.txt" ]; then
+	rm -f "$MARKER_DIR/$HEAD_OID.phase1-directive.txt"
+	echo "  cleaned phase1-directive marker for $HEAD_OID (merged via this skill)"
 fi
 
 # Resolve the exact merge-commit SHA via the GitHub API BEFORE any local

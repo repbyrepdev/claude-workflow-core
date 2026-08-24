@@ -148,9 +148,10 @@ gh api "repos/$(gh repo view --json nameWithOwner -q '.nameWithOwner')/pulls/$PR
 ### 4b. Approving-review gate (#2567) — `_approval-gate.sh`
 
 `run.sh` refuses (both immediate and `--auto` paths) unless a bot listed
-in the SSOT policy `.github/approval-policy.yml` — **read from the merge
-target's default branch via the contents API, never the working tree**,
-so a PR branch cannot edit its own gate — has an **APPROVED review
+in the SSOT policy `.github/approval-policy.yml` — **read from the repo's
+default branch via the contents API, never the working tree** (a PR
+branch cannot edit its own gate; a release-branch PR still answers to
+the default branch's policy) — has an **APPROVED review
 record on the final head** (latest *decisive* review per reviewer:
 APPROVED/CHANGES_REQUESTED/DISMISSED; COMMENTED records are ignored per
 GitHub's own semantics, commit-pinned — a stale APPROVED on an earlier
@@ -166,8 +167,11 @@ posts `@coderabbitai approve` and waits for the real record. It never
 nudges a findings-bearing or unreviewed head — that would launder the
 state it exists to block. NOTE: the nudge is a public PR comment posted
 before the operator prompt (running the wrapper is merge intent). Both
-merge calls pass `--match-head-commit` with the gate-verified sha, so
-a head that moves after verification is refused platform-side.
+merge calls pass `--match-head-commit` with the gate-verified sha: the
+immediate merge is refused if the head moved since verification, and
+the `--auto` arm validates the pin at the ARM call only — once armed,
+post-arm drift is governed by the branch ruleset (see the drift note
+near the top of this file).
 Audited escape: `APPROVAL_GATE_SKIP=1` (fail-closed if the skip cannot
 be audit-logged via `_lib/pipeline-skip.sh`).
 

@@ -74,6 +74,10 @@ _install_gh_shim() {
 log() { printf '%s\n' "$*" >>"$GH_ARGS_LOG"; }
 if [ "$1 $2" = "pr comment" ]; then
 	log "$@"
+	if [ "${FAKE_COMMENT_FAIL:-0}" = "1" ]; then
+		echo "gh: comment post failed" >&2
+		exit 1
+	fi
 	touch "$NUDGE_MARKER"
 	exit 0
 fi
@@ -83,6 +87,12 @@ case "$*" in
 	case "${FAKE_CONTENTS_MODE:-ok}" in
 	404)
 		echo "gh: Not Found (HTTP 404)" >&2
+		exit 1
+		;;
+	proxy404)
+		# An intermediary's 404 body relayed by gh — must NOT read as
+		# "not adopted" (that was the r2 critical fail-open).
+		echo "gh: 404 page not found" >&2
 		exit 1
 		;;
 	err)
@@ -117,9 +127,13 @@ SHIM
 }
 
 # gh shim for driving run.sh end-to-end. Implements --jq with real jq so
-# run.sh's own queries (state, stranded-threads graphql, owner slug)
-# behave; the gate's queries hit the same reviews/comments arms as the
-# unit shim.
+# run.sh's own queries (stranded-threads graphql, owner slug, headRefOid,
+# mergeCommit) behave. FAKE_STATE is served raw and PRE-SHAPED (the
+# post-jq object run.sh expects) — its arm does not apply --jq. The
+# gate's queries hit the same reviews/comments fixtures as the unit shim
+# (no FAKE_REVIEWS_AFTER_FILE nudge-landing switch here). Unmatched
+# calls FAIL LOUDLY — an rc-0 "{}" catch-all let the wiring tests pass
+# while exercising nothing (r2 finding).
 _install_runsh_gh_shim() {
 	_shim_bin_setup
 	cat >"$TEST_TMP/bin/gh" <<'SHIM'
@@ -163,7 +177,11 @@ case "$*" in
 *headRefOid*) emit "{\"headRefOid\":\"$HEAD_SHA\"}" ;;
 *mergeCommit*) emit '{"mergeCommit":{"oid":"cafecafe0000111122223333444455556666cafe"}}' ;;
 *deleteBranchOnMerge*) emit '{"deleteBranchOnMerge":false}' ;;
-*) echo "{}" ;;
+*)
+	log "UNEXPECTED gh: $*"
+	echo "gh-shim: UNEXPECTED: $*" >&2
+	exit 1
+	;;
 esac
 SHIM
 	chmod +x "$TEST_TMP/bin/gh"
@@ -557,4 +575,108 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ $output == *"MERGE-FIRED"* ]]
 	grep -q "pr merge 99 --squash --match-head-commit $HEAD_SHA --delete-branch" "$GH_ARGS_LOG"
+}
+
+@test "run.sh: degenerate headRefOid (null) is named as a wrapper data bug, not a policy refusal" {
+	_install_runsh_gh_shim
+	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":null,"checks":[]}'
+	run "$RUNSH" --pr 99 --yes
+	[ "$status" -eq 2 ]
+	[[ $output == *"gh payload drift"* ]]
+	[[ $output != *"approval gate refused"* ]]
+}
+
+# ---------- round-2 hardening pins ----------
+
+@test "proxy-shaped 404 prose does NOT disable the gate (fail-closed, r2 critical)" {
+	_install_gh_shim
+	unset APPROVAL_GATE_POLICY
+	export FAKE_CONTENTS_MODE=proxy404
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"policy fetch"*"failed"* ]]
+	[[ $output != *"DISABLED"* ]]
+}
+
+@test "STRUCTURAL leg: a review record at head carrying the rate-limit notice is NOT a witness" {
+	_install_gh_shim
+	_reviews '[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T15:30:00Z","body":"<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n> ## Review limit reached"}]'
+	_comments_without_witness
+	_write_findings 0
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"not verifiably reviewed"* ]]
+	[ ! -f "$NUDGE_MARKER" ]
+}
+
+@test "DISMISSED displaces an earlier APPROVED at head (decisive-state ordering)" {
+	_install_gh_shim
+	_reviews '[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T15:00:00Z","body":""},{"user":{"login":"coderabbitai[bot]"},"state":"DISMISSED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T16:00:00Z","body":""}]'
+	_write_findings 1
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"NOT verified clean"* ]]
+}
+
+@test "a null comment body does not error the witness; a later valid witness still counts" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_write_findings 0
+	_write_policy 5
+	printf '[{"user":{"login":"coderabbitai[bot]"},"body":null},{"user":{"login":"coderabbitai[bot]"},"body":"Reviewing files between oldold1111 and %s."}]' "$HEAD_SHA" >"$TEST_TMP/comments.json"
+	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
+	printf '[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"%s","submitted_at":"2026-08-24T16:31:00Z","body":""}]' "$HEAD_SHA" >"$TEST_TMP/reviews-after.json"
+	export FAKE_REVIEWS_AFTER_FILE="$TEST_TMP/reviews-after.json"
+	_run_gate
+	[ "$status" -eq 0 ]
+	[ -f "$NUDGE_MARKER" ]
+}
+
+@test "copilot-only policy without nudge_comment refuses BEFORE posting anything" {
+	_install_gh_shim
+	cat >"$APPROVAL_GATE_POLICY" <<EOF
+require_approving_review: true
+approvers:
+  - copilot-pull-request-reviewer[bot]
+nudge_timeout_seconds: 1
+EOF
+	_reviews '[{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"COMMENTED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T15:30:00Z","body":"looked at it"}]'
+	_comments_without_witness
+	_write_findings 0
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"no nudge_comment"* ]]
+	[ ! -f "$NUDGE_MARKER" ]
+}
+
+@test "nudge-post failure refuses instead of polling" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_comments_with_head_witness
+	_write_findings 0
+	export FAKE_COMMENT_FAIL=1
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"failed to post nudge comment"* ]]
+}
+
+@test "comments-query failure is a distinct fail-closed refusal, no NOWHERE claim" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_write_findings 0
+	export FAKE_COMMENTS_FILE="$TEST_TMP/nonexistent-comments.json"
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"witness query failed"* ]]
+	[[ $output == *"No nudge was posted"* ]]
+	[[ $output != *"not verifiably reviewed"* ]]
+	[ ! -f "$NUDGE_MARKER" ]
+}
+
+@test "CRLF policy file is accepted (consumer core.autocrlf)" {
+	_install_gh_shim
+	printf 'require_approving_review: true\r\napprovers:\r\n  - coderabbitai[bot]\r\nnudge_timeout_seconds: 1\r\n' >"$APPROVAL_GATE_POLICY"
+	_reviews_approved_at_head
+	_run_gate
+	[ "$status" -eq 0 ]
 }

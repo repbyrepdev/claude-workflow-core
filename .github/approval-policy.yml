@@ -20,11 +20,12 @@
 # VERIFIABLY converged but skipped the record, nudge and wait for the
 # real one — never merge without it.
 #
-# READ FROM THE MERGE TARGET: the gate fetches this file from the
-# repo's DEFAULT BRANCH via the GitHub contents API, never from the
-# working tree — a PR branch cannot neuter its own merge gate by
-# editing this file on that branch. Policy changes take effect only
-# once merged.
+# READ FROM THE DEFAULT BRANCH: the gate fetches this file from the
+# repo's default branch via the GitHub contents API — never from the
+# working tree (a PR branch cannot neuter its own merge gate by editing
+# this file on that branch), and deliberately NOT from a PR's base ref
+# (a release-branch PR still answers to the default branch's policy).
+# Policy changes take effect only once merged there.
 #
 # FORMAT CONTRACT (parsed by _approval-gate.sh with awk/sed — no yq on
 # the merge path). Keep exactly this shape:
@@ -36,9 +37,14 @@
 #     login (it would never match the API's user.login)
 #   - comments only on full lines (a trailing `# …` after a value would
 #     be read as part of the value; for require/timeout that fails
-#     closed loudly, for an approver it silently never matches)
-#   - `nudge_comment` is the one key with a built-in default: if the
-#     key is absent the gate uses "@coderabbitai approve" and says so
+#     closed loudly, for an approver it silently never matches, and for
+#     nudge_comment it would be POSTED verbatim to the PR — the worst
+#     of the four)
+#   - two keys have built-in defaults when absent: `nudge_comment` →
+#     "@coderabbitai approve" (announced; only applied when
+#     coderabbitai[bot] is an approver — otherwise the gate refuses
+#     before posting a meaningless nudge) and `nudge_timeout_seconds`
+#     → 180 (silent)
 #
 # Schema:
 #   require_approving_review: true|false — master switch for the gate.
