@@ -60,6 +60,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 FAILED=()
+ENF_FAILED=()
 
 for f in "$@"; do
 	# Normalize absolute → repo-relative so `case` glob works regardless of
@@ -125,10 +126,42 @@ for f in "$@"; do
 	[ "$auto_register" = "false" ] && continue
 	# (b) valid event
 	if [ -n "$event" ] && event_frontmatter_event_valid "$event"; then
+		# #2547: PostToolUse hooks must ALSO declare the enforce-vs-inform
+		# classification, fail-closed at commit time — the same placement
+		# as the event requirement itself (phase1 r1 code-reviewer: a
+		# bats-only check fires long after an unclassified hook lands;
+		# this gate is where "cannot land unclassified" is actually true).
+		#   enforce — the hook blocks on violation via a routed mechanism
+		#   inform  — advisory by documented design (say why)
+		if [ "$event" = "PostToolUse" ]; then
+			if ! head -n "$(event_frontmatter_scan_window)" "$f" |
+				grep -qE '^# enforcement: (enforce|inform)( |$)'; then
+				ENF_FAILED+=("$f")
+			fi
+		fi
 		continue
 	fi
 	FAILED+=("$f")
 done
+
+if [ "${#ENF_FAILED[@]}" -gt 0 ]; then
+	echo "event-frontmatter-check: ${#ENF_FAILED[@]} PostToolUse hook(s) lack the #2547 enforce-vs-inform classification:" >&2
+	for f in "${ENF_FAILED[@]}"; do
+		echo "  $f" >&2
+	done
+	cat >&2 <<EOF
+
+Add to the file's first $(event_frontmatter_scan_window) lines (after the matcher line):
+  # enforcement: enforce — <how it blocks: hook-ack routing / decision:block>
+  # enforcement: inform — <why advisory is the deliberate design>
+
+An 'enforce' hook must actually route its failures (hook_ack_append, or a
+decision:block JSON response) — posttooluse-enforcement-contract.bats pins
+that; this gate pins that the classification EXISTS.
+Bypass: EVENT_FRONTMATTER_SKIP=1 git commit ...
+EOF
+	exit 1
+fi
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
 	echo "event-frontmatter-check: ${#FAILED[@]} staged hook(s) lack required frontmatter:" >&2

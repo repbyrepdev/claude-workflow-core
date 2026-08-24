@@ -1,58 +1,157 @@
 #!/usr/bin/env bats
-# covers: hooks/lint-dispatch.sh hooks/cr-pause-detector.sh hooks/hook-ack-clear.sh hooks/next-step-advisor.sh hooks/persist-session-state.sh hooks/phase0.5-post-commit-rerun.sh hooks/phase1-post-agent-nudge.sh hooks/phase1-post-commit-resume.sh hooks/post-commit-template-lint.sh hooks/post-tool-failure.sh hooks/pr-close-prune.sh hooks/pr-trigger.sh
+# covers: pre-commit-hooks/event-frontmatter-check.sh
 #
-# #2547: every PostToolUse hook must be CLASSIFIED enforce-vs-inform via a
-# `# enforcement: ack|inform — <reason>` frontmatter line, and every
-# `enforcement: ack` hook must actually route through hook_ack_append. The
-# audit that produced the classification is a one-time act; this contract is
-# what keeps it true — a NEW PostToolUse hook cannot land unclassified, and
-# an enforcer cannot silently drop its routing (the exact regression #2547
-# fears: "Fix now, same-turn" messages that scroll past).
+# #2547: PostToolUse hooks must be CLASSIFIED enforce-vs-inform. The GATE is
+# pre-commit-hooks/event-frontmatter-check.sh (fail-closed at commit time —
+# phase1 r1 code-reviewer: a bats-only check fires long after an unclassified
+# hook lands); this file is the gate's unit test PLUS the live-tree routing
+# audit the gate deliberately does not do (it pins existence of the
+# classification; routing truth needs content inspection).
+#
+# `covers:` names ONLY the gate script (phase1 r1 code-reviewer, conf 9):
+# listing the twelve hooks here would grant them FALSE behavioral-coverage
+# credit in test-touched routing and the mirror-drift gate — behavioral
+# credit stays with behavioral suites (lint-dispatch.bats).
+#
+# Discovery drives off _lib/event-frontmatter.sh — the declared SSOT for
+# frontmatter semantics (scan window, helper-basename skips, opt-out) — so
+# the classified universe cannot diverge from the registered one.
 
 setup() {
-	HOOKS_DIR="${BATS_TEST_DIRNAME}/../../../hooks"
-	[ -d "$HOOKS_DIR" ]
+	REPO="${BATS_TEST_DIRNAME}/../../.."
+	GATE="$REPO/pre-commit-hooks/event-frontmatter-check.sh"
+	LIB="$REPO/_lib/event-frontmatter.sh"
+	[ -x "$GATE" ]
+	[ -f "$LIB" ]
+	# shellcheck source=../../../_lib/event-frontmatter.sh disable=SC1091
+	. "$LIB"
+	HOOKS_DIR="$REPO/hooks"
+	TEST_TMP=$(mktemp -d -t ptuenf.XXXXXX) || return 1
+	(
+		set -e
+		cd "$TEST_TMP"
+		git init -q
+		mkdir -p hooks
+		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init
+	) || return 1
 }
 
+teardown() {
+	# shellcheck disable=SC2164
+	cd /tmp 2>/dev/null || true
+	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */ptuenf.* ]]; then
+		rm -rf "$TEST_TMP"
+	fi
+}
+
+# Live-tree PostToolUse hooks via the SSOT: skip helper basenames, honor the
+# parser's scan window, filter to event == PostToolUse.
 _posttooluse_hooks() {
-	grep -l "^# event:.*PostToolUse" "$HOOKS_DIR"/*.sh
+	local f base event
+	for f in "$HOOKS_DIR"/*.sh; do
+		base=$(basename "$f")
+		event_frontmatter_skip_basename "$base" && continue
+		event=$(event_frontmatter_parse "$f" | head -1)
+		[ "$event" = "PostToolUse" ] && printf '%s\n' "$f"
+	done
+	return 0
 }
 
-@test "#2547 every PostToolUse hook declares enforcement: ack or inform" {
-	local f missing=""
-	while IFS= read -r f; do
-		grep -qE "^# enforcement: (ack|inform)( |$)" "$f" || missing="$missing ${f##*/}"
-	done < <(_posttooluse_hooks)
-	[ -z "$missing" ] || {
-		echo "PostToolUse hook(s) with no enforce-vs-inform classification:$missing"
-		echo "Add '# enforcement: ack — <why it blocks>' or '# enforcement: inform — <why advisory>' after the matcher line."
+# A hook "routes" iff a NON-COMMENT line invokes an enumerated blocking
+# mechanism: hook_ack_append (the universal sentinel) or a decision:block
+# JSON response (phase1 r1 silent-failure-hunter + pr-test-analyzer: the
+# bare string grep passed vacuously on a comment mention).
+_hook_routes() {
+	grep -qE '^[^#]*hook_ack_append' "$1" && return 0
+	grep -qE '^[^#]*"decision"[[:space:]]*:[[:space:]]*"block"' "$1"
+}
+
+@test "#2547 GATE refuses a PostToolUse hook with no enforcement classification" {
+	cat >"$TEST_TMP/hooks/newhook.sh" <<'EOF'
+#!/bin/bash
+set -u
+# event: PostToolUse
+# matcher: Bash
+exit 0
+EOF
+	cd "$TEST_TMP" || return 1
+	run bash "$GATE" hooks/newhook.sh
+	[ "$status" -eq 1 ] || {
+		echo "unclassified PostToolUse hook passed the gate (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"enforce-vs-inform"* ]] || {
+		echo "refusal does not name the missing classification. output: $output"
 		return 1
 	}
 }
 
-@test "#2547 every enforcement:ack hook routes through hook_ack_append" {
+@test "#2547 GATE passes a classified PostToolUse hook; non-PostToolUse needs none" {
+	cat >"$TEST_TMP/hooks/classified.sh" <<'EOF'
+#!/bin/bash
+set -u
+# event: PostToolUse
+# matcher: Bash
+# enforcement: inform — fixture
+exit 0
+EOF
+	cat >"$TEST_TMP/hooks/pretool.sh" <<'EOF'
+#!/bin/bash
+set -u
+# event: PreToolUse
+# matcher: Bash
+exit 0
+EOF
+	cd "$TEST_TMP" || return 1
+	run bash "$GATE" hooks/classified.sh hooks/pretool.sh
+	[ "$status" -eq 0 ] || {
+		echo "classified + non-PostToolUse fixtures failed the gate (rc=$status). output: $output"
+		return 1
+	}
+}
+
+@test "#2547 every live PostToolUse hook is classified enforce or inform" {
+	local f missing="" n=0
+	while IFS= read -r f; do
+		n=$((n + 1))
+		head -n "$(event_frontmatter_scan_window)" "$f" |
+			grep -qE '^# enforcement: (enforce|inform)( |$)' || missing="$missing ${f##*/}"
+	done < <(_posttooluse_hooks)
+	[ "$n" -gt 0 ] || {
+		echo "SSOT discovery found ZERO PostToolUse hooks — parser drift?"
+		return 1
+	}
+	[ -z "$missing" ] || {
+		echo "unclassified PostToolUse hook(s):$missing"
+		return 1
+	}
+}
+
+@test "#2547 every enforcement:enforce hook routes via a non-comment blocking call" {
 	local f unrouted="" found=0
 	while IFS= read -r f; do
-		grep -qE "^# enforcement: ack" "$f" || continue
+		head -n "$(event_frontmatter_scan_window)" "$f" |
+			grep -qE '^# enforcement: enforce' || continue
 		found=1
-		grep -q "hook_ack_append" "$f" || unrouted="$unrouted ${f##*/}"
+		_hook_routes "$f" || unrouted="$unrouted ${f##*/}"
 	done < <(_posttooluse_hooks)
 	[ "$found" -eq 1 ] || {
-		echo "no enforcement:ack hook found at all — lint-dispatch reclassified? That IS the regression."
+		echo "no enforcement:enforce hook found at all — lint-dispatch reclassified? That IS the regression."
 		return 1
 	}
 	[ -z "$unrouted" ] || {
-		echo "enforcement:ack hook(s) that never call hook_ack_append:$unrouted"
+		echo "enforce-classified hook(s) with no non-comment blocking call:$unrouted"
 		return 1
 	}
 }
 
-@test "#2547 lint-dispatch is pinned as the ack-routed enforcer" {
+@test "#2547 lint-dispatch is pinned as the enforce-classified hook" {
 	# The one current enforcer, pinned by name: reclassifying it to inform
 	# (or deleting the line) must turn this red — that decision belongs in
 	# review, not in drift.
-	grep -qE "^# enforcement: ack" "$HOOKS_DIR/lint-dispatch.sh" || {
-		echo "lint-dispatch.sh is no longer declared enforcement:ack"
+	head -n "$(event_frontmatter_scan_window)" "$HOOKS_DIR/lint-dispatch.sh" |
+		grep -qE '^# enforcement: enforce' || {
+		echo "lint-dispatch.sh is no longer declared enforcement:enforce"
 		return 1
 	}
 }

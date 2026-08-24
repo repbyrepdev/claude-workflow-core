@@ -2,7 +2,7 @@
 set -u
 # event: PostToolUse
 # matcher: Edit|Write|MultiEdit
-# enforcement: ack — every lint failure/auto-fix appends to the universal sentinel via _lint_pending_append
+# enforcement: enforce — every lint failure/auto-fix routes through hook_ack_append (via _lint_pending_append)
 # v4.26 (#627) — unified PostToolUse linter dispatcher.
 # Replaces the prior 3-hook fan-out (lint-yaml.sh + lint-shell.sh +
 # lint-actions.sh), which spawned 3 bash subprocesses per Edit/Write
@@ -10,12 +10,15 @@ set -u
 # This dispatcher spawns once, picks the linter by extension + path,
 # then delegates the same lint-log-append + advisory-stderr behavior.
 #
-# Drift guard: bats `lint-dispatch.bats` pins the ack-routing branches
-# (#2547 — this comment claimed coverage for 20+ versions while no such
-# file existed; the routing is now mutation-verified). If you add a new
-# file type to lint, add a `case` arm + a bats test, and keep the
-# `# enforcement:` declaration honest (posttooluse-enforcement-contract
-# .bats enforces its presence).
+# Drift guard: bats `lint-dispatch.bats` pins 5 of the 6 ack-routing
+# sites — shellcheck fail, shfmt auto-fixed, shfmt auto-fix-failed,
+# yamllint fail, actionlint fail; the shellcheck-CRASH arm needs an
+# input that crashes the linter itself and is exercised only in
+# production. (#2547 — the prior comment claimed full coverage for 20+
+# versions while no bats existed at all.) If you add a new file type,
+# add a `case` arm + a bats test, and keep the `# enforcement:`
+# declaration honest (event-frontmatter-check.sh gates its presence at
+# commit; posttooluse-enforcement-contract.bats audits the routing).
 #
 # Registered via ~/.claude/settings.json hooks.PostToolUse matcher=
 # Edit|Write|MultiEdit (ONE entry replacing the prior 3).
