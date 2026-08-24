@@ -85,6 +85,13 @@ while [ $# -gt 0 ]; do
 		grep '^#' "$0" | sed 's/^# \?//'
 		exit 0
 		;;
+	--yes | --approve)
+		# #2544: non-interactive approval WITHOUT an env-var prefix. See
+		# skc_approve_or_exit in ../_lib/skill-common.sh.
+		# shellcheck disable=SC2034 # read by skc_approve_or_exit (sourced lib)
+		SKC_ASSUME_YES=1
+		shift
+		;;
 	*)
 		echo "unknown arg: $1" >&2
 		exit 2

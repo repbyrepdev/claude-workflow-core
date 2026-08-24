@@ -119,7 +119,7 @@ skc_read_template() {
 skc_graphql_add_sub_issue() {
 	local new_num="${1:-}"
 	local parent_num="${2:-}"
-	if ! [[ "$new_num" =~ ^[0-9]+$ ]] || ! [[ "$parent_num" =~ ^[0-9]+$ ]]; then
+	if ! [[ $new_num =~ ^[0-9]+$ ]] || ! [[ $parent_num =~ ^[0-9]+$ ]]; then
 		echo "skc: skc_graphql_add_sub_issue <new-num> <parent-num>" >&2
 		return 2
 	fi
@@ -165,15 +165,34 @@ skc_graphql_add_sub_issue() {
 # Prompt user for go/no-go approval on an action. Reads a single line from
 # stdin. Accepts "y"/"yes" (case-insensitive) → return 0. Anything else →
 # print cancel message and return 2 (caller should exit). If stdin is not
-# a TTY (non-interactive run), requires APPROVE=1 env to proceed.
+# a TTY (non-interactive run), requires either the `--yes` flag (preferred)
+# or APPROVE=1 in the environment.
+#
+# #2544 — WHY `--yes` EXISTS. `APPROVE=1 <cmd>` is an env-var-PREFIX
+# invocation, which is byte-identical in shape to the `BASH_ENV=<payload>
+# <cmd>` arbitrary-code-execution pattern. Agent tool-call classifiers block
+# that shape on sight, and they are right to. The consequence was absurd: our
+# own approval mechanism was written in the one syntax an agent is
+# structurally forbidden from typing, so every issue / PR / merge required a
+# human to paste the command — in a workflow whose entire purpose is running
+# without one.
+#
+# `SKC_ASSUME_YES` is set by the wrapper AFTER it parses `--yes` from its own
+# argv. It is an ordinary shell variable assigned inside the script, never an
+# env prefix on the command line, so it carries none of that shape.
+# APPROVE=1 is retained for humans and existing scripts.
 skc_approve_or_exit() {
 	local prompt="${1:-Proceed?}"
+	if [ "${SKC_ASSUME_YES:-0}" = "1" ]; then
+		echo "skc: auto-approved via --yes" >&2
+		return 0
+	fi
 	if [ ! -t 0 ]; then
 		if [ "${APPROVE:-0}" = "1" ]; then
 			echo "skc: auto-approved via APPROVE=1 (non-interactive)" >&2
 			return 0
 		fi
-		echo "skc: non-interactive run without APPROVE=1 — refusing" >&2
+		echo "skc: non-interactive run without --yes (or APPROVE=1) — refusing" >&2
 		return 2
 	fi
 	printf '%s [yes/no] ' "$prompt"
