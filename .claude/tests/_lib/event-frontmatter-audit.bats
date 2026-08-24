@@ -115,14 +115,16 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 	# MEMBERSHIP too (phase1 r6 pr-test-analyzer, verified empirically): an
 	# auto-register:false on lint-dispatch kept this pin green while the
 	# routing + inverse audits iterated ZERO enforce subjects — vacuously
-	# green. The declared value only means something inside the universe.
+	# green. Via the CLASSIFICATION helper, not the raw emitter (phase1 r7
+	# code-simplifier: the raw path passed for membership under ANY event,
+	# so flipping the event to PreToolUse re-opened the same vacuity).
 	local list
-	list=$(event_frontmatter_registered_hooks "$HOOKS_DIR") || {
+	list=$(_classification_required_hooks "$HOOKS_DIR") || {
 		echo "universe discovery failed"
 		return 1
 	}
 	[[ $list == *"lint-dispatch.sh"* ]] || {
-		echo "lint-dispatch.sh left the registered universe — the enforce audits now run on nothing"
+		echo "lint-dispatch.sh left the classification-required universe — the enforce audits now run on nothing"
 		return 1
 	}
 }
@@ -265,8 +267,27 @@ FIXEOF
 		echo "a missing directory read as an empty clean universe (rc=0)"
 		return 1
 	}
-	[[ $output == *"NOT A DIRECTORY"* ]] || {
+	[[ $output == *"NOT A READABLE DIRECTORY"* ]] || {
 		echo "no loud diagnostic for the missing directory. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 emitter refuses an UNREADABLE (perm-denied) directory loudly" {
+	# phase1 r7 silent-failure-hunter (verified): chmod-000 on an EXISTING
+	# dir still glob-failed straight to rc 0 — the r6 guard caught only the
+	# missing-dir half.
+	mkdir -p "$TEST_TMP/deniedroot/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\nexit 0\n' >"$TEST_TMP/deniedroot/hooks/h.sh"
+	chmod 000 "$TEST_TMP/deniedroot/hooks"
+	run event_frontmatter_registered_hooks "$TEST_TMP/deniedroot/hooks"
+	chmod 755 "$TEST_TMP/deniedroot/hooks"
+	[ "$status" -ne 0 ] || {
+		echo "a permission-denied directory read as an empty clean universe (rc=0)"
+		return 1
+	}
+	[[ $output == *"NOT A READABLE DIRECTORY"* ]] || {
+		echo "no loud diagnostic for the unreadable directory. output: $output"
 		return 1
 	}
 }

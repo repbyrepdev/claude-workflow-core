@@ -162,8 +162,7 @@ event_frontmatter_enforcement_valid() {
 # itself; hoisting an ack wrapper into _lib later turns the audit RED
 # loudly, and the contract gets taught the new shape in the same PR.
 event_frontmatter_hook_routes() {
-	grep -qE '^[^#]*hook_ack_append' "$1" && return 0
-	grep -qE '^[^#]*"decision"[[:space:]]*:[[:space:]]*"block"' "$1"
+	grep -qE '^[^#]*(hook_ack_append|"decision"[[:space:]]*:[[:space:]]*"block")' "$1"
 }
 
 # Convenience composition for callers wanting the validated value in one
@@ -175,7 +174,13 @@ event_frontmatter_hook_routes() {
 # r5: the earlier comment claimed the array idiom and misnamed callers).
 event_frontmatter_enforcement() {
 	local hook="$1" _parse_out val
-	_parse_out=$(event_frontmatter_parse "$hook") || return 1
+	_parse_out=$(event_frontmatter_parse "$hook") || {
+		# phase1 r7 silent-failure-hunter: a bare rc 1 here laundered an
+		# I/O failure into an "unclassified" policy verdict — every sibling
+		# parse consumer is loud; this was the one mute path.
+		echo "event_frontmatter_enforcement: PARSE FAILURE: $hook (unreadable?)" >&2
+		return 1
+	}
 	{
 		read -r _
 		read -r _
@@ -206,11 +211,13 @@ event_frontmatter_enforcement() {
 # mid-record silently shifts every consumer's columns.
 event_frontmatter_registered_hooks() {
 	local dir="$1" f base _parse_out event auto enforcement
-	if [ ! -d "$dir" ]; then
-		# phase1 r6 silent-failure-hunter (verified): a mistyped/unlistable
-		# dir read as rc 0 + empty — the maximal shrunken universe passing
-		# as clean, exactly what this contract forbids per-file.
-		echo "event_frontmatter_registered_hooks: NOT A DIRECTORY: $dir — refusing an empty universe" >&2
+	if [ ! -d "$dir" ] || [ ! -r "$dir" ]; then
+		# phase1 r6+r7 silent-failure-hunter (both verified): a mistyped OR
+		# permission-denied dir read as rc 0 + empty — the maximal shrunken
+		# universe passing as clean, exactly what this contract forbids
+		# per-file. The r6 guard caught only the missing half; a chmod-000
+		# EXISTING dir still glob-failed straight to return 0.
+		echo "event_frontmatter_registered_hooks: NOT A READABLE DIRECTORY: $dir — refusing an empty universe" >&2
 		return 1
 	fi
 	for f in "$dir"/*.sh; do
