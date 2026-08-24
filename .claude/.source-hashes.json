@@ -25,7 +25,7 @@
     "_lib/cmd-launder-screen.sh": "3b145e92de1b916dcdbad972c4ee45a9488e7aac74c3f2d6dc2b39a96ed83742",
     "_lib/cmd-prefix-regex.sh": "716b091771368c0e4076882115208e52239073637044994d0018510ab5e3bac2",
     "_lib/content-hash-cache.sh": "d22c628356b195457fc2e7da5c2d10fb95cc0f9183be8f2bf4a4a388b754db13",
-    "_lib/cr-phase2-coverage.sh": "81e5b72ecb56779e16ea227ab6204ae46be5f9e8b66da0c7ad41a211144ecc0b",
+    "_lib/cr-phase2-coverage.sh": "162f7cee6220ee729239dd6ad328dcaf1effb54c07ab8e537aa10253dbba321f",
     "_lib/dogfood-fingerprint.sh": "71eb4e8990307ccb52f9e45b90d77c2c9d6b0435b7e608c16982afd56a95b722",
     "_lib/epic-completeness-check.sh": "c95052f36570f73071394d51024f7db592eb70ddfd64d8ac03eb26a09e5f04c0",
     "_lib/event-frontmatter.sh": "b7cb4c7bd793337813f695efdfc140238cb62955482de07a54dd7694551bef3f",

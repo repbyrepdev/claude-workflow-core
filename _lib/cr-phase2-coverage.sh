@@ -79,8 +79,21 @@ _cr_phase2_branch_graduation() {
 	fi
 	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl"
 	[ -f "$audit_log" ] || return 1
+	# CR-in-CI on #2565 (Major): a branch-WIDE sum let records that paid for
+	# an EARLIER round's findings satisfy a LATER review's larger residual —
+	# stale coverage buying new debts. Scope the sum to records whose
+	# covered_sha prefixes a commit AT or AFTER the reviewed ancestor:
+	# rev-list prints newest-first, so the eligible set is every line down
+	# to and including the ancestor itself. Records land under the HEAD
+	# current at record time (fixing happens at-or-after the review), so
+	# legitimate coverage always qualifies; only pre-review leftovers drop.
+	local eligible_shas
+	eligible_shas=$(printf '%s\n' "$branch_shas" | awk -v anc="$anc_sha" '
+		{ print }
+		index($0, anc) == 1 { exit }')
+	[ -n "$eligible_shas" ] || return 1
 	local covered
-	covered=$(jq -rs --arg shas "$branch_shas" '
+	covered=$(jq -rs --arg shas "$eligible_shas" '
 		($shas | split("\n") | map(select(length > 0))) as $bs
 		| [.[] | select(.source == "cr")
 		       | select((.covered_sha // "") as $c | ($c | length > 0) and ($bs | any(startswith($c))))]
@@ -89,10 +102,10 @@ _cr_phase2_branch_graduation() {
 	'' | *[!0-9]*) return 1 ;;
 	esac
 	if [ "$covered" -ge "$anc_findings" ]; then
-		echo "cr_phase2_clean_for_sha: HEAD has no review row — GRADUATED via branch ancestor $anc_sha ($anc_findings finding(s), covered $covered by branch-scoped prove-yourself records); the fix-delta defers to CR-in-CI." >&2
+		echo "cr_phase2_clean_for_sha: HEAD has no review row — GRADUATED via branch ancestor $anc_sha ($anc_findings finding(s), covered $covered by prove-yourself records at-or-after the reviewed commit); the fix-delta defers to CR-in-CI." >&2
 		return 0
 	fi
-	echo "cr_phase2_clean_for_sha: graduation candidate $anc_sha has $anc_findings finding(s) but branch-scoped coverage is only $covered — record the missing fix/rejection records, then re-run." >&2
+	echo "cr_phase2_clean_for_sha: graduation candidate $anc_sha has $anc_findings finding(s) but at-or-after coverage is only $covered — record the missing fix/rejection records, then re-run." >&2
 	return 1
 }
 

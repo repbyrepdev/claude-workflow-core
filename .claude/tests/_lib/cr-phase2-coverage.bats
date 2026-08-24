@@ -585,3 +585,40 @@ _grad_repo() {
 		return 1
 	}
 }
+
+@test "#2565 GRADUATION: an EARLIER round's coverage cannot pay a LATER review's debts" {
+	# CR-in-CI Major: with a branch-wide sum, records covering round 1's
+	# findings satisfied round 2's larger residual. Round 1 under the first
+	# branch commit (2 findings, covered 2 — records land under that same
+	# commit); round 2 under the child (3 findings, NO coverage). HEAD
+	# unreviewed → must refuse, naming the at-or-after gap.
+	_grad_repo
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$G_REVIEWED" >>"$AUDIT"
+	printf '{"sha":"%s","findings":3,"complete":true}\n' "${G_HEAD:0:7}" >>"$CR_LOG"
+	(cd "$TEST_TMP" && git -c user.email=t@t -c user.name=t commit --allow-empty -q -m more-fixes) || return 1
+	local head3
+	head3=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	run cr_phase2_clean_for_sha "$head3"
+	[ "$status" -ne 0 ] || {
+		echo "round 1's stale coverage paid round 2's uncovered findings"
+		return 1
+	}
+	[[ $output == *"at-or-after coverage is only 0"* ]] || {
+		echo "refusal does not show the at-or-after gap. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2565 GRADUATION: coverage recorded at-or-after the reviewed commit still clears" {
+	# The converse guard: scoping must not break the legitimate flow —
+	# records written while fixing (HEAD at-or-after the review) qualify.
+	_grad_repo
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$G_HEAD" >>"$AUDIT"
+	run cr_phase2_clean_for_sha "$G_HEAD"
+	[ "$status" -eq 0 ] || {
+		echo "legitimate at-or-after coverage no longer graduates. output: '$output'"
+		return 1
+	}
+}

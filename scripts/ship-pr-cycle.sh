@@ -1829,12 +1829,20 @@ EOF
 			p2prior=$(_phase2_branch_run_count) || return 2
 			if [ "$p2prior" -ge "$p2cap" ]; then
 				if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
-					echo "ship-pr-cycle: phase2 round-cap $p2prior/$p2cap OVERRIDDEN via PIPELINE_GATE_SKIP=1 — invoking the CR-CLI past the cap (audit-logged)" >&2
-					if command -v pipeline_skip_log >/dev/null 2>&1; then
-						pipeline_skip_log "phase2-round-cap" || true
-					else
-						echo "ship-pr-cycle: WARN: pipeline-skip.sh lib missing — cap override proceeding UNLOGGED" >&2
+					# CR-in-CI on #2565 (Major): "audit-logged" must be a
+					# precondition, not an aspiration — a failed append (or a
+					# missing writer lib) refuses the override BEFORE the
+					# CR-CLI spends, rc 2. An empty reason stays permitted;
+					# the writer records its absence, which is itself signal.
+					if ! command -v pipeline_skip_log >/dev/null 2>&1; then
+						echo "ship-pr-cycle: ERROR: _lib/pipeline-skip.sh unavailable — refusing an UNLOGGED cap override (fix the plugin install, or drop PIPELINE_GATE_SKIP)" >&2
+						return 2
 					fi
+					if ! pipeline_skip_log "phase2-round-cap"; then
+						echo "ship-pr-cycle: ERROR: cap-override audit append FAILED (see writer error above) — refusing to spend the override review UNLOGGED" >&2
+						return 2
+					fi
+					echo "ship-pr-cycle: phase2 round-cap $p2prior/$p2cap OVERRIDDEN via PIPELINE_GATE_SKIP=1 — invoking the CR-CLI past the cap (audit-logged)" >&2
 				else
 					local gate_rc=0
 					_phase2_cap_gate "$p2cap" "$p2prior" || gate_rc=$?

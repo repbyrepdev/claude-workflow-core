@@ -764,3 +764,31 @@ _seed_cache_detail() {
 	}
 	[ "$(_cur_stage)" = phase2 ]
 }
+
+@test "#2565 override REFUSES when the audit append fails — no unlogged spend" {
+	# CR-in-CI Major: "audit-logged" is a precondition. Point SKIP_LOG at an
+	# unwritable target → the writer fails → the override must rc 2 BEFORE
+	# the CR-CLI runs (sentinel absent), never spend-and-shrug.
+	_seed_stage phase2
+	_seed_log 3
+	mkdir -p "$TEST_TMP/ro"
+	chmod 500 "$TEST_TMP/ro"
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	SKIP_LOG="$TEST_TMP/ro/pipeline-skip.jsonl" PIPELINE_GATE_SKIP=1 \
+		PIPELINE_GATE_SKIP_REASON="bats-2565-audit-fail" run "$SCRIPT" next
+	chmod 700 "$TEST_TMP/ro" 2>/dev/null || true
+	[ "$status" -eq 2 ] || {
+		echo "override proceeded despite a dead audit trail (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"refusing to spend the override review UNLOGGED"* ]] || {
+		echo "no fail-closed audit message. output: $output"
+		return 1
+	}
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] || {
+		echo "the CR-CLI RAN with a dead audit trail"
+		return 1
+	}
+	[ "$(_cur_stage)" = phase2 ]
+}
