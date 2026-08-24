@@ -72,6 +72,12 @@ _expect_clean_passthrough() {
 		echo "$2 produced an ack entry. sentinel: $(cat "$SENTINEL")"
 		return 1
 	fi
+	# CR-in-CI on #2576: content too — a clean path emitting diagnostics is
+	# noise the operator reads as a problem.
+	[ -z "$output" ] || {
+		echo "$2 emitted output on a clean path: $output"
+		return 1
+	}
 }
 
 @test "#2547 shellcheck failure appends to the hook-ack sentinel (blocks next call)" {
@@ -90,6 +96,16 @@ _expect_clean_passthrough() {
 		echo "sentinel lacks the lint-dispatch.shellcheck fail entry. sentinel: $(cat "$SENTINEL")"
 		return 1
 	}
+	# CR-in-CI on #2576: assert the operator-facing CONTENT — suppressed
+	# diagnostics previously passed.
+	[[ $output == *"ShellCheck:"* ]] || {
+		echo "shellcheck diagnostics missing from output: $output"
+		return 1
+	}
+	[[ $output == *"Fix now, same-turn"* ]] || {
+		echo "the advisory context line is missing: $output"
+		return 1
+	}
 }
 
 @test "#2547 clean shell file: exit 0, NO sentinel entry (informers must not block)" {
@@ -102,6 +118,13 @@ _expect_clean_passthrough() {
 	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/fmt.sh")"
 	[ "$status" -eq 0 ] || {
 		echo "auto-fix path exited $status. output: $output"
+		return 1
+	}
+	# Content BEFORE the disk-state run below clobbers $output (CR-in-CI
+	# on #2576 + the first draft of this assertion placed after it read an
+	# empty, already-clobbered $output).
+	[[ $output == *"auto-fixed formatting"* ]] || {
+		echo "the auto-fix announcement is missing: $output"
 		return 1
 	}
 	# Disk state, not just exit code (phase1 r1 pr-test-analyzer: a silent
@@ -135,6 +158,10 @@ _expect_clean_passthrough() {
 		echo "sentinel lacks the auto-fix-failed reason. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}
+	[[ $output == *"auto-fix failed"* ]] || {
+		echo "the auto-fix-failed diagnostic is missing: $output"
+		return 1
+	}
 }
 
 @test "#2547 yamllint failure appends to the sentinel + propagates the lint exit" {
@@ -146,6 +173,10 @@ _expect_clean_passthrough() {
 	}
 	_sentinel_has yamllint 'fail-[0-9]+-issues' "$ROOT/bad.yml" || {
 		echo "sentinel lacks the yamllint fail entry. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
+		return 1
+	}
+	[[ $output == *"syntax"* || $output == *"error"* ]] || {
+		echo "yamllint diagnostics missing from output: $output"
 		return 1
 	}
 }
@@ -160,6 +191,10 @@ _expect_clean_passthrough() {
 	}
 	_sentinel_has actionlint 'fail-[0-9]+-issues' "$ROOT/.github/workflows/bad.yml" || {
 		echo "sentinel lacks the actionlint fail entry. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
+		return 1
+	}
+	[[ $output == *"bad.yml:"* ]] || {
+		echo "actionlint diagnostics missing from output: $output"
 		return 1
 	}
 }
