@@ -151,6 +151,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ]
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 	[[ $output != *"round-cap ENFORCED"* ]]
 	[ "$(_cur_stage)" = "phase1" ]
@@ -162,6 +163,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=5
 	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ]
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 	[[ $output != *"round-cap ENFORCED"* ]]
 }

@@ -125,17 +125,13 @@ command -v coderabbit >/dev/null 2>&1 || scm_fail "coderabbit CLI not installed 
 TEE_OUT=$(mktemp -t cr-local-review.XXXXXX)
 trap 'rm -f "$TEE_OUT"' EXIT
 # v0.32.x (#234), reframed by #2546: cap the local review's wall-time as a
-# HANG guard. CR's server-side review legitimately runs up to ~60min on a
-# large diff; a ceiling BELOW that (the old 600s) killed paid in-flight
-# reviews — each kill discarded a 10/hr budget slot and the retry spent a
-# second one. The guard therefore sits AT the worst case, not under it,
-# and exists only to catch a truly hung client. A client-side
-# timeout exists as a HANG guard, not a race (#2546): the old 600s default
-# sat BELOW CR's legitimate ~60min worst case, so it killed paid in-flight
-# reviews — each kill discarded one 10/hr budget slot and the retry spent a
-# second one for the same diff (observed live 2026-08-24). Default 3600s
-# now matches the server-side worst case; override via CR_LOCAL_REVIEW_TIMEOUT
-# (0 disables). Prefer GNU `timeout`, fall back to
+# HANG guard, not a race. CR's server-side review legitimately runs up to
+# ~60min on a large diff; a ceiling BELOW that (the old 600s) killed paid
+# in-flight reviews — each kill discarded a 10/hr budget slot and the
+# retry spent a second one (observed live 2026-08-24). Default 3600s
+# therefore sits AT the worst case and exists only to catch a truly hung
+# client; override via CR_LOCAL_REVIEW_TIMEOUT
+# (0 disables; non-integer values warn + use 3600). Prefer GNU `timeout`, fall back to
 # coreutils `gtimeout` (macOS via brew); if neither is present, run un-wrapped
 # and rely on CR's own server-side timeout event for the exit-4 signal.
 CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT:-3600}"
@@ -337,8 +333,9 @@ _persist_review_detail() {
 # distinct from a hard failure (auth/malformed) or a findings count. Log the
 # attempt first (audit + round visibility), then exit 4.
 _timeout_detected=0
-# 143 = plain SIGTERM to the pipeline — an EXTERNAL kill (harness tool
-# timeout, operator Ctrl-C propagated as TERM). #2546 r1: with the client
+# 143 = SIGTERM to the pipeline — an EXTERNAL termination (e.g. a harness
+# tool-timeout sending TERM; Ctrl-C is SIGINT/130, NOT this code). #2546
+# r1: with the client
 # default raised to 3600s, external kills at 600s+ became the common
 # abort shape; treating them like 124 keeps the salvage + exit-4
 # defer-to-CI contract instead of dying with nothing persisted.

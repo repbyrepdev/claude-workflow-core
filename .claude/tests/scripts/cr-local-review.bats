@@ -380,8 +380,26 @@ TSTUB
 	_stub_coderabbit '{"type":"complete","findings":0}' 0
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" run "$LR" --force --base main
+	[ "$status" -eq 0 ]
 	[ -f "$TIMEOUT_ARG_OUT" ]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=42 run "$LR" --force --base main
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "42" ]
+}
+
+@test "#2546: non-integer CR_LOCAL_REVIEW_TIMEOUT warns and uses 3600" {
+	cd "$TEST_TMP" || return 1
+	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
+shift
+exec "$@"
+TSTUB
+	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_coderabbit '{"type":"complete","findings":0}' 0
+	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=15m run "$LR" --force --base main
+	[ "$status" -eq 0 ]
+	[[ $output == *"not an integer; using 3600"* ]]
+	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }

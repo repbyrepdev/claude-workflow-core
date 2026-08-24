@@ -773,3 +773,12 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ $output == *"APPROVED bot review at final head"* ]]
 }
+
+@test "#2571 negative: github-actions[bot] APPROVED on a STALE commit does not cover the head" {
+	_install_gh_shim
+	export APPROVAL_GATE_POLICY="$REPO_ROOT/.github/approval-policy.yml"
+	_reviews '[{"user":{"login":"github-actions[bot]"},"state":"APPROVED","commit_id":"oldold1111","submitted_at":"2026-08-24T16:00:00Z","body":"stale backup review"}]'
+	_write_findings 1
+	_run_gate
+	[ "$status" -eq 2 ]
+}

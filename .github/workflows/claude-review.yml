@@ -28,15 +28,15 @@ concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: read
-
 jobs:
   review:
     # Draft PRs are not reviewable intents yet.
     if: ${{ !github.event.pull_request.draft }}
+    # Job-scoped, least-privilege (phase2 CR): contents to read the
+    # checkout, pull-requests to submit the review. Nothing else.
+    permissions:
+      contents: read
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

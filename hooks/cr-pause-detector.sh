@@ -265,9 +265,18 @@ NEED_REVIEW_POST=0
 # epoch; the pause notice's created_at is GitHub UTC-Z, converted via
 # BSD-date (-j -f) with a GNU-date (-d) fallback. Any conversion failure
 # leaves NEED_REVIEW_POST=0 — fail toward NOT posting the banned request.
-HEAD_COMMIT_EPOCH=$(git log -1 --format=%ct 2>/dev/null || echo "")
+HEAD_COMMIT_EPOCH=$(git -C "$REPO_ROOT" log -1 --format=%ct 2>/dev/null || echo "")
 PAUSE_EPOCH=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$LATEST_PAUSE_TS" +%s 2>/dev/null ||
 	date -u -d "$LATEST_PAUSE_TS" +%s 2>/dev/null || echo "")
+# WARN on undeterminable inputs (phase2 CR): the default is still
+# NOT-posting, but "could not determine" must be distinguishable from
+# "determined no" in the log trail.
+if ! [[ $HEAD_COMMIT_EPOCH =~ ^[0-9]+$ ]]; then
+	echo "cr-pause-detector: WARN — head commit time unavailable (git log failed); review-post decision defaults to NOT posting" >&2
+fi
+if ! [[ $PAUSE_EPOCH =~ ^[0-9]+$ ]]; then
+	echo "cr-pause-detector: WARN — pause timestamp '$LATEST_PAUSE_TS' not parseable by date; review-post decision defaults to NOT posting" >&2
+fi
 if [[ $HEAD_COMMIT_EPOCH =~ ^[0-9]+$ ]] && [[ $PAUSE_EPOCH =~ ^[0-9]+$ ]]; then
 	if [ "$HEAD_COMMIT_EPOCH" -ge "$PAUSE_EPOCH" ]; then
 		# CR in-progress markers (either wording generation) newer than the
