@@ -130,6 +130,14 @@ if ! [[ $HEAD_OID =~ ^[0-9a-f]{40}$ ]]; then
 	exit 2
 fi
 OWNER_NAME=$(skc_repo_owner_name)
+# Same fail-fast posture as the HEAD_OID guard: a malformed slug (no
+# slash — e.g. gh answering the wrong field) must be named HERE, not
+# surface as the gate's bad-args refusal ("approval gate refused" would
+# misattribute a wrapper data bug to policy).
+if [[ $OWNER_NAME != */* ]]; then
+	echo "error: repo slug from gh is '$OWNER_NAME' (want owner/name) — gh payload drift?" >&2
+	exit 2
+fi
 
 # --auto (#2487): ARM platform auto-merge and exit. The immediate path's
 # gates below (the mergeable bail, the FAILED-check warn that refuses under

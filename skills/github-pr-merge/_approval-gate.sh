@@ -119,9 +119,13 @@ if [ -z "$POLICY" ]; then
 		exit 2
 	fi
 elif [ ! -f "$POLICY" ]; then
-	# Test-seam path pointing nowhere = the not-adopted shape, kept loud.
-	echo "approval-gate: ⚠ no policy file at $POLICY — approving-review gate DISABLED (adopt via #2567)" >&2
-	exit 0
+	# A seam pointing nowhere is a CONFIG ERROR, not the not-adopted
+	# shape: only the default-branch 404 arm above may fail open, because
+	# no caller can forge it. Failing open here would let any caller
+	# disable the gate with one env var and no audit row — unlike
+	# APPROVAL_GATE_SKIP, which spends only after the audit write.
+	echo "approval-gate: ERROR — APPROVAL_GATE_POLICY points at '$POLICY', which does not exist; refusing (fail-closed). Unset it to read the default-branch policy, or use the audited APPROVAL_GATE_SKIP=1." >&2
+	exit 2
 fi
 
 # ---- Policy parse (single-pass awk per key: first match wins, no

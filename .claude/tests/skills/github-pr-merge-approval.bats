@@ -228,12 +228,12 @@ _run_gate() {
 
 # ---------- policy acquisition ----------
 
-@test "seam policy file absent: gate disabled loudly, rc 0, no gh calls" {
+@test "seam policy path pointing nowhere fails CLOSED (one env var must not disable the gate)" {
 	_install_gh_shim
 	rm -f "$APPROVAL_GATE_POLICY"
 	_run_gate
-	[ "$status" -eq 0 ]
-	[[ $output == *"DISABLED"* ]]
+	[ "$status" -eq 2 ]
+	[[ $output == *"does not exist"* ]]
 	[ ! -f "$GH_ARGS_LOG" ]
 }
 
@@ -697,4 +697,23 @@ EOF
 	[ "$status" -eq 2 ]
 	[[ $output == *"re-run this skill to re-gate"* ]]
 	[[ $output != *"✓ Merged"* ]]
+}
+
+@test "run.sh: e2e marker cleanup — pinned-head marker removed, other markers survive" {
+	_install_runsh_gh_shim
+	_reviews_approved_at_head
+	git init -q -b main "$TEST_TMP/sandbox"
+	cd "$TEST_TMP/sandbox"
+	git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+	git remote add origin "$TEST_TMP/sandbox"
+	git fetch -q origin
+	git branch -q --set-upstream-to=origin/main main
+	mkdir -p .claude/.session-state/ship-cycle
+	touch ".claude/.session-state/ship-cycle/$HEAD_SHA.phase1-directive.txt"
+	touch ".claude/.session-state/ship-cycle/beadbead000011112222333344445555666bead0.phase1-directive.txt"
+	run "$RUNSH" --pr 99 --yes
+	[ "$status" -eq 0 ]
+	[[ $output == *"cleaned phase1-directive marker for $HEAD_SHA"* ]]
+	[ ! -f ".claude/.session-state/ship-cycle/$HEAD_SHA.phase1-directive.txt" ]
+	[ -f ".claude/.session-state/ship-cycle/beadbead000011112222333344445555666bead0.phase1-directive.txt" ]
 }
