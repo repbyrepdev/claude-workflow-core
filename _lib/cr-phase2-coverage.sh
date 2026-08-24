@@ -37,7 +37,22 @@ cr_phase2_clean_for_sha() {
 	local short_sha
 	short_sha=$(printf '%s' "$sha" | cut -c1-7)
 	local latest_findings jq_err
-	jq_err=$(mktemp) || return 1
+	# `-t <template>` not bare `mktemp`: the bare form is a GNU coreutils
+	# convenience and BSD/macOS mktemp wants a template. The bats suite for this
+	# very file already uses the portable form; this lib did not, so a consumer
+	# on stock macOS without coreutils would have had every push refused.
+	# Guard emptiness too — an mktemp exiting 0 with no output would make
+	# `2>"$jq_err"` an ambiguous redirect and land on the failure branch with
+	# the real cause (a broken tmpdir) nowhere in the message.
+	# Explicit if, not `A && B || C` — that form runs C when A succeeds but B
+	# fails, which is exactly the empty-output case, and shellcheck SC2015
+	# flags it. `|| jq_err=""` collapses a non-zero rc into the same empty
+	# check (this lib is `set -u` only, so the assignment does not abort).
+	jq_err=$(mktemp -t crp2cov.XXXXXX) || jq_err=""
+	if [ -z "$jq_err" ]; then
+		echo "cr_phase2_clean_for_sha: mktemp failed (TMPDIR=${TMPDIR:-/tmp} full or unwritable?) — cannot verify Phase 2, refusing" >&2
+		return 1
+	fi
 	# A PARTIAL / TIMED-OUT run is NOT evidence of a clean review (#2544).
 	#
 	# THE LAUNDERING THIS CLOSES: when the CR-CLI is killed before emitting a
@@ -48,33 +63,47 @@ cr_phase2_clean_for_sha() {
 	# Observed live: PR #2540's f21b3d1 pushed on exactly such an entry, and the
 	# operator was told the signal was clean.
 	#
-	# Mapping partial/timeout to -1 routes it through the existing non-numeric
-	# rejection below — the same fail-closed exit as "no run at all", which is
-	# precisely what a review that produced no verdict IS.
+	# THE RULE: `complete:true` is REQUIRED. Everything else is defence in depth.
 	#
-	# This is UNCONDITIONAL: the mapping ignores `.findings` entirely, so
-	# prove-yourself coverage can NOT clear a partial run even when findings
-	# were salvaged and every one of them was addressed. That is deliberate —
-	# covering the 3 findings CR happened to emit before the kill says nothing
-	# about the rest of the diff it never read. The only thing that clears a
-	# partial run is a subsequent COMPLETE run for the same SHA (see the
-	# non-sticky note below).
+	# The first attempt at this fix enumerated the ways a review can fail —
+	# `partial`, `timeout` — and rejected those. That approach is unfixable in
+	# principle: you cannot enumerate every way a review fails to happen, and
+	# any path you miss writes an unflagged `findings:0` that reads as CLEAN.
+	# Phase 1 proved it empirically — ONLY rc 124/137 and CR's own timeout event
+	# reach the flagged writer; auth failure, rate limit, network error, bad
+	# config and CLI crash all fall through to the plain logger with
+	# `rc:1, findings:0` and no flags at all. The blocklist was already leaking
+	# on the day it was written.
 	#
-	# `!= false` rather than `== true` on purpose. local-review.sh writes real
-	# JSON booleans (`--argjson partial true`), so `== true` matches today — but
-	# a writer that ever emitted the string "true", or 1, would slip straight
-	# past a strict equality test and re-open the exact laundering hole this
-	# closes. Absent/null degrades to false via `//` and stays clean, and an
-	# explicit `false` stays clean; anything else is treated as "flagged".
-	# For a fail-closed gate, over-rejecting a malformed entry is the safe
-	# direction — it costs a re-run, not a false green.
+	# So the test is inverted: absence of positive evidence is refusal. A writer
+	# that forgets the field, an older writer that predates it, a truncated
+	# line, a schema change — every one of them fails CLOSED. That is the whole
+	# point, and it is why `// false` (not `// true`) is the default here.
+	#
+	# The remaining arms are belt-and-braces for a writer that sets
+	# `complete:true` wrongly:
+	#   - partial/timeout still reject, so a salvaged-then-flagged run cannot be
+	#     coverage-cleared. `!= false` not `== true`, so a string "true" or a 1
+	#     from some future writer still trips it.
+	#   - `.findings` must be a real JSON *number*. A string "0" would otherwise
+	#     print bare `0`, pass the shell digit test below, and read CLEAN.
+	#   - negative findings reject, so the -1 sentinel can never be compared
+	#     `-ge` against a coverage sum and pass.
+	#
+	# Prove-yourself coverage cannot clear an incomplete run at any findings
+	# count: covering the handful of findings CR emitted before it died says
+	# nothing about the rest of the diff it never read. Only a subsequent
+	# COMPLETE run for the same SHA clears it (see the non-sticky note below).
 	latest_findings=$(jq -rs --arg s "$short_sha" \
 		'[.[] | select(.sha==$s)]
 		 | if length > 0 then
 		     (last as $l
-		      | if (($l.partial // false) != false) or (($l.timeout // false) != false)
+		      | if ($l.complete // false) != true then -1
+		        elif (($l.partial // false) != false) or (($l.timeout // false) != false)
 		        then -1
-		        else ($l.findings // -1) end)
+		        elif ($l.findings | type) != "number" then -1
+		        elif $l.findings < 0 then -1
+		        else $l.findings end)
 		   else -1 end' \
 		"$cr_log" 2>"$jq_err") || {
 		# A jq failure here is NOT a verdict — it means the ledger is
@@ -99,6 +128,19 @@ cr_phase2_clean_for_sha() {
 	# commit — the gate would stop being a signal and start being a wall.
 	# Reject non-numeric / missing / negative BEFORE the coverage path. -1 means
 	# "no CR-CLI run for this SHA" — fail-closed, never whitewashed by old audit.
+	# #2544 — SAY WHY. A correct-but-mute gate is not actually correct: the
+	# caller's generic "Phase 2 not clean — address findings" sends the operator
+	# to a ledger showing findings:0, which reads as a broken gate, and the
+	# documented escape (PIPELINE_GATE_SKIP=1) is one line further down. A
+	# mystery-red trains the bypass. Refusing loudly is what makes the refusal
+	# survive contact with a tired operator at 2am.
+	if [ "$latest_findings" = "-1" ]; then
+		echo "cr_phase2_clean_for_sha: no COMPLETED CR review on record for $short_sha." >&2
+		echo "  The newest ledger entry is missing complete:true — it was killed, crashed, hit auth/rate-limit, or never ran." >&2
+		echo "  findings:0 there means '0 were SEEN', not '0 exist'. Re-run: coderabbit review --agent -t committed --base main" >&2
+		rm -f "$jq_err"
+		return 1
+	fi
 	case "$latest_findings" in
 	'' | *[!0-9]*) return 1 ;;
 	esac
