@@ -8,7 +8,8 @@
 #   resume  → always posted on an unresumed pause (unchanged);
 #   review  → ONLY when the head commit is at-or-after the pause notice
 #             AND no CR in-progress marker is newer than the pause.
-# The audit row records the decision (review_posted true|false).
+# The audit row records the OUTCOME (review_posted true only when the
+# review comment actually posted).
 #
 # Harness: CLI mode (--pr), tmp git repo with a controllable head commit
 # time (GIT_COMMITTER_DATE), PATH-stubbed gh serving a comments fixture
@@ -121,4 +122,32 @@ _comments_pause_at() {
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
 	run ! grep -q "pr comment" "$GH_ARGS_LOG"
+}
+
+@test "second busy wording ('Come back again in a few minutes') also suppresses the review post" {
+	_repo_with_head_at "2026-08-24T12:00:00Z"
+	printf '[{"user":{"login":"coderabbitai"},"created_at":"2026-08-24T11:00:00Z","body":"Reviews paused. To resume, comment @coderabbitai resume"},{"user":{"login":"coderabbitai"},"created_at":"2026-08-24T11:30:00Z","body":"Come back again in a few minutes."}]' \
+		>"$COMMENTS_FIXTURE"
+	run "$HOOK" --pr 42
+	[ "$status" -eq 0 ]
+	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
+	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
+}
+
+@test "unparseable pause timestamp fails toward NOT posting the banned request" {
+	_repo_with_head_at "2026-08-24T12:00:00Z"
+	printf '[{"user":{"login":"coderabbitai"},"created_at":"garbage-not-a-date","body":"Reviews paused. To resume, comment @coderabbitai resume"}]' \
+		>"$COMMENTS_FIXTURE"
+	run "$HOOK" --pr 42
+	[ "$status" -eq 0 ]
+	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
+	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
+}
+
+@test "AT-OR-AFTER boundary: head commit exactly at the pause instant posts the review" {
+	_repo_with_head_at "2026-08-24T11:00:00Z"
+	_comments_pause_at "2026-08-24T11:00:00Z"
+	run "$HOOK" --pr 42
+	[ "$status" -eq 0 ]
+	grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 }

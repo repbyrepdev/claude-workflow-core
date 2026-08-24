@@ -124,20 +124,25 @@ command -v coderabbit >/dev/null 2>&1 || scm_fail "coderabbit CLI not installed 
 # can't differentiate "CR CLI converged clean" from "CR CLI never ran."
 TEE_OUT=$(mktemp -t cr-local-review.XXXXXX)
 trap 'rm -f "$TEE_OUT"' EXIT
-# v0.32.x (#234): cap the local review's wall-time. CR's server-side review
-# can run ~60min on a large diff before emitting an unrecoverable timeout
-# event — wasted wall-clock for a PRE-PUSH convenience whose findings the
-# authoritative server-side CR-in-CI re-derives on push anyway. A client-side
+# v0.32.x (#234), reframed by #2546: cap the local review's wall-time as a
+# HANG guard. CR's server-side review legitimately runs up to ~60min on a
+# large diff; a ceiling BELOW that (the old 600s) killed paid in-flight
+# reviews — each kill discarded a 10/hr budget slot and the retry spent a
+# second one. The guard therefore sits AT the worst case, not under it,
+# and exists only to catch a truly hung client. A client-side
 # timeout exists as a HANG guard, not a race (#2546): the old 600s default
 # sat BELOW CR's legitimate ~60min worst case, so it killed paid in-flight
 # reviews — each kill discarded one 10/hr budget slot and the retry spent a
 # second one for the same diff (observed live 2026-08-24). Default 3600s
-# now clears the server-side worst case; override via CR_LOCAL_REVIEW_TIMEOUT
+# now matches the server-side worst case; override via CR_LOCAL_REVIEW_TIMEOUT
 # (0 disables). Prefer GNU `timeout`, fall back to
 # coreutils `gtimeout` (macOS via brew); if neither is present, run un-wrapped
 # and rely on CR's own server-side timeout event for the exit-4 signal.
 CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT:-3600}"
-[[ $CR_REVIEW_TIMEOUT =~ ^[0-9]+$ ]] || CR_REVIEW_TIMEOUT=3600
+if ! [[ $CR_REVIEW_TIMEOUT =~ ^[0-9]+$ ]]; then
+	echo "local-review: WARN — CR_LOCAL_REVIEW_TIMEOUT='$CR_REVIEW_TIMEOUT' is not an integer; using 3600" >&2
+	CR_REVIEW_TIMEOUT=3600
+fi
 TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 # Capture the review command's exit via `rc=0; … || rc=$?`. Under the `set -o
 # pipefail` on line 2, $? after a failed pipeline is its last non-zero exit —
@@ -332,7 +337,12 @@ _persist_review_detail() {
 # distinct from a hard failure (auth/malformed) or a findings count. Log the
 # attempt first (audit + round visibility), then exit 4.
 _timeout_detected=0
-if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
+# 143 = plain SIGTERM to the pipeline — an EXTERNAL kill (harness tool
+# timeout, operator Ctrl-C propagated as TERM). #2546 r1: with the client
+# default raised to 3600s, external kills at 600s+ became the common
+# abort shape; treating them like 124 keeps the salvage + exit-4
+# defer-to-CI contract instead of dying with nothing persisted.
+if [ "$rc" = "124" ] || [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
 	_timeout_detected=1
 elif [ -f "$TEE_OUT" ] && grep -qE '"errorType"[[:space:]]*:[[:space:]]*"timeout"' "$TEE_OUT"; then
 	_timeout_detected=1

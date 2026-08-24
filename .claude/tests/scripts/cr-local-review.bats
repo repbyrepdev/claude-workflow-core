@@ -365,7 +365,7 @@ _stub_coderabbit_lines() {
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
 }
 
-@test "#2546: default client timeout is 3600s (above CR's ~60min worst case), env-overridable" {
+@test "#2546: default client timeout is 3600s (matching CR's ~60min worst case), env-overridable" {
 	# The 600s default killed paid in-flight reviews (each kill = one 10/hr
 	# budget slot discarded + a second spent on the retry). Pin the default
 	# AND the override plumbing via a stubbed `timeout` that records its arg.

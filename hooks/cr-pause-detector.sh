@@ -254,9 +254,11 @@ fi
 # before posting it. The ship-cycle rule is NEVER post it (no-op + noise:
 # each request spends CR's rate allowance — the same budget whose
 # exhaustion causes the 50-min "Review limit reached" stalls). The ONE
-# legitimate case: commits landed AT-OR-AFTER the pause notice — resume
-# alone does not re-review work pushed during a pause — AND CR is not
-# already processing. Anything else gets resume only; the next push (or
+# legitimate case: the HEAD COMMIT TIME is at-or-after the pause notice
+# (a committer-time proxy for "work landed during the pause" — a commit
+# authored before the pause but pushed during it is MISSED by design;
+# fail direction is the safe one, the next push recovers) — AND CR is
+# not already processing. Anything else gets resume only; the next push (or
 # the rolling allowance) triggers the review naturally.
 NEED_REVIEW_POST=0
 # Epoch comparison, no timezone parsing: %ct is the commit time as a UNIX
@@ -299,9 +301,16 @@ mkdir -p "$LOG_DIR" 2>/dev/null || {
 }
 
 POST_RC=0
+REVIEW_POSTED_OK=0
 gh pr comment "$PR" --body "@coderabbitai resume" >/dev/null 2>&1 || POST_RC=$?
 if [ "$POST_RC" -eq 0 ] && [ "$NEED_REVIEW_POST" = "1" ]; then
-	gh pr comment "$PR" --body "@coderabbitai review" >/dev/null 2>&1 || POST_RC=$?
+	# r1 F13: the audit field records the OUTCOME — a decided-but-failed
+	# post must not read as posted.
+	if gh pr comment "$PR" --body "@coderabbitai review" >/dev/null 2>&1; then
+		REVIEW_POSTED_OK=1
+	else
+		POST_RC=$?
+	fi
 fi
 
 # Audit-log the attempt regardless of POST_RC so a failed post still
@@ -327,7 +336,7 @@ log_rc=0
 # set -u. Default to "(cli)" so the audit log is still well-formed.
 jq -nc --arg ts "$TS" --arg pr "$PR" --arg branch "${BRANCH:-(cli)}" \
 	--arg pause_ts "$LATEST_PAUSE_TS" "${resume_arg[@]}" \
-	--arg status "$STATUS" --argjson rc "$POST_RC" --argjson review_posted "$NEED_REVIEW_POST" \
+	--arg status "$STATUS" --argjson rc "$POST_RC" --argjson review_posted "$REVIEW_POSTED_OK" \
 	'{ts:$ts, pr:($pr|tonumber), branch:$branch, pause_ts:$pause_ts, prior_resume_ts:$prior_resume_ts, status:$status, post_rc:$rc, review_posted:($review_posted == 1)}' \
 	>>"$LOG" || log_rc=$?
 if [ "$log_rc" -ne 0 ]; then
@@ -338,7 +347,7 @@ if [ "$POST_RC" -eq 0 ]; then
 	if [ "$NEED_REVIEW_POST" = "1" ]; then
 		echo "cr-pause-detector: PR #$PR was paused — auto-posted @coderabbitai resume + review (commits landed during the pause, no review queued)" >&2
 	else
-		echo "cr-pause-detector: PR #$PR was paused — auto-posted @coderabbitai resume ONLY (#2571: no post-pause commits or review already queued; the banned review-request stays unposted)" >&2
+		echo "cr-pause-detector: PR #$PR was paused — auto-posted @coderabbitai resume ONLY (#2571: no post-pause commits, review already queued, OR the decision inputs were undeterminable — see any WARNs above; the banned review-request stays unposted)" >&2
 	fi
 else
 	echo "cr-pause-detector: PR #$PR pause detected but gh pr comment failed (rc=$POST_RC); see $LOG" >&2

@@ -56,7 +56,7 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 
 ## Phase 1 firing — operator-driven
 
-When state advances to `phase1` and neither exit-contract door is open, `next` prints a DIRECTIVE FOR OPERATOR block. Phase 1's `security-review` MUST be fired in a separate Claude turn from the 5 parallel Agent calls — the pending-file gate kills the Skill when bundled. The directive layout:
+When state advances to `phase1`, neither exit-contract door is open, AND the branch round count is under the cap (or the audited override is set), `next` prints a DIRECTIVE FOR OPERATOR block; at the cap it refuses instead (rc 2, no directive). Phase 1's `security-review` MUST be fired in a separate Claude turn from the 5 parallel Agent calls — the pending-file gate kills the Skill when bundled. The directive layout:
 
 1. Block A: 5 parallel Agent calls (code-reviewer, code-simplifier, comment-analyzer, pr-test-analyzer, silent-failure-hunter)
 2. Barrier: log all 5 via `.claude/hooks/review-log.sh phase1 <round> <agent> <findings-count> ok`
@@ -75,13 +75,19 @@ old "2-clean-streak" wording described only door 1 with a hardcoded 2;
 the cap comes from the scaler tier, and door 2 is how real branches
 with findings converge without treadmilling):
 
-1. **Clean convergence:** `clean_streak >= cap` — consecutive rounds
-   with zero findings and all expected agents logged.
-2. **Covered at cap:** the branch has spent `>= cap` rounds AND the
-   newest branch sha with phase-1 rows has EVERY finding covered by
-   prove-yourself records (cumulative covers >= cumulative findings —
-   positive evidence, no "probably fine"). `next` then GRADUATES to
-   phase2 without arming another round.
+1. **Clean convergence:** `clean_streak >= cap` — consecutive TRAILING
+   rounds with zero findings and all expected agents logged, read from
+   the CURRENT HEAD's review log only (clean rounds on earlier fix-
+   commit shas count toward the cap, never toward the streak).
+2. **Covered at cap:** the branch has spent `>= cap` rounds AND EVERY
+   findings-bearing branch sha has its findings covered by
+   prove-yourself records (cumulative covers >= cumulative findings,
+   PER SHA — a fresh 0-finding commit cannot wash out older uncovered
+   findings), with at least ONE findings-bearing sha as positive
+   evidence (all-zero rounds at the cap mean errored/partial panels,
+   not cleanliness). `next` then GRADUATES to phase2 without arming
+   another round. The refusal clears the directive marker, so Edit/
+   Write stay available for the record-fix/record-rejection remedies.
 
 Anything else at the cap is a REFUSAL (`_phase1_cap_gate`, rc 2,
 hook-ack routed): cover the findings, then re-run `next`. A deliberate
