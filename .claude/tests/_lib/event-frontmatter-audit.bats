@@ -177,6 +177,14 @@ _hooks_with_enforcement() {
 		echo "a comment-only mention counted as routing — the vacuous pass is back"
 		return 1
 	}
+	# INDENTED comments too (phase2 r2, dogfooded rc 1 before pinning): a
+	# leading tab/space before the # must not defeat the anchor.
+	printf '#!/bin/bash\nset -u\n\t# indented hook_ack_append mention\n    # spaced "decision": "block" mention\nexit 0\n' >"$TEST_TMP/hooks/indent.sh"
+	run event_frontmatter_hook_routes "$TEST_TMP/hooks/indent.sh"
+	[ "$status" -ne 0 ] || {
+		echo "an INDENTED comment mention counted as routing"
+		return 1
+	}
 	printf '#!/bin/bash\nset -u\nhook_ack_append "x" "y" "z"\nexit 0\n' >"$TEST_TMP/hooks/real.sh"
 	run event_frontmatter_hook_routes "$TEST_TMP/hooks/real.sh"
 	[ "$status" -eq 0 ] || {
