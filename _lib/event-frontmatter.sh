@@ -20,12 +20,12 @@ set -u
 #       auto_register\nenforcement (raw; empty when absent — #2547)
 #   event_frontmatter_event_valid <event>  — exit 0 if event in valid set
 #   event_frontmatter_scan_window  — number of header lines to scan (30)
-#   event_frontmatter_event_classified <event>  — exit 0 if the event's hooks
-#       must carry the classification ($EVENT_FRONTMATTER_CLASSIFIED_EVENTS)
+#   event_frontmatter_enforcement_required <event>  — exit 0 if the event's
+#       hooks must classify ($EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS)
 #   event_frontmatter_enforcement_valid <value>  — exit 0 iff enforce|inform
 #   event_frontmatter_enforcement <hook_path>  — validated value in one call
-#   event_frontmatter_registered_hooks <dir>  — the registered universe
-#       (skips helpers + auto-register:false); LOUD rc 1 on a parse failure
+#   event_frontmatter_registered_hooks <dir>  — registered universe, one
+#       path<TAB>event<TAB>enforcement record per hook; LOUD rc 1 on parse failure
 
 # Pipe-alternation, single source of truth for both internal `[[ =~ ]]` matching
 # AND consumer interpolation (event-frontmatter-check.sh's error-message hint).
@@ -57,7 +57,7 @@ event_frontmatter_skip_basename() {
 #
 # Why one-per-line not TSV: bash `read -r e m a` with IFS=$'\t' COLLAPSES
 # leading empty fields (e.g. tab-tab-true is read as e=true / m="" / a="").
-# One line per field preserves empties at the cost of a 3-element array.
+# One line per field preserves empties at the cost of a 4-element array.
 event_frontmatter_parse() {
 	local hook="$1" event="" matcher="" auto_register="true" enforcement=""
 	# Fail-closed: capture `head`'s output + rc explicitly before parsing.
@@ -126,13 +126,15 @@ event_frontmatter_event_valid() {
 
 # #2547: events whose hooks must carry the enforce-vs-inform
 # classification. Same pipe-alternation idiom as the sibling constants —
-# extending classification to another event is a one-file edit here, not
+# extending the requirement to another event is a one-file edit here, not
 # a string-literal hunt across gate + audit (phase1 r3 code-reviewer).
-EVENT_FRONTMATTER_CLASSIFIED_EVENTS="PostToolUse"
+# Named as a REQUIREMENT, not a state (phase1 r4: "classified" read as
+# "has been classified", pre-empting the per-hook predicate's name).
+EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS="PostToolUse"
 
-event_frontmatter_event_classified() {
+event_frontmatter_enforcement_required() {
 	local event="$1"
-	[[ "|$EVENT_FRONTMATTER_CLASSIFIED_EVENTS|" == *"|$event|"* ]]
+	[[ "|$EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS|" == *"|$event|"* ]]
 }
 
 # #2547: validate a raw enforcement value against the CLOSED vocabulary —
@@ -151,24 +153,36 @@ event_frontmatter_enforcement_valid() {
 # Convenience composition kept for callers that want the validated value
 # in one call (the live-tree audit, tests): emits enforce|inform, rc 1 on
 # absent OR out-of-vocabulary. Callers already holding parse output should
-# read its 4th line + the predicate instead of re-reading the header.
+# read its 4th line + the predicate instead of re-reading the header. Field
+# extraction uses the documented read-into-array idiom (phase1 r4: this
+# accessor was the one consumer slicing with printf|sed).
 event_frontmatter_enforcement() {
 	local hook="$1" _parse_out val
 	_parse_out=$(event_frontmatter_parse "$hook") || return 1
-	val=$(printf '%s\n' "$_parse_out" | sed -n 4p)
+	{
+		read -r _
+		read -r _
+		read -r _
+		read -r val
+	} <<<"$_parse_out"
 	event_frontmatter_enforcement_valid "$val" || return 1
 	printf '%s\n' "$val"
 }
 
 # #2547: ONE definition of "the registered hooks of a directory" — skip
-# helper basenames, parse, honor the auto-register:false opt-out. The
-# audit consumes this; install-hooks.sh and check-hook-ack-wiring.sh
-# still carry sibling copies with installer-specific extras (executable
-# preflight) — migrating them onto this emitter is tracked in epic #2566
-# rather than risked mid-PR. A parse failure is LOUD + rc 1: a shrunken
-# universe must never read as a clean one (phase1 r2/r3).
+# helper basenames, parse, honor the auto-register:false opt-out. Emits
+# one TAB-separated record per hook: path<TAB>event<TAB>enforcement(raw)
+# — carrying the parsed fields so consumers do not re-parse per hook
+# (phase1 r4: the audit paid three parses per hook, and its re-parse
+# guard was dead — a pipeline swallowed the rc, the exact silent shrink
+# this emitter's contract forbids). install-hooks.sh and
+# check-hook-ack-wiring.sh still carry sibling copies with
+# installer-specific extras (executable preflight) — migrating them onto
+# this emitter is tracked in epic #2566 rather than risked mid-PR. A
+# parse failure is LOUD + rc 1: a shrunken universe must never read as a
+# clean one (phase1 r2/r3).
 event_frontmatter_registered_hooks() {
-	local dir="$1" f base _parse_out event auto
+	local dir="$1" f base _parse_out event auto enforcement
 	for f in "$dir"/*.sh; do
 		[ -e "$f" ] || continue # nullglob-safe: literal pattern on empty dir
 		base=$(basename "$f")
@@ -181,9 +195,10 @@ event_frontmatter_registered_hooks() {
 			read -r event
 			read -r _
 			read -r auto
+			read -r enforcement
 		} <<<"$_parse_out"
 		[ "$auto" = "false" ] && continue
-		[ -n "$event" ] && printf '%s\n' "$f"
+		[ -n "$event" ] && printf '%s\t%s\t%s\n' "$f" "$event" "$enforcement"
 	done
 	return 0
 }

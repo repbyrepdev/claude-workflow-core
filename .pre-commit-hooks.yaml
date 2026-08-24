@@ -141,7 +141,7 @@
   stages: [pre-commit]
 
 - id: event-frontmatter-check
-  name: "event-frontmatter — hooks declare `# event:`; PostToolUse also `# enforcement:` (#2547)"
+  name: "event-frontmatter — hooks declare `# event:`; plugin-source PostToolUse also `# enforcement:` (#2547)"
   entry: pre-commit-hooks/event-frontmatter-check.sh
   language: script
   files: '^\.claude/hooks/.*\.sh$'

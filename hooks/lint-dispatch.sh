@@ -18,7 +18,8 @@ set -u
 # versions while no bats existed at all.) If you add a new file type,
 # add a `case` arm + a bats test, and keep the `# enforcement:`
 # declaration honest (event-frontmatter-check.sh gates its presence at
-# commit; posttooluse-enforcement-contract.bats audits the routing).
+# commit; .claude/tests/_lib/event-frontmatter-audit.bats audits the
+# routing).
 #
 # Registered via ~/.claude/settings.json hooks.PostToolUse matcher=
 # Edit|Write|MultiEdit (ONE entry replacing the prior 3).

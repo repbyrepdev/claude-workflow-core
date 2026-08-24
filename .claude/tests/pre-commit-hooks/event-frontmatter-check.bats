@@ -210,8 +210,8 @@ EOF
 # --- #2547 enforcement classification (PostToolUse only) ----------------------
 # Moved here from posttooluse-enforcement-contract.bats (phase1 r2
 # code-reviewer: this suite is the pre-existing home for gate-rule tests —
-# a maintainer changing the gate finds one suite, not two). The contract
-# file keeps the live-tree audit.
+# a maintainer changing the gate finds one suite, not two). The live-tree
+# audit lives in .claude/tests/_lib/event-frontmatter-audit.bats.
 
 _write_ptu_hook() {
 	# $1=path  $2=extra frontmatter line (empty for none)
@@ -277,6 +277,13 @@ _write_ptu_hook() {
 	[[ $output == *"lack required frontmatter"* ]]
 	[[ $output != *"enforce-vs-inform"* ]] || {
 		echo "classification still enforced under its own bypass. output: $output"
+		return 1
+	}
+	# The bypass must announce itself per-file (phase1 r4: the header
+	# promises a SKIP message; dropping the echo would make bypass use
+	# invisible in pre-commit output with all tests green).
+	[[ $output == *"SKIP enforcement classification"* ]] || {
+		echo "narrow bypass left no audit trail on stderr. output: $output"
 		return 1
 	}
 }

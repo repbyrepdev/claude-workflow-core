@@ -28,16 +28,17 @@ teardown() {
 	fi
 }
 
-# Registered PostToolUse hooks of $1: the lib's registered-universe emitter
-# filtered to classified events. LOUD rc 1 propagates from the emitter on a
-# parse failure — the audit must never pass on a silently shrunken universe.
+# Registered PostToolUse hooks of $1 as `path<TAB>enforcement(raw)` lines,
+# straight off the emitter's records — no per-hook re-parse (phase1 r4,
+# three reviewers: the re-parse guard was DEAD — a pipeline swallowed the
+# parser's rc, the exact silent shrink the emitter's contract forbids).
+# LOUD rc 1 propagates from the emitter on a parse failure.
 _posttooluse_hooks() {
-	local list f event
+	local list f event enf
 	list=$(event_frontmatter_registered_hooks "$1") || return 1
 	[ -n "$list" ] || return 0
-	while IFS= read -r f; do
-		event=$(event_frontmatter_parse "$f" | sed -n 1p) || return 1
-		event_frontmatter_event_classified "$event" && printf '%s\n' "$f"
+	while IFS=$'\t' read -r f event enf; do
+		event_frontmatter_enforcement_required "$event" && printf '%s\t%s\n' "$f" "$enf"
 	done <<<"$list"
 	return 0
 }
@@ -54,7 +55,7 @@ _hook_routes() {
 }
 
 @test "#2547 every registered live PostToolUse hook is classified enforce or inform" {
-	local list f missing=""
+	local list f enf missing=""
 	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
 		echo "discovery failed — see parse failure above"
 		return 1
@@ -63,8 +64,8 @@ _hook_routes() {
 		echo "SSOT discovery found ZERO registered PostToolUse hooks — parser drift?"
 		return 1
 	}
-	while IFS= read -r f; do
-		event_frontmatter_enforcement "$f" >/dev/null || missing="$missing ${f##*/}"
+	while IFS=$'\t' read -r f enf; do
+		event_frontmatter_enforcement_valid "$enf" || missing="$missing ${f##*/}"
 	done <<<"$list"
 	[ -z "$missing" ] || {
 		echo "unclassified (or out-of-vocabulary) PostToolUse hook(s):$missing"
@@ -73,17 +74,39 @@ _hook_routes() {
 }
 
 @test "#2547 every enforce-classified hook routes via a non-comment blocking call" {
-	local list f unrouted=""
+	local list f enf unrouted=""
 	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
 		echo "discovery failed — see parse failure above"
 		return 1
 	}
-	while IFS= read -r f; do
-		[ "$(event_frontmatter_enforcement "$f" 2>/dev/null)" = "enforce" ] || continue
+	while IFS=$'\t' read -r f enf; do
+		[ "$enf" = "enforce" ] || continue
 		_hook_routes "$f" || unrouted="$unrouted ${f##*/}"
 	done <<<"$list"
 	[ -z "$unrouted" ] || {
 		echo "enforce-classified hook(s) with no non-comment blocking call:$unrouted"
+		return 1
+	}
+}
+
+@test "#2547 INVERSE: inform-classified hooks contain NO blocking call (labels cannot lie)" {
+	# phase1 r4 pr-test-analyzer (major): the honesty contract was
+	# one-directional — a hook_ack_append landing in an inform hook without
+	# reclassification would start blocking tool calls while its header
+	# still claims advisory, and every test stayed green.
+	local list f enf lying=""
+	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
+		echo "discovery failed — see parse failure above"
+		return 1
+	}
+	while IFS=$'\t' read -r f enf; do
+		[ "$enf" = "inform" ] || continue
+		if _hook_routes "$f"; then
+			lying="$lying ${f##*/}"
+		fi
+	done <<<"$list"
+	[ -z "$lying" ] || {
+		echo "inform-classified hook(s) with a real blocking call — the label lies:$lying"
 		return 1
 	}
 }

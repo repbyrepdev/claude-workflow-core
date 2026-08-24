@@ -24,7 +24,7 @@ set -euo pipefail
 #           in the first 30 lines
 #       (b) `# auto-register: false` (explicit helper opt-out)
 #   - #2547, PLUGIN-SOURCE layout (hooks/*.sh) only, classified events
-#     ($EVENT_FRONTMATTER_CLASSIFIED_EVENTS — currently PostToolUse):
+#     ($EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS — currently PostToolUse):
 #       (c) `# enforcement: enforce|inform — <reason>` (closed vocabulary;
 #           consumer .claude/hooks/ exempt until migrated — epic #2566)
 #
@@ -149,16 +149,12 @@ for f in "$@"; do
 		# EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bypasses ONLY this rule
 		# (family-prefixed name per the repo's gate/bypass convention;
 		# the whole-gate EVENT_FRONTMATTER_SKIP also still works).
-		if event_frontmatter_event_classified "$event"; then
-			case "$rel" in
-			hooks/*.sh)
-				if [ "${EVENT_FRONTMATTER_ENFORCEMENT_SKIP:-}" = "1" ]; then
-					echo "event-frontmatter-check: SKIP enforcement classification via EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 for $f" >&2
-				elif ! event_frontmatter_enforcement_valid "$enforcement"; then
-					ENF_FAILED+=("$f")
-				fi
-				;;
-			esac
+		if event_frontmatter_enforcement_required "$event" && [[ $rel == hooks/*.sh ]]; then
+			if [ "${EVENT_FRONTMATTER_ENFORCEMENT_SKIP:-}" = "1" ]; then
+				echo "event-frontmatter-check: SKIP enforcement classification via EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 for $f" >&2
+			elif ! event_frontmatter_enforcement_valid "$enforcement"; then
+				ENF_FAILED+=("$f")
+			fi
 		fi
 		continue
 	fi
@@ -182,7 +178,7 @@ Add to the file's first $(event_frontmatter_scan_window) lines (after the matche
 (The vocabulary is closed: values other than enforce|inform are refused.)
 
 An 'enforce' hook must actually route its failures (hook_ack_append, or a
-decision:block JSON response) — posttooluse-enforcement-contract.bats pins
+decision:block JSON response) — .claude/tests/_lib/event-frontmatter-audit.bats pins
 that; this gate pins that the classification EXISTS.
 Bypass (this rule only): EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 git commit ...
 EOF

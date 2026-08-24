@@ -20,12 +20,11 @@
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/lint-dispatch.sh"
 	[ -f "$HOOK" ]
-	command -v jq >/dev/null
 	# Fail closed, not skip-as-pass: a skipped test counts as a bats pass,
 	# which would silently neuter this routing contract on a box without
 	# the linters (same rule as the prove-yourself covers_count test).
 	local t
-	for t in shellcheck shfmt yamllint actionlint; do
+	for t in jq shellcheck shfmt yamllint actionlint; do
 		command -v "$t" >/dev/null || {
 			echo "$t required for the lint-dispatch routing contract" >&2
 			return 1
