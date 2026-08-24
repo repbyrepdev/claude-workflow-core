@@ -1266,6 +1266,32 @@ _p1_branch_shas() {
 	printf '%s\n' "$shas"
 }
 
+_p1_zero_backed_by_state() {
+	# #2575 p2r2/p2r3: a zero round count is only trustworthy when the
+	# DURABLE state agrees nothing was spent. rc 0 = state absent or
+	# records 0 (zero is legitimate); rc 1 = refuse — state unreadable/
+	# malformed (p2r3: a jq failure must never be coerced to zero) or
+	# records rounds>0 while the logs are gone. $1 names the caller's
+	# missing-evidence condition for the error text.
+	local _ctx="$1" _state_sf _state_rounds _state_rc=0
+	_state_sf="$STATE_DIR/$(_current_sha).json"
+	if [ ! -f "$_state_sf" ]; then
+		echo "ship-pr-cycle: NOTE: phase1 round-cap — $_ctx and no state file; counting 0 (legit first round)" >&2
+		return 0
+	fi
+	_state_rounds=$(jq -r '.phase1_rounds // 0' "$_state_sf" 2>/dev/null) || _state_rc=$?
+	if [ "$_state_rc" -ne 0 ] || ! [[ $_state_rounds =~ ^[0-9]+$ ]]; then
+		echo "ship-pr-cycle: ERROR: phase1 round-cap — $_ctx AND state file $_state_sf unreadable/malformed (jq rc=$_state_rc, value '${_state_rounds:-<empty>}'); cannot prove zero rounds were spent — refusing a vacuous zero." >&2
+		return 1
+	fi
+	if [ "$_state_rounds" -gt 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase1 round-cap — $_ctx but state records $_state_rounds phase-1 round(s) for HEAD; review logs vanished. Restore them (or reset state deliberately); refusing a vacuous zero." >&2
+		return 1
+	fi
+	echo "ship-pr-cycle: NOTE: phase1 round-cap — $_ctx and state records 0 rounds; counting 0 (legit first round)" >&2
+	return 0
+}
+
 _phase1_branch_round_count() {
 	# #2575: SSOT for the phase-1 round position — counts DISTINCT phase-1
 	# round NUMBERS across THIS BRANCH's review logs (per-branch like the
@@ -1288,13 +1314,7 @@ _phase1_branch_round_count() {
 		# nothing was spent — state recording phase1_rounds>0 with the log
 		# dir gone means the logs VANISHED (manual cleanup, botched sync),
 		# and a silent 0 there is the pre-#2575 unbounded mode reborn.
-		local _state_rounds
-		_state_rounds=$(jq -r '.phase1_rounds // 0' "$STATE_DIR/$(_current_sha).json" 2>/dev/null || echo 0)
-		if [[ $_state_rounds =~ ^[0-9]+$ ]] && [ "$_state_rounds" -gt 0 ]; then
-			echo "ship-pr-cycle: ERROR: phase1 round-cap — $rdir absent but state records $_state_rounds phase-1 round(s) for HEAD; review logs vanished. Restore them (or reset state deliberately); refusing a vacuous zero." >&2
-			return 2
-		fi
-		echo "ship-pr-cycle: NOTE: phase1 round-cap — $rdir absent and state records 0 rounds; counting 0 (legit first round)" >&2
+		_p1_zero_backed_by_state "$rdir absent" || return 2
 		printf '0\n'
 		return 0
 	fi
@@ -1303,6 +1323,9 @@ _phase1_branch_round_count() {
 		[ -f "$rdir/$_sha.jsonl" ] && files+=("$rdir/$_sha.jsonl")
 	done
 	if [ "${#files[@]}" -eq 0 ]; then
+		# p2r3: same vanished-logs hole as the missing-dir arm — an empty
+		# match set with state recording spent rounds must refuse too.
+		_p1_zero_backed_by_state "no branch review logs in $rdir" || return 2
 		printf '0\n'
 		return 0
 	fi

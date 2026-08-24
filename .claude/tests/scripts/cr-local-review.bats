@@ -402,6 +402,7 @@ TSTUB
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=42 run "$LR" --force --base main
 	[ "$status" -eq 0 ]
+	[[ $output == *'"type":"complete"'* ]]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "42" ]
 }
 
@@ -419,5 +420,6 @@ TSTUB
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=15m run "$LR" --force --base main
 	[ "$status" -eq 0 ]
 	[[ $output == *"not an integer; using 3600"* ]]
+	[[ $output == *'"type":"complete"'* ]]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }

@@ -293,3 +293,27 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	[ "$status" -eq 0 ]
 	[[ $output == *"P1 cap:      <unavailable>/3"* ]]
 }
+
+@test "vanished logs (state records rounds>0, no log files) refuse a vacuous zero" {
+	_seed_stage_phase1
+	# State says 2 rounds were spent; no review-log file exists for any
+	# branch sha — the logs vanished. Counting 0 would reopen the
+	# pre-#2575 unbounded mode.
+	printf '{"version":1,"stage":"phase1","branch":"feat-2575-cap","sha":"%s","phase1_rounds":2,"history":[]}\n' \
+		"$SHA" >"$STATE_DIR/$SHA.json"
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ]
+	[[ $output == *"review logs vanished"* ]]
+}
+
+@test "unreadable state file with no logs refuses a vacuous zero (p2r3)" {
+	_seed_stage_phase1
+	printf 'not json' >"$STATE_DIR/$SHA.json"
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	[ "$status" -ne 0 ]
+	[[ $output == *"cannot prove zero rounds"* ]] || [[ $output == *"ERROR"* ]]
+}
