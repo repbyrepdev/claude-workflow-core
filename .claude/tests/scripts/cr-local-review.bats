@@ -179,6 +179,13 @@ _stub_coderabbit_lines() {
 	_stub_coderabbit '{"type":"error","errorType":"auth","recoverable":false}' 2
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	# Assert the script's OWN outcome before the next `run` clobbers $status.
+	# A crashed CR must not exit 0 — otherwise the orchestrator treats the
+	# stage as successful regardless of what the ledger says.
+	[ "$status" -ne 0 ] || {
+		echo "local-review exited 0 on a crashed CR run"
+		return 1
+	}
 	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
 	[ "$status" -eq 0 ] || {
 		echo "no ledger entry written for a crashed run"
@@ -223,6 +230,12 @@ _stub_coderabbit_lines() {
 	_stub_coderabbit '{"type":"complete","findings":0}' 0
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	# Assert the script's OWN exit before the next `run` clobbers $status —
+	# a genuinely clean review must exit 0.
+	[ "$status" -eq 0 ] || {
+		echo "local-review did not exit 0 on a clean review. output: $output"
+		return 1
+	}
 	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
 	[ "$status" -eq 0 ] || {
 		echo "no ledger entry written for a clean run"
