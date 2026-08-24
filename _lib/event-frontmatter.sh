@@ -198,11 +198,24 @@ event_frontmatter_enforcement() {
 # this emitter is tracked in epic #2566 rather than risked mid-PR. A
 # parse failure is LOUD + rc 1: a shrunken universe must never read as a
 # clean one (phase1 r2/r3).
+# RECORD CONTRACT (phase1 r6 code-reviewer): tab-separated deliberately —
+# the parse function's one-line-per-field rationale (leading-empty
+# collapse under IFS=tab) is dodged here by POSITION, not by luck: path
+# is never empty and event is [ -n ]-guarded, so ONLY the trailing field
+# may be empty. Any new field MUST be appended LAST; inserting one
+# mid-record silently shifts every consumer's columns.
 event_frontmatter_registered_hooks() {
 	local dir="$1" f base _parse_out event auto enforcement
+	if [ ! -d "$dir" ]; then
+		# phase1 r6 silent-failure-hunter (verified): a mistyped/unlistable
+		# dir read as rc 0 + empty — the maximal shrunken universe passing
+		# as clean, exactly what this contract forbids per-file.
+		echo "event_frontmatter_registered_hooks: NOT A DIRECTORY: $dir — refusing an empty universe" >&2
+		return 1
+	fi
 	for f in "$dir"/*.sh; do
 		[ -e "$f" ] || continue # nullglob-safe: literal pattern on empty dir
-		base=$(basename "$f")
+		base="${f##*/}"         # param expansion per the file's own no-fork convention
 		event_frontmatter_skip_basename "$base" && continue
 		if ! _parse_out=$(event_frontmatter_parse "$f"); then
 			echo "event_frontmatter_registered_hooks: PARSE FAILURE: $f (unreadable?) — refusing a shrunken universe" >&2

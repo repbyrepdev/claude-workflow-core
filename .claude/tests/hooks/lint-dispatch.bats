@@ -183,3 +183,32 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 		return 1
 	fi
 }
+
+@test "#2547 non-lintable extension passes through: exit 0, NO sentinel" {
+	# phase1 r6 pr-test-analyzer: the dispatcher's highest-frequency
+	# production path (a .md/.json/.py edit falling through the case) had
+	# no inverse — a hoisted exit 1 or broken fall-through would block
+	# every non-lintable Edit/Write with the suite green.
+	printf 'notes\n' >"$ROOT/notes.md"
+	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/notes.md")"
+	[ "$status" -eq 0 ] || {
+		echo "non-lintable file exited $status. output: $output"
+		return 1
+	}
+	if [ -s "$SENTINEL" ]; then
+		echo "a non-lintable file produced an ack entry. sentinel: $(cat "$SENTINEL")"
+		return 1
+	fi
+}
+
+@test "#2547 payload without file_path passes through: exit 0, NO sentinel" {
+	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<'{}'
+	[ "$status" -eq 0 ] || {
+		echo "empty payload exited $status. output: $output"
+		return 1
+	}
+	if [ -s "$SENTINEL" ]; then
+		echo "an empty payload produced an ack entry. sentinel: $(cat "$SENTINEL")"
+		return 1
+	fi
+}

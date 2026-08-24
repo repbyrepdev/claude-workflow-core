@@ -166,7 +166,7 @@ done
 # follow-up commit attempt — a two-pass fix cycle; rc stays fail-closed).
 rc=0
 if [ "${#ENF_FAILED[@]}" -gt 0 ]; then
-	echo "event-frontmatter-check: ${#ENF_FAILED[@]} PostToolUse hook(s) lack the #2547 enforce-vs-inform classification:" >&2
+	echo "event-frontmatter-check: ${#ENF_FAILED[@]} ${EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS} hook(s) lack the #2547 enforce-vs-inform classification:" >&2
 	for f in "${ENF_FAILED[@]}"; do
 		echo "  $f" >&2
 	done

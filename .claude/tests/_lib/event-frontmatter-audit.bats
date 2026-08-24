@@ -104,13 +104,25 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 	}
 }
 
-@test "#2547 lint-dispatch is pinned as the enforce-classified hook" {
+@test "#2547 lint-dispatch is pinned as the enforce-classified hook AND stays in the universe" {
 	# The one current enforcer, pinned by name: reclassifying it to inform
 	# (or deleting the line) must turn this red — that decision belongs in
-	# review, not in drift. Also the existence guard for the routing test
-	# above.
+	# review, not in drift.
 	[ "$(event_frontmatter_enforcement "$HOOKS_DIR/lint-dispatch.sh")" = "enforce" ] || {
 		echo "lint-dispatch.sh is no longer declared enforcement:enforce"
+		return 1
+	}
+	# MEMBERSHIP too (phase1 r6 pr-test-analyzer, verified empirically): an
+	# auto-register:false on lint-dispatch kept this pin green while the
+	# routing + inverse audits iterated ZERO enforce subjects — vacuously
+	# green. The declared value only means something inside the universe.
+	local list
+	list=$(event_frontmatter_registered_hooks "$HOOKS_DIR") || {
+		echo "universe discovery failed"
+		return 1
+	}
+	[[ $list == *"lint-dispatch.sh"* ]] || {
+		echo "lint-dispatch.sh left the registered universe — the enforce audits now run on nothing"
 		return 1
 	}
 }
@@ -243,6 +255,18 @@ FIXEOF
 	run event_frontmatter_enforcement "$TEST_TMP/hooks/none.sh"
 	[ "$status" -ne 0 ] || {
 		echo "accessor accepted an absent directive: '$output'"
+		return 1
+	}
+}
+
+@test "#2547 emitter refuses a NONEXISTENT directory loudly (no empty-universe pass)" {
+	run event_frontmatter_registered_hooks "$TEST_TMP/definitely/not/here"
+	[ "$status" -ne 0 ] || {
+		echo "a missing directory read as an empty clean universe (rc=0)"
+		return 1
+	}
+	[[ $output == *"NOT A DIRECTORY"* ]] || {
+		echo "no loud diagnostic for the missing directory. output: $output"
 		return 1
 	}
 }
