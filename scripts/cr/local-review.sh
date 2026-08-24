@@ -383,7 +383,12 @@ if command -v canonical_review_filtered_finding_count >/dev/null 2>&1; then
 else
 	# Fallback (lib unavailable): prior behavior — complete event, then grep.
 	findings=$(jq -rs 'map(select(.type=="complete")) | if length > 0 then .[-1].findings else empty end' <"$TEE_OUT" 2>/dev/null || true)
-	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+	# `|| true`, NOT `|| echo 0`: grep -c ALREADY prints 0 on no-match and then
+	# exits 1, so `|| echo 0` appended a second 0 and the capture became "0\n0".
+	# That was harmless while the next line clamped anything unparseable to 0 —
+	# but now that unparseable means INCOMPLETE, it would mark every genuinely
+	# clean fallback review as a non-review. Found by CR on this very commit.
+	[ -n "${findings:-}" ] || findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || true)
 fi
 # #2544: an UNPARSEABLE count is not a count of zero. The old `|| findings=0`
 # turned every extraction failure — most realistically a CR-CLI output-format

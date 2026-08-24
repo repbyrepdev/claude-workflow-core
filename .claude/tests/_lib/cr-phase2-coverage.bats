@@ -195,7 +195,7 @@ _log_partial_only() {
 	# A strict `== true` would let the string "true" through and silently
 	# re-open the laundering hole. We control the only writer today, but the
 	# gate must not depend on that staying true.
-	printf '{"sha":"abc1234","findings":0,"partial":"true"}\n' >>"$CR_LOG"
+	printf '{"sha":"abc1234","findings":0,"partial":"true","complete":true}\n' >>"$CR_LOG"
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ] || {
 		echo 'an entry flagged partial:"true" (string) was accepted as CLEAN'
@@ -210,7 +210,7 @@ _log_partial_only() {
 @test "#2544 a non-boolean truthy TIMEOUT flag is still NOT clean (fail-closed)" {
 	# Symmetric to the partial:"true" case — both disjuncts get the same
 	# non-boolean treatment, so neither can regress to strict equality alone.
-	printf '{"sha":"abc1234","findings":0,"timeout":"true"}\n' >>"$CR_LOG"
+	printf '{"sha":"abc1234","findings":0,"timeout":"true","complete":true}\n' >>"$CR_LOG"
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ] || {
 		echo 'an entry flagged timeout:"true" (string) was accepted as CLEAN'
@@ -225,7 +225,7 @@ _log_partial_only() {
 @test "#2544 a NUMERIC 1 flag is still NOT clean (fail-closed)" {
 	# The lib comment names `1` specifically as a value that must not slip
 	# past the guard. Pin the claim so the comment cannot go stale.
-	printf '{"sha":"abc1234","findings":0,"partial":1}\n' >>"$CR_LOG"
+	printf '{"sha":"abc1234","findings":0,"partial":1,"complete":true}\n' >>"$CR_LOG"
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ] || {
 		echo "an entry flagged partial:1 (numeric) was accepted as CLEAN"
