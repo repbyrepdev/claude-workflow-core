@@ -6,8 +6,10 @@ set -euo pipefail
 # v4.28-W4 (#708) — CR pause-detector: after a successful `git push` to a
 # branch with an open PR, check whether CodeRabbit has posted a "Reviews
 # paused" notice that has not yet been resumed. If detected, auto-post
-# `@coderabbitai resume` followed by `@coderabbitai review` so the next
-# CR pass kicks off without operator intervention.
+# `@coderabbitai resume`; the `@coderabbitai review` follow-up fires ONLY
+# when commits landed at-or-after the pause AND no review is already
+# queued (#2571 — an unconditional review-request contradicted the
+# ship-cycle never-post rule and burned CR rate allowance).
 #
 # Real-world burn pattern this prevents (PR #683): 10+ rounds of
 # push → wait 5min → no review → push again, before noticing the pause.
@@ -31,8 +33,10 @@ set -euo pipefail
 #   3. Locate the LATEST `@coderabbitai resume` comment authored by ANY
 #      user on the PR.
 #   4. If pause-notice timestamp > resume timestamp (or no resume exists),
-#      post `@coderabbitai resume` then `@coderabbitai review` and append
-#      a record to .claude/logs/cr-resume-fired.jsonl.
+#      post `@coderabbitai resume`; ALSO post `@coderabbitai review` only
+#      when head-commit >= pause-notice time and no CR in-progress marker
+#      is newer than the pause (#2571). Append a record (review_posted
+#      field) to .claude/logs/cr-resume-fired.jsonl.
 #
 # Fail-soft: any gh API failure → log to stderr + exit 0. Hook is advisory
 # — blocking would abort the user's git-push tool-result, costing more
@@ -246,8 +250,41 @@ if [ -n "$LATEST_RESUME_TS" ]; then
 	fi
 fi
 
-# Pause-not-yet-resumed. Post resume + review. Use two separate comments
-# so CR's parser sees them as distinct triggers (combining into one
+# #2571: decide whether the `@coderabbitai review` follow-up is JUSTIFIED
+# before posting it. The ship-cycle rule is NEVER post it (no-op + noise:
+# each request spends CR's rate allowance — the same budget whose
+# exhaustion causes the 50-min "Review limit reached" stalls). The ONE
+# legitimate case: commits landed AT-OR-AFTER the pause notice — resume
+# alone does not re-review work pushed during a pause — AND CR is not
+# already processing. Anything else gets resume only; the next push (or
+# the rolling allowance) triggers the review naturally.
+NEED_REVIEW_POST=0
+# Epoch comparison, no timezone parsing: %ct is the commit time as a UNIX
+# epoch; the pause notice's created_at is GitHub UTC-Z, converted via
+# BSD-date (-j -f) with a GNU-date (-d) fallback. Any conversion failure
+# leaves NEED_REVIEW_POST=0 — fail toward NOT posting the banned request.
+HEAD_COMMIT_EPOCH=$(git log -1 --format=%ct 2>/dev/null || echo "")
+PAUSE_EPOCH=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$LATEST_PAUSE_TS" +%s 2>/dev/null ||
+	date -u -d "$LATEST_PAUSE_TS" +%s 2>/dev/null || echo "")
+if [[ $HEAD_COMMIT_EPOCH =~ ^[0-9]+$ ]] && [[ $PAUSE_EPOCH =~ ^[0-9]+$ ]]; then
+	if [ "$HEAD_COMMIT_EPOCH" -ge "$PAUSE_EPOCH" ]; then
+		# CR in-progress markers (either wording generation) newer than the
+		# pause mean a review is already queued — do not double-request.
+		jq_rc=0
+		CR_BUSY=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg ts "$LATEST_PAUSE_TS" '
+			[.[] | select(.user.login == "coderabbitai"
+				and .created_at > $ts
+				and ((.body | contains("Currently processing")) or (.body | contains("Come back again in a few minutes"))))]
+			| length' 2>/dev/null) || jq_rc=$?
+		if [ "$jq_rc" -eq 0 ] && [ "$CR_BUSY" = "0" ]; then
+			NEED_REVIEW_POST=1
+		fi
+	fi
+fi
+
+# Pause-not-yet-resumed. Post resume (+ review ONLY when justified above).
+# Two separate comments when both fire, so CR's parser sees them as
+# distinct triggers (combining into one
 # multi-command body has been observed to silently drop the second).
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 LOG_DIR="$REPO_ROOT/.claude/logs"
@@ -263,7 +300,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null || {
 
 POST_RC=0
 gh pr comment "$PR" --body "@coderabbitai resume" >/dev/null 2>&1 || POST_RC=$?
-if [ "$POST_RC" -eq 0 ]; then
+if [ "$POST_RC" -eq 0 ] && [ "$NEED_REVIEW_POST" = "1" ]; then
 	gh pr comment "$PR" --body "@coderabbitai review" >/dev/null 2>&1 || POST_RC=$?
 fi
 
@@ -290,15 +327,19 @@ log_rc=0
 # set -u. Default to "(cli)" so the audit log is still well-formed.
 jq -nc --arg ts "$TS" --arg pr "$PR" --arg branch "${BRANCH:-(cli)}" \
 	--arg pause_ts "$LATEST_PAUSE_TS" "${resume_arg[@]}" \
-	--arg status "$STATUS" --argjson rc "$POST_RC" \
-	'{ts:$ts, pr:($pr|tonumber), branch:$branch, pause_ts:$pause_ts, prior_resume_ts:$prior_resume_ts, status:$status, post_rc:$rc}' \
+	--arg status "$STATUS" --argjson rc "$POST_RC" --argjson review_posted "$NEED_REVIEW_POST" \
+	'{ts:$ts, pr:($pr|tonumber), branch:$branch, pause_ts:$pause_ts, prior_resume_ts:$prior_resume_ts, status:$status, post_rc:$rc, review_posted:($review_posted == 1)}' \
 	>>"$LOG" || log_rc=$?
 if [ "$log_rc" -ne 0 ]; then
 	echo "cr-pause-detector: audit-log write failed (rc=$log_rc) for PR #$PR — post may have happened but is not recorded in $LOG" >&2
 fi
 
 if [ "$POST_RC" -eq 0 ]; then
-	echo "cr-pause-detector: PR #$PR was paused — auto-posted @coderabbitai resume + review" >&2
+	if [ "$NEED_REVIEW_POST" = "1" ]; then
+		echo "cr-pause-detector: PR #$PR was paused — auto-posted @coderabbitai resume + review (commits landed during the pause, no review queued)" >&2
+	else
+		echo "cr-pause-detector: PR #$PR was paused — auto-posted @coderabbitai resume ONLY (#2571: no post-pause commits or review already queued; the banned review-request stays unposted)" >&2
+	fi
 else
 	echo "cr-pause-detector: PR #$PR pause detected but gh pr comment failed (rc=$POST_RC); see $LOG" >&2
 fi
