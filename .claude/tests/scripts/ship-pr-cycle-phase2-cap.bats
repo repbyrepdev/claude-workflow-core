@@ -109,12 +109,17 @@ _cur_stage() {
 
 # Seed N prior CR-CLI run entries for the current SHORT sha into the run-log
 # the cap counts (each genuine run appends one `{"sha":...}` line).
+# #2544: the real producer (local-review.sh) now emits `complete:true` on
+# every genuinely-finished run, and cr_phase2_clean_for_sha REQUIRES it —
+# a fixture without the flag models a killed run, which the coverage-based
+# advance paths correctly refuse (that latent drift broke 4 tests here the
+# day #2544 merged; this suite only runs when ship-pr-cycle.sh is touched).
 _seed_log() {
 	local n="$1" i
 	mkdir -p "$ROOT/.claude/logs"
 	: >"$ROOT/.claude/logs/cr-local-review.jsonl"
 	for ((i = 0; i < n; i++)); do
-		printf '{"sha":"%s","findings":2}\n' "$SHA_SHORT" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+		printf '{"sha":"%s","findings":2,"complete":true}\n' "$SHA_SHORT" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
 	done
 }
 
@@ -166,7 +171,10 @@ _seed_coverage() {
 
 @test "phase2 at round-cap WITH all residuals addressed advances to push (#234/#238)" {
 	# 3 runs logged, cap=3 → 3>=3 AND every finding addressed (prove-yourself
-	# scoped to sha) → advance. #238: the cap now requires coverage to advance.
+	# scoped to sha) → advance. #238: the cap requires coverage to advance.
+	# #2545: the advance now happens BEFORE the CR-CLI would fire — graduating
+	# a covered branch must not spend a review — so the stub sentinel must be
+	# absent.
 	_seed_stage phase2
 	_seed_log 3
 	_seed_coverage 2
@@ -178,22 +186,43 @@ _seed_coverage() {
 	[[ $output == *"addressed"* ]]
 	[[ $output == *"advanced to push"* ]]
 	[ "$(_cur_stage)" = push ]
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] # graduation must not spend a review
 }
 
-@test "phase2 at round-cap but residuals NOT addressed → directive, stays (#238)" {
-	# 3 runs logged, cap=3, but NO prove-yourself coverage → the cap must NOT
-	# advance (never ride past unaddressed findings of any severity); emits the
-	# address-residuals directive + stays at phase2.
+@test "#2545 at round-cap, residuals NOT addressed → ENFORCED: no CR-CLI, rc 2, hook-ack" {
+	# 3 runs logged, cap=3, NO coverage. Before #2545 the orchestrator ran the
+	# CR-CLI a 4th time and THEN said "not advancing" — every next past the cap
+	# burned 10/hr budget (PR #2540: 6 rounds vs cap 3). Now the 4th next must
+	# REFUSE to invoke (sentinel absent), exit non-zero, emit the graduation
+	# directive, and write the hook-ack diagnostic so the refusal cannot
+	# scroll past (hook_ack_diagnostic_write fires even under bats; only the
+	# universal sentinel append is bats-suppressed).
 	_seed_stage phase2
 	_seed_log 3
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
-	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (3/3) but"* ]]
-	[[ $output == *"NOT all addressed"* ]]
+	[ "$status" -eq 2 ] || {
+		echo "4th next at cap 3 did not exit non-zero (got $status). output: $output"
+		return 1
+	}
+	[[ $output == *"round-cap ENFORCED (3/3)"* ]] || {
+		echo "no enforcement message. output: $output"
+		return 1
+	}
+	[[ $output == *"REFUSING to invoke the CR-CLI"* ]]
 	[[ $output == *"record-rejection"* ]]
+	[[ $output == *"PIPELINE_GATE_SKIP=1"* ]] # the audited escape must be named
 	[ "$(_cur_stage)" = phase2 ]
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] || {
+		echo "the CR-CLI RAN past the cap — the refusal did not refuse"
+		return 1
+	}
+	local diag_dir="$ROOT/.claude/.session-state/hook-ack/ship-pr-cycle-p2cap"
+	[ -d "$diag_dir" ] && [ -n "$(ls -A "$diag_dir" 2>/dev/null)" ] || {
+		echo "no hook-ack diagnostic written under $diag_dir"
+		return 1
+	}
 }
 
 @test "phase2 findings>0 under cap (p2runs<cap) emits directive + stays (#234)" {
@@ -223,6 +252,7 @@ _seed_coverage() {
 	[[ $output == *"round-cap reached (2/2)"* ]]
 	[[ $output == *"advanced to push"* ]]
 	[ "$(_cur_stage)" = push ]
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] # #2545: graduation spends no review
 }
 
 @test "phase2 missing CR-CLI log → p2runs=0 (legit first run), stays (#234)" {
@@ -327,9 +357,10 @@ _seed_coverage() {
 	printf '{"version":1,"stage":"phase2","branch":"feat-2354-cap","sha":"%s","history":[]}\n' \
 		"$sha2" >"$STATE_DIR/$sha2.json"
 	# One run-log entry per branch commit: per-SHA counts 1 (HEAD), per-branch 2.
+	# complete:true per the #2544 producer contract (see _seed_log).
 	: >"$ROOT/.claude/logs/cr-local-review.jsonl"
-	printf '{"sha":"%s","findings":2}\n' "$sha1_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
-	printf '{"sha":"%s","findings":2}\n' "$sha2_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "$sha1_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "$sha2_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
 	# Coverage scoped to the new HEAD so the cap can advance once REACHED.
 	mkdir -p "$ROOT/.claude/audit"
 	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' \
@@ -520,4 +551,90 @@ _seed_cache_detail() {
 	[[ $output == *"NOT all addressed"* ]] || return 1
 	[[ $output != *"Findings from that review:"* ]] || return 1
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] || return 1
+}
+
+@test "#2545 PIPELINE_GATE_SKIP=1 permits the review past the cap + logs the bypass" {
+	# The audited escape: a DELIBERATE extra round must still be possible —
+	# the CR-CLI runs (sentinel present), the bypass lands in
+	# pipeline-skip.jsonl with gate + reason, and the run then flows into the
+	# normal post-review cap handling (rc 0, directive, stays — no coverage).
+	_seed_stage phase2
+	_seed_log 3
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON="bats-2545-deliberate" run "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "skip-permitted round did not exit 0 (got $status). output: $output"
+		return 1
+	}
+	[[ $output == *"OVERRIDDEN via PIPELINE_GATE_SKIP=1"* ]]
+	[ -e "$TEST_TMP/.claude/.local-review-ran" ] || {
+		echo "skip was set but the CR-CLI did NOT run"
+		return 1
+	}
+	local skip_log="$ROOT/.claude/logs/pipeline-skip.jsonl"
+	[ -f "$skip_log" ] || {
+		echo "no pipeline-skip.jsonl written"
+		return 1
+	}
+	run jq -rs '[.[] | select(.gate=="phase2-round-cap")] | last | .reason' "$skip_log"
+	[ "$status" -eq 0 ]
+	[ "$output" = "bats-2545-deliberate" ] || {
+		echo "skip-log entry missing gate/reason. got: '$output'"
+		return 1
+	}
+}
+
+@test "#2545 status prints the P2 round/cap position" {
+	# Acceptance: the position against the ceiling is visible without
+	# re-reading logs. 2 runs seeded, cap 3 → "P2 cap: 2/3".
+	_seed_stage phase2
+	_seed_log 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" status
+	[ "$status" -eq 0 ] || {
+		echo "status exited $status. output: $output"
+		return 1
+	}
+	[[ $output == *"P2 cap:"* ]] || {
+		echo "status has no P2 cap line. output: $output"
+		return 1
+	}
+	[[ $output == *"2/3"* ]] || {
+		echo "P2 cap line does not show 2/3. output: $output"
+		return 1
+	}
+}
+
+@test "#2545 cache-HIT reconcile row satisfies the #2544 completeness gate" {
+	# #284 deadlock regression: the reconcile synthesizes a run-log row for a
+	# sha whose identical content was reviewed under ANOTHER sha. #2544 made
+	# the coverage predicate REQUIRE complete:true — a row without it is
+	# refused as a killed run, so the branch could never clear phase2 (the
+	# exact deadlock #284 fixed). Cache HIT + coverage + NO row for this sha
+	# must synthesize a complete:true row and advance without the CR-CLI.
+	_seed_stage phase2
+	_seed_cache 2
+	_seed_coverage 2
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "reconcile advance failed (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"cache HIT"* ]]
+	[[ $output == *"advanced to push"* ]] || {
+		echo "did not advance — the reconcile row failed the completeness gate? output: $output"
+		return 1
+	}
+	[ "$(_cur_stage)" = push ]
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] # reconcile must not spend a review
+	run jq -rs '[.[] | select(.source=="phase2-cache-reconcile")] | last | .complete' "$ROOT/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ]
+	[ "$output" = "true" ] || {
+		echo "reconcile row lacks complete:true (got '$output') — #284 deadlock is back"
+		return 1
+	}
 }
