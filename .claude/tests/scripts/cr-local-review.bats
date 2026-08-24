@@ -169,6 +169,49 @@ _stub_coderabbit_lines() {
 	[[ $output != *"timed out"* ]]
 }
 
+@test "#2544 DOGFOOD: a CR CRASH writes complete:false to the ledger" {
+	# The hole the blocklist missed. Only rc 124/137 and CR's own timeout event
+	# reach the flagged writer; an auth failure / rate limit / network error /
+	# CLI crash lands in the PLAIN logger. Before #2544 that wrote an unflagged
+	# findings:0 which the pre-push gate read as CLEAN.
+	# This drives the REAL script — not a fixture — and asserts on what actually
+	# lands in the ledger the gate reads.
+	_stub_coderabbit '{"type":"error","errorType":"auth","recoverable":false}' 2
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "no ledger entry written for a crashed run"
+		return 1
+	}
+	[[ $output == *'"complete":false'* ]] || {
+		echo "a CRASHED review was recorded WITHOUT complete:false — the gate would read it as clean. entry: $output"
+		return 1
+	}
+}
+
+@test "#2544 DOGFOOD: a genuine 0-findings review writes complete:true" {
+	# The other direction, and the one the grep -c double-zero regression broke:
+	# a real clean review must still be recorded as COMPLETE, or the gate walls
+	# off every good push. Drives the real script end-to-end.
+	_stub_coderabbit '{"type":"complete","findings":0}' 0
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "no ledger entry written for a clean run"
+		return 1
+	}
+	[[ $output == *'"complete":true'* ]] || {
+		echo "a genuinely CLEAN review was not recorded complete:true — every good push would be refused. entry: $output"
+		return 1
+	}
+	[[ $output == *'"findings":0'* ]] || {
+		echo "clean review did not record findings:0 (grep -c double-zero regression?). entry: $output"
+		return 1
+	}
+}
+
 @test "local-review: findings count uses the textual hash-filter (survives noisy TEE_OUT) (#2249)" {
 	# Wiring + false-clean regression: local-review.sh must source canonical-
 	# review-exclude.sh and tally finding LINES via canonical_review_filtered_
