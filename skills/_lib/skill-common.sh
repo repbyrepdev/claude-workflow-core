@@ -181,6 +181,16 @@ skc_graphql_add_sub_issue() {
 # argv. It is an ordinary shell variable assigned inside the script, never an
 # env prefix on the command line, so it carries none of that shape.
 # APPROVE=1 is retained for humans and existing scripts.
+#
+# An INHERITED value is discarded at source time (#2544 phase2): a parent
+# process exporting SKC_ASSUME_YES=1 auto-approved every wrapper without
+# --yes ever being typed — the same env-prefix bypass the flag exists to
+# replace, and the log line even claimed "via --yes". Every wrapper sources
+# this lib BEFORE parsing argv, so clearing here can never clobber a real
+# --yes. `unset` (not =0) also drops an inherited export attribute, so the
+# stale value cannot ride into child processes either.
+unset SKC_ASSUME_YES
+
 skc_approve_or_exit() {
 	local prompt="${1:-Proceed?}"
 	if [ "${SKC_ASSUME_YES:-0}" = "1" ]; then

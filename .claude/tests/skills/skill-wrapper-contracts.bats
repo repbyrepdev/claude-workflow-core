@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh skills/bootstrap-repo/run.sh
+# covers: skills/cr-plan/run.sh skills/cr-resolve-conflict/run.sh skills/github-epic-creation/run.sh skills/github-pr-creation/run.sh skills/prove-yourself-audit/run.sh skills/bootstrap-repo/run.sh skills/_lib/skill-common.sh
 #
 # v0.30.H (#196 slice 2): bats coverage for the 6 highest-risk untested skill
 # wrappers (they invoke gh/git and write to disk). Two contracts are locked:
@@ -131,4 +131,30 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	[ "$status" -eq 0 ]
 	[ "$output" = "3" ]
 	[ -d "$repo" ] && [[ $repo == */pycovers.* ]] && rm -rf "$repo"
+}
+
+@test "skill-common: inherited SKC_ASSUME_YES=1 cannot auto-approve (#2544 env-bypass)" {
+	# A parent exporting SKC_ASSUME_YES=1 auto-approved every wrapper with no
+	# --yes typed (and the log line even claimed "via --yes"). The lib unsets
+	# it at source time; wrappers assign it AFTER parsing argv, so the real
+	# --yes path is untouched — both directions pinned here.
+	run env SKC_ASSUME_YES=1 bash -c "echo '' | { source '$REPO/skills/_lib/skill-common.sh' && skc_approve_or_exit 'x'; }"
+	[ "$status" -eq 2 ] || {
+		echo "inherited env SKC_ASSUME_YES bypassed approval (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"non-interactive run without --yes"* ]] || {
+		echo "expected the non-interactive refusal, got: '$output'"
+		return 1
+	}
+	# regression: wrapper-local assignment AFTER source still approves
+	run bash -c "echo '' | { source '$REPO/skills/_lib/skill-common.sh' && SKC_ASSUME_YES=1 && skc_approve_or_exit 'x'; }"
+	[ "$status" -eq 0 ] || {
+		echo "wrapper-local SKC_ASSUME_YES=1 no longer approves (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"auto-approved via --yes"* ]] || {
+		echo "expected the --yes approval line, got: '$output'"
+		return 1
+	}
 }
