@@ -128,13 +128,16 @@ trap 'rm -f "$TEE_OUT"' EXIT
 # can run ~60min on a large diff before emitting an unrecoverable timeout
 # event — wasted wall-clock for a PRE-PUSH convenience whose findings the
 # authoritative server-side CR-in-CI re-derives on push anyway. A client-side
-# timeout fails fast so ship-pr-cycle can defer to CR-in-CI (the exit-4 SSOT
-# contract below). Default 600s (~3x observed clean-run duration); override via
-# CR_LOCAL_REVIEW_TIMEOUT (0 disables). Prefer GNU `timeout`, fall back to
+# timeout exists as a HANG guard, not a race (#2546): the old 600s default
+# sat BELOW CR's legitimate ~60min worst case, so it killed paid in-flight
+# reviews — each kill discarded one 10/hr budget slot and the retry spent a
+# second one for the same diff (observed live 2026-08-24). Default 3600s
+# now clears the server-side worst case; override via CR_LOCAL_REVIEW_TIMEOUT
+# (0 disables). Prefer GNU `timeout`, fall back to
 # coreutils `gtimeout` (macOS via brew); if neither is present, run un-wrapped
 # and rely on CR's own server-side timeout event for the exit-4 signal.
-CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT:-600}"
-[[ $CR_REVIEW_TIMEOUT =~ ^[0-9]+$ ]] || CR_REVIEW_TIMEOUT=600
+CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT:-3600}"
+[[ $CR_REVIEW_TIMEOUT =~ ^[0-9]+$ ]] || CR_REVIEW_TIMEOUT=3600
 TIMEOUT_BIN=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
 # Capture the review command's exit via `rc=0; … || rc=$?`. Under the `set -o
 # pipefail` on line 2, $? after a failed pipeline is its last non-zero exit —

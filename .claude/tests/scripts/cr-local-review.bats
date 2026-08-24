@@ -364,3 +364,24 @@ _stub_coderabbit_lines() {
 	[ -f "$TEST_TMP/.claude/review-log/cr-budget.jsonl" ]
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
 }
+
+@test "#2546: default client timeout is 3600s (above CR's ~60min worst case), env-overridable" {
+	# The 600s default killed paid in-flight reviews (each kill = one 10/hr
+	# budget slot discarded + a second spent on the retry). Pin the default
+	# AND the override plumbing via a stubbed `timeout` that records its arg.
+	cd "$TEST_TMP" || return 1
+	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
+shift
+exec "$@"
+TSTUB
+	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_coderabbit '{"type":"complete","findings":0}' 0
+	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
+	PATH="$TEST_TMP/bin:$PATH" run "$LR" --force --base main
+	[ -f "$TIMEOUT_ARG_OUT" ]
+	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=42 run "$LR" --force --base main
+	[ "$(cat "$TIMEOUT_ARG_OUT")" = "42" ]
+}
