@@ -1276,7 +1276,7 @@ _phase2_cap_gate() {
 	local _cap_body
 	_cap_body="ship-pr-cycle: phase2 round-cap ENFORCED ($runs/$cap) — REFUSING to spend another CR-CLI review on this branch; the residual finding(s) are NOT all addressed.
 Re-reviewing past the cap is the non-deterministic minor-tail treadmill (PR #2540 burned 6 rounds against a cap of 3). Graduate instead — address EACH residual from the last completed review, then re-run 'scripts/ship-pr-cycle.sh next':
-  - real issue → fix in-PR and commit, then spend ONE deliberate review on the new HEAD via the audited escape below (the pre-push gate requires a completed review of HEAD; the cap keeps that spend explicit, not drift)
+  - real issue → fix in-PR, record-fix each finding (prove-yourself), commit — the branch then GRADUATES on the covered ancestor review: 'next' advances to push with NO new spend, the fix-delta deferring to the authoritative server-side CR-in-CI
   - verified FALSE-POSITIVE → record a rejection with evidence (scoped to HEAD):
       skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
         --covers-count <N> --follow-up-issue <N — required for critical/high/medium> \\

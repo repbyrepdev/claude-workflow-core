@@ -24,6 +24,75 @@ set -u
 # missing audit log → rc 1 (never whitewash). REPO_ROOT honored if exported
 # (tests pre-set it); else derived from git.
 
+_cr_phase2_branch_graduation() {
+	# #2545 (operator-flagged design bug): a fix commit necessarily orphans
+	# its review's sha — the row lives under the REVIEWED commit, the fixes
+	# land under a NEW one. With strictly sha-scoped evidence, a rejection
+	# covered findings in place but a FIX could never satisfy the gate
+	# without spending another review, so the enforced round cap turned the
+	# normal terminal state (final in-budget round found trivia → you fixed
+	# it) into a routine emergency override. GRADUATION closes that: HEAD
+	# with NO row of its own is clean when the newest COMPLETED review among
+	# THIS branch's commits (BASE_BRANCH..HEAD — the same per-branch scope
+	# the round cap counts, #2354) passes the identical completeness rules
+	# AND its findings are covered by branch-scoped prove-yourself records.
+	# Positive evidence is still the rule: no branch row, a killed/partial
+	# row, or an uncovered count all refuse exactly as before, and the
+	# unreviewed fix-delta defers to the authoritative server-side CR-in-CI
+	# (the same philosophy as ship-pr-cycle's timeout rc=4 defer).
+	#
+	# $1 = cr_log path, $2 = repo_root. All git calls anchor to $2 — the
+	# caller's cwd is not trusted (bats fixtures run from the live repo).
+	# Silent when it cannot graduate for structural reasons (no git, no
+	# branch rows — the caller's refusal already narrates); loud on the one
+	# actionable gap (candidate found, coverage short) and on success (an
+	# ancestor-graduated push is a trust signal the operator should see).
+	local cr_log="$1" repo_root="$2"
+	local base="${BASE_BRANCH:-main}"
+	local branch_shas
+	branch_shas=$(git -C "$repo_root" rev-list "$base..HEAD" 2>/dev/null) || return 1
+	[ -n "$branch_shas" ] || return 1
+	local row
+	row=$(jq -rs --arg shas "$branch_shas" '
+		($shas | split("\n") | map(select(length > 0))) as $bs
+		| [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))]
+		| if length == 0 then empty else
+		    (last as $l
+		     | if ($l.complete // false) != true then empty
+		       elif (($l | has("partial")) and ($l.partial != false))
+		         or (($l | has("timeout")) and ($l.timeout != false)) then empty
+		       elif ($l.findings | type) != "number" then empty
+		       elif $l.findings < 0 then empty
+		       else "\($l.sha)\t\($l.findings)" end)
+		  end' "$cr_log" 2>/dev/null) || return 1
+	[ -n "$row" ] || return 1
+	local anc_sha="${row%%$'\t'*}" anc_findings="${row##*$'\t'}"
+	case "$anc_findings" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	if [ "$anc_findings" = "0" ]; then
+		echo "cr_phase2_clean_for_sha: HEAD has no review row — GRADUATED via branch ancestor $anc_sha (0 findings, complete); the fix-delta defers to CR-in-CI." >&2
+		return 0
+	fi
+	local audit_log="$repo_root/.claude/audit/prove-yourself.jsonl"
+	[ -f "$audit_log" ] || return 1
+	local covered
+	covered=$(jq -rs --arg shas "$branch_shas" '
+		($shas | split("\n") | map(select(length > 0))) as $bs
+		| [.[] | select(.source == "cr")
+		       | select((.covered_sha // "") as $c | ($c | length > 0) and ($bs | any(startswith($c))))]
+		| map(.covers_count // 1) | add // 0' "$audit_log" 2>/dev/null || echo 0)
+	case "$covered" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	if [ "$covered" -ge "$anc_findings" ]; then
+		echo "cr_phase2_clean_for_sha: HEAD has no review row — GRADUATED via branch ancestor $anc_sha ($anc_findings finding(s), covered $covered by branch-scoped prove-yourself records); the fix-delta defers to CR-in-CI." >&2
+		return 0
+	fi
+	echo "cr_phase2_clean_for_sha: graduation candidate $anc_sha has $anc_findings finding(s) but branch-scoped coverage is only $covered — record the missing fix/rejection records, then re-run." >&2
+	return 1
+}
+
 cr_phase2_clean_for_sha() {
 	local sha=$1
 	# #248 CR: fail CLOSED on an unresolvable repo root — do NOT fall back to
@@ -148,6 +217,18 @@ cr_phase2_clean_for_sha() {
 	case "$latest_findings" in
 	-1*)
 		local refusal_reason="${latest_findings#-1 }"
+		# #2545 graduation: ONLY the no-row-for-this-SHA reason may
+		# graduate via a covered branch-ancestor review. A row that EXISTS
+		# and was rejected on its own terms (killed run, partial flag, bad
+		# count) is evidence something ran and died for THIS sha —
+		# graduating around it would be the #2544 laundering again.
+		case "$refusal_reason" in
+		"no ledger entry exists for this SHA"*)
+			if _cr_phase2_branch_graduation "$cr_log" "$repo_root"; then
+				return 0
+			fi
+			;;
+		esac
 		echo "cr_phase2_clean_for_sha: no COMPLETED CR review on record for $short_sha." >&2
 		echo "  Reason: ${refusal_reason}." >&2
 		echo "  findings:0 there means '0 were SEEN', not '0 exist'. Re-run: coderabbit review --agent -t committed --base main" >&2

@@ -697,3 +697,48 @@ _seed_cache_detail() {
 		return 1
 	}
 }
+@test "#2545 at cap, FIXED findings graduate a child HEAD — no review, no override" {
+	# The operator-flagged design bug: at 2/2 the final round found trivia,
+	# the fixes landed as a NEW commit, and the only exit was the audited
+	# PIPELINE_GATE_SKIP override — an enforcement whose happy path needs an
+	# emergency escape every time. Now: rows under the reviewed parent sha +
+	# branch-scoped coverage for its findings → the child HEAD GRADUATES:
+	# `next` advances to push spending nothing, no skip var set.
+	cd "$TEST_TMP" || return 1
+	local reviewed_short
+	reviewed_short="$SHA_SHORT" # setup()'s branch commit = the reviewed sha
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m fixes
+	local head2
+	head2=$(git rev-parse HEAD)
+	printf '{"version":1,"stage":"phase2","branch":"feat-2354-cap","sha":"%s","history":[]}\n' \
+		"$head2" >"$STATE_DIR/$head2.json"
+	# Two prior runs (cap=2), newest under the REVIEWED parent — the child
+	# HEAD itself has NO row.
+	: >"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "$reviewed_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "$reviewed_short" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	# Coverage recorded while fixing — lands under the CHILD sha (the
+	# natural writing point); branch-scoped matching accepts it.
+	mkdir -p "$ROOT/.claude/audit"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' \
+		"$head2" >"$ROOT/.claude/audit/prove-yourself.jsonl"
+	export STUB_ROUNDS=2
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "graduation did not advance (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"GRADUATED via branch ancestor"* ]] || {
+		echo "no graduation trust-signal in output: $output"
+		return 1
+	}
+	[[ $output == *"advanced to push"* ]] || {
+		echo "did not advance to push. output: $output"
+		return 1
+	}
+	[ "$(jq -r '.stage' "$STATE_DIR/$head2.json")" = push ]
+	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] || {
+		echo "graduation SPENT a review — the whole point was not to"
+		return 1
+	}
+}
