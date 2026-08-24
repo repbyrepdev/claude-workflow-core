@@ -1,0 +1,64 @@
+# SSOT: approving-review merge policy (#2567).
+#
+# Consumed by skills/github-pr-merge/_approval-gate.sh on every wrapper
+# merge, and — once the wrapper flow is proven — mirrored by the native
+# branch ruleset (require 1 approving review; GitHub then enforces it
+# platform-side and author self-approval stays blocked). Keep the two in
+# sync: this file is the policy, the ruleset is the platform copy.
+#
+# Why a wrapper gate first (evidence 2026-08-24, reviews API):
+#   PR #2540: CR posted APPROVED — the record mechanism works.
+#   PR #2561: ended COMMENTED-only despite resolving all 5 threads itself.
+#   PR #2565: NO review record at all for the final HEAD (approval signal
+#             lived only in thread auto-resolves + summary edits).
+#   PR #2576: stale CHANGES_REQUESTED until `@coderabbitai approve` was
+#             posted — the record flipped to APPROVED on the final HEAD
+#             in ~30s. The weirdness is real; the nudge remediates it.
+# A native "require approving review" rule alone would deadlock the
+# #2561/#2565 shape; today's checks+threads gate under-asks. The wrapper
+# gate closes the gap: require the record, and when CodeRabbit has
+# VERIFIABLY converged but skipped the record, nudge and wait for the
+# real one — never merge without it.
+#
+# READ FROM THE DEFAULT BRANCH: the gate fetches this file from the
+# repo's default branch via the GitHub contents API — never from the
+# working tree (a PR branch cannot neuter its own merge gate by editing
+# this file on that branch), and deliberately NOT from a PR's base ref
+# (a release-branch PR still answers to the default branch's policy).
+# Policy changes take effect only once merged there.
+#
+# FORMAT CONTRACT (parsed by _approval-gate.sh with awk/sed — no yq on
+# the merge path). Keep exactly this shape:
+#   - scalar keys at column 0:  `key: value`; first occurrence wins if
+#     a key is duplicated
+#   - the approvers list: one `  - login` line per approver, two-space
+#     indent, under `approvers:`; blank lines and full-line comments
+#     are allowed inside the block; trailing whitespace after a login
+#     is stripped by the parser (CR-in-CI r1 hardening)
+#   - comments only on full lines (a trailing `# …` after a value would
+#     be read as part of the value; for require/timeout that fails
+#     closed loudly, for an approver it silently never matches — but a
+#     PURELY-whitespace pad is stripped — and for
+#     nudge_comment it would be POSTED verbatim to the PR — the worst
+#     of the four)
+#   - two keys have built-in defaults when absent: `nudge_comment` →
+#     "@coderabbitai approve" (announced; only applied when
+#     coderabbitai[bot] is an approver — otherwise the gate refuses
+#     before posting a meaningless nudge) and `nudge_timeout_seconds`
+#     → 180 (silent)
+#
+# Schema:
+#   require_approving_review: true|false — master switch for the gate.
+#   approvers: bot logins (reviews-API user.login, EXACT) whose APPROVED
+#     review at the final HEAD satisfies the gate.
+#   nudge_comment: posted when CR converged (zero findings across all
+#     four _pr-cr-findings buckets AND the final HEAD verifiably
+#     reviewed) but no APPROVED record exists.
+#   nudge_timeout_seconds: how long the gate waits for the record after
+#     nudging before refusing.
+require_approving_review: true
+approvers:
+  - coderabbitai[bot]
+  - copilot-pull-request-reviewer[bot]
+nudge_comment: "@coderabbitai approve"
+nudge_timeout_seconds: 180

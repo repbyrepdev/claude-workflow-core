@@ -5,6 +5,8 @@
 # phase1-directive marker for the merged PR's head ref after a
 # successful merge.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
 	WRAPPER="${BATS_TEST_DIRNAME}/../../../skills/github-pr-merge/run.sh"
 	[ -f "$WRAPPER" ]
@@ -30,12 +32,20 @@ teardown() {
 	skip "#176 deferred — gh-mock integration v0.30.x followup"
 }
 
-@test "BRANCH_HEAD_SHA via gh headRefOid resolution syntax is in run.sh" {
-	# Sanity check that the v0.27.1 Phase 1 r1 fix (gh pr view --jq headRefOid)
-	# is present in the wrapper — guards against accidental revert.
-	# Flexible regex tolerates "$PR" / $PR / ${PR} variable quoting styles.
-	run grep -E 'gh pr view.*--json[[:space:]]+headRefOid' "$WRAPPER"
+@test "marker cleanup keys on the gh-derived pinned head, never git rev-parse HEAD" {
+	# v0.27.1 guarded against `git rev-parse HEAD` (wrong sha when invoked
+	# from main/worktree). #2567 strengthened the property: the merge is
+	# pinned via --match-head-commit to HEAD_OID (gh headRefOid from the
+	# STATE fetch), and the marker rm keys on that same variable — the
+	# re-query AND its rev-parse fallback are gone. Guard both halves.
+	run grep -E -- '--match-head-commit[[:space:]]+"\$HEAD_OID"' "$WRAPPER"
 	[ "$status" -eq 0 ]
+	run grep -E 'MARKER_DIR/\$HEAD_OID\.phase1-directive' "$WRAPPER"
+	[ "$status" -eq 0 ]
+	# Name-independent (CR-in-CI r1): ANY code line resolving `git
+	# rev-parse HEAD` is the hazard, whatever variable it lands in.
+	# Comment mentions are stripped before the match.
+	run ! grep -E '^[^#]*git rev-parse HEAD' "$WRAPPER"
 }
 
 # --- #2293 edge-case expansion: behavioral arg-validation (exit 2 before any

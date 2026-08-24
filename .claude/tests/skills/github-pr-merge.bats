@@ -19,6 +19,12 @@ setup() {
 		return 1
 	}
 	export GH_ARGS_LOG="$TEST_TMP/gh-args.log"
+	# #2567: the approval gate now runs in both run.sh paths. This suite
+	# tests the --auto ARM mechanics, so disable the gate deterministically
+	# through its policy seam — its behavior has its own suite
+	# (github-pr-merge-approval.bats), including the arm-path wiring.
+	export APPROVAL_GATE_POLICY="$TEST_TMP/gate-off-policy.yml"
+	printf 'require_approving_review: false\n' >"$TEST_TMP/gate-off-policy.yml"
 }
 
 teardown() {
@@ -57,7 +63,12 @@ case "$1 $2" in
 	exit 0
 	;;
 "repo view")
-	printf '%s\n' "${FAKE_DEL:-false}"
+	# #2567: the hoisted skc_repo_owner_name slug query and the arm-path
+	# delete-setting query share this subcommand — dispatch on the field.
+	case "$*" in
+	*nameWithOwner*) printf 'testowner/testrepo\n' ;;
+	*) printf '%s\n' "${FAKE_DEL:-false}" ;;
+	esac
 	;;
 "api graphql")
 	if [ "${FAKE_QUEUE_FAIL:-0}" = "1" ]; then
@@ -79,7 +90,7 @@ SHIM
 _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	local failed=""
 	[ "${2:-0}" -gt 0 ] && failed='{"context":"ci","state":"FAILURE"}'
-	printf '{"state":"%s","mergeable":"%s","mergeStateStatus":"BLOCKED","head":"headsha1","checks":[%s]}' "$1" "${3:-MERGEABLE}" "$failed"
+	printf '{"state":"%s","mergeable":"%s","mergeStateStatus":"BLOCKED","head":"beadbead000011112222333344445555666bead0","checks":[%s]}' "$1" "${3:-MERGEABLE}" "$failed"
 }
 
 @test "--auto with --tag refuses (rc 2) before any gh call" {
@@ -105,7 +116,7 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	FAKE_DEL=true
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
-	grep -qx "pr merge 55 --squash --auto --match-head-commit headsha1 --delete-branch" "$GH_ARGS_LOG"
+	grep -qx "pr merge 55 --squash --auto --match-head-commit beadbead000011112222333344445555666bead0 --delete-branch" "$GH_ARGS_LOG"
 	[[ $output == *"Auto-merge armed for PR #55"* ]]
 }
 
@@ -116,7 +127,7 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	FAKE_POST='{"state":"OPEN","armed":true,"queued":false,"head":"abc1234"}'
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto --no-delete-branch </dev/null"
 	[ "$status" -eq 0 ]
-	grep -qx "pr merge 55 --squash --auto --match-head-commit headsha1" "$GH_ARGS_LOG"
+	grep -qx "pr merge 55 --squash --auto --match-head-commit beadbead000011112222333344445555666bead0" "$GH_ARGS_LOG"
 	[[ $output == *"Auto-merge armed for PR #55"* ]]
 }
 
