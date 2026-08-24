@@ -2,7 +2,30 @@
 set -euo pipefail
 # event: PreToolUse
 # matcher: Bash|Edit|Write|MultiEdit|NotebookEdit
-# auto-register: true
+# auto-register: false
+# #2544: DELIBERATELY not auto-registered. Unregistered on 2026-08-24 because
+# it deadlocks the session, and `auto-register: true` would have silently
+# reinstated it on the next `register-hook.sh --all-auto-register`. The orphan
+# report even prints that command as the "Fix", so the trap was one keystroke
+# away.
+#
+# WHY IT DEADLOCKS: it blocks every non-Agent/Skill tool call while a phase1
+# directive marker exists, reporting "agents not yet fired" — a hardcoded
+# string it never verifies (it only tests whether a marker FILE exists). Since
+# the Agent tool went ASYNCHRONOUS, its sibling phase1-post-agent-nudge fires
+# at agent LAUNCH and arms the log-pending gate before any agent has read a
+# file. The two stack: one demands findings counts for agents still running,
+# the other blocks the review-log.sh call that would clear them. The only
+# documented exit is a *_SKIP bypass — so the guard's escape hatch is the very
+# thing it exists to prevent, and in the meantime it pressures the operator
+# into fabricating review records.
+#
+# Do NOT re-enable without: (a) keying the pending file on agent COMPLETION,
+# not launch; (b) verifying the allowlist actually admits the command that
+# clears it — its regex rejected absolute paths to review-log.sh; (c) leaving
+# Read available to subagents, which this blocked, so review agents could not
+# open the files they were asked to review.
+#
 # v0.7.1 (#23): stricter Phase 1 directive enforcement (partial #732 fix).
 #
 # WHY this exists: ship-pr-cycle.sh emits a Phase 1 directive ("fire 5
