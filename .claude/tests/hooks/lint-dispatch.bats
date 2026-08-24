@@ -58,6 +58,22 @@ _payload() { printf '{"tool_input":{"file_path":"%s"}}' "$1"; }
 # sentinel (phase1 r3 pr-test-analyzer). $3 = expected file path.
 _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 
+# Clean-path passthrough contract (phase1 r8 code-simplifier: five tests
+# carried byte-identical bodies): run the hook on payload $1, expect exit 0
+# and an EMPTY sentinel. $2 names the scenario in failure output. Each
+# caller keeps its own @test name, so branches stay independently reported.
+_expect_clean_passthrough() {
+	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$1"
+	[ "$status" -eq 0 ] || {
+		echo "$2 exited $status. output: $output"
+		return 1
+	}
+	if [ -s "$SENTINEL" ]; then
+		echo "$2 produced an ack entry. sentinel: $(cat "$SENTINEL")"
+		return 1
+	fi
+}
+
 @test "#2547 shellcheck failure appends to the hook-ack sentinel (blocks next call)" {
 	# SC2164 (cd without || exit) is warning-level — survives -S warning.
 	printf '#!/bin/bash\nset -u\ncd /tmp/nope\necho "$undefined_sc2154"\n' >"$ROOT/bad.sh"
@@ -78,15 +94,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 
 @test "#2547 clean shell file: exit 0, NO sentinel entry (informers must not block)" {
 	printf '#!/bin/bash\nset -u\necho ok\n' >"$ROOT/good.sh"
-	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/good.sh")"
-	[ "$status" -eq 0 ] || {
-		echo "clean file exited $status. output: $output"
-		return 1
-	}
-	if [ -s "$SENTINEL" ]; then
-		echo "a CLEAN file produced an ack entry — enforcement noise. sentinel: $(cat "$SENTINEL")"
-		return 1
-	fi
+	_expect_clean_passthrough "$(_payload "$ROOT/good.sh")" "clean shell file"
 }
 
 @test "#2547 shfmt drift: auto-fixed ON DISK + auto-fixed sentinel reason" {
@@ -159,29 +167,13 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 	# yamllint PASS arm would block the operator's next call with every
 	# test green.
 	printf 'key: value\n' >"$ROOT/good.yml"
-	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/good.yml")"
-	[ "$status" -eq 0 ] || {
-		echo "clean yaml exited $status. output: $output"
-		return 1
-	}
-	if [ -s "$SENTINEL" ]; then
-		echo "a CLEAN yaml produced an ack entry. sentinel: $(cat "$SENTINEL")"
-		return 1
-	fi
+	_expect_clean_passthrough "$(_payload "$ROOT/good.yml")" "clean yaml"
 }
 
 @test "#2547 clean workflow file: exit 0, NO sentinel entry" {
 	mkdir -p "$ROOT/.github/workflows"
 	printf 'on: push\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n' >"$ROOT/.github/workflows/good.yml"
-	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/.github/workflows/good.yml")"
-	[ "$status" -eq 0 ] || {
-		echo "clean workflow exited $status. output: $output"
-		return 1
-	}
-	if [ -s "$SENTINEL" ]; then
-		echo "a CLEAN workflow produced an ack entry. sentinel: $(cat "$SENTINEL")"
-		return 1
-	fi
+	_expect_clean_passthrough "$(_payload "$ROOT/.github/workflows/good.yml")" "clean workflow"
 }
 
 @test "#2547 non-lintable extension passes through: exit 0, NO sentinel" {
@@ -190,25 +182,9 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 	# no inverse — a hoisted exit 1 or broken fall-through would block
 	# every non-lintable Edit/Write with the suite green.
 	printf 'notes\n' >"$ROOT/notes.md"
-	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<"$(_payload "$ROOT/notes.md")"
-	[ "$status" -eq 0 ] || {
-		echo "non-lintable file exited $status. output: $output"
-		return 1
-	}
-	if [ -s "$SENTINEL" ]; then
-		echo "a non-lintable file produced an ack entry. sentinel: $(cat "$SENTINEL")"
-		return 1
-	fi
+	_expect_clean_passthrough "$(_payload "$ROOT/notes.md")" "non-lintable file"
 }
 
 @test "#2547 payload without file_path passes through: exit 0, NO sentinel" {
-	run env HOOK_ACK_BATS_SKIP=0 bash "$HOOK" <<<'{}'
-	[ "$status" -eq 0 ] || {
-		echo "empty payload exited $status. output: $output"
-		return 1
-	}
-	if [ -s "$SENTINEL" ]; then
-		echo "an empty payload produced an ack entry. sentinel: $(cat "$SENTINEL")"
-		return 1
-	fi
+	_expect_clean_passthrough '{}' "empty payload"
 }

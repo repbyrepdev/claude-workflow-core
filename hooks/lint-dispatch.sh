@@ -10,16 +10,16 @@ set -u
 # This dispatcher spawns once, picks the linter by extension + path,
 # then delegates the same lint-log-append + advisory-stderr behavior.
 #
-# Drift guard: bats `lint-dispatch.bats` pins 5 of the 6 ack-routing
-# sites — shellcheck fail, shfmt auto-fixed, shfmt auto-fix-failed,
-# yamllint fail, actionlint fail; the shellcheck-CRASH arm needs an
-# input that crashes the linter itself and is exercised only in
-# production. (#2547 — the prior comment claimed full coverage for 20+
-# versions while no bats existed at all.) If you add a new file type,
-# add a `case` arm + a bats test, and keep the `# enforcement:`
-# declaration honest (event-frontmatter-check.sh gates its presence at
-# commit; .claude/tests/_lib/event-frontmatter-audit.bats audits the
-# routing).
+# Drift guard: the reason-string list below (v4.28-W3-C block) is the
+# SINGLE enumeration of ack-routing call sites — bats `lint-dispatch
+# .bats` pins every arm except shellcheck-CRASH, which needs an input
+# that crashes the linter itself (#2574; exercised only in production).
+# (#2547 — the prior comment claimed full coverage for 20+ versions
+# while no bats existed; r8 caught THIS header keeping a second,
+# already-diverged copy of the same list.) New file type: add a `case`
+# arm + a bats test + a reason-string entry, and keep `# enforcement:`
+# honest (event-frontmatter-check.sh gates its presence at commit;
+# .claude/tests/_lib/event-frontmatter-audit.bats audits the routing).
 #
 # Registered via ~/.claude/settings.json hooks.PostToolUse matcher=
 # Edit|Write|MultiEdit (ONE entry replacing the prior 3).
@@ -46,6 +46,8 @@ fi
 # outcome that requires operator eyes appends to the sentinel — concrete
 # reason strings used by current call sites:
 #   - shellcheck: "fail-N-issues"      (linter found issues)
+#   - shellcheck: "crashed-upstream-bug" (linter itself crashed; the one
+#     arm without a bats pin — #2574)
 #   - shfmt:      "auto-fixed"         (shfmt -w rewrote the file)
 #   - shfmt:      "auto-fix-failed"    (shfmt -d showed drift but -w failed)
 #   - actionlint: "fail-N-issues"

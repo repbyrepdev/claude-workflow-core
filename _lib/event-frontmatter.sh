@@ -24,6 +24,7 @@ set -u
 #       hooks must classify ($EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS)
 #   event_frontmatter_enforcement_valid <value>  — exit 0 iff enforce|inform
 #   event_frontmatter_enforcement <hook_path>  — validated value in one call
+#       (rc 1 absent/invalid — policy; rc 2 parse/I-O failure — loud)
 #   event_frontmatter_hook_routes <hook_path>  — exit 0 iff a non-comment
 #       blocking call exists (the MEANING of enforce — #2547)
 #   event_frontmatter_registered_hooks <dir>  — registered universe, one
@@ -167,19 +168,25 @@ event_frontmatter_hook_routes() {
 
 # Convenience composition for callers wanting the validated value in one
 # call (today: the by-name pin test; the intended #2566 installer-migration
-# consumers): emits enforce|inform, rc 1 on absent OR out-of-vocabulary —
-# BOTH failure paths test-pinned. Callers already holding parse output
-# should read its 4th line + the predicate instead of re-reading the
-# header. Reads parse output line-by-line per the header contract (phase1
-# r5: the earlier comment claimed the array idiom and misnamed callers).
+# consumers): emits enforce|inform. Failure modes (phase1 r8: enumerate
+# them ALL, and split policy from I/O per the repo's rc-1-vs-2 lib
+# convention — resolve-plugin-helper.sh's "hard error must not mask as
+# benign not-found"):
+#   rc 1 — directive absent OR value out of vocabulary (policy verdict)
+#   rc 2 — parse/I-O failure, named loudly on stderr (NOT a verdict)
+# Callers already holding parse output should read its 4th line + the
+# predicate instead of re-reading the header. Reads parse output
+# line-by-line per the header contract.
 event_frontmatter_enforcement() {
 	local hook="$1" _parse_out val
 	_parse_out=$(event_frontmatter_parse "$hook") || {
-		# phase1 r7 silent-failure-hunter: a bare rc 1 here laundered an
-		# I/O failure into an "unclassified" policy verdict — every sibling
-		# parse consumer is loud; this was the one mute path.
+		# phase1 r7 silent-failure-hunter: a bare rc laundered an I/O
+		# failure into an "unclassified" policy verdict. Loud + rc 2 —
+		# every classification-pipeline consumer is loud (the SessionStart
+		# wiring checker's 2>/dev/null skip is its documented fail-soft
+		# advisory exception, phase1 r8 comment-analyzer).
 		echo "event_frontmatter_enforcement: PARSE FAILURE: $hook (unreadable?)" >&2
-		return 1
+		return 2
 	}
 	{
 		read -r _
@@ -211,18 +218,30 @@ event_frontmatter_enforcement() {
 # mid-record silently shifts every consumer's columns.
 event_frontmatter_registered_hooks() {
 	local dir="$1" f base _parse_out event auto enforcement
-	if [ ! -d "$dir" ] || [ ! -r "$dir" ]; then
-		# phase1 r6+r7 silent-failure-hunter (both verified): a mistyped OR
-		# permission-denied dir read as rc 0 + empty — the maximal shrunken
-		# universe passing as clean, exactly what this contract forbids
-		# per-file. The r6 guard caught only the missing half; a chmod-000
-		# EXISTING dir still glob-failed straight to return 0.
+	if [ ! -d "$dir" ] || [ ! -r "$dir" ] || [ ! -x "$dir" ]; then
+		# phase1 r6+r7+r8 (each verified): missing, unreadable, and
+		# unsearchable dirs each read as rc 0 + empty — the maximal
+		# shrunken universe passing as clean. The attribute list kept
+		# accreting one axis per round (r8 code-reviewer), so the
+		# STRUCTURAL closure lives below: a glob-expanded name that cannot
+		# be stat'd refuses loudly, whatever the cause. This preflight
+		# remains for the clearer early message.
 		echo "event_frontmatter_registered_hooks: NOT A READABLE DIRECTORY: $dir — refusing an empty universe" >&2
 		return 1
 	fi
 	for f in "$dir"/*.sh; do
-		[ -e "$f" ] || continue # nullglob-safe: literal pattern on empty dir
-		base="${f##*/}"         # param expansion per the file's own no-fork convention
+		if [ ! -e "$f" ]; then
+			# The one benign case: an empty dir leaves the glob literal.
+			# Anything else — a dangling symlink, a name stat blocked by a
+			# permission axis the preflight missed — is a per-file shrink
+			# and refuses loudly (phase1 r8: '[ -e ] || continue' carried
+			# two incompatible meanings; SFH reproduced a dangling *.sh
+			# symlink silently vanishing from the honesty audits).
+			[ "$f" = "$dir/*.sh" ] && continue
+			echo "event_frontmatter_registered_hooks: CANNOT STAT: $f (dangling symlink? blocked axis?) — refusing a shrunken universe" >&2
+			return 1
+		fi
+		base="${f##*/}" # param expansion per the file's own no-fork convention
 		event_frontmatter_skip_basename "$base" && continue
 		if ! _parse_out=$(event_frontmatter_parse "$f"); then
 			echo "event_frontmatter_registered_hooks: PARSE FAILURE: $f (unreadable?) — refusing a shrunken universe" >&2

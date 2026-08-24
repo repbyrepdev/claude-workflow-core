@@ -36,9 +36,28 @@ teardown() {
 _classification_required_hooks() {
 	local list f event enf
 	list=$(event_frontmatter_registered_hooks "$1") || return 1
-	[ -n "$list" ] || return 0
+	# No [ -n ] guard needed (phase1 r8 code-simplifier, verified): an empty
+	# list feeds one all-empty record, the required-filter rejects "", and
+	# the trailing return 0 normalizes the loop's rc.
 	while IFS=$'\t' read -r f event enf; do
 		event_frontmatter_enforcement_required "$event" && printf '%s\t%s\n' "$f" "$enf"
+	done <<<"$list"
+	return 0
+}
+
+# Discover + guard + filter in one call (phase1 r8 code-simplifier: the
+# pipeline was spelled out five times with interchangeable messages).
+# $1 = hooks dir, $2 = enforcement value to keep (enforce|inform|any).
+# Emits matching paths one per line; rc 1 (already-loud) on discovery
+# failure.
+_hooks_with_enforcement() {
+	local list f enf
+	list=$(_classification_required_hooks "$1") || return 1
+	while IFS=$'\t' read -r f enf; do
+		[ -z "$f" ] && continue
+		if [ "$2" = "any" ] || [ "$enf" = "$2" ]; then
+			printf '%s\n' "$f"
+		fi
 	done <<<"$list"
 	return 0
 }
@@ -67,13 +86,10 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 }
 
 @test "#2547 every enforce-classified hook routes via a non-comment blocking call" {
-	local list f enf unrouted=""
-	list=$(_classification_required_hooks "$HOOKS_DIR") || {
-		echo "discovery failed — see parse failure above"
-		return 1
-	}
-	while IFS=$'\t' read -r f enf; do
-		[ "$enf" = "enforce" ] || continue
+	local list f unrouted=""
+	list=$(_hooks_with_enforcement "$HOOKS_DIR" enforce) || return 1
+	while IFS= read -r f; do
+		[ -z "$f" ] && continue
 		_hook_routes "$f" || unrouted="$unrouted ${f##*/}"
 	done <<<"$list"
 	[ -z "$unrouted" ] || {
@@ -87,13 +103,10 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 	# one-directional — a hook_ack_append landing in an inform hook without
 	# reclassification would start blocking tool calls while its header
 	# still claims advisory, and every test stayed green.
-	local list f enf lying=""
-	list=$(_classification_required_hooks "$HOOKS_DIR") || {
-		echo "discovery failed — see parse failure above"
-		return 1
-	}
-	while IFS=$'\t' read -r f enf; do
-		[ "$enf" = "inform" ] || continue
+	local list f lying=""
+	list=$(_hooks_with_enforcement "$HOOKS_DIR" inform) || return 1
+	while IFS= read -r f; do
+		[ -z "$f" ] && continue
 		if _hook_routes "$f"; then
 			lying="$lying ${f##*/}"
 		fi
@@ -206,6 +219,9 @@ FIXEOF
 }
 
 @test "#2547 an unreadable hook fails the audit LOUDLY, never a vacuous pass" {
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "relies on DAC perms, which root (uid 0) bypasses"
+	fi
 	mkdir -p "$TEST_TMP/hooks"
 	printf '#!/bin/bash\nset -u\n# event: PostToolUse\nexit 0\n' >"$TEST_TMP/hooks/dark.sh"
 	chmod 000 "$TEST_TMP/hooks/dark.sh"
@@ -274,6 +290,9 @@ FIXEOF
 }
 
 @test "#2547 emitter refuses an UNREADABLE (perm-denied) directory loudly" {
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "relies on DAC perms, which root (uid 0) bypasses"
+	fi
 	# phase1 r7 silent-failure-hunter (verified): chmod-000 on an EXISTING
 	# dir still glob-failed straight to rc 0 — the r6 guard caught only the
 	# missing-dir half.
@@ -288,6 +307,70 @@ FIXEOF
 	}
 	[[ $output == *"NOT A READABLE DIRECTORY"* ]] || {
 		echo "no loud diagnostic for the unreadable directory. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 emitter refuses a READ-ONLY (no-search, mode 444) directory loudly" {
+	# phase1 r8, code-reviewer + silent-failure-hunter independently
+	# (verified): readable-but-unsearchable passed the r7 guard, the glob
+	# expanded to real names, every stat failed, and the loop fell through
+	# to a clean empty universe. The structural closure is the loud
+	# CANNOT-STAT branch; the -x preflight gives the earlier message.
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "relies on DAC perms, which root (uid 0) bypasses"
+	fi
+	mkdir -p "$TEST_TMP/rodir/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\nexit 0\n' >"$TEST_TMP/rodir/hooks/h.sh"
+	chmod 444 "$TEST_TMP/rodir/hooks"
+	run event_frontmatter_registered_hooks "$TEST_TMP/rodir/hooks"
+	chmod 755 "$TEST_TMP/rodir/hooks"
+	[ "$status" -ne 0 ] || {
+		echo "a read-only (no-search) directory read as a clean empty universe (rc=0)"
+		return 1
+	}
+	[[ $output == *"NOT A READABLE DIRECTORY"* || $output == *"CANNOT STAT"* ]] || {
+		echo "no loud diagnostic for the unsearchable directory. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 a DANGLING *.sh symlink refuses loudly (no silent per-file drop)" {
+	# phase1 r8 silent-failure-hunter (verified): a hook deployed as a
+	# symlink whose target vanished disappeared from the honesty audits
+	# with everything green — the '[ -e ] || continue' sentinel conflated
+	# empty-dir with cannot-stat.
+	mkdir -p "$TEST_TMP/symdir"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# enforcement: inform — fixture\nexit 0\n' >"$TEST_TMP/symdir/real.sh"
+	ln -s "$TEST_TMP/symdir/vanished-target" "$TEST_TMP/symdir/ghost.sh"
+	run event_frontmatter_registered_hooks "$TEST_TMP/symdir"
+	[ "$status" -ne 0 ] || {
+		echo "a dangling symlink was silently dropped from the universe (rc=0). output: $output"
+		return 1
+	}
+	[[ $output == *"CANNOT STAT"* ]] || {
+		echo "no loud diagnostic for the dangling symlink. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 accessor parse failure: rc 2 + loud PARSE FAILURE (not a policy verdict)" {
+	# phase1 r8, code-reviewer + pr-test-analyzer: the r7 stderr add went
+	# unpinned, and rc 1 conflated I/O failure with the two policy
+	# verdicts — the repo's lib convention splits them 1-vs-2.
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "relies on DAC perms, which root (uid 0) bypasses"
+	fi
+	mkdir -p "$TEST_TMP/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# enforcement: enforce — x\nexit 0\n' >"$TEST_TMP/hooks/sealed.sh"
+	chmod 000 "$TEST_TMP/hooks/sealed.sh"
+	run event_frontmatter_enforcement "$TEST_TMP/hooks/sealed.sh"
+	[ "$status" -eq 2 ] || {
+		echo "parse/I-O failure did not return rc 2 (got $status) — laundered into a policy verdict"
+		return 1
+	}
+	[[ $output == *"PARSE FAILURE"* ]] || {
+		echo "no loud diagnostic on the accessor's I/O path. output: $output"
 		return 1
 	}
 }
