@@ -131,11 +131,19 @@ for f in "$@"; do
 		# as the event requirement itself (phase1 r1 code-reviewer: a
 		# bats-only check fires long after an unclassified hook lands;
 		# this gate is where "cannot land unclassified" is actually true).
+		# The value + vocabulary live in event_frontmatter_enforcement
+		# (SSOT — phase1 r2: four hand-rolled grep sites had already
+		# diverged from a one-file-edit promise). An out-of-vocabulary
+		# value ("advisory") is unclassified, not a pass.
 		#   enforce — the hook blocks on violation via a routed mechanism
 		#   inform  — advisory by documented design (say why)
+		# ENFORCEMENT_FRONTMATTER_SKIP=1 bypasses ONLY this rule (phase1
+		# r2 code-reviewer: the whole-gate EVENT_FRONTMATTER_SKIP was the
+		# only escape, disabling the original event check with it).
 		if [ "$event" = "PostToolUse" ]; then
-			if ! head -n "$(event_frontmatter_scan_window)" "$f" |
-				grep -qE '^# enforcement: (enforce|inform)( |$)'; then
+			if [ "${ENFORCEMENT_FRONTMATTER_SKIP:-}" = "1" ]; then
+				echo "event-frontmatter-check: SKIP enforcement classification via ENFORCEMENT_FRONTMATTER_SKIP=1 for $f" >&2
+			elif ! event_frontmatter_enforcement "$f" >/dev/null; then
 				ENF_FAILED+=("$f")
 			fi
 		fi
@@ -144,6 +152,10 @@ for f in "$@"; do
 	FAILED+=("$f")
 done
 
+# Report EVERY failure class before the single exit (phase1 r2, three
+# reviewers independently: an early exit hid the second class until a
+# follow-up commit attempt — a two-pass fix cycle; rc stays fail-closed).
+rc=0
 if [ "${#ENF_FAILED[@]}" -gt 0 ]; then
 	echo "event-frontmatter-check: ${#ENF_FAILED[@]} PostToolUse hook(s) lack the #2547 enforce-vs-inform classification:" >&2
 	for f in "${ENF_FAILED[@]}"; do
@@ -154,13 +166,14 @@ if [ "${#ENF_FAILED[@]}" -gt 0 ]; then
 Add to the file's first $(event_frontmatter_scan_window) lines (after the matcher line):
   # enforcement: enforce — <how it blocks: hook-ack routing / decision:block>
   # enforcement: inform — <why advisory is the deliberate design>
+(The vocabulary is closed: values other than enforce|inform are refused.)
 
 An 'enforce' hook must actually route its failures (hook_ack_append, or a
 decision:block JSON response) — posttooluse-enforcement-contract.bats pins
 that; this gate pins that the classification EXISTS.
-Bypass: EVENT_FRONTMATTER_SKIP=1 git commit ...
+Bypass (this rule only): ENFORCEMENT_FRONTMATTER_SKIP=1 git commit ...
 EOF
-	exit 1
+	rc=1
 fi
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
@@ -184,7 +197,7 @@ Either fix the file(s) above or use an opt-out form:
   - add `# auto-register: false` to the first 30 lines — explicit opt-out
 Bypass: EVENT_FRONTMATTER_SKIP=1 git commit ...
 EOF
-	exit 1
+	rc=1
 fi
 
-exit 0
+exit "$rc"

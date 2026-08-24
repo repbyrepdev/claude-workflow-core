@@ -132,7 +132,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "yamllint failure exited 0. output: $output"
 		return 1
 	}
-	grep -qE "	lint-dispatch\.yamllint	fail-[0-9]+-issues	" "$SENTINEL" || {
+	_sentinel_has yamllint 'fail-[0-9]+-issues' || {
 		echo "sentinel lacks the yamllint fail entry. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}
@@ -146,7 +146,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "actionlint failure did not exit 1 (got $status). output: $output"
 		return 1
 	}
-	grep -qE "	lint-dispatch\.actionlint	fail-[0-9]+-issues	" "$SENTINEL" || {
+	_sentinel_has actionlint 'fail-[0-9]+-issues' || {
 		echo "sentinel lacks the actionlint fail entry. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}

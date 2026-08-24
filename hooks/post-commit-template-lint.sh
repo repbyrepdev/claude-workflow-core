@@ -2,7 +2,7 @@
 set -u
 # event: PostToolUse
 # matcher: Bash
-# enforcement: inform — deliberate warn-only (the git-commit wrapper is the fail-closed path, see header)
+# enforcement: inform — deliberate warn-only; the git-commit wrapper fails closed for Copilot-drafted messages, operator-supplied stay warn-only by design (see header)
 # v4.24 (#597) — PostToolUse hook: lint just-made commit message against
 # .github/commit-template.yml schema. Non-blocking: emits stderr warning on
 # drift so the next commit can fix. Does NOT block or rewrite commits.

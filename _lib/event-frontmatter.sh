@@ -19,6 +19,8 @@ set -u
 #   event_frontmatter_parse <hook_path>  — emit 3 lines: event\nmatcher\nauto_register
 #   event_frontmatter_event_valid <event>  — exit 0 if event in valid set
 #   event_frontmatter_scan_window  — number of header lines to scan (30)
+#   event_frontmatter_enforcement <hook_path>  — emit enforce|inform, rc 1 if
+#       absent or out-of-vocabulary (#2547; PostToolUse classification)
 
 # Pipe-alternation, single source of truth for both internal `[[ =~ ]]` matching
 # AND consumer interpolation (event-frontmatter-check.sh's error-message hint).
@@ -106,6 +108,41 @@ event_frontmatter_parse() {
 event_frontmatter_event_valid() {
 	local event="$1"
 	[[ "|$EVENT_FRONTMATTER_VALID_EVENTS|" == *"|$event|"* ]]
+}
+
+# #2547: the enforce-vs-inform classification directive for PostToolUse
+# hooks. Emits the classification value ("enforce" or "inform") on stdout
+# and returns 0 when a valid `# enforcement:` line exists in the scan
+# window; emits nothing and returns 1 when the directive is absent OR
+# carries an unknown value — the vocabulary is CLOSED, so a typo like
+# "advisory" reads as unclassified rather than silently passing (phase1
+# r2 pr-test-analyzer: the enum boundary must refuse, not just presence).
+# One accessor replacing four hand-rolled `head | grep` sites (phase1 r2,
+# code-reviewer + code-simplifier independently): the commit gate and the
+# live-tree audit both read THIS definition.
+event_frontmatter_enforcement() {
+	local hook="$1" window _header line val
+	window=$(event_frontmatter_scan_window)
+	if ! _header=$(head -n "$window" "$hook" 2>/dev/null); then
+		return 1
+	fi
+	while IFS= read -r line; do
+		case "$line" in
+		"# enforcement:"*)
+			val="${line#"# enforcement:"}"
+			val="${val#"${val%%[![:space:]]*}"}" # ltrim
+			val="${val%%[[:space:]]*}"           # first word; the — reason is prose
+			case "$val" in
+			enforce | inform)
+				printf '%s\n' "$val"
+				return 0
+				;;
+			esac
+			return 1
+			;;
+		esac
+	done <<<"$_header"
+	return 1
 }
 
 # Events that don't accept a matcher per Claude Code spec — passing a matcher

@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # enforcement: inform — directive injection (de-registered 2026-08-24, see #2564)
+# auto-register: false  # de-registered 2026-08-24 (see 2564): assumed synchronous Agent returns; the installer must NOT re-wire it
 # v4.15.G #495 — PostToolUse hook: Phase 1 agent return → log-now reminder.
 
 # v4.15.R: unconditional debug log of hook firing — `|| true` keeps strict
