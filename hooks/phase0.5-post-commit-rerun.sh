@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — orchestration re-fire; failures surface via the phase0.5 gate itself
 # v4.28-W3-C — auto-fire phase0.5-copilot-prefilter.sh after every
 # `git commit` so the next round/CR-CLI/launcher invocation isn't
 # blocked by phase0.5-before-phase1.sh / phase0.5-before-cr.sh demanding

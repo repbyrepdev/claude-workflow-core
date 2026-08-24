@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — state persistence infrastructure, no verdicts
 # v4.26 (#626) — PostToolUse hook: persist mid-PR state for compaction resilience.
 #
 # Maintains .claude/.session-state/ (gitignored) so a post-compact session can

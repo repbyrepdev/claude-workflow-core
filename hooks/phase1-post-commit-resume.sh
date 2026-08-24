@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — orchestration resume; the stage gates enforce
 # v4.15.H #496 — PostToolUse hook: post-commit of workflow-infra files
 # mid-dogfood → resume-loop reminder.
 

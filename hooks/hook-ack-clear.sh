@@ -7,6 +7,7 @@ set -u
 # branch, mv || exit 1. set -u remains to catch unset-variable typos.
 # event: PostToolUse
 # matcher: Read
+# enforcement: inform — the ack-clearing infrastructure itself; must never self-block
 # v4.28-W3-C — clears hook-output-pending sentinel entries when the
 # operator Reads the affected file. Pairs with hook-ack.sh + the
 # universal stale-state-gate.sh (PreToolUse Bash/Edit blocker).

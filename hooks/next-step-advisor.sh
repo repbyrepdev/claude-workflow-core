@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — advisory context injection only
 # PostToolUse hook: tell Claude what the default next action is after a transition.
 #
 # This is guidance for CLAUDE to auto-continue — NOT a menu shown to the user.
