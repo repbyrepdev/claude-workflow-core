@@ -1229,7 +1229,11 @@ _phase2_branch_run_count() {
 	# run's log entry (it drops from the count), but the effect is benign:
 	# the cap engages one round later (the rewritten commit re-logs its own
 	# phase2 run) and NEVER wrong-advances.
-	p2runs=$(jq -rs --arg shas "$branch_shas" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
+	# phase2 r3 (major): reconcile rows are SYNTHESIZED (source:
+	# "phase2-cache-reconcile") — they spend nothing and must not count as
+	# CR-CLI runs, or the cap engages early and eats a round the operator
+	# never got.
+	p2runs=$(jq -rs --arg shas "$branch_shas" '($shas | split("\n") | map(select(length > 0))) as $bs | [.[] | select((.source // "") != "phase2-cache-reconcile") | select((.sha // "") as $s | ($s | length > 0) and ($bs | any(startswith($s))))] | length' "$cr_log" 2>"$p2runs_err_file") || p2runs_rc=$?
 	if [ "$p2runs_rc" -ne 0 ]; then
 		echo "ship-pr-cycle: ERROR: phase2 round-cap — jq failed (rc=$p2runs_rc) counting CR-CLI runs in $cr_log: $(cat "$p2runs_err_file" 2>/dev/null)" >&2
 		rm -f "$p2runs_err_file"

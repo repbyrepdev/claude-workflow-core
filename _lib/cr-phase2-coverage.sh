@@ -32,10 +32,13 @@ _cr_phase2_branch_graduation() {
 	# without spending another review, so the enforced round cap turned the
 	# normal terminal state (final in-budget round found trivia → you fixed
 	# it) into a routine emergency override. GRADUATION closes that: HEAD
-	# with NO row of its own is clean when the newest COMPLETED review among
-	# THIS branch's commits (BASE_BRANCH..HEAD — the same per-branch scope
-	# the round cap counts, #2354) passes the identical completeness rules
-	# AND its findings are covered by branch-scoped prove-yourself records.
+	# with NO row of its own is clean when the NEWEST branch review row
+	# (BASE_BRANCH..HEAD — the same per-branch scope the round cap counts,
+	# #2354) ITSELF satisfies the completeness rules AND its findings are
+	# covered by branch-scoped prove-yourself records. Deliberately no
+	# search backward for an older completed row (phase2 r3 pinned the
+	# wording): a NEWER killed/partial run blocks graduation — the newest
+	# evidence wins, incomplete newest evidence is refusal.
 	# Positive evidence is still the rule: no branch row, a killed/partial
 	# row, or an uncovered count all refuse exactly as before, and the
 	# unreviewed fix-delta defers to the authoritative server-side CR-in-CI

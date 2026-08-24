@@ -498,10 +498,12 @@ _log_partial_only() {
 # under a new one), so strictly sha-scoped evidence made every post-cap fix
 # require the audited override — rejections covered in place, fixes were
 # punished (operator-flagged design bug). Graduation: HEAD with NO row is
-# clean iff the newest COMPLETED review among BASE_BRANCH..HEAD passes the
-# same completeness rules AND its findings are covered by branch-scoped
-# records. These tests build a real git repo in TEST_TMP (the helper anchors
-# git to repo_root, never the bats cwd).
+# clean iff the NEWEST branch review row (BASE_BRANCH..HEAD) ITSELF passes
+# the completeness rules AND its findings are covered by branch-scoped
+# records — deliberately no backward search for an older completed row: a
+# newer killed run blocks graduation (phase2 r3 pinned this wording). These
+# tests build a real git repo in TEST_TMP (the helper anchors git to
+# repo_root, never the bats cwd).
 
 _grad_repo() {
 	# main + branch with two commits; REVIEWED=first branch commit,

@@ -742,3 +742,25 @@ _seed_cache_detail() {
 		return 1
 	}
 }
+@test "#2545 reconcile rows do NOT count toward the round cap" {
+	# phase2 r3 (major): a synthesized source:"phase2-cache-reconcile" row
+	# spends nothing — counting it engages the cap early and eats a round
+	# the operator never got. One real run + one reconcile row must read as
+	# round 1, not 2.
+	_seed_stage phase2
+	_seed_log 1
+	printf '{"sha":"%s","findings":2,"complete":true,"source":"phase2-cache-reconcile"}\n' \
+		"$SHA_SHORT" >>"$ROOT/.claude/logs/cr-local-review.jsonl"
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "next failed (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"phase2 round 1/3"* ]] || {
+		echo "reconcile row inflated the round count. output: $output"
+		return 1
+	}
+	[ "$(_cur_stage)" = phase2 ]
+}
