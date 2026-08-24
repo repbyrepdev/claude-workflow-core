@@ -499,7 +499,11 @@ if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 	_ppg_skip_lib="$PPG_DIR/../_lib/pipeline-skip.sh"
 	if [ -r "$_ppg_skip_lib" ]; then
 		# shellcheck source=../_lib/pipeline-skip.sh
-		. "$_ppg_skip_lib" 2>/dev/null || true
+		# Source failures surface distinctly (phase2 r2: 2>/dev/null || true
+		# swallowed them into the generic 'unavailable' fallback below —
+		# a broken lib and an absent lib are different repairs).
+		. "$_ppg_skip_lib" ||
+			echo "pre-push-pipeline-gate: WARN: sourcing _lib/pipeline-skip.sh returned non-zero — bypass will fall back to the UNLOGGED warning" >&2
 	fi
 	if command -v pipeline_skip_log >/dev/null 2>&1; then
 		pipeline_skip_log "pre-push" || true

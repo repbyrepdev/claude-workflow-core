@@ -1918,9 +1918,18 @@ EOF
 				# truthful here: the cached count only exists because a
 				# genuinely COMPLETED review of this identical content ran
 				# (phase2_review_cache_put fires on completed runs only).
-				jq -nc --arg s "$hs" --argjson f "$findings" \
-					'{sha:$s, findings:$f, complete:true, source:"phase2-cache-reconcile"}' >>"$_crlog" 2>/dev/null ||
-					echo "ship-pr-cycle: WARN: cache-hit cr-local-review reconcile failed for $hs" >&2
+				# phase2 r2: capture jq's stderr for the WARN (the file's
+				# tempfile idiom) — a reconcile failure that hides its cause
+				# leaves the operator diagnosing a deadlock blind.
+				local _rec_err_file _rec_err=""
+				_rec_err_file=$(mktemp -t ship-cycle-p2-reconcile-err.XXXXXX) || _rec_err_file=""
+				if ! jq -nc --arg s "$hs" --argjson f "$findings" \
+					'{sha:$s, findings:$f, complete:true, source:"phase2-cache-reconcile"}' \
+					>>"$_crlog" 2>"${_rec_err_file:-/dev/null}"; then
+					[ -n "$_rec_err_file" ] && _rec_err=$(cat "$_rec_err_file" 2>/dev/null)
+					echo "ship-pr-cycle: WARN: cache-hit cr-local-review reconcile failed for $hs: ${_rec_err:-<no stderr>}" >&2
+				fi
+				rm -f "$_rec_err_file"
 			fi
 			if cr_phase2_clean_for_sha "$hs"; then
 				_set_stage "push"
