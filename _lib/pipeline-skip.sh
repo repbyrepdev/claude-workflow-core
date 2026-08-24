@@ -27,12 +27,16 @@ pipeline_skip_log() {
 	mkdir -p "$(dirname "$skip_log")" 2>/dev/null || true
 	branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 	sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$sha" \
+	# `2>&1 >>"$skip_log"`: jq's stderr is captured for the diagnostic while
+	# its stdout appends to the log — the failure message reports the ACTUAL
+	# error instead of guessed causes (phase2 r1 on this branch).
+	local _psl_err
+	_psl_err=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$sha" \
 		--arg branch "$branch" --arg reason "${PIPELINE_GATE_SKIP_REASON:-}" \
 		--arg gate "$gate" \
 		'{ts: $ts, sha: $sha, branch: $branch, reason: $reason, gate: $gate}' \
-		>>"$skip_log" 2>/dev/null || {
-		echo "pipeline_skip_log: audit append FAILED for gate=$gate — override proceeding UNLOGGED (jq missing? $skip_log unwritable?)" >&2
+		2>&1 >>"$skip_log") || {
+		echo "pipeline_skip_log: audit append FAILED for gate=$gate — override proceeding UNLOGGED (target=$skip_log): ${_psl_err:-<no stderr>}" >&2
 		return 1
 	}
 }

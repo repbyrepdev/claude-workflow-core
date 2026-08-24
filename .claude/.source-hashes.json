@@ -40,7 +40,7 @@
     "_lib/phase05-dedupe.sh": "a47ccecf75ee51c2b2eba137fa1559d5347f939264201caae4fe76c98516940b",
     "_lib/phase1-agent-prompt.sh": "13408a8e02a048f4d8ab9de45f8ef41efa81105db8a4bf8031c1852db1f86aad",
     "_lib/phase1-round-coverage.sh": "4db9f0f5a7e52ab47e9ff2517a1b17d20df7f614c1d6c3e2ad31747ea574820a",
-    "_lib/pipeline-skip.sh": "016a4c8dac74846576fd0c58e34326c10187b0b9724e3e87cb87c9e14e09a750",
+    "_lib/pipeline-skip.sh": "454e45e8e080a8e271f99735851a8b3232d74b8b9a62548b380110092f4ea55c",
     "_lib/plugin-cache-resolve.sh": "1890c16b142967ab80e3c15fdb647ae5585f39da6323a42b6a8a20bbf6f36b1d",
     "_lib/post-commit-detect.sh": "40bb9e1c9d303e6e8ca1820acdb763dcc6d7d3c606dad0811fc57db42074266b",
     "_lib/repo-guard.sh": "66f8f7bc2f50798be6aabd6a8c0ca0abc8adf6a7bec9e2ef2cf0043d835296b5",
