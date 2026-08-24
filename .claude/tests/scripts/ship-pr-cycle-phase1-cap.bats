@@ -308,12 +308,17 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	[[ $output == *"review logs vanished"* ]]
 }
 
-@test "unreadable state file with no logs refuses a vacuous zero (p2r3)" {
+@test "malformed phase1_rounds in valid state refuses a vacuous zero (p2r3, CI r1)" {
+	# The state must PARSE for _get_stage (a fully-corrupt file dies there,
+	# never reaching the counter — CI r1 caught the earlier test passing on
+	# that wrong path). A valid stage with a non-numeric rounds value drives
+	# _p1_zero_backed_by_state's strict-parse refusal for real.
 	_seed_stage_phase1
-	printf 'not json' >"$STATE_DIR/$SHA.json"
+	printf '{"version":1,"stage":"phase1","branch":"feat-2575-cap","sha":"%s","phase1_rounds":"garbage","history":[]}\n' \
+		"$SHA" >"$STATE_DIR/$SHA.json"
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
-	[ "$status" -ne 0 ]
-	[[ $output == *"cannot prove zero rounds"* ]] || [[ $output == *"ERROR"* ]]
+	[ "$status" -eq 2 ]
+	[[ $output == *"cannot prove zero rounds"* ]]
 }

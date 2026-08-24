@@ -423,3 +423,20 @@ TSTUB
 	[[ $output == *'"type":"complete"'* ]]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }
+
+@test "#2546: EMPTY CR_LOCAL_REVIEW_TIMEOUT warns and uses 3600 (not silently treated as unset)" {
+	cd "$TEST_TMP" || return 1
+	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
+shift
+exec "$@"
+TSTUB
+	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_coderabbit '{"type":"complete","findings":0}' 0
+	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT="" run "$LR" --force --base main
+	[ "$status" -eq 0 ]
+	[[ $output == *"not an integer; using 3600"* ]]
+	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
+}

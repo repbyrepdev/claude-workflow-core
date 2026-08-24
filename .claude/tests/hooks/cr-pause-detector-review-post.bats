@@ -123,6 +123,7 @@ _comments_pause_at() {
 		>"$COMMENTS_FIXTURE"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
+	[[ $output != *"auto-posted"* ]]
 	run ! grep -q "pr comment" "$GH_ARGS_LOG"
 }
 
@@ -142,6 +143,8 @@ _comments_pause_at() {
 		>"$COMMENTS_FIXTURE"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
+	[[ $output == *"not parseable by date"* ]]
+	[[ $output == *"resume ONLY"* ]]
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 }
@@ -151,5 +154,6 @@ _comments_pause_at() {
 	_comments_pause_at "2026-08-24T11:00:00Z"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
+	[[ $output == *"resume + review"* ]]
 	grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 }

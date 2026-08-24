@@ -134,7 +134,7 @@ trap 'rm -f "$TEE_OUT"' EXIT
 # (0 disables; non-integer values warn + use 3600). Prefer GNU `timeout`, fall back to
 # coreutils `gtimeout` (macOS via brew); if neither is present, run un-wrapped
 # and rely on CR's own server-side timeout event for the exit-4 signal.
-CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT:-3600}"
+CR_REVIEW_TIMEOUT="${CR_LOCAL_REVIEW_TIMEOUT-3600}"
 if ! [[ $CR_REVIEW_TIMEOUT =~ ^[0-9]+$ ]]; then
 	echo "local-review: WARN — CR_LOCAL_REVIEW_TIMEOUT='$CR_REVIEW_TIMEOUT' is not an integer; using 3600" >&2
 	CR_REVIEW_TIMEOUT=3600
