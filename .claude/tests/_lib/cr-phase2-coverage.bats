@@ -237,6 +237,48 @@ _log_partial_only() {
 	}
 }
 
+@test "#2544 an explicit partial:null is NOT clean (null != absent)" {
+	# `// false` collapsed absent and null into the same value. They mean
+	# different things: absent is an old writer predating the field, null is a
+	# writer that tried to state completion and produced nothing.
+	printf '{"sha":"abc1234","findings":0,"partial":null,"complete":true}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "an entry with partial:null was accepted as CLEAN"
+		return 1
+	}
+	[[ $output == *"no COMPLETED CR review"* ]] || {
+		echo "refused SILENTLY — operator gets no reason. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2544 an explicit timeout:null is NOT clean (null != absent)" {
+	printf '{"sha":"abc1234","findings":0,"timeout":null,"complete":true}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "an entry with timeout:null was accepted as CLEAN"
+		return 1
+	}
+	[[ $output == *"no COMPLETED CR review"* ]] || {
+		echo "refused SILENTLY — operator gets no reason. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2544 ABSENT flags stay clean (old writers remain compatible)" {
+	# The other side of has(): an entry with neither key — every pre-flag
+	# writer — must still read clean when complete:true. Without this the
+	# has() change would wall off the entire existing ledger.
+	printf '{"sha":"abc1234","findings":0,"complete":true}\n' >>"$CR_LOG"
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -eq 0 ] || {
+		echo "an entry with no partial/timeout keys was wrongly refused"
+		return 1
+	}
+	[ -z "$output" ]
+}
+
 @test "#2544 mixed flags (partial:false, timeout:true) is NOT clean" {
 	# The flags are independent: one being explicitly false must not vouch
 	# for the other. A naive `and` — or reading only the first flag — passes

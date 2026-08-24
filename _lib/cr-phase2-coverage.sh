@@ -83,8 +83,13 @@ cr_phase2_clean_for_sha() {
 	# The remaining arms are belt-and-braces for a writer that sets
 	# `complete:true` wrongly:
 	#   - partial/timeout still reject, so a salvaged-then-flagged run cannot be
-	#     coverage-cleared. `!= false` not `== true`, so a string "true" or a 1
-	#     from some future writer still trips it.
+	#     coverage-cleared. `has()` + `!= false` rather than `// false != false`:
+	#     the `//` form collapses ABSENT and explicit NULL into the same value,
+	#     but they mean different things. Absent is an old writer that predates
+	#     the field — compatible, allow. An explicit `null` is a writer that
+	#     TRIED to state completion and produced nothing, which is the same
+	#     inference error as reading findings:0 off a killed run. Reject it.
+	#     `!= false` (not `== true`) still catches a string "true" or a 1.
 	#   - `.findings` must be a real JSON *number*. A string "0" would otherwise
 	#     print bare `0`, pass the shell digit test below, and read CLEAN.
 	#   - negative findings reject, so the -1 sentinel can never be compared
@@ -99,7 +104,8 @@ cr_phase2_clean_for_sha() {
 		 | if length > 0 then
 		     (last as $l
 		      | if ($l.complete // false) != true then -1
-		        elif (($l.partial // false) != false) or (($l.timeout // false) != false)
+		        elif (($l | has("partial")) and ($l.partial != false))
+		          or (($l | has("timeout")) and ($l.timeout != false))
 		        then -1
 		        elif ($l.findings | type) != "number" then -1
 		        elif $l.findings < 0 then -1
