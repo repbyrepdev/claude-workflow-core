@@ -512,13 +512,29 @@ fi
 SKIP_LOG="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/logs/pipeline-skip.jsonl"
 if [ -f "$SKIP_LOG" ]; then
 	today=$(date -u +%Y-%m-%d)
-	# `|| true` (NOT `|| echo 0`): `grep -c` no-match outputs '0' AND exits 1.
-	# With `|| echo 0`, the fallback fires too, producing today_count='0\n0'
-	# which makes the [ ... -gt 3 ] arithmetic test below silently fail.
-	today_count=$(grep -c "\"ts\":\"$today" "$SKIP_LOG" 2>/dev/null || true)
-	if [ "${today_count:-0}" -gt 3 ]; then
+	# #2545: the log carries rows from TWO producers (pre-push bypasses and
+	# phase2 round-cap overrides — distinguished by the `gate` field; rows
+	# predating the field were all written by the pre-push hook), so the
+	# warning segments by gate rather than conflating them. ONE jq pass
+	# yields both the total and the breakdown (phase2 r2: a grep count plus
+	# a second jq scan re-read the file for numbers one pass provides);
+	# `(.ts // "")` keeps a legacy ts-less row from breaking the filter.
+	# jq absent/failing degrades to the original grep total, un-segmented
+	# (`|| true`, NOT `|| echo 0`: grep -c no-match outputs '0' AND exits 1,
+	# so an echo fallback would produce '0\n0' and break the -gt test).
+	skip_summary=$(jq -rs --arg today "$today" \
+		'[.[] | select((.ts // "") | startswith($today))] | "\(length)\t\(group_by(.gate // "pre-push") | map("\(.[0].gate // "pre-push")=\(length)") | join(", "))"' \
+		"$SKIP_LOG" 2>/dev/null || true)
+	if [ -n "$skip_summary" ]; then
+		today_count=${skip_summary%%$'\t'*}
+		gate_breakdown=${skip_summary#*$'\t'}
+	else
+		today_count=$(grep -c "\"ts\":\"$today" "$SKIP_LOG" 2>/dev/null || true)
+		gate_breakdown=""
+	fi
+	if [ "${today_count:-0}" -gt 3 ] 2>/dev/null; then
 		bits="$bits
-• ⚠ PIPELINE_GATE_SKIP used $today_count time(s) today — emergency bypass is running routine. Review whether gate thresholds need adjustment (see v4.23-A scaler) or Phase 1 discipline slipped."
+• ⚠ PIPELINE_GATE_SKIP used $today_count time(s) today${gate_breakdown:+ ($gate_breakdown)} — emergency bypass is running routine. Review whether gate thresholds need adjustment (see v4.23-A scaler) or Phase 1 discipline slipped."
 	fi
 fi
 

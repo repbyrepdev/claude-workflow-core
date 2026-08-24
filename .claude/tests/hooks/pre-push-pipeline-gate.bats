@@ -133,7 +133,7 @@ STUB
 	# resolved _lib) return CLEAN, so _cr_cli_clean_for_sha actually EXECUTES and
 	# emits its accept verdict — proving the resolved _lib is functional.
 	mkdir -p "$TMP/repo/.claude/logs"
-	printf '{"sha":"abc1234","findings":0}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"abc1234","findings":0,"complete":true}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
 	REPO_ROOT="$TMP/repo" run _cr_cli_clean_for_sha abc1234def
 	[ "$status" -eq 0 ]            # the resolved lib's fn ran and returned clean
 	[[ $output == *"accepting"* ]] # ... emitting the gate's accept verdict
@@ -155,7 +155,7 @@ STUB
 	# resolved _lib) return CLEAN, so _cr_cli_clean_for_sha actually EXECUTES and
 	# emits its accept verdict — proving the resolved _lib is functional.
 	mkdir -p "$TMP/repo/.claude/logs"
-	printf '{"sha":"abc1234","findings":0}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"abc1234","findings":0,"complete":true}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
 	REPO_ROOT="$TMP/repo" run _cr_cli_clean_for_sha abc1234def
 	[ "$status" -eq 0 ]            # the resolved lib's fn ran and returned clean
 	[[ $output == *"accepting"* ]] # ... emitting the gate's accept verdict
@@ -180,7 +180,7 @@ STUB
 	# resolved _lib) return CLEAN, so _cr_cli_clean_for_sha actually EXECUTES and
 	# emits its accept verdict — proving the resolved _lib is functional.
 	mkdir -p "$TMP/repo/.claude/logs"
-	printf '{"sha":"abc1234","findings":0}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"abc1234","findings":0,"complete":true}\n' >"$TMP/repo/.claude/logs/cr-local-review.jsonl"
 	REPO_ROOT="$TMP/repo" run _cr_cli_clean_for_sha abc1234def
 	[ "$status" -eq 0 ]            # the resolved lib's fn ran and returned clean
 	[[ $output == *"accepting"* ]] # ... emitting the gate's accept verdict
@@ -335,7 +335,7 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	c3=$(git rev-parse HEAD)
 	mkdir -p .claude/logs
 	# cr_phase2_clean_for_sha matches .sha against the 7-char short sha exactly.
-	printf '{"sha":"%s","findings":0}\n' "${c3:0:7}" >.claude/logs/cr-local-review.jsonl # Phase 2 clean seed
+	printf '{"sha":"%s","findings":0,"complete":true}\n' "${c3:0:7}" >.claude/logs/cr-local-review.jsonl # Phase 2 clean seed
 	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
 	[ "$status" -eq 0 ]
 	[[ $output == *"graduated past Phase 0.5/1"* ]] # short-circuit survived the ancestry check

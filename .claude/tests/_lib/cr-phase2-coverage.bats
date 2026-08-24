@@ -493,3 +493,132 @@ _log_partial_only() {
 		return 1
 	}
 }
+# --- #2545 branch-ancestor graduation ----------------------------------------
+# A fix commit orphans its review's sha (row under the reviewed commit, fixes
+# under a new one), so strictly sha-scoped evidence made every post-cap fix
+# require the audited override — rejections covered in place, fixes were
+# punished (operator-flagged design bug). Graduation: HEAD with NO row is
+# clean iff the NEWEST branch review row (BASE_BRANCH..HEAD) ITSELF passes
+# the completeness rules AND its findings are covered by branch-scoped
+# records — deliberately no backward search for an older completed row: a
+# newer killed run blocks graduation (phase2 r3 pinned this wording). These
+# tests build a real git repo in TEST_TMP (the helper anchors git to
+# repo_root, never the bats cwd).
+
+_grad_repo() {
+	# main + branch with two commits; REVIEWED=first branch commit,
+	# HEAD=fix commit (no row). Echoes nothing; sets G_REVIEWED / G_HEAD.
+	(
+		set -e
+		cd "$TEST_TMP"
+		git init -q
+		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init
+		git branch -M main
+		git checkout -q -b fixbranch
+		git -c user.email=t@t -c user.name=t commit --allow-empty -q -m reviewed
+	) || return 1
+	G_REVIEWED=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	(cd "$TEST_TMP" && git -c user.email=t@t -c user.name=t commit --allow-empty -q -m fixes) || return 1
+	G_HEAD=$(cd "$TEST_TMP" && git rev-parse HEAD)
+}
+
+@test "#2545 GRADUATION: covered ancestor review clears an unreviewed fix HEAD" {
+	_grad_repo
+	printf '{"sha":"%s","findings":3,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":3}\n' "$G_HEAD" >>"$AUDIT"
+	run cr_phase2_clean_for_sha "$G_HEAD"
+	[ "$status" -eq 0 ] || {
+		echo "covered ancestor did not graduate the fix HEAD. output: '$output'"
+		return 1
+	}
+	[[ $output == *"GRADUATED via branch ancestor"* ]] || {
+		echo "graduation happened silently — the operator loses the trust signal. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2545 GRADUATION refused when ancestor coverage falls short" {
+	_grad_repo
+	printf '{"sha":"%s","findings":3,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$G_HEAD" >>"$AUDIT"
+	run cr_phase2_clean_for_sha "$G_HEAD"
+	[ "$status" -ne 0 ] || {
+		echo "2-of-3 coverage graduated — the gap was waved through"
+		return 1
+	}
+	[[ $output == *"coverage is only 2"* ]] || {
+		echo "refusal does not name the coverage gap. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2545 GRADUATION refused when the only ancestor row is INCOMPLETE" {
+	# A killed run on the ancestor is not evidence — same #2544 rule.
+	_grad_repo
+	printf '{"sha":"%s","findings":0,"complete":false}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":5}\n' "$G_HEAD" >>"$AUDIT"
+	run cr_phase2_clean_for_sha "$G_HEAD"
+	[ "$status" -ne 0 ] || {
+		echo "an INCOMPLETE ancestor row graduated — #2544 laundering via the side door"
+		return 1
+	}
+	[[ $output == *"no COMPLETED CR review"* ]] || {
+		echo "expected the standard refusal. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2545 GRADUATION never bypasses a rejected row for HEAD itself" {
+	# HEAD HAS a row (incomplete) — something ran and died for THIS sha.
+	# A covered ancestor must NOT graduate around it.
+	_grad_repo
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"sha":"%s","findings":0,"complete":false}\n' "${G_HEAD:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$G_HEAD" >>"$AUDIT"
+	run cr_phase2_clean_for_sha "$G_HEAD"
+	[ "$status" -ne 0 ] || {
+		echo "a covered ancestor graduated around HEAD's own killed run"
+		return 1
+	}
+	[[ $output == *"missing complete:true"* ]] || {
+		echo "expected HEAD's own incomplete-row refusal. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2565 GRADUATION: an EARLIER round's coverage cannot pay a LATER review's debts" {
+	# CR-in-CI Major: with a branch-wide sum, records covering round 1's
+	# findings satisfied round 2's larger residual. Round 1 under the first
+	# branch commit (2 findings, covered 2 — records land under that same
+	# commit); round 2 under the child (3 findings, NO coverage). HEAD
+	# unreviewed → must refuse, naming the at-or-after gap.
+	_grad_repo
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$G_REVIEWED" >>"$AUDIT"
+	printf '{"sha":"%s","findings":3,"complete":true}\n' "${G_HEAD:0:7}" >>"$CR_LOG"
+	(cd "$TEST_TMP" && git -c user.email=t@t -c user.name=t commit --allow-empty -q -m more-fixes) || return 1
+	local head3
+	head3=$(cd "$TEST_TMP" && git rev-parse HEAD)
+	run cr_phase2_clean_for_sha "$head3"
+	[ "$status" -ne 0 ] || {
+		echo "round 1's stale coverage paid round 2's uncovered findings"
+		return 1
+	}
+	[[ $output == *"at-or-after coverage is only 0"* ]] || {
+		echo "refusal does not show the at-or-after gap. output: '$output'"
+		return 1
+	}
+}
+
+@test "#2565 GRADUATION: coverage recorded at-or-after the reviewed commit still clears" {
+	# The converse guard: scoping must not break the legitimate flow —
+	# records written while fixing (HEAD at-or-after the review) qualify.
+	_grad_repo
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${G_REVIEWED:0:7}" >>"$CR_LOG"
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$G_HEAD" >>"$AUDIT"
+	run cr_phase2_clean_for_sha "$G_HEAD"
+	[ "$status" -eq 0 ] || {
+		echo "legitimate at-or-after coverage no longer graduates. output: '$output'"
+		return 1
+	}
+}
