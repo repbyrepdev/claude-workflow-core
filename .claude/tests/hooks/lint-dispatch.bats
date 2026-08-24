@@ -86,8 +86,8 @@ _expect_clean_passthrough() {
 		echo "no sentinel entry — the failure would scroll past (the exact #2547 regression)"
 		return 1
 	}
-	_sentinel_has shellcheck "fail-2-issues" "$ROOT/bad.sh" || {
-		echo "sentinel lacks lint-dispatch.shellcheck fail-2-issues. sentinel: $(cat "$SENTINEL")"
+	_sentinel_has shellcheck "fail-[0-9]+-issues" "$ROOT/bad.sh" || {
+		echo "sentinel lacks the lint-dispatch.shellcheck fail entry. sentinel: $(cat "$SENTINEL")"
 		return 1
 	}
 }
@@ -118,6 +118,9 @@ _expect_clean_passthrough() {
 }
 
 @test "#2547 shfmt -w failure falls back to auto-fix-failed + exit 1" {
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "relies on DAC perms, which root (uid 0) bypasses"
+	fi
 	# shfmt -w replaces via rename, so blocking the DIRECTORY (not the
 	# file) is what makes -w fail while -d still reads the drift.
 	mkdir -p "$ROOT/rodir"

@@ -36,10 +36,12 @@ teardown() {
 _classification_required_hooks() {
 	local list f event enf
 	list=$(event_frontmatter_registered_hooks "$1") || return 1
-	# No [ -n ] guard needed (phase1 r8 code-simplifier, verified): an empty
-	# list feeds one all-empty record, the required-filter rejects "", and
-	# the trailing return 0 normalizes the loop's rc.
+	# No [ -n ] guard needed (phase1 r8, verified): an empty list feeds one
+	# all-empty record, skipped explicitly below (phase2 r1: the r9 domain
+	# guard made the required-predicate LOUD on non-events, so the empty
+	# record must not reach it); the trailing return 0 normalizes the rc.
 	while IFS=$'\t' read -r f event enf; do
+		[ -z "$f" ] && continue # empty universe feeds one all-empty record
 		event_frontmatter_enforcement_required "$event" && printf '%s\t%s\n' "$f" "$enf"
 	done <<<"$list"
 	return 0

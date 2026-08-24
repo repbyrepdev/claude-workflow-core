@@ -11,8 +11,8 @@ set -u
 # then delegates the same lint-log-append + advisory-stderr behavior.
 #
 # Drift guard: the reason-string list below (v4.28-W3-C block) is the
-# SINGLE enumeration of ack-routing call sites — bats `lint-dispatch
-# .bats` pins every arm except shellcheck-CRASH, which needs an input
+# SINGLE enumeration of ack-routing call sites — bats
+# `lint-dispatch.bats` pins every arm except shellcheck-CRASH, which needs an input
 # that crashes the linter itself (#2574; exercised only in production).
 # (#2547 — the prior comment claimed full coverage for 20+ versions
 # while no bats existed; r8 caught THIS header keeping a second,
