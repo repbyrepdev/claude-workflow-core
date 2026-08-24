@@ -47,7 +47,8 @@ _classification_required_hooks() {
 
 # Discover + guard + filter in one call (phase1 r8 code-simplifier: the
 # pipeline was spelled out five times with interchangeable messages).
-# $1 = hooks dir, $2 = enforcement value to keep (enforce|inform|any).
+# $1 = hooks dir, $2 = enforcement value to keep (enforce|inform — the
+# closed vocabulary; r9 dropped an unexercised any mode).
 # Emits matching paths one per line; rc 1 (already-loud) on discovery
 # failure.
 _hooks_with_enforcement() {
@@ -55,16 +56,10 @@ _hooks_with_enforcement() {
 	list=$(_classification_required_hooks "$1") || return 1
 	while IFS=$'\t' read -r f enf; do
 		[ -z "$f" ] && continue
-		if [ "$2" = "any" ] || [ "$enf" = "$2" ]; then
-			printf '%s\n' "$f"
-		fi
+		[ "$enf" = "$2" ] && printf '%s\n' "$f"
 	done <<<"$list"
 	return 0
 }
-
-# The routing predicate lives in the lib (phase1 r5: label AND meaning
-# are one SSOT now); this thin alias keeps the audit tests readable.
-_hook_routes() { event_frontmatter_hook_routes "$1"; }
 
 @test "#2547 every registered live PostToolUse hook is classified enforce or inform" {
 	local list f enf missing=""
@@ -90,7 +85,7 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 	list=$(_hooks_with_enforcement "$HOOKS_DIR" enforce) || return 1
 	while IFS= read -r f; do
 		[ -z "$f" ] && continue
-		_hook_routes "$f" || unrouted="$unrouted ${f##*/}"
+		event_frontmatter_hook_routes "$f" || unrouted="$unrouted ${f##*/}"
 	done <<<"$list"
 	[ -z "$unrouted" ] || {
 		echo "enforce-classified hook(s) with no non-comment blocking call:$unrouted"
@@ -107,7 +102,7 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 	list=$(_hooks_with_enforcement "$HOOKS_DIR" inform) || return 1
 	while IFS= read -r f; do
 		[ -z "$f" ] && continue
-		if _hook_routes "$f"; then
+		if event_frontmatter_hook_routes "$f"; then
 			lying="$lying ${f##*/}"
 		fi
 	done <<<"$list"
@@ -168,20 +163,20 @@ _hook_routes() { event_frontmatter_hook_routes "$1"; }
 	done
 }
 
-@test "#2547 _hook_routes: comment-only mention does NOT count; real calls do" {
+@test "#2547 event_frontmatter_hook_routes: comment-only mention does NOT count; real calls do" {
 	# phase1 r3 pr-test-analyzer (conf 9): the predicate had no negative
 	# fixture — losing the non-comment anchor would leave the routing audit
 	# vacuously green forever (lint-dispatch's own header mentions
 	# hook_ack_append in prose).
 	mkdir -p "$TEST_TMP/hooks"
 	printf '#!/bin/bash\nset -u\n# this hook mentions hook_ack_append only in prose\nexit 0\n' >"$TEST_TMP/hooks/prose.sh"
-	run _hook_routes "$TEST_TMP/hooks/prose.sh"
+	run event_frontmatter_hook_routes "$TEST_TMP/hooks/prose.sh"
 	[ "$status" -ne 0 ] || {
 		echo "a comment-only mention counted as routing — the vacuous pass is back"
 		return 1
 	}
 	printf '#!/bin/bash\nset -u\nhook_ack_append "x" "y" "z"\nexit 0\n' >"$TEST_TMP/hooks/real.sh"
-	run _hook_routes "$TEST_TMP/hooks/real.sh"
+	run event_frontmatter_hook_routes "$TEST_TMP/hooks/real.sh"
 	[ "$status" -eq 0 ] || {
 		echo "a real hook_ack_append call did not count as routing"
 		return 1
@@ -192,7 +187,7 @@ set -u
 printf '%s' '{"decision": "block"}'
 exit 0
 FIXEOF
-	run _hook_routes "$TEST_TMP/hooks/dec.sh"
+	run event_frontmatter_hook_routes "$TEST_TMP/hooks/dec.sh"
 	[ "$status" -eq 0 ] || {
 		echo "a decision:block response did not count as routing"
 		return 1
@@ -265,14 +260,17 @@ FIXEOF
 	# The one-call accessor's FAILURE contract (phase1 r5 pr-test-analyzer:
 	# only the positive path was pinned — deleting its validity check left
 	# every test green while it emitted raw invalid values).
+	# EXACT rc 1 (phase1 r9 pr-test-analyzer: -ne 0 let a policy verdict
+	# drift onto the rc-2 I/O path with the suite green — the 2566
+	# consumers branch on the split).
 	run event_frontmatter_enforcement "$TEST_TMP/hooks/raw.sh"
-	[ "$status" -ne 0 ] || {
-		echo "accessor accepted an out-of-vocabulary value: '$output'"
+	[ "$status" -eq 1 ] || {
+		echo "out-of-vocabulary was not the rc-1 POLICY verdict (got $status): '$output'"
 		return 1
 	}
 	run event_frontmatter_enforcement "$TEST_TMP/hooks/none.sh"
-	[ "$status" -ne 0 ] || {
-		echo "accessor accepted an absent directive: '$output'"
+	[ "$status" -eq 1 ] || {
+		echo "absent directive was not the rc-1 POLICY verdict (got $status): '$output'"
 		return 1
 	}
 }
@@ -371,6 +369,23 @@ FIXEOF
 	}
 	[[ $output == *"PARSE FAILURE"* ]] || {
 		echo "no loud diagnostic on the accessor's I/O path. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 an EMPTY readable directory is a benign rc-0 empty universe" {
+	# phase1 r9 pr-test-analyzer: only the loud half of the r8 split was
+	# pinned — deleting the literal-glob carve-out would make every fresh
+	# consumer install (empty hooks dir) refuse loudly with CANNOT STAT
+	# while the suite stayed green.
+	mkdir -p "$TEST_TMP/emptydir"
+	run event_frontmatter_registered_hooks "$TEST_TMP/emptydir"
+	[ "$status" -eq 0 ] || {
+		echo "an empty readable dir refused (rc=$status) — fresh installs would break. output: $output"
+		return 1
+	}
+	[ -z "$output" ] || {
+		echo "an empty dir emitted records: $output"
 		return 1
 	}
 }

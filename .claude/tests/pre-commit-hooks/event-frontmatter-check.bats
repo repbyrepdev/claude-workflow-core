@@ -316,3 +316,20 @@ _write_ptu_hook() {
 		return 1
 	}
 }
+
+@test "#2547 ABSOLUTE path to an unclassified plugin PostToolUse hook still fails rule (c)" {
+	# phase1 r9 pr-test-analyzer: every rule-(c) test used relative paths,
+	# so mutating the scope check from \$rel to \$f survived the suite —
+	# absolute-path invocation would silently exempt plugin hooks from the
+	# classification requirement (fail-open).
+	_write_ptu_hook "hooks/absuncls.sh" ""
+	run _run_from_tmp "$TEST_TMP/hooks/absuncls.sh"
+	[ "$status" -eq 1 ] || {
+		echo "absolute-path invocation exempted rule (c) (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"enforce-vs-inform"* ]] || {
+		echo "no classification failure for the absolute path. output: $output"
+		return 1
+	}
+}

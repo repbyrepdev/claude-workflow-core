@@ -28,7 +28,10 @@ set -u
 #   event_frontmatter_hook_routes <hook_path>  — exit 0 iff a non-comment
 #       blocking call exists (the MEANING of enforce — #2547)
 #   event_frontmatter_registered_hooks <dir>  — registered universe, one
-#       path<TAB>event<TAB>enforcement record per hook; LOUD rc 1 on parse failure
+#       path<TAB>event<TAB>enforcement record per hook; LOUD rc 1 on an
+#       unusable dir, an unstattable name, or a parse failure. (The emitter
+#       has no policy verdicts, so rc 1 is unambiguous; the accessor above
+#       reserves rc 2 for I/O precisely because ITS rc 1 is a verdict.)
 
 # Pipe-alternation, single source of truth for both internal `[[ =~ ]]` matching
 # AND consumer interpolation (event-frontmatter-check.sh's error-message hint).
@@ -137,6 +140,14 @@ EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS="PostToolUse"
 
 event_frontmatter_enforcement_required() {
 	local event="$1"
+	# Guard the argument DOMAIN (phase1 r9 code-reviewer): three siblings
+	# share the enforcement prefix with three argument kinds, and a
+	# mis-wired hook-path argument would return a quiet permissive "not
+	# required". A non-event is a caller bug — loud, not no.
+	if ! event_frontmatter_event_valid "$event"; then
+		echo "event_frontmatter_enforcement_required: not an event name: '$event' (caller bug — expected one of $EVENT_FRONTMATTER_VALID_EVENTS)" >&2
+		return 1
+	fi
 	[[ "|$EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS|" == *"|$event|"* ]]
 }
 
@@ -241,8 +252,7 @@ event_frontmatter_registered_hooks() {
 			echo "event_frontmatter_registered_hooks: CANNOT STAT: $f (dangling symlink? blocked axis?) — refusing a shrunken universe" >&2
 			return 1
 		fi
-		base="${f##*/}" # param expansion per the file's own no-fork convention
-		event_frontmatter_skip_basename "$base" && continue
+		event_frontmatter_skip_basename "${f##*/}" && continue # param expansion per the no-fork convention
 		if ! _parse_out=$(event_frontmatter_parse "$f"); then
 			echo "event_frontmatter_registered_hooks: PARSE FAILURE: $f (unreadable?) — refusing a shrunken universe" >&2
 			return 1
