@@ -381,9 +381,27 @@ TSTUB
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" run "$LR" --force --base main
 	[ "$status" -eq 0 ]
+	# User-visible success signal, not just the recorded argument (p2 CR).
+	[[ $output == *'"type":"complete"'* ]]
 	[ -f "$TIMEOUT_ARG_OUT" ]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
+}
+
+@test "#2546: CR_LOCAL_REVIEW_TIMEOUT env override reaches the timeout wrapper" {
+	# Split from the default pin (p2 CR: one run per test — a second run in
+	# the same test resets \$output and hides which invocation failed).
+	cd "$TEST_TMP" || return 1
+	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
+shift
+exec "$@"
+TSTUB
+	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_coderabbit '{"type":"complete","findings":0}' 0
+	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=42 run "$LR" --force --base main
+	[ "$status" -eq 0 ]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "42" ]
 }
 

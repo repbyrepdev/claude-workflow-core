@@ -781,4 +781,6 @@ EOF
 	_write_findings 1
 	_run_gate
 	[ "$status" -eq 2 ]
+	[[ $output == *"NOT verified clean"* ]]
+	[ ! -f "$NUDGE_MARKER" ]
 }

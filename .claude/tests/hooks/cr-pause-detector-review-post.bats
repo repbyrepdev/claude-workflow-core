@@ -88,6 +88,7 @@ _comments_pause_at() {
 	_comments_pause_at "2026-08-24T11:00:00Z"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
+	[[ $output == *"resume + review"* ]]
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 	grep -q '"review_posted":true' .claude/logs/cr-resume-fired.jsonl
@@ -110,6 +111,7 @@ _comments_pause_at() {
 	_comments_pause_at "2026-08-24T11:00:00Z" "2026-08-24T11:30:00Z"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
+	[[ $output == *"resume ONLY"* ]]
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 	grep -q '"review_posted":false' .claude/logs/cr-resume-fired.jsonl

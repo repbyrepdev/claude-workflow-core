@@ -1284,9 +1284,17 @@ _phase1_branch_round_count() {
 	local rdir="$REPO_ROOT/.claude/review-log" branch_shas
 	branch_shas=$(_p1_branch_shas) || return 2
 	if [ ! -d "$rdir" ]; then
-		# Legit first-round shape — but say so: a deleted log dir mid-branch
-		# silently reading as "no rounds" is the pre-#2575 unbounded mode.
-		echo "ship-pr-cycle: NOTE: phase1 round-cap — $rdir absent; counting 0 rounds (first round, or the log dir was removed)" >&2
+		# p2 CR: absence may only read as zero when the durable state agrees
+		# nothing was spent — state recording phase1_rounds>0 with the log
+		# dir gone means the logs VANISHED (manual cleanup, botched sync),
+		# and a silent 0 there is the pre-#2575 unbounded mode reborn.
+		local _state_rounds
+		_state_rounds=$(jq -r '.phase1_rounds // 0' "$STATE_DIR/$(_current_sha).json" 2>/dev/null || echo 0)
+		if [[ $_state_rounds =~ ^[0-9]+$ ]] && [ "$_state_rounds" -gt 0 ]; then
+			echo "ship-pr-cycle: ERROR: phase1 round-cap — $rdir absent but state records $_state_rounds phase-1 round(s) for HEAD; review logs vanished. Restore them (or reset state deliberately); refusing a vacuous zero." >&2
+			return 2
+		fi
+		echo "ship-pr-cycle: NOTE: phase1 round-cap — $rdir absent and state records 0 rounds; counting 0 (legit first round)" >&2
 		printf '0\n'
 		return 0
 	fi
@@ -1343,11 +1351,20 @@ _phase1_cap_gate() {
 	local _shas _s _sum _round _tot _cov
 	local _findings_shas=0 _covered_shas=0 _detail="" _undeterminable=""
 	_shas=$(_p1_branch_shas) || return 2
+	local _sum_rc
 	for _s in $_shas; do
 		[ -f "$REPO_ROOT/.claude/review-log/$_s.jsonl" ] || continue
-		_sum=$(phase1_round_coverage_summary "$_s" 2>/dev/null || echo "")
-		# Empty summary = no phase-1 findings rows on this sha (e.g. a
-		# phase-2-only log) — nothing to cover, walk on.
+		# p2 CR: a FAILING summary command is undeterminable, never "no
+		# rows" — collapsing it into the empty case would silently skip a
+		# sha whose coverage could not be read (fail-open by omission).
+		_sum_rc=0
+		_sum=$(phase1_round_coverage_summary "$_s" 2>/dev/null) || _sum_rc=$?
+		if [ "$_sum_rc" -ne 0 ]; then
+			_undeterminable="$_undeterminable ${_s:0:7}(summary-rc=$_sum_rc)"
+			continue
+		fi
+		# Empty summary (rc 0) = no phase-1 findings rows on this sha
+		# (e.g. a phase-2-only log) — nothing to cover, walk on.
 		[ -n "$_sum" ] || continue
 		IFS=' ' read -r _round _tot _cov <<<"$_sum"
 		if ! [[ $_tot =~ ^[0-9]+$ ]] || ! [[ $_cov =~ ^[0-9]+$ ]]; then

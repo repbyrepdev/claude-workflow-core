@@ -58,6 +58,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          # The reviewer only READS the checkout; leaving the default
+          # credential persisted in .git/config is an unnecessary token
+          # exposure to anything that touches the tree (p2 CR).
+          persist-credentials: false
 
       - name: Claude fresh-context review
         if: steps.gate.outputs.active == 'true'
@@ -106,8 +110,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          n=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews" --paginate \
-            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and .commit_id == \"${HEAD_SHA}\")] | length")
+          # jq -s 'add' merges --paginate's per-page arrays BEFORE counting
+          # (per-page --jq would emit one count per page and break the -lt).
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews" --paginate |
+            jq -s "add // [] | [.[] | select(.user.login == \"github-actions[bot]\" and .commit_id == \"${HEAD_SHA}\")] | length")
           if [ "${n:-0}" -lt 1 ]; then
             echo "::error::claude-review ran but NO github-actions[bot] review exists for head ${HEAD_SHA}. Likely causes: repo setting 'Allow GitHub Actions to create and approve pull requests' is OFF (#2571), or the reviewer submitted nothing."
             exit 1
