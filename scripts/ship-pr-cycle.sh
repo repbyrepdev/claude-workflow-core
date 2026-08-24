@@ -1247,6 +1247,105 @@ _phase2_branch_run_count() {
 	printf '%s\n' "$p2runs"
 }
 
+_phase1_branch_round_count() {
+	# #2575: SSOT for the phase-1 round position — counts DISTINCT phase-1
+	# rounds across THIS BRANCH's review logs (per-branch like the phase-2
+	# twin: a fix-commit's new HEAD must not reset the count — the #2547
+	# incident ran NINE rounds across four HEADs against a cap of 3, and
+	# nothing mechanical stopped it). Review-log files are keyed by FULL
+	# sha, so rev-list output maps to filenames directly (no short-sha
+	# prefix matching needed, unlike the CR-CLI run log).
+	# Echoes the count. git/jq failures are LOUD + rc 2, never a silent
+	# default (masked failure → vacuous cap satisfaction or forever-loop).
+	local rdir="$REPO_ROOT/.claude/review-log" total=0
+	local branch_shas branch_shas_rc=0 branch_shas_err_file branch_shas_err=""
+	branch_shas_err_file=$(mktemp -t ship-cycle-p1-revshas-err.XXXXXX) ||
+		scm_fail "mktemp for phase1 round-cap rev-list stderr failed"
+	branch_shas=$(git rev-list "$BASE_BRANCH..HEAD" 2>"$branch_shas_err_file") || branch_shas_rc=$?
+	if [ -s "$branch_shas_err_file" ]; then
+		branch_shas_err=$(cat "$branch_shas_err_file")
+	fi
+	rm -f "$branch_shas_err_file"
+	if [ "$branch_shas_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase1 round-cap — git rev-list \"$BASE_BRANCH..HEAD\" failed (rc=$branch_shas_rc): ${branch_shas_err:-<no stderr>}; cannot count this-branch phase-1 rounds (is $BASE_BRANCH a local ref?)" >&2
+		return 2
+	fi
+	[ -d "$rdir" ] || {
+		printf '0\n'
+		return 0
+	}
+	local _sha _f _n
+	for _sha in $branch_shas; do
+		_f="$rdir/$_sha.jsonl"
+		[ -f "$_f" ] || continue
+		_n=$(jq -rs '[.[] | select(.phase == 1) | .round] | unique | length' "$_f" 2>/dev/null) || {
+			echo "ship-pr-cycle: ERROR: phase1 round-cap — jq failed reading $_f; cannot count rounds (corrupt review log?)" >&2
+			return 2
+		}
+		case "$_n" in '' | *[!0-9]*)
+			echo "ship-pr-cycle: ERROR: phase1 round-cap — non-numeric round count '$_n' from $_f" >&2
+			return 2
+			;;
+		esac
+		total=$((total + _n))
+	done
+	printf '%s\n' "$total"
+}
+
+_phase1_cap_gate() {
+	# #2575 (+#2570 exit contract): the ONE at-cap decision for phase 1,
+	# mirroring _phase2_cap_gate. Reached when the branch has already spent
+	# >= cap rounds without a clean streak. Contract:
+	#   rc 0 → the newest branch sha WITH phase-1 rows has every finding
+	#          covered (cumulative prove-yourself vs cumulative findings —
+	#          POSITIVE evidence, parsed from phase1_round_coverage_summary);
+	#          GRADUATED to phase2, no new round armed.
+	#   rc 2 → refusal: uncovered findings, or coverage undeterminable
+	#          (fail-closed — doubt never graduates), hook-ack routed.
+	local cap="$1" runs="$2"
+	if ! command -v phase1_round_coverage_summary >/dev/null 2>&1; then
+		echo "ship-pr-cycle: ERROR: _lib/phase1-round-coverage.sh did not load — cannot evaluate the phase-1 round-cap graduation. Fix the plugin install, then re-run. (NOT arming another round.)" >&2
+		return 2
+	fi
+	# Newest branch commit that has phase-1 rows is the coverage anchor
+	# (the current HEAD is usually a fix commit with no rows of its own).
+	local _shas _s _anchor="" _sum=""
+	_shas=$(git rev-list "$BASE_BRANCH..HEAD" 2>/dev/null) || _shas=""
+	for _s in $_shas; do
+		if [ -f "$REPO_ROOT/.claude/review-log/$_s.jsonl" ]; then
+			_anchor="$_s"
+			break
+		fi
+	done
+	if [ -n "$_anchor" ]; then
+		_sum=$(phase1_round_coverage_summary "$_anchor" 2>/dev/null || echo "")
+	fi
+	local _round _tot _cov
+	IFS=' ' read -r _round _tot _cov <<<"$_sum"
+	if [[ $_tot =~ ^[0-9]+$ ]] && [[ $_cov =~ ^[0-9]+$ ]] && [ "$_cov" -ge "$_tot" ]; then
+		_emit_stage_directive phase2-preread
+		_set_stage "phase2"
+		echo "→ phase1 round-cap reached ($runs/$cap) + every finding on anchor ${_anchor:0:7} covered ($_cov/$_tot, prove-yourself); GRADUATED to phase2 WITHOUT arming another round (#2575 exit contract)"
+		return 0
+	fi
+	local _cap_body
+	_cap_body="ship-pr-cycle: phase1 round-cap ENFORCED ($runs/$cap) — REFUSING to arm another 6-agent round on this branch; findings are NOT all covered (anchor ${_anchor:0:7}: ${_sum:-no parseable coverage} = round/findings/covered).
+Re-running panels past the cap is the phase-1 treadmill (#2547 burned NINE rounds against a cap of 3 — millions of tokens). The exit contract (#2570) has exactly two doors:
+  - clean round(s) >= cap  → converges automatically, OR
+  - at cap: cover EVERY finding — record-fix (applied, with retest) or record-rejection (dogfooded evidence) via skills/prove-yourself-audit/run.sh, --source phase1 — then re-run 'scripts/ship-pr-cycle.sh next': the branch GRADUATES on the covered anchor with NO new round.
+Deliberate extra round (audit-logged to pipeline-skip.jsonl):
+  PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON=\"why\" scripts/ship-pr-cycle.sh next"
+	printf '%s\n' "$_cap_body" >&2
+	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
+		command -v hook_ack_append >/dev/null 2>&1; then
+		local _cap_diag
+		if _cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p1cap" "phase1-round-cap-enforced" "$_cap_body"); then
+			hook_ack_append "ship-pr-cycle-p1cap" "phase1-round-cap-enforced" "$_cap_diag" || true
+		fi
+	fi
+	return 2
+}
+
 _phase2_cap_gate() {
 	# #2545 (phase1 r1 — flagged independently by code-reviewer,
 	# code-simplifier AND silent-failure-hunter): the ONE at-cap decision,
@@ -1357,6 +1456,14 @@ cmd_status() {
 		# exactly the abort the contract above forbids.
 		_p2runs=$(_phase2_branch_run_count) || _p2runs=""
 		echo "  P2 cap:      ${_p2runs:-<unavailable>}/$_p2cap CR-CLI run(s) used on this branch (enforced pre-invocation, #2545)"
+	fi
+	if [ "$_p2stage" = "phase1" ]; then
+		local _p1cap _p1runs
+		_p1cap=$(_scaler_rounds)
+		# Same advisory-render contract as the P2 line: a count failure
+		# degrades to <unavailable>; the GATE in cmd_next fail-closes.
+		_p1runs=$(_phase1_branch_round_count) || _p1runs=""
+		echo "  P1 cap:      ${_p1runs:-<unavailable>}/$_p1cap phase-1 round(s) used on this branch (enforced pre-arm, #2575)"
 	fi
 }
 
@@ -1674,6 +1781,34 @@ cmd_next() {
 			_set_stage "phase2"
 			echo "→ phase1 converged ($clean_streak-clean-streak ≥ $cap cap); advanced to phase2"
 		else
+			# #2575: ENFORCE the round cap BEFORE arming another 6-agent
+			# round. The prior shape emitted the directive on every `next`
+			# with streak<cap — a documented cap with no mechanical
+			# backstop is a suggestion (the #2547 cycle ran 9 rounds vs
+			# cap 3). At the cap, `next` either GRADUATES on positive
+			# coverage evidence or refuses via the shared _phase1_cap_gate
+			# (fail-closed, hook-ack routed, rc 2). Deliberate overrun
+			# stays possible via the SAME audited escape the phase-2 cap
+			# honors (PIPELINE_GATE_SKIP=1 [+ _REASON]).
+			local p1runs
+			p1runs=$(_phase1_branch_round_count) || return 2
+			if [ "$p1runs" -ge "$cap" ]; then
+				if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
+					if ! command -v pipeline_skip_log >/dev/null 2>&1; then
+						echo "ship-pr-cycle: ERROR: _lib/pipeline-skip.sh unavailable — refusing an UNLOGGED phase-1 cap override (fix the plugin install, or drop PIPELINE_GATE_SKIP)" >&2
+						return 2
+					fi
+					if ! pipeline_skip_log "phase1-round-cap"; then
+						echo "ship-pr-cycle: ERROR: phase-1 cap-override audit append FAILED (see writer error above) — refusing to arm the override round UNLOGGED" >&2
+						return 2
+					fi
+					echo "ship-pr-cycle: phase1 round-cap $p1runs/$cap OVERRIDDEN via PIPELINE_GATE_SKIP=1 — arming one more round past the cap (audit-logged)" >&2
+				else
+					local p1gate_rc=0
+					_phase1_cap_gate "$cap" "$p1runs" || p1gate_rc=$?
+					return "$p1gate_rc"
+				fi
+			fi
 			# v4.28-W4 (#732): write the directive ALSO to a marker file
 			# so the phase1-directive-emit UserPromptSubmit hook can
 			# surface it to Claude on next prompt — covers the case
