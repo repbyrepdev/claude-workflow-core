@@ -140,6 +140,15 @@ if [ "$AUTO" = "1" ]; then
 	if [ "$failed_now" -gt 0 ]; then
 		echo "⚠ $failed_now check(s) currently FAILED. The ruleset blocks the merge only on REQUIRED checks — a red non-required check will NOT stop the platform merge." >&2
 	fi
+	# #2567: approving-review gate — runs in the arm path too. Until the
+	# native ruleset requires an approving review, an armed PR would merge
+	# on green checks alone; the wrapper is the only place the policy holds.
+	if ! "$SCRIPT_DIR/_approval-gate.sh" --pr "$PR" \
+		--head "$(printf '%s' "$STATE" | jq -r '.head')" \
+		--owner-name "$(skc_repo_owner_name)"; then
+		echo "approval gate refused — not arming auto-merge for PR #$PR" >&2
+		exit 2
+	fi
 	skc_approve_or_exit "Arm auto-merge for PR #$PR ($METHOD)? The platform merges when the branch ruleset is satisfied (whatever it requires)"
 	# Pin the merge to the head the operator just approved: a push between
 	# this approval and the platform merge would otherwise merge a commit
@@ -284,6 +293,19 @@ if ! STRANDED=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", n
 	fi
 elif [ "$STRANDED" != "0" ]; then
 	echo "⚠ $STRANDED stranded review thread(s) (isResolved=false + isOutdated=true) — consider resolving via GraphQL before merge" >&2
+fi
+
+# #2567: approving-review gate (SSOT: .github/approval-policy.yml).
+# Refuses without an APPROVED bot review at the final head; when CR has
+# verifiably converged but skipped the record, the gate nudges
+# (`@coderabbitai approve`) and waits for the real record. Runs BEFORE
+# the operator approval so the prompt is only ever offered on a
+# policy-satisfying PR.
+if ! "$SCRIPT_DIR/_approval-gate.sh" --pr "$PR" \
+	--head "$(printf '%s' "$STATE" | jq -r '.head')" \
+	--owner-name "$OWNER_NAME"; then
+	echo "approval gate refused — not merging PR #$PR" >&2
+	exit 2
 fi
 
 echo ""

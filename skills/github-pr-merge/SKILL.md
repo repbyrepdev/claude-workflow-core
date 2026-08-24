@@ -145,6 +145,29 @@ gh api "repos/$(gh repo view --json nameWithOwner -q '.nameWithOwner')/pulls/$PR
 
 > 0 halts — someone's explicit change-request hasn't been resolved.
 
+### 4b. Approving-review gate (#2567) — `_approval-gate.sh`
+
+`run.sh` refuses (both immediate and `--auto` paths) unless a bot listed
+in the SSOT policy `.github/approval-policy.yml` has an **APPROVED review
+record on the final head** (latest-per-reviewer, commit-pinned — a stale
+APPROVED on an earlier commit or one superseded by CHANGES_REQUESTED does
+not count). CodeRabbit sometimes converges without posting the record
+(evidence table in the policy file): when `_pr-cr-findings.sh` reports
+all four buckets clean AND the final head sha appears in CR's own
+reviews/comments (the fail-open CodeRabbit *check* is deliberately not
+trusted as the witness), the gate posts `@coderabbitai approve` and
+waits for the real record. It never nudges a findings-bearing or
+unreviewed head — that would launder the state it exists to block.
+Audited escape: `APPROVAL_GATE_SKIP=1` (fail-closed if the skip cannot
+be audit-logged via `_lib/pipeline-skip.sh`).
+
+**Ruleset flip (deferred activation):** once this wrapper flow has
+proven itself over a few merges, mirror the policy platform-side —
+branch ruleset on `main`: require 1 approving review (GitHub blocks
+author self-approval; CodeRabbit satisfies it via
+`request_changes_workflow: true`). The wrapper gate stays on afterwards:
+it is what un-deadlocks the converged-but-unrecorded shape by nudging.
+
 ### 5. User confirmation GATE
 
 Present a one-line summary:
