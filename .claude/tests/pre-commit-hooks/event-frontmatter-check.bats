@@ -206,3 +206,130 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ $output == *"SKIP via EVENT_FRONTMATTER_SKIP"* ]]
 }
+
+# --- #2547 enforcement classification (PostToolUse only) ----------------------
+# Moved here from posttooluse-enforcement-contract.bats (phase1 r2
+# code-reviewer: this suite is the pre-existing home for gate-rule tests —
+# a maintainer changing the gate finds one suite, not two). The live-tree
+# audit lives in .claude/tests/_lib/event-frontmatter-audit.bats.
+
+_write_ptu_hook() {
+	# $1=path  $2=extra frontmatter line (empty for none)
+	mkdir -p "$(dirname "$TEST_TMP/$1")"
+	{
+		printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# matcher: Bash\n'
+		[ -n "$2" ] && printf '%s\n' "$2"
+		printf 'exit 0\n'
+	} >"$TEST_TMP/$1"
+	chmod +x "$TEST_TMP/$1"
+}
+
+@test "#2547 PostToolUse hook with NO enforcement classification fails" {
+	_write_ptu_hook "hooks/uncls.sh" ""
+	run _run_from_tmp hooks/uncls.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"enforce-vs-inform"* ]]
+}
+
+@test "#2547 enforcement value OUTSIDE the vocabulary fails (enum, not presence)" {
+	# Same property the event enum pins: loosening the accessor to accept
+	# any value must turn this red (phase1 r2 pr-test-analyzer).
+	_write_ptu_hook "hooks/advisory.sh" "# enforcement: advisory — not a real value"
+	run _run_from_tmp hooks/advisory.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"enforce-vs-inform"* ]]
+}
+
+@test "#2547 enforce AND inform values both pass; non-PostToolUse needs none" {
+	_write_ptu_hook "hooks/enf.sh" "# enforcement: enforce — fixture"
+	_write_ptu_hook "hooks/inf.sh" "# enforcement: inform — fixture"
+	_write_hook_with_frontmatter "hooks/pre.sh" "PreToolUse"
+	run _run_from_tmp hooks/enf.sh hooks/inf.sh hooks/pre.sh
+	[ "$status" -eq 0 ]
+}
+
+@test "#2547 MIXED batch reports BOTH failure classes in one pass" {
+	# phase1 r2, three reviewers independently: the early exit hid the
+	# frontmatter failure behind the classification failure, forcing a
+	# two-pass fix cycle.
+	_write_ptu_hook "hooks/uncls2.sh" ""
+	_write_hook_no_frontmatter "hooks/bare.sh"
+	run _run_from_tmp hooks/uncls2.sh hooks/bare.sh
+	[ "$status" -eq 1 ]
+	[[ $output == *"enforce-vs-inform"* ]] || {
+		echo "classification failure not reported. output: $output"
+		return 1
+	}
+	[[ $output == *"lack required frontmatter"* ]] || {
+		echo "frontmatter failure hidden behind the classification exit — two-pass cycle is back. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bypasses ONLY the classification rule" {
+	_write_ptu_hook "hooks/uncls3.sh" ""
+	_write_hook_no_frontmatter "hooks/bare2.sh"
+	run env EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bash -c "cd '$TEST_TMP' && '$SCRIPT' hooks/uncls3.sh hooks/bare2.sh"
+	[ "$status" -eq 1 ] || {
+		echo "narrow bypass disabled the event rule too (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"lack required frontmatter"* ]]
+	[[ $output != *"enforce-vs-inform"* ]] || {
+		echo "classification still enforced under its own bypass. output: $output"
+		return 1
+	}
+	# The bypass must announce itself per-file (phase1 r4: the header
+	# promises a SKIP message; dropping the echo would make bypass use
+	# invisible in pre-commit output with all tests green).
+	[[ $output == *"SKIP enforcement classification"* ]] || {
+		echo "narrow bypass left no audit trail on stderr. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 consumer-layout PostToolUse hook is EXEMPT from the classification (until migrated)" {
+	# phase1 r3 code-reviewer (conf 8): the exported id fires on consumer
+	# .claude/hooks/, where consumer-authored PostToolUse hooks would newly
+	# fail commits under a patch bump. Rule (c) scopes to plugin-source
+	# hooks/*.sh until consumers migrate (epic #2566) — widening this later
+	# must be a deliberate edit that turns THIS test into the migration
+	# checklist item.
+	mkdir -p "$TEST_TMP/.claude/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# matcher: Bash\nexit 0\n' >"$TEST_TMP/.claude/hooks/consumerptu.sh"
+	chmod +x "$TEST_TMP/.claude/hooks/consumerptu.sh"
+	run _run_from_tmp .claude/hooks/consumerptu.sh
+	[ "$status" -eq 0 ] || {
+		echo "consumer-layout PostToolUse hook failed the classification rule it is exempt from (rc=$status). output: $output"
+		return 1
+	}
+}
+
+@test "#2547 gate-side: auto-register:false PostToolUse hook needs NO classification" {
+	# phase1 r3 pr-test-analyzer: the exemption existed only via statement
+	# ordering; a refactor checking enforcement wherever event=PostToolUse
+	# would silently diverge gate policy from audit policy.
+	_write_ptu_hook "hooks/optout-ptu.sh" "# auto-register: false"
+	run _run_from_tmp hooks/optout-ptu.sh
+	[ "$status" -eq 0 ] || {
+		echo "a de-registered PostToolUse hook was forced to classify (rc=$status). output: $output"
+		return 1
+	}
+}
+
+@test "#2547 ABSOLUTE path to an unclassified plugin PostToolUse hook still fails rule (c)" {
+	# phase1 r9 pr-test-analyzer: every rule-(c) test used relative paths,
+	# so mutating the scope check from \$rel to \$f survived the suite —
+	# absolute-path invocation would silently exempt plugin hooks from the
+	# classification requirement (fail-open).
+	_write_ptu_hook "hooks/absuncls.sh" ""
+	run _run_from_tmp "$TEST_TMP/hooks/absuncls.sh"
+	[ "$status" -eq 1 ] || {
+		echo "absolute-path invocation exempted rule (c) (rc=$status). output: $output"
+		return 1
+	}
+	[[ $output == *"enforce-vs-inform"* ]] || {
+		echo "no classification failure for the absolute path. output: $output"
+		return 1
+	}
+}

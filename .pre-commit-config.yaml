@@ -82,7 +82,7 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
       - id: event-frontmatter-check
-        name: event-frontmatter — hooks must declare `# event:` for discovery
+        name: event-frontmatter — hooks declare `# event:`; PostToolUse also `# enforcement:` (#2547)
         entry: pre-commit-hooks/event-frontmatter-check.sh
         language: script
         files: ^hooks/.*\.sh$

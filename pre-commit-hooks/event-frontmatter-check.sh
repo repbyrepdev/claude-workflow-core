@@ -23,10 +23,14 @@ set -euo pipefail
 #       (a) `# event: <PreToolUse|PostToolUse|SessionStart|PreCompact|Stop|UserPromptSubmit>`
 #           in the first 30 lines
 #       (b) `# auto-register: false` (explicit helper opt-out)
+#   - #2547, PLUGIN-SOURCE layout (hooks/*.sh) only, classified events
+#     ($EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS — currently PostToolUse):
+#       (c) `# enforcement: enforce|inform — <reason>` (closed vocabulary;
+#           consumer .claude/hooks/ exempt until migrated — epic #2566)
 #
-# Bypass: EVENT_FRONTMATTER_SKIP=1 (use sparingly — emits a SKIP message to
-# stderr so the bypass shows up in pre-commit output, but no automatic
-# audit-log file is written).
+# Bypasses (each emits a SKIP message to stderr; no automatic audit-log):
+#   EVENT_FRONTMATTER_SKIP=1              — whole gate (use sparingly)
+#   EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1  — rule (c) only
 #
 # Exit codes:
 #   0 — all staged hooks pass
@@ -60,6 +64,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 FAILED=()
+ENF_FAILED=()
 
 for f in "$@"; do
 	# Normalize absolute → repo-relative so `case` glob works regardless of
@@ -120,15 +125,65 @@ for f in "$@"; do
 	while IFS= read -r _line; do _parsed+=("$_line"); done <<<"$_parse_out"
 	event="${_parsed[0]:-}"
 	auto_register="${_parsed[2]:-true}"
+	enforcement="${_parsed[3]:-}"
 
 	# (a) explicit opt-out
 	[ "$auto_register" = "false" ] && continue
 	# (b) valid event
 	if [ -n "$event" ] && event_frontmatter_event_valid "$event"; then
+		# (c) #2547: classified events (SSOT list in the lib) must ALSO
+		# declare enforce-vs-inform, fail-closed at commit time — the same
+		# placement as the event requirement itself (phase1 r1: a
+		# bats-only check fires long after an unclassified hook lands).
+		# The raw value rides parse's 4th line; the CLOSED vocabulary is
+		# judged by event_frontmatter_enforcement_valid ("advisory" is
+		# unclassified, not a pass).
+		#   enforce — the hook blocks on violation via a routed mechanism
+		#   inform  — advisory by documented design (say why)
+		# PLUGIN-SOURCE LAYOUT ONLY for now (phase1 r3 code-reviewer,
+		# conf 8): the exported pre-commit id also fires on consumer
+		# .claude/hooks/, where three consumer-authored PostToolUse hooks
+		# would newly fail commits under a patch bump with no migration
+		# note. Consumers migrate deliberately — widening tracked in epic
+		# #2566.
+		# EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bypasses ONLY this rule
+		# (family-prefixed name per the repo's gate/bypass convention;
+		# the whole-gate EVENT_FRONTMATTER_SKIP also still works).
+		if event_frontmatter_enforcement_required "$event" && [[ $rel == hooks/*.sh ]]; then
+			if [ "${EVENT_FRONTMATTER_ENFORCEMENT_SKIP:-}" = "1" ]; then
+				echo "event-frontmatter-check: SKIP enforcement classification via EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 for $f" >&2
+			elif ! event_frontmatter_enforcement_valid "$enforcement"; then
+				ENF_FAILED+=("$f")
+			fi
+		fi
 		continue
 	fi
 	FAILED+=("$f")
 done
+
+# Report EVERY failure class before the single exit (phase1 r2, three
+# reviewers independently: an early exit hid the second class until a
+# follow-up commit attempt — a two-pass fix cycle; rc stays fail-closed).
+rc=0
+if [ "${#ENF_FAILED[@]}" -gt 0 ]; then
+	echo "event-frontmatter-check: ${#ENF_FAILED[@]} ${EVENT_FRONTMATTER_ENFORCEMENT_REQUIRED_EVENTS} hook(s) lack the #2547 enforce-vs-inform classification:" >&2
+	for f in "${ENF_FAILED[@]}"; do
+		echo "  $f" >&2
+	done
+	cat >&2 <<EOF
+
+Add to the file's first $(event_frontmatter_scan_window) lines (after the matcher line):
+  # enforcement: enforce — <how it blocks: hook-ack routing / decision:block>
+  # enforcement: inform — <why advisory is the deliberate design>
+(The vocabulary is closed: values other than enforce|inform are refused.)
+
+An 'enforce' hook must actually route its failures (hook_ack_append, or a
+decision:block JSON response) — .claude/tests/_lib/event-frontmatter-audit.bats pins
+that; this gate pins that the classification EXISTS.
+Bypass (this rule only): EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 git commit ...
+EOF
+	rc=1
+fi
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
 	echo "event-frontmatter-check: ${#FAILED[@]} staged hook(s) lack required frontmatter:" >&2
@@ -151,7 +206,7 @@ Either fix the file(s) above or use an opt-out form:
   - add `# auto-register: false` to the first 30 lines — explicit opt-out
 Bypass: EVENT_FRONTMATTER_SKIP=1 git commit ...
 EOF
-	exit 1
+	rc=1
 fi
 
-exit 0
+exit "$rc"

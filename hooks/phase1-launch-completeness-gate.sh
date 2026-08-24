@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PreToolUse
 # matcher: Bash
+# auto-register: false  # de-registered 2026-08-24 (see 2564): assumed synchronous Agent returns; the installer must NOT re-wire it
 # v4.27 (#632) — PreToolUse Bash gate: refuse phase1-launcher.sh round N
 # invocation when round N-1's EFFECTIVE_AGENTS aren't fully logged.
 #
@@ -55,7 +56,7 @@ if ! printf '%s' "$CMD" | grep -qE "$TARGET_RE"; then
 	exit 0
 fi
 # Capture optional numeric round argument.
-if [[ "$CMD" =~ phase1-launcher\.sh[[:space:]]+([0-9]+) ]]; then
+if [[ $CMD =~ phase1-launcher\.sh[[:space:]]+([0-9]+) ]]; then
 	ROUND="${BASH_REMATCH[1]}"
 else
 	ROUND=""

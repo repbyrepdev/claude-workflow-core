@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — fail-soft auto-remediation; blocking would abort the push tool-result (see header)
 # v4.28-W4 (#708) — CR pause-detector: after a successful `git push` to a
 # branch with an open PR, check whether CodeRabbit has posted a "Reviews
 # paused" notice that has not yet been resumed. If detected, auto-post
@@ -42,7 +43,7 @@ set -euo pipefail
 EXPLICIT_PR=""
 if [ "${1:-}" = "--pr" ]; then
 	EXPLICIT_PR="${2:-}"
-	if [ -z "$EXPLICIT_PR" ] || ! [[ "$EXPLICIT_PR" =~ ^[0-9]+$ ]]; then
+	if [ -z "$EXPLICIT_PR" ] || ! [[ $EXPLICIT_PR =~ ^[0-9]+$ ]]; then
 		echo "error: --pr requires a numeric value (got: '${EXPLICIT_PR:-}')" >&2
 		exit 2
 	fi

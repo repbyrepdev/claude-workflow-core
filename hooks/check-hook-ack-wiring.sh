@@ -66,9 +66,10 @@ command -v jq >/dev/null 2>&1 || exit 0
 source "$LIB_FRONTMATTER"
 
 # Collect (event, matcher, basename) triples from every hook with valid
-# frontmatter. event_frontmatter_parse emits 3 lines: event, matcher,
-# auto_register; auto_register==false means operator opted out of
-# automatic registration → don't warn.
+# frontmatter. event_frontmatter_parse emits 4 lines: event, matcher,
+# auto_register, enforcement (#2547) — this consumer reads the first 3;
+# auto_register==false means operator opted out of automatic
+# registration → don't warn.
 missing=""
 for hook in "$HOOKS_DIR/"*.sh; do
 	[ -f "$hook" ] || continue

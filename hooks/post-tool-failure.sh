@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — failure telemetry capture
 # PostToolUse hook that captures FAILED tool calls to .claude/session-log.jsonl
 # for later /retro analysis. Fills the "what went wrong" signal gap — capture-
 # signal.sh logs what the user said; this logs what the tools did.

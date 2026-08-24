@@ -5,6 +5,7 @@
 set -euo pipefail
 # event: PreToolUse
 # matcher: Bash|Agent|Skill|Edit|Write|MultiEdit|NotebookEdit
+# auto-register: false  # de-registered 2026-08-24 (see 2564): assumed synchronous Agent returns; the installer must NOT re-wire it
 # v4.28-W4 (#721) — mechanically enforce phase1-log chain. Refuses any
 # tool call when `.claude/.session-state/phase1-log-pending/*.txt`
 # files exist. Each pending file is written by phase1-post-agent-nudge.sh

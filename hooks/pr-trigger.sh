@@ -2,6 +2,7 @@
 set -euo pipefail
 # event: PostToolUse
 # matcher: Bash
+# enforcement: inform — advisory directive on PR-open
 # Hook script for PostToolUse - triggers PR dashboard after gh pr create
 
 # Silently exit if jq is not available
@@ -39,7 +40,7 @@ EXIT_CODE=$(printf '%s' "$INPUT" | jq -r '.tool_response.exitCode // 1' 2>/dev/n
 # SKILL_WRAPPER=1. Result: /pr dashboard never auto-nudged for wrapper-
 # created PRs, watch-until-done.sh never fired, session-long manual
 # polling was the fallback.
-if printf '%s' "$COMMAND" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)gh[[:space:]]+pr[[:space:]]+create' && [[ "$EXIT_CODE" == "0" ]]; then
+if printf '%s' "$COMMAND" | grep -qE '((^|[;&|][[:space:]]*)([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)gh[[:space:]]+pr[[:space:]]+create' && [[ $EXIT_CODE == "0" ]]; then
 	# v4.17.Z: keep stderr OUT of STDOUT — a success case with a benign jq
 	# warning would otherwise pollute the PR# grep input. Accept the
 	# tradeoff of less-detailed error log for deterministic STDOUT.
