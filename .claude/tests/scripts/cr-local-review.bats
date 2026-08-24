@@ -89,7 +89,10 @@ _stub_coderabbit_lines() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	# still defers to CR-in-CI…
-	[ "$status" -eq 4 ] || return 1
+	[ "$status" -eq 4 ] || {
+		echo "salvaged timeout did not exit 4 (got $status). output: $output"
+		return 1
+	}
 	[[ $output == *"timed out"* ]] || return 1
 	# …but announces + persists the salvage rather than discarding it
 	[[ $output == *"salvaged 2 finding"* ]] || return 1
@@ -121,7 +124,10 @@ _stub_coderabbit_lines() {
 	_stub_coderabbit '{"type":"error","errorType":"timeout","recoverable":false}' 0
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
-	[ "$status" -eq 4 ] || return 1
+	[ "$status" -eq 4 ] || {
+		echo "no-findings timeout did not exit 4 (got $status). output: $output"
+		return 1
+	}
 	[[ $output != *"salvaged"* ]] || return 1
 	local sha
 	sha=$(git rev-parse --short HEAD)
@@ -207,7 +213,10 @@ _stub_coderabbit_lines() {
 	_stub_coderabbit '{"type":"error","errorType":"timeout","recoverable":false}' 0
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
-	[ "$status" -eq 4 ] || return 1
+	[ "$status" -eq 4 ] || {
+		echo "zero-finding timeout did not exit 4 (got $status). output: $output"
+		return 1
+	}
 	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
 	[ "$status" -eq 0 ] || {
 		echo "zero-finding timeout wrote NO ledger entry — the sha would read as 'never reviewed'"

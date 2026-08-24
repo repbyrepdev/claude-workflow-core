@@ -103,14 +103,14 @@ cr_phase2_clean_for_sha() {
 		'[.[] | select(.sha==$s)]
 		 | if length > 0 then
 		     (last as $l
-		      | if ($l.complete // false) != true then -1
+		      | if ($l.complete // false) != true then "-1 the newest ledger entry is missing complete:true — the review was killed, crashed, hit auth/rate-limit, or never ran"
 		        elif (($l | has("partial")) and ($l.partial != false))
 		          or (($l | has("timeout")) and ($l.timeout != false))
-		        then -1
-		        elif ($l.findings | type) != "number" then -1
-		        elif $l.findings < 0 then -1
-		        else $l.findings end)
-		   else -1 end' \
+		        then "-1 the newest ledger entry is flagged partial/timeout — an incomplete run cannot be coverage-cleared"
+		        elif ($l.findings | type) != "number" then "-1 .findings is not a JSON number — writer bug or schema drift"
+		        elif $l.findings < 0 then "-1 .findings is negative — the unparseable-count sentinel, not a real count"
+		        else ($l.findings | tostring) end)
+		   else "-1 no ledger entry exists for this SHA — no review has ever run" end' \
 		"$cr_log" 2>"$jq_err") || {
 		# A jq failure here is NOT a verdict — it means the ledger is
 		# unreadable (malformed JSONL from a torn concurrent write, a schema
@@ -132,21 +132,28 @@ cr_phase2_clean_for_sha() {
 	# complete entry. Making the rejection sticky would strand a branch whose
 	# re-run genuinely succeeded, with no way to clear it short of a new
 	# commit — the gate would stop being a signal and start being a wall.
-	# Reject non-numeric / missing / negative BEFORE the coverage path. -1 means
-	# "no CR-CLI run for this SHA" — fail-closed, never whitewashed by old audit.
+	# Reject non-numeric / missing / negative BEFORE the coverage path. A
+	# "-1 <reason>" string means "no completed CR-CLI run for this SHA" —
+	# fail-closed, never whitewashed by old audit. The reason rides out of the
+	# jq because one fused message for five distinct causes points the
+	# operator at the wrong field (a SHA with no entry at all has no "newest
+	# entry" to be missing complete:true — the gate would refuse correctly
+	# and explain wrongly).
 	# #2544 — SAY WHY. A correct-but-mute gate is not actually correct: the
 	# caller's generic "Phase 2 not clean — address findings" sends the operator
 	# to a ledger showing findings:0, which reads as a broken gate, and the
 	# documented escape (PIPELINE_GATE_SKIP=1) is one line further down. A
 	# mystery-red trains the bypass. Refusing loudly is what makes the refusal
 	# survive contact with a tired operator at 2am.
-	if [ "$latest_findings" = "-1" ]; then
+	case "$latest_findings" in
+	-1*)
+		local refusal_reason="${latest_findings#-1 }"
 		echo "cr_phase2_clean_for_sha: no COMPLETED CR review on record for $short_sha." >&2
-		echo "  The newest ledger entry is missing complete:true — it was killed, crashed, hit auth/rate-limit, or never ran." >&2
+		echo "  Reason: ${refusal_reason}." >&2
 		echo "  findings:0 there means '0 were SEEN', not '0 exist'. Re-run: coderabbit review --agent -t committed --base main" >&2
-		rm -f "$jq_err"
 		return 1
-	fi
+		;;
+	esac
 	case "$latest_findings" in
 	'' | *[!0-9]*) return 1 ;;
 	esac

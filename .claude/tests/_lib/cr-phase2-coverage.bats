@@ -453,6 +453,29 @@ _log_partial_only() {
 	}
 }
 
+@test "#2544 a NEGATIVE findings count is NOT clean (sentinel cannot be coverage-cleared)" {
+	# local-review.sh writes findings:-1 when it cannot parse a count. Coverage
+	# is stacked high so nothing but the negative-count arm can refuse. If that
+	# arm were deleted, jq would emit a bare "-1" that still trips the refusal
+	# case but prints "Reason: -1" — the assertion on "negative" pins the arm
+	# itself, not just the refusal.
+	_log -1
+	_cover 5
+	run cr_phase2_clean_for_sha "$SHA"
+	[ "$status" -ne 0 ] || {
+		echo "a negative findings count was accepted as CLEAN"
+		return 1
+	}
+	[[ $output == *"no COMPLETED CR review"* ]] || {
+		echo "refused SILENTLY — operator gets no reason. output: '$output'"
+		return 1
+	}
+	[[ $output == *"negative"* ]] || {
+		echo "refusal did not name the negative-count cause. output: '$output'"
+		return 1
+	}
+}
+
 @test "no cr-local-review.jsonl at all → NOT clean (fail-closed)" {
 	rm -f "$CR_LOG"
 	run cr_phase2_clean_for_sha "$SHA"
