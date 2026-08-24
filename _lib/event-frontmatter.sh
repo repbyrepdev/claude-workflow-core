@@ -16,11 +16,16 @@ set -u
 # Public API:
 #   $EVENT_FRONTMATTER_VALID_EVENTS  — pipe-separated regex alternation
 #   event_frontmatter_skip_basename <basename>  — exit 0 if hook is a helper
-#   event_frontmatter_parse <hook_path>  — emit 3 lines: event\nmatcher\nauto_register
+#   event_frontmatter_parse <hook_path>  — emit 4 lines: event\nmatcher\n
+#       auto_register\nenforcement (raw; empty when absent — #2547)
 #   event_frontmatter_event_valid <event>  — exit 0 if event in valid set
 #   event_frontmatter_scan_window  — number of header lines to scan (30)
-#   event_frontmatter_enforcement <hook_path>  — emit enforce|inform, rc 1 if
-#       absent or out-of-vocabulary (#2547; PostToolUse classification)
+#   event_frontmatter_event_classified <event>  — exit 0 if the event's hooks
+#       must carry the classification ($EVENT_FRONTMATTER_CLASSIFIED_EVENTS)
+#   event_frontmatter_enforcement_valid <value>  — exit 0 iff enforce|inform
+#   event_frontmatter_enforcement <hook_path>  — validated value in one call
+#   event_frontmatter_registered_hooks <dir>  — the registered universe
+#       (skips helpers + auto-register:false); LOUD rc 1 on a parse failure
 
 # Pipe-alternation, single source of truth for both internal `[[ =~ ]]` matching
 # AND consumer interpolation (event-frontmatter-check.sh's error-message hint).
@@ -39,9 +44,12 @@ event_frontmatter_skip_basename() {
 	esac
 }
 
-# Parse frontmatter from a hook file's first $window lines. Emits THREE lines
-# (one per field) to stdout: event\nmatcher\nauto_register. Empty event = no
-# frontmatter / treat as helper. Consumers read via:
+# Parse frontmatter from a hook file's first $window lines. Emits FOUR lines
+# (one per field) to stdout: event\nmatcher\nauto_register\nenforcement.
+# Empty event = no frontmatter / treat as helper. The enforcement field is
+# the RAW first word after `# enforcement:` (empty when absent) — judged by
+# event_frontmatter_enforcement_valid, mirroring the event/matcher split
+# (#2547 phase1 r3). Consumers read via:
 #
 #   _parsed=()
 #   while IFS= read -r _line; do _parsed+=("$_line"); done < <(event_frontmatter_parse "$hook")
@@ -51,7 +59,7 @@ event_frontmatter_skip_basename() {
 # leading empty fields (e.g. tab-tab-true is read as e=true / m="" / a="").
 # One line per field preserves empties at the cost of a 3-element array.
 event_frontmatter_parse() {
-	local hook="$1" event="" matcher="" auto_register="true"
+	local hook="$1" event="" matcher="" auto_register="true" enforcement=""
 	# Fail-closed: capture `head`'s output + rc explicitly before parsing.
 	# Prior form `done < <(head ... "$hook")` had two problems: (a) the
 	# preflight `[ -f ] && [ -r ]` check has a TOCTOU race with `head` —
@@ -97,9 +105,15 @@ event_frontmatter_parse() {
 			val="${val%"${val##*[![:space:]]}"}"
 			auto_register="$val"
 			;;
+		"# enforcement:"*)
+			val="${line#"# enforcement:"}"
+			val="${val#"${val%%[![:space:]]*}"}" # ltrim
+			val="${val%%[[:space:]]*}"           # first word; the — reason is prose
+			enforcement="$val"
+			;;
 		esac
 	done <<<"$_header"
-	printf '%s\n%s\n%s\n' "$event" "$matcher" "$auto_register"
+	printf '%s\n%s\n%s\n%s\n' "$event" "$matcher" "$auto_register" "$enforcement"
 }
 
 # Validate event is one of the known values. Returns 0 if valid, 1 if not.
@@ -110,39 +124,68 @@ event_frontmatter_event_valid() {
 	[[ "|$EVENT_FRONTMATTER_VALID_EVENTS|" == *"|$event|"* ]]
 }
 
-# #2547: the enforce-vs-inform classification directive for PostToolUse
-# hooks. Emits the classification value ("enforce" or "inform") on stdout
-# and returns 0 when a valid `# enforcement:` line exists in the scan
-# window; emits nothing and returns 1 when the directive is absent OR
-# carries an unknown value — the vocabulary is CLOSED, so a typo like
-# "advisory" reads as unclassified rather than silently passing (phase1
-# r2 pr-test-analyzer: the enum boundary must refuse, not just presence).
-# One accessor replacing four hand-rolled `head | grep` sites (phase1 r2,
-# code-reviewer + code-simplifier independently): the commit gate and the
-# live-tree audit both read THIS definition.
+# #2547: events whose hooks must carry the enforce-vs-inform
+# classification. Same pipe-alternation idiom as the sibling constants —
+# extending classification to another event is a one-file edit here, not
+# a string-literal hunt across gate + audit (phase1 r3 code-reviewer).
+EVENT_FRONTMATTER_CLASSIFIED_EVENTS="PostToolUse"
+
+event_frontmatter_event_classified() {
+	local event="$1"
+	[[ "|$EVENT_FRONTMATTER_CLASSIFIED_EVENTS|" == *"|$event|"* ]]
+}
+
+# #2547: validate a raw enforcement value against the CLOSED vocabulary —
+# a typo like "advisory" must read as unclassified, never silently pass
+# (phase1 r2 pr-test-analyzer). Mirrors event_frontmatter_event_valid:
+# parse extracts raw, a predicate judges (phase1 r3 code-reviewer — the
+# accessor previously fused extract+judge, so no caller could distinguish
+# "invalid value" from "missing").
+event_frontmatter_enforcement_valid() {
+	case "$1" in
+	enforce | inform) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# Convenience composition kept for callers that want the validated value
+# in one call (the live-tree audit, tests): emits enforce|inform, rc 1 on
+# absent OR out-of-vocabulary. Callers already holding parse output should
+# read its 4th line + the predicate instead of re-reading the header.
 event_frontmatter_enforcement() {
-	local hook="$1" window _header line val
-	window=$(event_frontmatter_scan_window)
-	if ! _header=$(head -n "$window" "$hook" 2>/dev/null); then
-		return 1
-	fi
-	while IFS= read -r line; do
-		case "$line" in
-		"# enforcement:"*)
-			val="${line#"# enforcement:"}"
-			val="${val#"${val%%[![:space:]]*}"}" # ltrim
-			val="${val%%[[:space:]]*}"           # first word; the — reason is prose
-			case "$val" in
-			enforce | inform)
-				printf '%s\n' "$val"
-				return 0
-				;;
-			esac
+	local hook="$1" _parse_out val
+	_parse_out=$(event_frontmatter_parse "$hook") || return 1
+	val=$(printf '%s\n' "$_parse_out" | sed -n 4p)
+	event_frontmatter_enforcement_valid "$val" || return 1
+	printf '%s\n' "$val"
+}
+
+# #2547: ONE definition of "the registered hooks of a directory" — skip
+# helper basenames, parse, honor the auto-register:false opt-out. The
+# audit consumes this; install-hooks.sh and check-hook-ack-wiring.sh
+# still carry sibling copies with installer-specific extras (executable
+# preflight) — migrating them onto this emitter is tracked in epic #2566
+# rather than risked mid-PR. A parse failure is LOUD + rc 1: a shrunken
+# universe must never read as a clean one (phase1 r2/r3).
+event_frontmatter_registered_hooks() {
+	local dir="$1" f base _parse_out event auto
+	for f in "$dir"/*.sh; do
+		[ -e "$f" ] || continue # nullglob-safe: literal pattern on empty dir
+		base=$(basename "$f")
+		event_frontmatter_skip_basename "$base" && continue
+		if ! _parse_out=$(event_frontmatter_parse "$f"); then
+			echo "event_frontmatter_registered_hooks: PARSE FAILURE: $f (unreadable?) — refusing a shrunken universe" >&2
 			return 1
-			;;
-		esac
-	done <<<"$_header"
-	return 1
+		fi
+		{
+			read -r event
+			read -r _
+			read -r auto
+		} <<<"$_parse_out"
+		[ "$auto" = "false" ] && continue
+		[ -n "$event" ] && printf '%s\n' "$f"
+	done
+	return 0
 }
 
 # Events that don't accept a matcher per Claude Code spec — passing a matcher

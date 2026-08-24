@@ -266,10 +266,10 @@ _write_ptu_hook() {
 	}
 }
 
-@test "#2547 ENFORCEMENT_FRONTMATTER_SKIP=1 bypasses ONLY the classification rule" {
+@test "#2547 EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bypasses ONLY the classification rule" {
 	_write_ptu_hook "hooks/uncls3.sh" ""
 	_write_hook_no_frontmatter "hooks/bare2.sh"
-	run env ENFORCEMENT_FRONTMATTER_SKIP=1 bash -c "cd '$TEST_TMP' && '$SCRIPT' hooks/uncls3.sh hooks/bare2.sh"
+	run env EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bash -c "cd '$TEST_TMP' && '$SCRIPT' hooks/uncls3.sh hooks/bare2.sh"
 	[ "$status" -eq 1 ] || {
 		echo "narrow bypass disabled the event rule too (rc=$status). output: $output"
 		return 1
@@ -277,6 +277,35 @@ _write_ptu_hook() {
 	[[ $output == *"lack required frontmatter"* ]]
 	[[ $output != *"enforce-vs-inform"* ]] || {
 		echo "classification still enforced under its own bypass. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 consumer-layout PostToolUse hook is EXEMPT from the classification (until migrated)" {
+	# phase1 r3 code-reviewer (conf 8): the exported id fires on consumer
+	# .claude/hooks/, where consumer-authored PostToolUse hooks would newly
+	# fail commits under a patch bump. Rule (c) scopes to plugin-source
+	# hooks/*.sh until consumers migrate (epic #2566) — widening this later
+	# must be a deliberate edit that turns THIS test into the migration
+	# checklist item.
+	mkdir -p "$TEST_TMP/.claude/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# matcher: Bash\nexit 0\n' >"$TEST_TMP/.claude/hooks/consumerptu.sh"
+	chmod +x "$TEST_TMP/.claude/hooks/consumerptu.sh"
+	run _run_from_tmp .claude/hooks/consumerptu.sh
+	[ "$status" -eq 0 ] || {
+		echo "consumer-layout PostToolUse hook failed the classification rule it is exempt from (rc=$status). output: $output"
+		return 1
+	}
+}
+
+@test "#2547 gate-side: auto-register:false PostToolUse hook needs NO classification" {
+	# phase1 r3 pr-test-analyzer: the exemption existed only via statement
+	# ordering; a refactor checking enforcement wherever event=PostToolUse
+	# would silently diverge gate policy from audit policy.
+	_write_ptu_hook "hooks/optout-ptu.sh" "# auto-register: false"
+	run _run_from_tmp hooks/optout-ptu.sh
+	[ "$status" -eq 0 ] || {
+		echo "a de-registered PostToolUse hook was forced to classify (rc=$status). output: $output"
 		return 1
 	}
 }

@@ -53,9 +53,11 @@ teardown() {
 
 _payload() { printf '{"tool_input":{"file_path":"%s"}}' "$1"; }
 
-# Sentinel line format is <ts>\t<hook>\t<reason>\t<file> — assert the hook
-# AND the specific reason so a wrong-reason append cannot pass.
-_sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
+# Sentinel line format is <ts>\t<hook>\t<reason>\t<file> — assert hook,
+# reason AND the file path: hook-ack-clear.sh clears by matching that 4th
+# field against the Read file, so a garbage path means an uncleanable stuck
+# sentinel (phase1 r3 pr-test-analyzer). $3 = expected file path.
+_sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	$3$" "$SENTINEL"; }
 
 @test "#2547 shellcheck failure appends to the hook-ack sentinel (blocks next call)" {
 	# SC2164 (cd without || exit) is warning-level — survives -S warning.
@@ -69,7 +71,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "no sentinel entry — the failure would scroll past (the exact #2547 regression)"
 		return 1
 	}
-	_sentinel_has shellcheck "fail-2-issues" || {
+	_sentinel_has shellcheck "fail-2-issues" "$ROOT/bad.sh" || {
 		echo "sentinel lacks lint-dispatch.shellcheck fail-2-issues. sentinel: $(cat "$SENTINEL")"
 		return 1
 	}
@@ -102,7 +104,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "file still has shfmt drift after the auto-fix path: $output"
 		return 1
 	}
-	_sentinel_has shfmt "auto-fixed" || {
+	_sentinel_has shfmt "auto-fixed" "$ROOT/fmt.sh" || {
 		echo "sentinel lacks the auto-fixed reason specifically. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}
@@ -119,7 +121,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "auto-fix-failed path did not exit 1 (got $status). output: $output"
 		return 1
 	}
-	_sentinel_has shfmt "auto-fix-failed" || {
+	_sentinel_has shfmt "auto-fix-failed" "$ROOT/rodir/ro.sh" || {
 		echo "sentinel lacks the auto-fix-failed reason. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}
@@ -132,7 +134,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "yamllint failure exited 0. output: $output"
 		return 1
 	}
-	_sentinel_has yamllint 'fail-[0-9]+-issues' || {
+	_sentinel_has yamllint 'fail-[0-9]+-issues' "$ROOT/bad.yml" || {
 		echo "sentinel lacks the yamllint fail entry. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}
@@ -146,7 +148,7 @@ _sentinel_has() { grep -qE "	lint-dispatch\.$1	$2	" "$SENTINEL"; }
 		echo "actionlint failure did not exit 1 (got $status). output: $output"
 		return 1
 	}
-	_sentinel_has actionlint 'fail-[0-9]+-issues' || {
+	_sentinel_has actionlint 'fail-[0-9]+-issues' "$ROOT/.github/workflows/bad.yml" || {
 		echo "sentinel lacks the actionlint fail entry. sentinel: $(cat "$SENTINEL" 2>/dev/null)"
 		return 1
 	}

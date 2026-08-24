@@ -23,10 +23,14 @@ set -euo pipefail
 #       (a) `# event: <PreToolUse|PostToolUse|SessionStart|PreCompact|Stop|UserPromptSubmit>`
 #           in the first 30 lines
 #       (b) `# auto-register: false` (explicit helper opt-out)
+#   - #2547, PLUGIN-SOURCE layout (hooks/*.sh) only, classified events
+#     ($EVENT_FRONTMATTER_CLASSIFIED_EVENTS — currently PostToolUse):
+#       (c) `# enforcement: enforce|inform — <reason>` (closed vocabulary;
+#           consumer .claude/hooks/ exempt until migrated — epic #2566)
 #
-# Bypass: EVENT_FRONTMATTER_SKIP=1 (use sparingly — emits a SKIP message to
-# stderr so the bypass shows up in pre-commit output, but no automatic
-# audit-log file is written).
+# Bypasses (each emits a SKIP message to stderr; no automatic audit-log):
+#   EVENT_FRONTMATTER_SKIP=1              — whole gate (use sparingly)
+#   EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1  — rule (c) only
 #
 # Exit codes:
 #   0 — all staged hooks pass
@@ -121,31 +125,40 @@ for f in "$@"; do
 	while IFS= read -r _line; do _parsed+=("$_line"); done <<<"$_parse_out"
 	event="${_parsed[0]:-}"
 	auto_register="${_parsed[2]:-true}"
+	enforcement="${_parsed[3]:-}"
 
 	# (a) explicit opt-out
 	[ "$auto_register" = "false" ] && continue
 	# (b) valid event
 	if [ -n "$event" ] && event_frontmatter_event_valid "$event"; then
-		# #2547: PostToolUse hooks must ALSO declare the enforce-vs-inform
-		# classification, fail-closed at commit time — the same placement
-		# as the event requirement itself (phase1 r1 code-reviewer: a
-		# bats-only check fires long after an unclassified hook lands;
-		# this gate is where "cannot land unclassified" is actually true).
-		# The value + vocabulary live in event_frontmatter_enforcement
-		# (SSOT — phase1 r2: four hand-rolled grep sites had already
-		# diverged from a one-file-edit promise). An out-of-vocabulary
-		# value ("advisory") is unclassified, not a pass.
+		# (c) #2547: classified events (SSOT list in the lib) must ALSO
+		# declare enforce-vs-inform, fail-closed at commit time — the same
+		# placement as the event requirement itself (phase1 r1: a
+		# bats-only check fires long after an unclassified hook lands).
+		# The raw value rides parse's 4th line; the CLOSED vocabulary is
+		# judged by event_frontmatter_enforcement_valid ("advisory" is
+		# unclassified, not a pass).
 		#   enforce — the hook blocks on violation via a routed mechanism
 		#   inform  — advisory by documented design (say why)
-		# ENFORCEMENT_FRONTMATTER_SKIP=1 bypasses ONLY this rule (phase1
-		# r2 code-reviewer: the whole-gate EVENT_FRONTMATTER_SKIP was the
-		# only escape, disabling the original event check with it).
-		if [ "$event" = "PostToolUse" ]; then
-			if [ "${ENFORCEMENT_FRONTMATTER_SKIP:-}" = "1" ]; then
-				echo "event-frontmatter-check: SKIP enforcement classification via ENFORCEMENT_FRONTMATTER_SKIP=1 for $f" >&2
-			elif ! event_frontmatter_enforcement "$f" >/dev/null; then
-				ENF_FAILED+=("$f")
-			fi
+		# PLUGIN-SOURCE LAYOUT ONLY for now (phase1 r3 code-reviewer,
+		# conf 8): the exported pre-commit id also fires on consumer
+		# .claude/hooks/, where three consumer-authored PostToolUse hooks
+		# would newly fail commits under a patch bump with no migration
+		# note. Consumers migrate deliberately — widening tracked in epic
+		# #2566.
+		# EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 bypasses ONLY this rule
+		# (family-prefixed name per the repo's gate/bypass convention;
+		# the whole-gate EVENT_FRONTMATTER_SKIP also still works).
+		if event_frontmatter_event_classified "$event"; then
+			case "$rel" in
+			hooks/*.sh)
+				if [ "${EVENT_FRONTMATTER_ENFORCEMENT_SKIP:-}" = "1" ]; then
+					echo "event-frontmatter-check: SKIP enforcement classification via EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 for $f" >&2
+				elif ! event_frontmatter_enforcement_valid "$enforcement"; then
+					ENF_FAILED+=("$f")
+				fi
+				;;
+			esac
 		fi
 		continue
 	fi
@@ -171,7 +184,7 @@ Add to the file's first $(event_frontmatter_scan_window) lines (after the matche
 An 'enforce' hook must actually route its failures (hook_ack_append, or a
 decision:block JSON response) — posttooluse-enforcement-contract.bats pins
 that; this gate pins that the classification EXISTS.
-Bypass (this rule only): ENFORCEMENT_FRONTMATTER_SKIP=1 git commit ...
+Bypass (this rule only): EVENT_FRONTMATTER_ENFORCEMENT_SKIP=1 git commit ...
 EOF
 	rc=1
 fi

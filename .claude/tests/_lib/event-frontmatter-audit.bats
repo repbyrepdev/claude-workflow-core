@@ -1,0 +1,201 @@
+#!/usr/bin/env bats
+# covers: _lib/event-frontmatter.sh
+#
+# #2547 LIVE-TREE AUDIT + accessor unit tests. The commit-time GATE lives in
+# event-frontmatter-check.sh (its unit tests in .claude/tests/pre-commit-
+# hooks/event-frontmatter-check.bats — phase1 r2). This file audits the REPO
+# against the classification policy through the lib's own accessors, and
+# unit-tests the accessors' contracts (routing predicate, registered-universe
+# emitter, de-registration pins). Located beside the other lib suites
+# (phase1 r3 code-reviewer: it was the one hooks/-dir suite covering a lib,
+# so a scoped `bats .claude/tests/_lib/` run missed it).
+
+setup() {
+	REPO="${BATS_TEST_DIRNAME}/../../.."
+	LIB="$REPO/_lib/event-frontmatter.sh"
+	[ -f "$LIB" ]
+	# shellcheck source=../../../_lib/event-frontmatter.sh disable=SC1091
+	. "$LIB"
+	HOOKS_DIR="$REPO/hooks"
+	TEST_TMP=$(mktemp -d -t ptuenf.XXXXXX) || return 1
+}
+
+teardown() {
+	cd /tmp 2>/dev/null || true
+	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */ptuenf.* ]]; then
+		chmod -R u+rwx "$TEST_TMP" 2>/dev/null || true
+		rm -rf "$TEST_TMP"
+	fi
+}
+
+# Registered PostToolUse hooks of $1: the lib's registered-universe emitter
+# filtered to classified events. LOUD rc 1 propagates from the emitter on a
+# parse failure — the audit must never pass on a silently shrunken universe.
+_posttooluse_hooks() {
+	local list f event
+	list=$(event_frontmatter_registered_hooks "$1") || return 1
+	[ -n "$list" ] || return 0
+	while IFS= read -r f; do
+		event=$(event_frontmatter_parse "$f" | sed -n 1p) || return 1
+		event_frontmatter_event_classified "$event" && printf '%s\n' "$f"
+	done <<<"$list"
+	return 0
+}
+
+# A hook "routes" iff a NON-COMMENT line invokes an enumerated blocking
+# mechanism: hook_ack_append (the universal sentinel) or a decision:block
+# JSON response. Known limitation, deliberate: the call must be visible in
+# the hook file itself — hoisting an ack wrapper into _lib later turns this
+# RED loudly (fail-closed), at which point the contract gets taught the new
+# shape in the same PR (phase1 r3 code-reviewer).
+_hook_routes() {
+	grep -qE '^[^#]*hook_ack_append' "$1" && return 0
+	grep -qE '^[^#]*"decision"[[:space:]]*:[[:space:]]*"block"' "$1"
+}
+
+@test "#2547 every registered live PostToolUse hook is classified enforce or inform" {
+	local list f missing=""
+	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
+		echo "discovery failed — see parse failure above"
+		return 1
+	}
+	[ -n "$list" ] || {
+		echo "SSOT discovery found ZERO registered PostToolUse hooks — parser drift?"
+		return 1
+	}
+	while IFS= read -r f; do
+		event_frontmatter_enforcement "$f" >/dev/null || missing="$missing ${f##*/}"
+	done <<<"$list"
+	[ -z "$missing" ] || {
+		echo "unclassified (or out-of-vocabulary) PostToolUse hook(s):$missing"
+		return 1
+	}
+}
+
+@test "#2547 every enforce-classified hook routes via a non-comment blocking call" {
+	local list f unrouted=""
+	list=$(_posttooluse_hooks "$HOOKS_DIR") || {
+		echo "discovery failed — see parse failure above"
+		return 1
+	}
+	while IFS= read -r f; do
+		[ "$(event_frontmatter_enforcement "$f" 2>/dev/null)" = "enforce" ] || continue
+		_hook_routes "$f" || unrouted="$unrouted ${f##*/}"
+	done <<<"$list"
+	[ -z "$unrouted" ] || {
+		echo "enforce-classified hook(s) with no non-comment blocking call:$unrouted"
+		return 1
+	}
+}
+
+@test "#2547 lint-dispatch is pinned as the enforce-classified hook" {
+	# The one current enforcer, pinned by name: reclassifying it to inform
+	# (or deleting the line) must turn this red — that decision belongs in
+	# review, not in drift. Also the existence guard for the routing test
+	# above.
+	[ "$(event_frontmatter_enforcement "$HOOKS_DIR/lint-dispatch.sh")" = "enforce" ] || {
+		echo "lint-dispatch.sh is no longer declared enforcement:enforce"
+		return 1
+	}
+}
+
+@test "#2547 the de-registered phase1 panel hooks stay opted out (installer must not re-wire)" {
+	# phase1 r3 pr-test-analyzer: the #2564 de-registrations were pinned by
+	# no test — deleting an auto-register:false line silently re-wires a
+	# hook documented as deadlock-broken. By-name pins, same rationale as
+	# the lint-dispatch pin above.
+	local h auto
+	for h in phase1-log-pending-gate phase1-post-agent-nudge phase1-launch-completeness-gate phase1-directive-pending-guard; do
+		auto=$(event_frontmatter_parse "$HOOKS_DIR/$h.sh" | sed -n 3p) || {
+			echo "parse failed for $h.sh"
+			return 1
+		}
+		[ "$auto" = "false" ] || {
+			echo "$h.sh lost its auto-register:false — the installer WILL re-wire the deadlocking panel (see #2564)"
+			return 1
+		}
+	done
+}
+
+@test "#2547 _hook_routes: comment-only mention does NOT count; real calls do" {
+	# phase1 r3 pr-test-analyzer (conf 9): the predicate had no negative
+	# fixture — losing the non-comment anchor would leave the routing audit
+	# vacuously green forever (lint-dispatch's own header mentions
+	# hook_ack_append in prose).
+	mkdir -p "$TEST_TMP/hooks"
+	printf '#!/bin/bash\nset -u\n# this hook mentions hook_ack_append only in prose\nexit 0\n' >"$TEST_TMP/hooks/prose.sh"
+	run _hook_routes "$TEST_TMP/hooks/prose.sh"
+	[ "$status" -ne 0 ] || {
+		echo "a comment-only mention counted as routing — the vacuous pass is back"
+		return 1
+	}
+	printf '#!/bin/bash\nset -u\nhook_ack_append "x" "y" "z"\nexit 0\n' >"$TEST_TMP/hooks/real.sh"
+	run _hook_routes "$TEST_TMP/hooks/real.sh"
+	[ "$status" -eq 0 ] || {
+		echo "a real hook_ack_append call did not count as routing"
+		return 1
+	}
+	cat >"$TEST_TMP/hooks/dec.sh" <<'FIXEOF'
+#!/bin/bash
+set -u
+printf '%s' '{"decision": "block"}'
+exit 0
+FIXEOF
+	run _hook_routes "$TEST_TMP/hooks/dec.sh"
+	[ "$status" -eq 0 ] || {
+		echo "a decision:block response did not count as routing"
+		return 1
+	}
+}
+
+@test "#2547 audit honors auto-register:false (registered universe, not file universe)" {
+	mkdir -p "$TEST_TMP/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# auto-register: false\nexit 0\n' >"$TEST_TMP/hooks/optout.sh"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# enforcement: inform — fixture\nexit 0\n' >"$TEST_TMP/hooks/reg.sh"
+	local list
+	list=$(_posttooluse_hooks "$TEST_TMP/hooks") || {
+		echo "fixture discovery failed"
+		return 1
+	}
+	[[ $list == *"reg.sh"* ]] || {
+		echo "registered fixture missing from the universe: $list"
+		return 1
+	}
+	[[ $list != *"optout.sh"* ]] || {
+		echo "auto-register:false hook counted as registered — the universes diverge again"
+		return 1
+	}
+}
+
+@test "#2547 an unreadable hook fails the audit LOUDLY, never a vacuous pass" {
+	mkdir -p "$TEST_TMP/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\nexit 0\n' >"$TEST_TMP/hooks/dark.sh"
+	chmod 000 "$TEST_TMP/hooks/dark.sh"
+	run event_frontmatter_registered_hooks "$TEST_TMP/hooks"
+	[ "$status" -ne 0 ] || {
+		echo "unreadable hook silently dropped from the audited universe (rc=0)"
+		return 1
+	}
+	[[ $output == *"PARSE FAILURE"* ]] || {
+		echo "no loud parse-failure diagnostic. output: $output"
+		return 1
+	}
+}
+
+@test "#2547 parse emits the raw enforcement value as line 4 (empty when absent)" {
+	mkdir -p "$TEST_TMP/hooks"
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\n# enforcement: advisory — bogus but raw\nexit 0\n' >"$TEST_TMP/hooks/raw.sh"
+	[ "$(event_frontmatter_parse "$TEST_TMP/hooks/raw.sh" | sed -n 4p)" = "advisory" ] || {
+		echo "raw out-of-vocabulary value not surfaced on parse line 4"
+		return 1
+	}
+	run event_frontmatter_enforcement_valid "advisory"
+	[ "$status" -ne 0 ]
+	run event_frontmatter_enforcement_valid "enforce"
+	[ "$status" -eq 0 ]
+	printf '#!/bin/bash\nset -u\n# event: PostToolUse\nexit 0\n' >"$TEST_TMP/hooks/none.sh"
+	[ -z "$(event_frontmatter_parse "$TEST_TMP/hooks/none.sh" | sed -n 4p)" ] || {
+		echo "absent directive did not yield an empty line 4"
+		return 1
+	}
+}

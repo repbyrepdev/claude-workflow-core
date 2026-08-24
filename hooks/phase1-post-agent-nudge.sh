@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # event: PostToolUse
-# enforcement: inform — directive injection (de-registered 2026-08-24, see #2564)
+# enforcement: inform — pre-staged for any future re-registration; INERT while the auto-register:false line below stands (#2564)
 # auto-register: false  # de-registered 2026-08-24 (see 2564): assumed synchronous Agent returns; the installer must NOT re-wire it
 # v4.15.G #495 — PostToolUse hook: Phase 1 agent return → log-now reminder.
 
