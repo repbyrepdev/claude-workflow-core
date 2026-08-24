@@ -764,3 +764,12 @@ EOF
 	[ "$status" -eq 0 ]
 	grep -q "contents-query" "$GH_ARGS_LOG"
 }
+
+@test "#2571: the REAL policy accepts the claude-review backup approver (github-actions[bot]) at head" {
+	_install_gh_shim
+	export APPROVAL_GATE_POLICY="$REPO_ROOT/.github/approval-policy.yml"
+	_reviews '[{"user":{"login":"github-actions[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T16:00:00Z","body":"backup review clean"}]'
+	_run_gate
+	[ "$status" -eq 0 ]
+	[[ $output == *"APPROVED bot review at final head"* ]]
+}

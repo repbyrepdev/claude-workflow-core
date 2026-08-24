@@ -60,5 +60,11 @@ require_approving_review: true
 approvers:
   - coderabbitai[bot]
   - copilot-pull-request-reviewer[bot]
+  # github-actions[bot] = the claude-review.yml backup approver (#2571):
+  # a fresh-context Claude review submitted under the Actions identity.
+  # CAVEAT accepted for this single-operator repo: ANY workflow with
+  # pull-requests:write could post reviews as this login — revisit with
+  # a dedicated GitHub App identity if the trust model widens.
+  - github-actions[bot]
 nudge_comment: "@coderabbitai approve"
 nudge_timeout_seconds: 180

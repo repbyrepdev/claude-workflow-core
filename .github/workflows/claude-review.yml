@@ -1,0 +1,87 @@
+name: Claude Review
+
+# #2571 (backup-approver half): a fresh-context Claude review of every PR,
+# submitted as a REAL GitHub review under the github-actions[bot] identity.
+# Purpose: redundancy for the #2567 approving-review merge gate — CodeRabbit
+# is otherwise the ONLY producer of an APPROVED record (Copilot's PR bot
+# never submits Approve), so a CR outage or rate-limit pause is a merge
+# stall. This reviewer is the designed backup, not the primary: CR-in-CI
+# stays a required check; this workflow is deliberately NOT required.
+#
+# Independence posture: the review runs in a FRESH context (no session
+# state), under a separate identity from the commit author, with an
+# adversarial prompt. It approves only when it finds nothing material.
+#
+# Dormant-by-design until two operator switches exist:
+#   * secrets.CLAUDE_CODE_OAUTH_TOKEN (claude setup-token)
+#   * repo setting "Allow GitHub Actions to create and approve pull
+#     requests" (without it the Approve submission is rejected by GitHub
+#     and the run reports that loudly).
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+# One run per PR head — a new push supersedes the in-flight review.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  review:
+    # Draft PRs are not reviewable intents yet.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check token present (dormant until operator sets it)
+        id: gate
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::notice::claude-review is DORMANT — set the CLAUDE_CODE_OAUTH_TOKEN repo secret (claude setup-token) to activate the backup approver (#2571)."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR head
+        if: steps.gate.outputs.active == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Claude fresh-context review
+        if: steps.gate.outputs.active == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools 'Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Read,Grep,Glob'"
+          prompt: |
+            You are the BACKUP reviewer for PR #${{ github.event.pull_request.number }} in ${{ github.repository }}
+            (head ${{ github.event.pull_request.head.sha }}). You did not write this code; review it
+            adversarially and in full.
+
+            1. Read the diff: `gh pr diff ${{ github.event.pull_request.number }}`. Read surrounding
+               files as needed for context.
+            2. Hunt real defects: correctness, silent failures, security, laundering/bypass paths in
+               gates or hooks, test dishonesty (assertions that cannot fail), doc claims the code
+               contradicts.
+            3. Then submit EXACTLY ONE formal review of the CURRENT head:
+               - Nothing material found:
+                 `gh pr review ${{ github.event.pull_request.number }} --approve --body "<what you checked + why it is clean>"`
+               - Material findings:
+                 `gh pr review ${{ github.event.pull_request.number }} --request-changes --body "<numbered findings with file:line>"`
+            4. If the review submission is REJECTED by GitHub, state loudly in your output that the
+               repo setting "Allow GitHub Actions to create and approve pull requests" is off (#2571)
+               — do not retry, do not fall back to a plain comment labeled as an approval.
+
+            Approve ONLY when you found nothing material. A hedged approval is worse than
+            requested changes.
