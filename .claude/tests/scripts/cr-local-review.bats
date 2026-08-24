@@ -190,6 +190,32 @@ _stub_coderabbit_lines() {
 	}
 }
 
+@test "#2544 DOGFOOD: a ZERO-finding timeout still writes a valid ledger entry" {
+	# CR round 4 caught the twin of the grep -c double-zero: the timeout path
+	# had the same `|| echo 0`, rescued only by a regex clamp on the next line.
+	# scm_log builds the entry with `--argjson findings`, which REJECTS "0\n0"
+	# outright — so a zero-finding timeout would have lost its ledger line
+	# entirely, and a SHA with no entry reads as "no review" rather than a
+	# recorded incomplete one. Pin both the count and the completeness flag.
+	_stub_coderabbit '{"type":"error","errorType":"timeout","recoverable":false}' 0
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 4 ] || return 1
+	run grep -h 'cr-local-review' "$TEST_TMP/.claude/logs/cr-local-review.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "zero-finding timeout wrote NO ledger entry — the sha would read as 'never reviewed'"
+		return 1
+	}
+	[[ $output == *'"findings":0'* ]] || {
+		echo "zero-finding timeout did not record findings:0. entry: $output"
+		return 1
+	}
+	[[ $output == *'"complete":false'* ]] || {
+		echo "timeout entry missing complete:false — the gate would read it as clean. entry: $output"
+		return 1
+	}
+}
+
 @test "#2544 DOGFOOD: a genuine 0-findings review writes complete:true" {
 	# The other direction, and the one the grep -c double-zero regression broke:
 	# a real clean review must still be recorded as COMPLETE, or the gate walls

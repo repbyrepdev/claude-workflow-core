@@ -350,7 +350,14 @@ if [ "$_timeout_detected" -eq 1 ]; then
 	# no consumer mistakes it for a complete, filtered count.
 	_partial_findings=0
 	if [ -f "$TEE_OUT" ]; then
-		_partial_findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || echo 0)
+		# Same `|| true` reasoning as the main counter below: grep -c ALREADY
+		# prints 0 on no-match and then exits 1, so `|| echo 0` appended a
+		# second 0 and the capture became "0\n0". Here the regex clamp on the
+		# next line silently rescued it — which is why the twin bug survived
+		# the first fix. `--argjson findings` would reject "0\n0" outright, so
+		# the salvage log line would have been lost entirely on a zero-finding
+		# timeout had the clamp ever been removed.
+		_partial_findings=$(grep -cE '"type"[[:space:]]*:[[:space:]]*"finding"' "$TEE_OUT" 2>/dev/null || true)
 		[[ $_partial_findings =~ ^[0-9]+$ ]] || _partial_findings=0
 	fi
 	if [ "$_partial_findings" -gt 0 ]; then
