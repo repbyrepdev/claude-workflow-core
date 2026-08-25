@@ -14,11 +14,13 @@ set -u
 #   signal). Appends one JSONL row. Honors $SKIP_LOG as the target override
 #   (the pre-push hook's existing test seam).
 #
-#   FAILURE IS LOUD, rc 1: the override this call audits must not be blocked
-#   by a broken audit trail (jq missing, unwritable log, disk full), but it
-#   must never be SILENT either — "(audit-logged)" while the append died was
-#   the silent-failure-hunter finding. Callers `|| true` under set -e; the
-#   stderr line is the visibility.
+#   FAILURE IS LOUD, rc 1 — and the CALLER decides policy on it. All
+#   production callers now REFUSE their override when the append fails
+#   (ship-pr-cycle cap overrides since #2575; the approval-gate skip;
+#   the pre-push bypass since the #2567-r2 hardening): no audit row → no
+#   bypass, because the row is the only durable record that the operator
+#   approved that specific skip. A caller that must stay fail-open can
+#   still `|| true` — the stderr line keeps the failure visible either way.
 pipeline_skip_log() {
 	local gate="${1:?pipeline_skip_log: gate name required}"
 	local repo_root skip_log branch sha
@@ -36,7 +38,7 @@ pipeline_skip_log() {
 		--arg gate "$gate" \
 		'{ts: $ts, sha: $sha, branch: $branch, reason: $reason, gate: $gate}' \
 		2>&1 >>"$skip_log") || {
-		echo "pipeline_skip_log: audit append FAILED for gate=$gate — override proceeding UNLOGGED (target=$skip_log): ${_psl_err:-<no stderr>}" >&2
+		echo "pipeline_skip_log: audit append FAILED for gate=$gate (target=$skip_log): ${_psl_err:-<no stderr>} — caller decides whether the override may proceed" >&2
 		return 1
 	}
 }

@@ -194,8 +194,18 @@ if command -v setsid >/dev/null 2>&1; then
 	(setsid nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" </dev/null >"$DETACH_LOG" 2>&1 &) ||
 		echo "phase0.5-post-commit-rerun: WARN: failed to detach prefilter via setsid+nohup" >&2
 else
-	# setsid is GNU/coreutils only — fall back to plain nohup on systems
-	# without it (rare but defensive).
+	# setsid ships in util-linux (not in coreutils, not on stock macOS), so
+	# THIS branch is the primary path on the main dev platform (not a rare
+	# fallback).
+	# p2-ci-r1 (CR): nohup does NOT create a new session or process group
+	# — its guarantees are narrower: SIGHUP immunity + survival past the
+	# parent's exit (reparented to launchd/init when the subshell exits
+	# immediately, as here). A signal aimed at the hook's whole process
+	# GROUP could still reach the child in the window before reparenting;
+	# in practice the PostToolUse timeout signals the hook process, and
+	# the `( ... & )` subshell exits at once, so the window is ~0 — but
+	# that is an observation about the current harness, not a nohup
+	# guarantee.
 	(nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" </dev/null >"$DETACH_LOG" 2>&1 &) ||
 		echo "phase0.5-post-commit-rerun: WARN: failed to detach prefilter via nohup fallback" >&2
 fi

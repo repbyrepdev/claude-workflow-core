@@ -396,7 +396,7 @@ _log_partial_only() {
 	# is not a verdict — it means the input is broken. Returning the same mute
 	# rc 1 as a real finding left the operator unable to tell a refused push
 	# caused by CR findings from one caused by a torn log write.
-	printf '{"sha":"abc1234","findings":0}\n{"sha":"abc12\n' >>"$CR_LOG"
+	printf '{"sha":"abc1234","findings":0,"complete":true}\n{"sha":"abc12\n' >>"$CR_LOG"
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ] || {
 		echo "a corrupt ledger was accepted as CLEAN"
@@ -484,7 +484,7 @@ _log_partial_only() {
 }
 
 @test "non-numeric latest findings → NOT clean (fail-closed, no whitewash)" {
-	printf '{"sha":"abc1234","findings":"oops"}\n' >>"$CR_LOG"
+	printf '{"sha":"abc1234","findings":"oops","complete":true}\n' >>"$CR_LOG"
 	_cover 9
 	run cr_phase2_clean_for_sha "$SHA"
 	[ "$status" -ne 0 ]

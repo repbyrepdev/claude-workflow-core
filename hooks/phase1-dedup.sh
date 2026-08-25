@@ -12,7 +12,9 @@ set -euo pipefail
 #
 # Advisory-cluster mode (current):
 #   - Same dedup-hash → assigned same cluster_id
-#   - ALL findings emitted (input.length == output.length always)
+#   - ALL findings emitted (input.length == output.length — the ONE
+#     exception is non-object garbage elements, dropped with a stderr
+#     warn; #2563)
 #   - dedup_rules in review-config.yml still apply — they still mark
 #     known-overlap pairs (silent-failure-hunter + code-reviewer, etc.)
 #     so the cluster is operator-visible, but no findings are dropped.
@@ -104,11 +106,21 @@ export -f _cluster_id
 #      category fields onto one cluster.
 #   3. Group findings by dedup_hash.
 #   4. Pipe each group's hash to _cluster_id (sha256-based).
-#   5. Emit ALL findings with cluster_id added. Never drop.
+#   5. Emit ALL findings with cluster_id added. Never drop a finding
+#      (non-object garbage elements excepted — warned, #2563).
 WITH_HASHES=$(echo "$INPUT" | jq -c --argjson agent_keys "$AGENT_KEYS" --argjson rules "$RULES" '
   # Derive dedup_key field list for a given agent name.
+  # (#2563 + p1r1) TYPE-safe, not just null-safe: indexing $agent_keys
+  # with null OR any non-string (.agent: 42 reproduced live in round 1)
+  # is a jq RUNTIME error (exit 5), so ONE malformed finding threw away
+  # every finding in the round. Non-string agents index with "" (yields
+  # null → default key set). Single default literal — the two-branch
+  # form spelled it twice and could drift per-branch. The phase0.5
+  # producers now stamp .agent unconditionally, but this consumer must
+  # not trust every future producer to.
   def keys_for($agent):
-    ($agent_keys[$agent].dedup_key // ["file", "line", "category"]);
+    ($agent_keys[if ($agent | type) == "string" then $agent else "" end].dedup_key
+     // ["file", "line", "category"]);
 
   # Compute base hash string for a finding: pipe-joined key-field values.
   def base_hash_of($finding):
@@ -134,12 +146,28 @@ WITH_HASHES=$(echo "$INPUT" | jq -c --argjson agent_keys "$AGENT_KEYS" --argjson
         base_hash_of($finding)
       end;
 
+  # (#2563) Drop non-object elements before hashing — base_hash_of on a
+  # string/number is a jq runtime error, so one garbage element from a
+  # sloppy producer would crash the whole batch (the one narrow exception
+  # to the input.length == output.length contract; producers warn+flag
+  # partial when they drop these themselves).
+  map(select(type == "object"))
   # Annotate each finding with its hash; group + emit.
-  map(. + {_dedup_hash: hash_of(.)})
+  | map(. + {_dedup_hash: hash_of(.)})
   | group_by(._dedup_hash)
   | map(. as $group | $group[0]._dedup_hash as $h | $group | map(. + {_cluster_hash: $h}))
   | flatten
 ')
+
+# (#2563 p1r1) The non-object drop must be LOUD from this consumer too —
+# only the copilot prefilter warns producer-side; codex/gemini rows (and
+# any future producer) would otherwise shrink here invisibly, with the
+# audit-log count silently disagreeing with the emitted array.
+_in_len=$(echo "$INPUT" | jq 'length')
+_out_len=$(echo "$WITH_HASHES" | jq 'length')
+if [ "$_in_len" != "$_out_len" ]; then
+	echo "phase1-dedup: WARN — dropped $((_in_len - _out_len)) non-object element(s) from the input batch (schema garbage; producers should stamp+warn upstream)" >&2
+fi
 
 # Map _cluster_hash → _cluster_id via _cluster_id() (sha256-based).
 # Walk findings; for each unique hash, compute the cluster_id once.

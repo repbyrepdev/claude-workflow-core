@@ -56,6 +56,35 @@ Records that a finding was applied + re-tested. Distinct file shape from `record
   --retest-rc <integer>
 ```
 
+**The retest evidence is RUN, not trusted (#2562).** `record-fix` re-executes
+`--retest-cmd` at record time (timeout `PROVE_RETEST_TIMEOUT`, default 120s)
+and refuses the record unless the actual exit code equals `--retest-rc`
+(EVIDENCE MISMATCH otherwise). Consequences:
+
+- The retest command must be **idempotent/read-only** — it runs again right
+  here. A test or check invocation qualifies; a mutating command does not.
+- A claimed **nonzero** rc is legitimate evidence ("the gate refuses with
+  rc 1" proves enforcement) — the contract is *match*, not *zero*.
+- The record is stamped `retest_verified: true` + `retest_actual_rc` +
+  `retest_output_tail`; `audit`/`check-commit` refuse fix records without
+  the stamp, so hand-forged or pre-#2562 records cannot pass the gate.
+- **Cycle-critical citations demand the real entry point**: when
+  `--cited-files` names `hooks/*.sh`, `_lib/*.sh`, `pre-commit-hooks/*.sh`,
+  or `scripts/cr/local-review.sh` (`.claude/`-mirror spellings normalized),
+  that path must appear in **command position** inside `--retest-cmd` — a
+  bats fixture alone, or a command that merely *mentions* the path, is not
+  production-shaped evidence (#2544's three escaped defects all had green
+  bats). Additionally, nothing that can SWALLOW the entry point's exit
+  status may follow it: `;`, `|`, `&`, or a newline after the cited path
+  refuses the record (`hooks/x.sh || true` would report 0 regardless —
+  the laundering the backup reviewer caught on #2626). The full contract
+  after its second catch (`true || hooks/x.sh` SKIPS the entry point via
+  short-circuit while reporting `true`'s rc): a cycle-critical retest is
+  a **single pipeline** — no `;`, `&`, `&&`, `||`, or newlines anywhere.
+  Feed-pipes (`printf x | bash hooks/y.sh`) remain legal because every
+  pipeline stage executes unconditionally; a pipe *after* the path still
+  refuses (rc = pipe tail). One record per entry point.
+
 ### `audit`
 Read-only audit of all records under `.claude/.session-state/prove-yourself/`. Reports count of rejections / fixes / records with missing fields. Exits non-zero if any record is malformed.
 

@@ -330,22 +330,15 @@ No prose. No markdown fence. Just the array."
 	fi
 	rm -f "$_helper_err"
 
-	# Extract JSON array from output (Gemini may wrap response in markdown fences
-	# + may include markdown fences). Strip fenced code block markers + lead/trail ws.
-	cleaned=$(printf '%s' "$raw" | sed -E 's/^```(json)?//' | sed -E 's/```$//' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
-	# Validate it's a JSON array.
-	if ! echo "$cleaned" | jq -e 'type == "array"' >/dev/null 2>&1; then
-		# Gemini emitted non-array (refusal, explanation). Count as 0.
-		jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" \
-			'{ts:$ts, sha:$sha, phase:"0.5", cli:"gemini", agent:$agent, findings:0, status:"non-array-output"}' \
-			>>"$LOG"
+	# (#2563 p1r1) Parse → salvage → stamp → count → log via the SHARED
+	# helper in _lib/phase05-dedupe.sh — round 1 caught this prefilter
+	# still discarding prose-wrapped arrays and passing agent-less
+	# findings into dedup after the fix landed copilot-only. rc 1 = no
+	# array recoverable (non-array-output row already logged).
+	if ! cleaned=$(phase05_parse_and_log_findings "$raw" "$agent" "$TS" "$SHA" "$LOG" "gemini"); then
 		continue
 	fi
-
-	count=$(echo "$cleaned" | jq 'length')
-	jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" --argjson n "$count" \
-		'{ts:$ts, sha:$sha, phase:"0.5", cli:"gemini", agent:$agent, findings:$n, status:"ok"}' \
-		>>"$LOG"
+	count=$(printf '%s' "$cleaned" | jq 'length')
 
 	# Merge into ALL_FINDINGS.
 	ALL_FINDINGS=$(jq -nc --argjson a "$ALL_FINDINGS" --argjson b "$cleaned" '$a + $b')
@@ -364,5 +357,6 @@ phase05_emit_auth_summary "gemini" "gemini login" "$ERRORED" "$ATTEMPTED" "$ERR_
 phase05_log_no_reviewable_agents "gemini" "$SHA" "$LOG" "$TS" "$ATTEMPTED"
 
 # Two-stage dedup (#817 + #823 + #827): phase1-dedup → audit-dedup.
-# Wiring extracted to .claude/_lib/phase05-dedupe.sh (sourced above).
-phase05_emit_findings "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK"
+# (#2563 p1r1) _logged wrap: emit failures collapse to documented rc 1
+# with an errored-emit row instead of leaking jq's rc through pipefail.
+phase05_emit_findings_logged "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK" "$LOG" "$SHA" "$TS" || exit 1

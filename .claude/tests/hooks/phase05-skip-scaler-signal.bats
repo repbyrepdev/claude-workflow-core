@@ -336,7 +336,11 @@ _log_cr() { # $1=findings count for the latest CR entry
 	# cannot distinguish real ancestry validation from equality (CR).
 	sha=$(cd "$WORK" && git rev-parse main)
 	mkdir -p "$WORK/.claude/logs"
-	printf '{"sha":"%s","findings":4}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	# #2568: current-writer shape (complete stamped since #2544). The scaler
+	# reads these rows for ESCALATION (a count), not for a clean verdict, so
+	# the field is not load-bearing here — but the fixture models the writer
+	# that exists.
+	printf '{"sha":"%s","findings":4,"complete":true}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"cr=4"* ]]
@@ -351,7 +355,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 		git rev-parse HEAD)
 	(cd "$WORK" && git checkout -q feat/test)
 	mkdir -p "$WORK/.claude/logs"
-	printf '{"sha":"%s","findings":9}\n' "$other" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":9,"complete":true}\n' "$other" >>"$WORK/.claude/logs/cr-local-review.jsonl" # #2568: current-writer shape
 	_scaler
 	[ "$status" -eq 0 ]
 	# 9 findings from the sibling must NOT leak in.
@@ -367,10 +371,13 @@ _log_cr() { # $1=findings count for the latest CR entry
 	# The STRING "0" is the dangerous one: jq string-interpolation renders it
 	# identically to the NUMBER 0, so without a type check it would pass the
 	# canonical-decimal guard as a valid 0 and vouch a clean branch (CR-in-CI).
+	# #2568: rows carry complete:true (current-writer shape) — the corrupt
+	# part under test is the findings VALUE, and a writer that garbles the
+	# count can garble it on an otherwise well-formed row.
 	{
-		printf '{"sha":"%s","findings":"abc"}\n' "$sha"
-		printf '{"sha":"%s","findings":"008"}\n' "$sha"
-		printf '{"sha":"%s","findings":"0"}\n' "$sha"
+		printf '{"sha":"%s","findings":"abc","complete":true}\n' "$sha"
+		printf '{"sha":"%s","findings":"008","complete":true}\n' "$sha"
+		printf '{"sha":"%s","findings":"0","complete":true}\n' "$sha"
 	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
@@ -386,7 +393,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	# one — admitting those rows may never LOWER cr_count.
 	sha=$(cd "$WORK" && git rev-parse main)
 	mkdir -p "$WORK/.claude/logs"
-	printf '{"sha":"%s","findings":2}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_log_cr 9 # no .sha field → unattributable
 	_scaler
 	[ "$status" -eq 0 ]
@@ -401,8 +408,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 	sha=$(cd "$WORK" && git rev-parse main)
 	mkdir -p "$WORK/.claude/logs"
 	{
-		printf '{"sha":"%s","findings":0}\n' "$sha"
-		printf '{"sha":"%s","findings":"abc"}\n' "$sha"
+		printf '{"sha":"%s","findings":0,"complete":true}\n' "$sha"
+		printf '{"sha":"%s","findings":"abc","complete":true}\n' "$sha"
 	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
@@ -416,8 +423,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 	# branch supersedes its earlier entry rather than the file order deciding.
 	sha=$(cd "$WORK" && git rev-parse HEAD)
 	mkdir -p "$WORK/.claude/logs"
-	printf '{"sha":"%s","findings":7}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
-	printf '{"sha":"%s","findings":1}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":7,"complete":true}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"%s","findings":1,"complete":true}\n' "$sha" >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
 	[[ $output == *"cr=1"* ]]

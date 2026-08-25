@@ -29,7 +29,9 @@ set -euo pipefail
 #       (#2258 — keeps the canonical hook portable to consumers w/o Copilot)
 #   1 = tooling error: review-config / dedup-hook / yq / jq missing;
 #       list-phase1-agents.sh broken or crashed; OR a BROKEN Copilot helper
-#       (resolver hard-error rc=2, or present-but-non-executable) — #2258
+#       (resolver hard-error rc=2, or present-but-non-executable) — #2258;
+#       OR the findings emit/dedup pipeline failed (#2563 — every terminal
+#       path exits one of these documented codes, nothing leaks through)
 #   2 = arg error
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
@@ -391,22 +393,15 @@ No prose. No markdown fence. Just the array."
 	fi
 	rm -f "$_helper_err"
 
-	# Extract JSON array from output (Copilot sometimes wraps in markdown).
-	# Strip fenced code block markers + leading/trailing whitespace.
-	cleaned=$(printf '%s' "$raw" | sed -E 's/^```(json)?//' | sed -E 's/```$//' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
-	# Validate it's a JSON array.
-	if ! echo "$cleaned" | jq -e 'type == "array"' >/dev/null 2>&1; then
-		# Copilot emitted non-array (refusal, explanation). Count as 0.
-		jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" \
-			'{ts:$ts, sha:$sha, phase:"0.5", agent:$agent, findings:0, status:"non-array-output"}' \
-			>>"$LOG"
+	# (#2563 p1r1) Parse → salvage → stamp → count → log via the SHARED
+	# helper in _lib/phase05-dedupe.sh — the hardening originally landed
+	# inline here and round 1 caught codex/gemini still carrying every
+	# defect it closed; the lib is now the single implementation. rc 1 =
+	# no array recoverable (non-array-output row already logged).
+	if ! cleaned=$(phase05_parse_and_log_findings "$raw" "$agent" "$TS" "$SHA" "$LOG" ""); then
 		continue
 	fi
-
-	count=$(echo "$cleaned" | jq 'length')
-	jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" --argjson n "$count" \
-		'{ts:$ts, sha:$sha, phase:"0.5", agent:$agent, findings:$n, status:"ok"}' \
-		>>"$LOG"
+	count=$(printf '%s' "$cleaned" | jq 'length')
 
 	# Merge into ALL_FINDINGS.
 	ALL_FINDINGS=$(jq -nc --argjson a "$ALL_FINDINGS" --argjson b "$cleaned" '$a + $b')
@@ -426,5 +421,8 @@ phase05_emit_auth_summary "copilot" "copilot login" "$ERRORED" "$ATTEMPTED" "$ER
 phase05_log_no_reviewable_agents "copilot" "$SHA" "$LOG" "$TS" "$ATTEMPTED"
 
 # Two-stage dedup (#817 + #823 + #827): phase1-dedup → audit-dedup.
-# Wiring extracted to .claude/_lib/phase05-dedupe.sh (sourced above).
-phase05_emit_findings "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK"
+# (#2563) Every terminal path must exit a DOCUMENTED code: the _logged
+# wrap in _lib/phase05-dedupe.sh collapses any dedup/emit failure to rc 1
+# with an errored-emit audit row (observed live pre-fix: jq's runtime
+# rc=5 leaked through pipefail with [] on stdout reading as "clean").
+phase05_emit_findings_logged "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK" "$LOG" "$SHA" "$TS" || exit 1

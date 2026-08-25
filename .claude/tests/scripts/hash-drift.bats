@@ -662,3 +662,27 @@ EOF
 	[[ $output == *"NOTE pinned plugin v0.99.0 has no installed cache"* ]]
 	[[ $output == *"comparing against installed v0.34.52"* ]]
 }
+
+@test "#2237 coupled-wrapper coverage-hole refusal is a positive contract (#2552, p1r1: moved here from the regen-gate suite for covers: routing)" {
+	# Until #2552 this refusal was only ever OBSERVED accidentally — as the
+	# mystery rc=2 that broke the regen-gate suite. Pin it deliberately: a
+	# plugin (plugin.json present) whose skills/ship-pr-cycle/run.sh is
+	# missing must refuse generation rather than emit a hash set with a
+	# coverage hole for the coupled wrapper.
+	mkdir -p "$TEST_TMP/plug"
+	(
+		set -e
+		cd "$TEST_TMP/plug"
+		git init -q
+		mkdir -p .claude-plugin hooks _lib scripts
+		echo '{"version":"0.0.0"}' >.claude-plugin/plugin.json
+		printf '#!/bin/bash\necho v1\n' >hooks/h.sh
+		cp "$SCRIPT" scripts/hash-drift.sh
+		chmod +x scripts/hash-drift.sh hooks/h.sh
+		# deliberately NO skills/ship-pr-cycle/run.sh
+	)
+	cd "$TEST_TMP/plug" || return 1
+	run scripts/hash-drift.sh --generate
+	[ "$status" -eq 2 ]
+	[[ $output == *"refusing a coverage hole for the coupled wrapper"* ]]
+}

@@ -22,6 +22,21 @@ setup() {
 		cp "$HASH_DRIFT" scripts/hash-drift.sh
 		cp "$HOOK" pre-commit-hooks/source-hashes-regen-gate.sh
 		chmod +x scripts/hash-drift.sh pre-commit-hooks/source-hashes-regen-gate.sh
+		# #2552: the fixture must satisfy hash-drift's OWN preconditions.
+		# plugin.json above arms the #2237 coupled-wrapper guard, so a stub
+		# skills/ship-pr-cycle/run.sh must exist or --generate refuses
+		# (rc 2) — exactly what tests 4+5 tripped over as a red suite. The
+		# manifest + its one declared file exercise the .github byte-SSOT
+		# read/validate/hash path instead of the NOTE-and-skip branch.
+		mkdir -p skills/ship-pr-cycle .github
+		printf '#!/bin/bash\nexit 0\n' >skills/ship-pr-cycle/run.sh
+		chmod +x skills/ship-pr-cycle/run.sh
+		printf 'PR template stub\n' >.github/pull_request_template.md
+		cat >scripts/bootstrap-manifest.yml <<'M'
+files:
+  - path: .github/pull_request_template.md
+    hashed: true
+M
 		# One initial tracked file in each SSOT dir
 		cat >hooks/sample-hook.sh <<'F'
 #!/bin/bash
@@ -32,8 +47,13 @@ F
 echo "lib v1"
 F
 		chmod +x hooks/sample-hook.sh _lib/sample-lib.sh
-		# Generate baseline + commit everything
-		scripts/hash-drift.sh --generate >/dev/null
+		# Generate baseline + commit everything. #2552: assert the rc AT
+		# the call with the tool's own message — a future refusal must not
+		# surface three lines later as a confusing downstream error.
+		if ! _gen_out=$(scripts/hash-drift.sh --generate 2>&1); then
+			echo "FATAL: hash-drift --generate refused in fixture setup: $_gen_out" >&2
+			exit 1
+		fi
 		git add .
 		git commit -q -m "baseline"
 	) || {
@@ -82,7 +102,13 @@ teardown() {
 @test "passes when staged file + fresh hashes both staged" {
 	cd "$TEST_TMP" || return 1
 	echo "echo v2" >>hooks/sample-hook.sh
-	scripts/hash-drift.sh --generate >/dev/null
+	# #2552: rc asserted at the call so a refusal fails HERE with the
+	# tool's message, not later as "cp: No such file or directory".
+	run scripts/hash-drift.sh --generate
+	[ "$status" -eq 0 ] || {
+		echo "hash-drift --generate refused: $output" >&2
+		return 1
+	}
 	git add hooks/sample-hook.sh .claude/.source-hashes.json
 	run pre-commit-hooks/source-hashes-regen-gate.sh
 	[ "$status" -eq 0 ]

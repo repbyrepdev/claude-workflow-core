@@ -102,7 +102,14 @@ if [ ! -f "$LOG" ]; then
 	deny "Phase 0.5 log not found — run .claude/hooks/phase0.5-copilot-prefilter.sh --base main before phase1-launcher.sh. Override: PHASE05_GATE_SKIP=1."
 fi
 
-if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s)] | length' "$LOG" 2>/dev/null); then
+# (#2563 p1r1 + p2r1) Require a TERMINAL row: this log doubles as the
+# run-proof token, and per-agent ok rows are written BEFORE emission —
+# a crashed emit leaves them behind, so counting them let a FAILED
+# phase 0.5 unlock the phase-1 launcher for a sha whose findings were
+# never emitted. Only status:"emitted" (written by
+# phase05_emit_findings_logged after a successful emit) or a run-level
+# skipped-* row proves the run.
+if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s) | select(.agent == "<all>") | select((.status // "") as $st | $st == "emitted" or ($st | startswith("skipped-")))] | length' "$LOG" 2>/dev/null); then
 	echo "phase0.5-before-phase1: warning — failed to parse $LOG (malformed JSONL?); treating as no match" >&2
 	entries=0
 fi
