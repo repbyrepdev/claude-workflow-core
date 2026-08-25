@@ -6,9 +6,11 @@
 # "this round's findings were NOT emitted" — before this suite, ANY row
 # for HEAD (including a pure failure marker) satisfied the gates, so a
 # FAILED phase 0.5 unlocked downstream review for a sha whose prefilter
-# produced nothing. Contract pinned here: errored-* rows never count as
-# run-proof; ok and skipped-* rows do (a documented skip IS a completed
-# run).
+# produced nothing. Contract pinned here: only a TERMINAL row proves the
+# run — the run-level `emitted` row, or a run-level skipped-* row (a
+# documented skip IS a completed run). errored-* rows never count, and
+# per-agent ok rows do not either: they are written BEFORE emission, so
+# they survive a crashed emit (p2r1).
 
 setup() {
 	CR_HOOK="${BATS_TEST_DIRNAME}/../../../hooks/phase0.5-before-cr.sh"

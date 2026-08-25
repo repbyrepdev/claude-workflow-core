@@ -1031,7 +1031,11 @@ cmd_record_fix() {
 	# path rule REQUIRES) would fail rc=127 from a subdirectory and surface
 	# as a bogus EVIDENCE MISMATCH.
 	_retest_t0=$SECONDS
-	if command -v timeout >/dev/null 2>&1; then
+	# p2-ci-r1: PROVE_RETEST_NO_TIMEOUT=1 forces the unbounded branch —
+	# a deterministic seam so the fallback has real coverage on hosts
+	# WITH a timeout binary (PATH surgery in tests was host-dependent and
+	# silently skipped on exactly the CI hosts that have coreutils).
+	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 		(cd "$REPO_ROOT" && timeout "$_retest_timeout" bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
 	else
 		# No timeout binary (stock macOS without coreutils): run unbounded —

@@ -109,6 +109,33 @@ _last_agent_row() {
 	[ "$(jq -r '.partial' <<<"$(_last_agent_row)")" = "true" ]
 }
 
+@test "prose with its OWN brackets before the array is salvaged (p2-ci-r1)" {
+	# The CR major: first-[ .. last-] started at [draft] and never
+	# validated — the candidate scan must find the real array.
+	cd "$TEST_TMP" || return 1
+	printf 'Summary [draft]: [{"agent":"code-reviewer","file":"base.sh","line":1,"category":"c","severity":"low","description":"d","confidence":5}]\n' >copilot-out.txt
+	_run_prefilter
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq 'length')" = "1" ]
+	[ "$(jq -r '.partial' <<<"$(_last_agent_row)")" = "true" ]
+}
+
+@test "bracketed prose AFTER the array is salvaged (p2-ci-r1)" {
+	cd "$TEST_TMP" || return 1
+	printf '[{"agent":"code-reviewer","file":"base.sh","line":1,"category":"c","severity":"low","description":"d","confidence":5}]\nSee [ref] for details.\n' >copilot-out.txt
+	_run_prefilter
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq 'length')" = "1" ]
+}
+
+@test "multibyte prose before the array does not skew salvage offsets (p2-ci-r1)" {
+	cd "$TEST_TMP" || return 1
+	printf 'Résumé — findings ✓: [{"agent":"code-reviewer","file":"base.sh","line":1,"category":"c","severity":"low","description":"d","confidence":5}]\n' >copilot-out.txt
+	_run_prefilter
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq 'length')" = "1" ]
+}
+
 @test "pure prose (no array) still records non-array-output with 0" {
 	cd "$TEST_TMP" || return 1
 	printf 'I cannot review this diff.\n' >copilot-out.txt

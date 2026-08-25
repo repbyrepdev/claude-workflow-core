@@ -198,21 +198,21 @@ _record_fix() {
 	[[ $(jq -r '.decision_data.retest_output_tail' "$f") == *"tail-marker-xyz"* ]]
 }
 
-@test "no-timeout-binary fallback still verifies match AND mismatch (p1r1)" {
-	# The branch that actually runs on stock macOS had zero coverage: hide
-	# `timeout` via a PATH that lacks it (jq/git/bash symlinked in).
+@test "no-timeout-binary fallback still verifies match AND mismatch (p1r1, p2-ci-r1 deterministic)" {
+	# p2-ci-r1 CR major: PATH surgery was host-dependent — on GNU hosts
+	# timeout lives in /usr/bin, the hide failed, and the guard converted
+	# that into a silent skip on exactly the hosts CI runs. The
+	# PROVE_RETEST_NO_TIMEOUT seam forces the unbounded branch
+	# deterministically on every host; the WARN proves WHICH branch ran.
 	cd "$TEST_TMP" || return 1
-	mkdir -p bin
-	for t in jq git bash grep sed tail date mktemp shasum ls; do
-		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "bin/$t"
-	done
-	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" bash -c "cd '$TEST_TMP' && ! command -v timeout >/dev/null && '$SKILL' record-fix --finding-id tf1 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0 --source phase1 --confidence 5"
-	if [[ $output == *"timeout"* ]] && [ "$status" -ne 0 ] && [[ $output != *"Recorded fix"* ]]; then
-		skip "could not hide timeout from PATH on this host"
-	fi
+	export PROVE_RETEST_NO_TIMEOUT=1
+	_record_fix "true" 0
 	[ "$status" -eq 0 ]
+	[[ $output == *"deadline is UNENFORCED"* ]]
 	[[ $output == *"Recorded fix"* ]]
-	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" bash -c "cd '$TEST_TMP' && '$SKILL' record-fix --finding-id tf2 --finding-text x2 --fix-summary y --retest-cmd false --retest-rc 0 --source phase1 --confidence 5"
+	run "$SKILL" record-fix --finding-id tf2 --finding-text x2 --fix-summary y \
+		--retest-cmd false --retest-rc 0 --source phase1 --confidence 5
+	unset PROVE_RETEST_NO_TIMEOUT
 	[ "$status" -eq 1 ]
 	[[ $output == *"EVIDENCE MISMATCH"* ]]
 }

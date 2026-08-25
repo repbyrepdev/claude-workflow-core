@@ -93,17 +93,31 @@ phase05_parse_and_log_findings() {
 	# Preamble/trailer salvage: prose-wrapped arrays used to be discarded
 	# as non-array-output with findings:0 — a paid-for review reporting
 	# success-shaped zero (the #2544 laundering class, living in 0.5).
-	# Extract the first-[ .. last-] span and validate it.
+	# p2-ci-r1 (CR major): the first-[ .. last-] span breaks when prose
+	# carries its own brackets ("Summary [draft]: [ ... ]" — the span
+	# starts at [draft] and never validates). Bounded candidate scan
+	# instead: try each of the first 8 `[` positions against each of the
+	# last 8 `]` positions (widest first) and take the first span that
+	# independently validates as a JSON array. Byte-exact via tail/head
+	# -c so multibyte prose cannot skew the offsets.
 	if ! printf '%s' "$cleaned" | jq -e 'type == "array"' >/dev/null 2>&1; then
 		case "$raw" in
 		*\[*\]*)
-			_salvage="[${raw#*\[}"
-			_salvage="${_salvage%\]*}]"
-			if printf '%s' "$_salvage" | jq -e 'type == "array"' >/dev/null 2>&1; then
-				cleaned="$_salvage"
-				_partial=true
-				echo "phase0.5: salvaged a JSON array wrapped in prose for agent=$agent — logging partial:true" >&2
-			fi
+			local _s _e _starts _ends
+			_starts=$(printf '%s' "$raw" | grep -bo '\[' 2>/dev/null | head -8 | cut -d: -f1)
+			_ends=$(printf '%s' "$raw" | grep -bo '\]' 2>/dev/null | tail -8 | cut -d: -f1 | sort -rn)
+			for _s in $_starts; do
+				for _e in $_ends; do
+					[ "$_e" -gt "$_s" ] || continue
+					_salvage=$(printf '%s' "$raw" | tail -c +"$((_s + 1))" | head -c "$((_e - _s + 1))")
+					if printf '%s' "$_salvage" | jq -e 'type == "array"' >/dev/null 2>&1; then
+						cleaned="$_salvage"
+						_partial=true
+						echo "phase0.5: salvaged a JSON array wrapped in prose for agent=$agent — logging partial:true" >&2
+						break 2
+					fi
+				done
+			done
 			;;
 		esac
 	fi
