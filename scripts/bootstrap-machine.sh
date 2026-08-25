@@ -143,6 +143,20 @@ fi
 # lifecycle scripts run as this user. That is weaker than the CI lane, which
 # uses `npm ci` against a committed lockfile with integrity hashes.
 OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
+# A bare `command -v` presence check does not enforce a PIN — it enforces
+# "some openwiki exists", which is the one thing pinning is meant to rule out.
+# A machine that installed 0.3.x before this step existed would keep it
+# forever while the repo-side toolchain pin moved, which is exactly the
+# two-lanes-disagree failure the lockstep test exists to prevent. Compare, and
+# reinstall on any answer that is not the pin.
+#
+# Version output is matched by extracting the first semver rather than by
+# equality, because the CLI's format is not part of its contract ("0.4.0" and
+# "openwiki/0.4.0" both occur in the wild). An UNREADABLE version counts as a
+# mismatch: "cannot confirm the pin holds" must not report as "the pin holds".
+_ow_installed_version() {
+	openwiki --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
 if ! command -v openwiki >/dev/null 2>&1; then
 	if ! command -v npm >/dev/null 2>&1; then
 		_log "  ⚠ npm not available — install Node.js first (brew install node)"
@@ -152,7 +166,17 @@ if ! command -v openwiki >/dev/null 2>&1; then
 		_run npm install -g "openwiki@$OPENWIKI_PIN"
 	fi
 else
-	_log "  ✓ openwiki CLI already installed ($(openwiki --version 2>/dev/null | head -1))"
+	OW_HAVE=$(_ow_installed_version) || OW_HAVE=""
+	if [ "$OW_HAVE" = "$OPENWIKI_PIN" ]; then
+		_log "  ✓ openwiki CLI already installed at the pin ($OPENWIKI_PIN)"
+	elif ! command -v npm >/dev/null 2>&1; then
+		_log "  ⚠ openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN,"
+		_log "    and npm is not available to correct it. Install Node.js, then:"
+		_log "    npm install -g openwiki@$OPENWIKI_PIN"
+	else
+		_log "openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN — reinstalling..."
+		_run npm install -g "openwiki@$OPENWIKI_PIN"
+	fi
 fi
 
 # Wire the MCP server. Idempotent: the installer rewrites its own entry, and

@@ -66,8 +66,9 @@ _write_claude_json() { # $1 = json for .mcpServers.openwiki, "" = key absent
 	fi
 }
 
-_stub_openwiki() { # put a fake CLI on the controlled PATH
-	printf '#!/usr/bin/env bash\n[ "$1" = "--version" ] && { echo "openwiki/0.4.0"; exit 0; }\nexit 0\n' >"$TEST_TMP/bin/openwiki"
+_stub_openwiki() { # $1 = --version output (default: the pinned version)
+	printf '#!/usr/bin/env bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' \
+		"${1-openwiki/0.4.0}" >"$TEST_TMP/bin/openwiki"
 	chmod +x "$TEST_TMP/bin/openwiki"
 }
 
@@ -105,8 +106,59 @@ _dry_run() {
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"openwiki CLI already installed"* ]]
+	[[ $output == *"already installed at the pin (0.4.0)"* ]]
 	[[ $output != *"npm install -g openwiki@"* ]]
+}
+
+@test "an installed CLI at the WRONG version is reinstalled at the pin (p2r1)" {
+	# `command -v openwiki` enforces "some openwiki exists" — the one thing a
+	# pin is meant to rule out. A machine that installed 0.3.x before this
+	# step existed kept it forever while the repo-side toolchain pin moved,
+	# which is precisely the two-lanes-disagree failure the lockstep test
+	# exists to prevent.
+	_stub_openwiki "openwiki/0.3.1"
+	_write_claude_json ""
+	_dry_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"openwiki is 0.3.1, pin is 0.4.0 — reinstalling"* ]]
+	[[ $output == *"npm install -g openwiki@0.4.0"* ]]
+	[[ $output != *"already installed at the pin"* ]]
+}
+
+@test "a bare-semver --version is matched too (format is not a contract) (p2r1)" {
+	# The CLI prints "0.4.0" in some builds and "openwiki/0.4.0" in others, so
+	# the comparison extracts a semver rather than testing equality. Matching
+	# on the whole string would reinstall on every run of a healthy machine.
+	_stub_openwiki "0.4.0"
+	_write_claude_json ""
+	_dry_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"already installed at the pin (0.4.0)"* ]]
+	[[ $output != *"reinstalling"* ]]
+}
+
+@test "an UNREADABLE version counts as a mismatch, not as 'fine' (p2r1)" {
+	# "cannot confirm the pin holds" must not report as "the pin holds".
+	_stub_openwiki ""
+	_write_claude_json ""
+	_dry_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"an unreadable version, pin is 0.4.0 — reinstalling"* ]]
+	[[ $output != *"already installed at the pin"* ]]
+}
+
+@test "version drift with no npm WARNS and hands over the command (p2r1)" {
+	# The correction needs npm. Without it the run must still refuse to call
+	# the drifted install healthy — the same warn-and-continue shape as the
+	# no-CLI-at-all case, but naming the version it actually found.
+	_stub_openwiki "openwiki/0.3.1"
+	rm -f "$TEST_TMP/bin/npm"
+	_write_claude_json ""
+	_dry_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"openwiki is 0.3.1, pin is 0.4.0,"* ]]
+	[[ $output == *"npm install -g openwiki@0.4.0"* ]]
+	[[ $output != *"already installed at the pin"* ]]
 }
 
 @test "already-wired MCP is reported as satisfied, not re-wired" {

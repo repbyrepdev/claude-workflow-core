@@ -57,8 +57,16 @@ status | preflight | doctor) CMD="$1" ;;
 	;;
 esac
 
+# Keep git's stderr: "not a repo" and "git is broken/absent" are different
+# problems with different fixes, and discarding the message makes the second
+# one wear the first one's label — the same tri-state lesson as the tree probe
+# below, at the door instead of inside it.
+_RR_ERR=""
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
-	echo "openwiki-lane: not inside a git repo — openwiki operates on a repo tree" >&2
+	_RR_ERR=$(git rev-parse --show-toplevel 2>&1 >/dev/null) || true
+	echo "openwiki-lane: cannot resolve a git repo root — openwiki operates on a repo tree" >&2
+	[ -n "$_RR_ERR" ] && echo "  git said: $_RR_ERR" >&2
+	echo "  (If git itself is broken or missing, that is the problem, not the cwd.)" >&2
 	exit 2
 }
 
@@ -100,10 +108,29 @@ _mcp_state() {
 		echo "unknown (~/.claude.json is not valid JSON)"
 		return
 	fi
-	if ! jq -e '.mcpServers.openwiki' "$cfg" >/dev/null 2>&1; then
-		echo "not wired"
+	# Branch on the entry's TYPE, not merely its truthiness. `jq -e .x` is true
+	# for a string or a number too, and `"str" | (.args // [])` then errors —
+	# which the `|| args=""` below turns into the empty string, i.e. a
+	# malformed entry reported as "wired". Read the type once and let every
+	# shape land somewhere honest.
+	local t rc=0
+	t=$(jq -r '.mcpServers.openwiki | type' "$cfg" 2>/dev/null) || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		# .mcpServers itself is not an object, so the lookup could not run.
+		echo "unknown (~/.claude.json: cannot read .mcpServers.openwiki)"
 		return
 	fi
+	case "$t" in
+	null)
+		echo "not wired"
+		return
+		;;
+	object) ;;
+	*)
+		echo "unknown (~/.claude.json .mcpServers.openwiki is a $t, not an object)"
+		return
+		;;
+	esac
 	# Distinguish the published-CLI wiring from the obsolete source-build hack
 	# (operations.md "Install"): the hack points at ~/.openwiki-main.
 	local args
@@ -192,8 +219,21 @@ preflight)
 doctor)
 	_print_status
 	echo ""
-	# Diagnostic by contract: doctor reports, it does not gate. Always rc 0.
-	_preflight || true
+	# Diagnostic by contract: doctor REPORTS, preflight GATES. doctor is
+	# documented as always rc 0 and callers are told not to switch on it, so
+	# an unsafe result must not become doctor's exit code.
+	#
+	# But `|| true` swallowed EVERY status, including ones _preflight never
+	# returns — a crash, a 127, a `set -e` abort mid-probe all read exactly
+	# like the ordinary "unsafe" it is supposed to absorb. Keep rc 0; say the
+	# undocumented ones out loud instead.
+	_PF_RC=0
+	_preflight || _PF_RC=$?
+	if [ "$_PF_RC" -ne 0 ] && [ "$_PF_RC" -ne 1 ]; then
+		echo "openwiki-lane: WARNING — preflight itself failed with rc $_PF_RC." >&2
+		echo "  That is not one of its documented outcomes (0 safe / 1 unsafe)," >&2
+		echo "  so this report is INCOMPLETE — run 'preflight' directly." >&2
+	fi
 	echo ""
 	echo "Notes:"
 	echo "  - The MCP server is read at SESSION START. A fresh install becomes"

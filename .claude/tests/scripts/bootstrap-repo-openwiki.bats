@@ -64,6 +64,31 @@ teardown() {
 	[ -f "$target/.github/openwiki-toolchain/package-lock.json" ]
 	run jq -e '.packages["node_modules/openwiki"].version' "$target/.github/openwiki-toolchain/package-lock.json"
 	[ "$status" -eq 0 ]
+	# (p2r1) Assert the pin in the GENERATED file, not just in this repo's
+	# source. The lockstep test below compares bootstrap-machine's OPENWIKI_PIN
+	# against the plugin's own package.json; that only reaches a consumer
+	# through the heredoc, and the heredoc↔live pin for THIS path is enforced
+	# by a pre-commit hook with several exit-0-without-checking paths. Reading
+	# what the consumer actually received closes the chain here in the suite.
+	local machine_pin gen_pin
+	machine_pin=$(grep -oE 'OPENWIKI_PIN="\$\{OPENWIKI_PIN:-[0-9.]+\}"' "$REPO_ROOT/scripts/bootstrap-machine.sh" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+	gen_pin=$(jq -r '.dependencies.openwiki' "$target/.github/openwiki-toolchain/package.json")
+	[ -n "$machine_pin" ] || {
+		echo "could not parse OPENWIKI_PIN from bootstrap-machine.sh"
+		return 1
+	}
+	[ "$gen_pin" = "$machine_pin" ] || {
+		echo "the BOOTSTRAPPED repo pins openwiki $gen_pin; the machine lane pins $machine_pin"
+		return 1
+	}
+	# ...and the lockfile the consumer received resolves that same version, so
+	# `npm ci` in the seeded workflow installs the pin rather than drifting.
+	run jq -re --arg v "$machine_pin" '.packages["node_modules/openwiki"].version | select(. == $v)' \
+		"$target/.github/openwiki-toolchain/package-lock.json"
+	[ "$status" -eq 0 ] || {
+		echo "seeded lockfile resolves openwiki to something other than $machine_pin"
+		return 1
+	}
 
 	# Auto-merge must be opt-in: arming the cron and auto-merging LLM edits to
 	# AGENTS.md/CLAUDE.md are different risk decisions.

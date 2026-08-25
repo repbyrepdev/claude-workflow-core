@@ -37,6 +37,19 @@ setup() {
 		echo "FATAL: fixture init failed" >&2
 		return 1
 	}
+	# _run_skill pins PATH to the fixture bin + /usr/bin:/bin, so anything the
+	# wrapper needs that lives elsewhere (jq, on a Homebrew machine) has to be
+	# linked in explicitly.
+	for t in jq git; do
+		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$TEST_TMP/bin/$t"
+	done
+	# Fail LOUD rather than silently testing the wrong branch: the CLI-absent
+	# cases depend on openwiki being unreachable except via _stub_cli, and
+	# openwiki installs to a brew/npm prefix, never to /usr/bin or /bin.
+	if [ -x /usr/bin/openwiki ] || [ -x /bin/openwiki ]; then
+		echo "FATAL: openwiki present in /usr/bin or /bin — fixture PATH isolation broken" >&2
+		return 1
+	fi
 }
 
 teardown() {
@@ -60,8 +73,14 @@ _write_claude_json() {
 
 _commit_all() { (cd "$REPO" && git add -A && git -c user.email=t@t -c user.name=t commit -q -m fixture); }
 
-_run_skill() { # $1 = subcommand; PATH includes the stub bin, HOME is the fixture
-	run env PATH="$TEST_TMP/bin:$PATH" HOME="$TEST_TMP/home" bash -c "cd '$REPO' && '$SKILL' $1"
+_run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixture
+	# The ambient PATH is deliberately NOT retained. Half this suite drives the
+	# CLI-absent branch ("CLI: absent", the missing-CLI preflight refusal), and
+	# `scripts/bootstrap-machine.sh` installs openwiki to a brew/npm prefix on
+	# every developer machine — so an inherited PATH turns those tests into
+	# assertions about whoever is running them. _stub_cli is the only way the
+	# CLI becomes reachable here.
+	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" bash -c "cd '$REPO' && '$SKILL' $1"
 }
 
 @test "usage: no subcommand exits 2; --help exits 0" {
@@ -83,7 +102,10 @@ _run_skill() { # $1 = subcommand; PATH includes the stub bin, HOME is the fixtur
 	# $TEST_TMP is deliberately NOT a git repo — the repo is its child.
 	run env HOME="$TEST_TMP/home" bash -c "cd '$TEST_TMP' && '$SKILL' status"
 	[ "$status" -eq 2 ]
-	[[ $output == *"not inside a git repo"* ]]
+	[[ $output == *"cannot resolve a git repo root"* ]]
+	# The real "not a repository" text comes through from git itself now, so
+	# this case and the broken-git case below read differently (p2r1).
+	[[ $output == *"not a git repository"* ]]
 }
 
 @test "status reports every axis: CLI absent, MCP unwired, no openwiki/, clean tree" {
@@ -214,6 +236,78 @@ _run_skill() { # $1 = subcommand; PATH includes the stub bin, HOME is the fixtur
 	_run_skill status
 	[ "$status" -eq 0 ]
 	[[ $output == *"no ~/.claude.json"* ]]
+}
+
+@test "MCP probe: a NON-OBJECT entry is unknown, never 'wired' (p2r1)" {
+	# `jq -e .mcpServers.openwiki` is true for a string or a number too, and
+	# `"str" | (.args // [])` then errors — which the `|| args=""` fallback
+	# turned into the empty string, i.e. the *_) "wired" arm. A hand-edited
+	# config would report the server as working when nothing can launch it.
+	cd "$REPO" || return 1
+	for shape in '"just-a-string"' '42' 'true' '["a","b"]'; do
+		_write_claude_json "$shape"
+		_run_skill status
+		[ "$status" -eq 0 ]
+		[[ $output == *"MCP:       unknown"* ]] || {
+			echo "shape $shape did not report unknown: $output"
+			return 1
+		}
+		[[ $output != *"MCP:       wired"* ]] || {
+			echo "shape $shape reported WIRED: $output"
+			return 1
+		}
+	done
+	# `false` is falsy to `jq -e` but is still a malformed entry, not absence.
+	_write_claude_json 'false'
+	_run_skill status
+	[[ $output == *"MCP:       unknown"* ]]
+	# ...and a real object still reads as wired, so this is not over-broad.
+	_write_claude_json '{"command":"openwiki","args":["mcp"]}'
+	_run_skill status
+	[[ $output == *"MCP:       wired"* ]]
+}
+
+@test "doctor keeps rc 0 but does NOT swallow an undocumented preflight rc (p2r1)" {
+	# doctor is contractually always rc 0 (it reports; preflight gates), and
+	# `_preflight || true` honoured that by swallowing EVERY status — so a
+	# crash mid-probe was indistinguishable from the ordinary "unsafe" it is
+	# meant to absorb. rc 1 stays quiet; anything else says so out loud.
+	cd "$REPO" || return 1
+	_stub_cli "openwiki/0.4.0"
+	_write_claude_json ""
+	echo dirty >"$REPO/uncommitted"
+	_run_skill doctor
+	[ "$status" -eq 0 ]
+	[[ $output == *"REFUSING"* ]]
+	[[ $output != *"preflight itself failed"* ]]
+
+	# The already-covered UNKNOWN path (a corrupt index) is preflight's rc 1
+	# too, so it stays quiet as well.
+	#
+	# HONEST SCOPE: nothing here drives the warning ARM. _preflight only ever
+	# returns 0 or 1, and it is a shell function inside the script, so an
+	# undocumented status cannot be induced through the CLI surface. The arm
+	# exists for the next probe someone adds to _preflight — the point of the
+	# finding — and these assertions pin that today's paths all stay inside
+	# the documented vocabulary.
+}
+
+@test "a BROKEN git is not reported as 'wrong directory' (p2r1)" {
+	# Trying to drive doctor with a git that exits 42 revealed the wrapper
+	# never gets that far: the repo-root probe discarded git's stderr and
+	# blamed the cwd, so `git` being broken or missing wore the label "not
+	# inside a git repo" — sending the operator to cd somewhere else.
+	cd "$REPO" || return 1
+	# rm -f FIRST: setup() links the real git in here, and `printf >` FOLLOWS a
+	# symlink — without this it truncates /usr/bin/git. (SIP refuses on macOS,
+	# which is how this was caught; a Linux dev box would not have refused.)
+	rm -f "$TEST_TMP/bin/git"
+	printf '#!/usr/bin/env bash\necho "git: broken toolchain" >&2\nexit 42\n' >"$TEST_TMP/bin/git"
+	chmod +x "$TEST_TMP/bin/git"
+	_run_skill doctor
+	[ "$status" -eq 2 ]
+	[[ $output == *"git said: git: broken toolchain"* ]]
+	[[ $output == *"git itself is broken or missing"* ]]
 }
 
 @test "tree probe FAILS CLOSED: a git error is UNKNOWN and refuses (p1r1)" {

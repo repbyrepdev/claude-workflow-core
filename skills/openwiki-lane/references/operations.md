@@ -20,10 +20,19 @@ Earlier versions could not serve MCP, which forced a pnpm **source build** at
 is obsolete; do not reproduce it. If you meet a machine still running it (the
 office mini, as of this writing), the fix is the two commands above.
 
-The installer writes `~/.claude/skills/openwiki-lane/` (vendor files with SHA-256
+The installer writes `~/.claude/skills/openwiki/` (vendor files with SHA-256
 recorded in `.openwiki-install.json`) and the MCP server entry. Never commit
 those files into a repo — they are third-party, hash-verified, and regenerated
 on install; vendoring them creates silent drift.
+
+That path is `openwiki`, **not** `openwiki-lane` — read out of the published
+package rather than assumed (`dist/integrations/install/registry.js`,
+`claude.user.skillDirectory`, v0.4.0). An earlier draft of this file said
+`openwiki-lane/`, which would have meant the vendor skill lands on top of THIS
+skill; it is also the whole reason this skill carries the `-lane` suffix, so
+the two spellings could not both be right. The same registry entry has a
+`project` scope writing `.claude/skills/openwiki` INSIDE a repo — nothing here
+runs that, and it is worth knowing before someone does.
 
 ## The eight gotchas
 

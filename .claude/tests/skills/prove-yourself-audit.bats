@@ -341,3 +341,44 @@ _record_fix() {
 	[[ $output == *"refusing to run retest evidence UNBOUNDED"* ]]
 	[[ $output == *"PROVE_RETEST_NO_TIMEOUT"* ]]
 }
+
+# $1 = --reason text. Everything else is a valid minimal rejection.
+_record_rejection_reason() {
+	run env HOME="$TEST_TMP" bash -c "cd '$TEST_TMP' && '$SKILL' record-rejection \
+		--finding-id ap1 --finding-text 'sample finding' \
+		--dogfood-cmd 'true' --dogfood-output 'ok' --dogfood-rc 0 \
+		--external-authority 'GNU coreutils manual, timeout(1)' \
+		--reason \"\$1\" --source cr --severity minor" _ "$1"
+}
+
+@test "anti-pattern match is WORD-BOUNDED, not bare substring (p2r1)" {
+	# The guard's remedy line is "APPLY the fix instead of rejecting", so a
+	# false positive actively pushes the reviewer toward making a change they
+	# had correctly judged wrong. Found live: "od shows" fired inside
+	# "dogfood shows", blocking a rejection whose evidence was a docs quote.
+	cd "$TEST_TMP" || return 1
+	_record_rejection_reason "The dogfood shows zero matches, so the suggestion would loosen the config."
+	[ "$status" -eq 0 ] || {
+		echo "word-bounded guard still blocked a legitimate reason: $output"
+		return 1
+	}
+	[[ $output != *"anti-pattern"* ]]
+}
+
+@test "the real self-citation anti-patterns still BLOCK (not over-corrected) (p2r1)" {
+	cd "$TEST_TMP" || return 1
+	# Standalone, mid-sentence, and sentence-initial — every position a
+	# boundary check has to get right.
+	for r in "od shows the bytes are fine" \
+		"I checked and od shows nothing" \
+		"memory says this was already settled" \
+		"i remember rejecting this one before"; do
+		_record_rejection_reason "$r"
+		# rc 2 is this skill's validation-refusal status (not 1).
+		[ "$status" -eq 2 ] || {
+			echo "anti-pattern NOT blocked (rc $status): $r"
+			return 1
+		}
+		[[ $output == *"anti-pattern"* ]]
+	done
+}
