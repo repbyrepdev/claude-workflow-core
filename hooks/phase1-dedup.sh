@@ -107,8 +107,16 @@ export -f _cluster_id
 #   5. Emit ALL findings with cluster_id added. Never drop.
 WITH_HASHES=$(echo "$INPUT" | jq -c --argjson agent_keys "$AGENT_KEYS" --argjson rules "$RULES" '
   # Derive dedup_key field list for a given agent name.
+  # (#2563) null-safe: a finding missing its .agent field crashed the
+  # whole batch here — `$agent_keys[null]` is a jq RUNTIME error ("Cannot
+  # index object with null", exit 5), so ONE malformed finding threw away
+  # every finding in the round. Fall back to the default key set; the
+  # phase0.5 producers now stamp .agent, but this consumer must not trust
+  # every future producer to.
   def keys_for($agent):
-    ($agent_keys[$agent].dedup_key // ["file", "line", "category"]);
+    if $agent == null then ["file", "line", "category"]
+    else ($agent_keys[$agent].dedup_key // ["file", "line", "category"])
+    end;
 
   # Compute base hash string for a finding: pipe-joined key-field values.
   def base_hash_of($finding):
@@ -134,8 +142,14 @@ WITH_HASHES=$(echo "$INPUT" | jq -c --argjson agent_keys "$AGENT_KEYS" --argjson
         base_hash_of($finding)
       end;
 
+  # (#2563) Drop non-object elements before hashing — base_hash_of on a
+  # string/number is a jq runtime error, so one garbage element from a
+  # sloppy producer would crash the whole batch (the one narrow exception
+  # to the input.length == output.length contract; producers warn+flag
+  # partial when they drop these themselves).
+  map(select(type == "object"))
   # Annotate each finding with its hash; group + emit.
-  map(. + {_dedup_hash: hash_of(.)})
+  | map(. + {_dedup_hash: hash_of(.)})
   | group_by(._dedup_hash)
   | map(. as $group | $group[0]._dedup_hash as $h | $group | map(. + {_cluster_hash: $h}))
   | flatten
