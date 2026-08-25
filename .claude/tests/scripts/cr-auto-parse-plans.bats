@@ -20,7 +20,7 @@ _write_gh_stub() {
 	local fail_glob="${2:-}"
 	{
 		echo '#!/usr/bin/env bash'
-		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
+		echo 'if [ "$1" = "issue" ] && [ "$2" = "view" ]; then [ -n "${GH_VIEW_LOG:-}" ] && echo "$*" >>"$GH_VIEW_LOG"; printf "%s" "$GH_VIEW_JSON"; exit 0; fi'
 		if [ "${1:-}" = "edit-log" ]; then
 			echo 'if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then'
 			echo '  echo "$*" >>"$GH_EDIT_LOG"'
@@ -34,6 +34,26 @@ _write_gh_stub() {
 		echo 'exit 0'
 	} >"$TEST_TMP/bin/gh"
 	chmod +x "$TEST_TMP/bin/gh"
+}
+
+# One fixture builder (p1r1 code-reviewer): the gh view payload lives in
+# ONE place, so the next `--json` field addition edits this function, not
+# every literal in the file (the state/body addition needed a 4-fixture
+# hand-sweep — never again).
+#   $1 = labels csv ("plan-me,epic"; "" = none)
+#   $2 = state ("" = field ABSENT, for the missing-state edge)
+#   $3 = body
+#   $4 = issue number (default 999)
+_issue_json() {
+	local labels_json
+	labels_json=$(printf '%s' "$1" | jq -Rc 'split(",") | map(select(length > 0) | {name: .})')
+	jq -nc --argjson labels "$labels_json" --arg state "$2" --arg body "$3" \
+		--argjson num "${4:-999}" \
+		'{labels: $labels, number: $num, title: "feat: x",
+		  comments: [{author: {login: "coderabbitai"}, body: "## Implementation Steps - foo"}],
+		  createdAt: "2026-01-01T00:00:00Z"}
+		 + (if $state != "" then {state: $state} else {} end)
+		 + {body: $body}'
 }
 
 setup() {
@@ -73,7 +93,8 @@ teardown() {
 @test "epic-labelled issue is SKIPPED, never parsed (anti-nesting guard)" {
 	# epic + plan-me + a CR plan present: the OLD code WOULD parse it (creating a
 	# nested epic); the fix must skip it on the `epic` label.
-	local j='{"labels":[{"name":"epic"},{"name":"plan-me"}],"number":999,"title":"EPIC: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
+	local j
+	j=$(_issue_json "epic,plan-me" OPEN "ordinary hand-written issue body")
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
@@ -88,7 +109,8 @@ teardown() {
 }
 
 @test "non-epic plan-me issue WITH a CR plan WOULD parse (guard not over-broad)" {
-	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"feat: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
+	local j
+	j=$(_issue_json "plan-me" OPEN "ordinary hand-written issue body")
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
@@ -107,7 +129,8 @@ teardown() {
 	# issues leave it) ran only under --dry-run, so it was never exercised. Stub
 	# cr-plan (no-op success) at the first-candidate path + capture the gh edit;
 	# assert BOTH the parse event and the exact relabel fire.
-	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: y","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
+	local j
+	j=$(_issue_json "plan-me" OPEN "ordinary hand-written issue body" 777)
 	cd "$TEST_TMP"
 	# cr-plan resolves $REPO_ROOT/.claude/skills/cr-plan/run.sh first (REPO_ROOT
 	# == this tmp git repo) — stub it as a no-op success so parse "succeeds".
@@ -152,7 +175,8 @@ teardown() {
 	# still drops plan-me so the poll set is bounded). Stub gh so ONLY the
 	# add-label-plan-parsed edit returns non-zero; all other gh calls behave
 	# normally + log their args.
-	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: z","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
+	local j
+	j=$(_issue_json "plan-me" OPEN "ordinary hand-written issue body" 777)
 	cd "$TEST_TMP"
 	# cr-plan no-op success (parse "succeeds") so we reach the relabel block.
 	mkdir -p "$TEST_TMP/.claude/skills/cr-plan"
@@ -192,7 +216,8 @@ teardown() {
 	# The June guard covered epic-labelled outputs only; ai-triage plan-me'd
 	# the auto-created SUBS and the parser decomposed decompositions three
 	# levels deep. Any body carrying the auto-created markers must skip.
-	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"Thread-reply helper","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"Sub-issue auto-created from CodeRabbit plan on epic for #2548."}'
+	local j
+	j=$(_issue_json "plan-me" OPEN "Sub-issue auto-created from CodeRabbit plan on epic for #2548.")
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
@@ -202,7 +227,8 @@ teardown() {
 }
 
 @test "epic that LOST its label is still skipped via the body marker (defense in depth)" {
-	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"EPIC: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"Epic auto-created from CodeRabbit plan on issue #2574."}'
+	local j
+	j=$(_issue_json "plan-me" OPEN "Epic auto-created from CodeRabbit plan on issue #2574.")
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
@@ -215,11 +241,109 @@ teardown() {
 	# The bulk poll lists --state open, but --issue <N> and sources closed
 	# mid-flight (batch-PR merge) reached the parser closed — creating
 	# scaffolding for work that is already done (#2578 → #2623-#2625).
-	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"feat: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"CLOSED","body":"ordinary issue"}'
+	local j
+	j=$(_issue_json "plan-me" CLOSED "ordinary issue")
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
 	[[ $output != *"WOULD parse"* ]]
 	run grep -q '"event":"skip-not-open"' "$LOG"
 	[ "$status" -eq 0 ]
+}
+
+@test "the tail marker ALONE is caught — degraded-body defense (p1r1 test-analyzer vs simplifier)" {
+	# Pristine generated bodies carry BOTH markers (simplifier verified they
+	# co-occur in one heredoc), so the second regex alternative fires alone
+	# only on a DEGRADED body — top line edited/lost, tail Context intact.
+	# That is precisely the case worth defending; this pins the alternative
+	# as the SOLE matcher, answering both p1r1 findings.
+	local j
+	j=$(_issue_json "plan-me" OPEN 'Operator rewrote this intro. Auto-generated by `cr-plan parse 42`. Refer to parent epic.')
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output != *"WOULD parse"* ]]
+	run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
+	[ "$status" -eq 0 ]
+}
+
+@test "MERGED state is skipped — the guard is an OPEN allowlist, not a CLOSED blocklist (p1r1)" {
+	local j
+	j=$(_issue_json "plan-me" MERGED "ordinary issue")
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output != *"WOULD parse"* ]]
+	run grep -q '"event":"skip-not-open"' "$LOG"
+	[ "$status" -eq 0 ]
+}
+
+@test "MISSING state field fails closed to skip (p1r1)" {
+	local j
+	j=$(_issue_json "plan-me" "" "ordinary issue")
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output != *"WOULD parse"* ]]
+	run grep -q '"event":"skip-not-open"' "$LOG"
+	[ "$status" -eq 0 ]
+}
+
+@test "the fetch REQUESTS state+body — stub-fidelity lock (p1r1 test-analyzer)" {
+	# The gh stub echoes $GH_VIEW_JSON regardless of the --json field list,
+	# so reverting the field additions would pass every fixture test while
+	# production fail-closed-skipped EVERY issue on the missing .state.
+	# Lock the requested fields via the stub's view-args log.
+	local j
+	j=$(_issue_json "plan-me" OPEN "ordinary hand-written issue body")
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" GH_VIEW_LOG="$TEST_TMP/gh-view.log" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	run grep -qE -- '--json [^ ]*state' "$TEST_TMP/gh-view.log"
+	[ "$status" -eq 0 ]
+	run grep -qE -- '--json [^ ]*body' "$TEST_TMP/gh-view.log"
+	[ "$status" -eq 0 ]
+}
+
+@test "DRIFT LOCK: the guard regex matches the REAL producer templates (p1r1 code-reviewer)" {
+	# The markers are prose emitted by heredocs in skills/cr-plan/run.sh; a
+	# wording edit there must break THIS test loudly, not silently un-arm a
+	# fail-closed guard. Extract each literal from the producer source and
+	# drive it through the real guard.
+	local producer="$PLUGIN/skills/cr-plan/run.sh"
+	local m1 m2 m3
+	m1=$(grep -o 'Epic auto-created from CodeRabbit plan on issue' "$producer" | head -1)
+	m2=$(grep -o 'Sub-issue auto-created from CodeRabbit plan on epic' "$producer" | head -1)
+	# The producer SOURCE escapes the backtick inside its heredoc (\`);
+	# rendered issue bodies carry a plain backtick. Anchor to line-start —
+	# the heredoc template begins its line with the marker, while the
+	# skill's own guard REGEX carries the same words mid-line (grepping
+	# unanchored extracted the regex, not the template). Then RENDER
+	# (strip the backslash) — the guard sees bodies, never source.
+	m3=$(grep -oE '^Auto-generated by ..?cr-plan parse' "$producer" | head -1 | sed 's/\\//g')
+	[ -n "$m1" ] || {
+		echo "producer EPIC marker moved — update the guard regex + this test"
+		return 1
+	}
+	[ -n "$m2" ] || {
+		echo "producer SUB marker moved — update the guard regex + this test"
+		return 1
+	}
+	[ -n "$m3" ] || {
+		echo "producer Context marker moved — update the guard regex + this test"
+		return 1
+	}
+	cd "$TEST_TMP"
+	local body j
+	for body in "$m1 #9." "$m2 for #9." "prose intro. $m3 9\`."; do
+		j=$(_issue_json "plan-me" OPEN "$body")
+		rm -f "$LOG"
+		run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+		[ "$status" -eq 0 ]
+		run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
+		[ "$status" -eq 0 ] || {
+			echo "guard MISSED a real producer marker: $body"
+			return 1
+		}
+	done
 }
