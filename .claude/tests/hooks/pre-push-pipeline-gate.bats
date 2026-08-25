@@ -431,6 +431,39 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	[[ $output != *"INVAL"* ]]
 }
 
+# ---- #2567-r2 hardening: NO AUDIT ROW → NO BYPASS ---------------------------
+
+@test "PIPELINE_GATE_SKIP=1 bypass succeeds AND writes the audit row" {
+	(cd "$TMP" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
+	run bash -c "cd '$TMP' && printf '' | PIPELINE_GATE_SKIP=1 SKIP_LOG='$TMP/skip.jsonl' bash '$HOOK'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"bypassing gate"* ]]
+	[ -f "$TMP/skip.jsonl" ]
+	[ "$(jq -r '.gate' "$TMP/skip.jsonl")" = "pre-push" ]
+}
+
+@test "bypass REFUSES when the audit append fails — no unlogged skip" {
+	(cd "$TMP" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
+	mkdir -p "$TMP/ro"
+	chmod 555 "$TMP/ro"
+	run bash -c "cd '$TMP' && printf '' | PIPELINE_GATE_SKIP=1 SKIP_LOG='$TMP/ro/deeper/skip.jsonl' bash '$HOOK'"
+	chmod 755 "$TMP/ro"
+	[ "$status" -eq 1 ]
+	[[ $output == *"refusing an UNLOGGED bypass"* ]]
+}
+
+@test "bypass REFUSES when the audit writer lib is absent entirely" {
+	# Copy the hook to a dir with NO sibling _lib → pipeline_skip_log never
+	# defined → the bypass must fail closed, not proceed with a warning.
+	(cd "$TMP" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
+	mkdir -p "$TMP/hooks"
+	cp "$HOOK" "$TMP/hooks/pre-push-pipeline-gate.sh"
+	run bash -c "cd '$TMP' && printf '' | PIPELINE_GATE_SKIP=1 bash '$TMP/hooks/pre-push-pipeline-gate.sh'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"refusing an UNLOGGED bypass"* ]]
+	[[ $output == *"pipeline-skip.sh unavailable"* ]]
+}
+
 @test "real hook on a fast-forward ref does NOT abort at the force-push probe (#2295 set -e regression)" {
 	# pr-test-analyzer #2295 r1: the unit tests above call the fn via `run` (a
 	# subshell — it swallows set -e), so they cannot see that a BARE call at the

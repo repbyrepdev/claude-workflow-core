@@ -494,8 +494,14 @@ if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 	# #2545: the append moved to the shared _lib/pipeline-skip.sh writer —
 	# one row shape for every gate (this producer emits gate:"pre-push",
 	# the phase2 round-cap emits gate:"phase2-round-cap") so the report
-	# can segment overrides instead of conflating them. A missing lib
-	# degrades to a LOUD unlogged warning, never a blocked bypass.
+	# can segment overrides instead of conflating them.
+	# #2567-r2 (deferred to this batch): NO AUDIT ROW → NO BYPASS. This
+	# gate is the last line protecting origin, and the audit row is the
+	# only durable record that the operator approved this specific skip —
+	# an unlogged bypass is indistinguishable from a silent one. The
+	# prior warn-and-proceed contradicted the cap-override writers in
+	# ship-pr-cycle.sh, which already refuse UNLOGGED overrides; this
+	# aligns the last gate with that fail-closed contract.
 	_ppg_skip_lib="$PPG_DIR/../_lib/pipeline-skip.sh"
 	if [ -r "$_ppg_skip_lib" ]; then
 		# shellcheck source=../_lib/pipeline-skip.sh
@@ -503,12 +509,16 @@ if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 		# swallowed them into the generic 'unavailable' fallback below —
 		# a broken lib and an absent lib are different repairs).
 		. "$_ppg_skip_lib" ||
-			echo "pre-push-pipeline-gate: WARN: sourcing _lib/pipeline-skip.sh returned non-zero — bypass will fall back to the UNLOGGED warning" >&2
+			echo "pre-push-pipeline-gate: WARN: sourcing _lib/pipeline-skip.sh returned non-zero — the audit writer is unavailable" >&2
 	fi
 	if command -v pipeline_skip_log >/dev/null 2>&1; then
-		pipeline_skip_log "pre-push" || true
+		if ! pipeline_skip_log "pre-push"; then
+			echo "pre-push-pipeline-gate: ERROR: bypass audit append FAILED (see writer error above) — refusing an UNLOGGED bypass (fix .claude/logs perms, or drop PIPELINE_GATE_SKIP)" >&2
+			exit 1
+		fi
 	else
-		echo "pre-push-pipeline-gate: WARN: _lib/pipeline-skip.sh unavailable — bypass proceeding UNLOGGED" >&2
+		echo "pre-push-pipeline-gate: ERROR: _lib/pipeline-skip.sh unavailable — refusing an UNLOGGED bypass (fix the plugin install, or drop PIPELINE_GATE_SKIP)" >&2
+		exit 1
 	fi
 	exit 0
 fi
