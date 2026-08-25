@@ -784,3 +784,33 @@ EOF
 	[[ $output == *"NOT verified clean"* ]]
 	[ ! -f "$NUDGE_MARKER" ]
 }
+
+@test "LIVE SHAPE (#2600): a delimited rate-limit BLOCK inside the summary does not destroy the witness around it" {
+	# CR edits its summary in place; a past rate-limit episode leaves a
+	# start/end-delimited block INSIDE the body whose walkthrough carries
+	# the genuine reviewed range. Whole-body exclusion refused a fully
+	# reviewed head (the gate's first production refusal) — the strip is
+	# block-scoped now.
+	_install_gh_shim
+	_reviews_stale_cr
+	_write_findings 0
+	_write_policy 5
+	printf '[{"user":{"login":"coderabbitai[bot]"},"body":"<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n> Review limit reached\\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->\\n<!-- walkthrough_start -->\\nReviewing files that changed between oldold1111 and %s.\\n"}]' "$HEAD_SHA" >"$TEST_TMP/comments.json"
+	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
+	_reviews_after_approved_at_head
+	_run_gate
+	[ "$status" -eq 0 ]
+	grep -q "pr comment" "$GH_ARGS_LOG"
+}
+
+@test "a body that is ONLY a delimited rate-limit block (nothing else) is still not a witness" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_write_findings 0
+	printf '[{"user":{"login":"coderabbitai[bot]"},"body":"<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n> Review limit reached - next window pending for %s\\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->\\n"}]' "$HEAD_SHA" >"$TEST_TMP/comments.json"
+	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
+	_run_gate
+	[ "$status" -eq 2 ]
+	[[ $output == *"not verifiably reviewed"* ]]
+	[ ! -f "$NUDGE_MARKER" ]
+}
