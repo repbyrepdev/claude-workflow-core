@@ -1,0 +1,129 @@
+name: OpenWiki Update
+
+# (#2629) Regenerates the `openwiki/` evidence index and opens a docs PR.
+#
+# SHIPPED DISABLED ON PURPOSE. There is no `schedule:` trigger below — a
+# repo that receives this file via bootstrap must never start spending AI
+# credits merely by being bootstrapped. To arm it, uncomment the cron and
+# commit that deliberately:
+#
+#   schedule:
+#     - cron: "0 8 * * 1"   # Mondays
+#
+# Stagger the day/hour across repos; a shared credit pool drains fastest
+# when every repo regenerates on the same morning.
+#
+# COST MODEL (skills/openwiki/references/operations.md): this CI lane is
+# for cheap weekly DELTAS — it diffs HEAD against the commit it last
+# documented. The expensive first generation belongs in the in-chat MCP
+# lane, which runs on the host agent's own session for free.
+#
+# PROVIDER: `OPENWIKI_PROVIDER` + `OPENWIKI_MODEL_ID` are knobs, but do NOT
+# point them at a Claude model through the copilot provider — it crashes in
+# patchToolCallsMiddleware (operations.md gotcha 3). Use a GPT-family model
+# here; use the in-chat lane to drive OpenWiki with Claude.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read # checkout only reads; the PR step pushes with OPENWIKI_PUSH_TOKEN
+
+# Two overlapping runs race on the openwiki/update branch.
+concurrency:
+  group: openwiki-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Full history so `openwiki code --update` can diff HEAD against the
+          # commit it last documented.
+          fetch-depth: 0
+          persist-credentials: false # nothing later may inherit the write token
+
+      # Fail EARLY and legibly when a repo was bootstrapped but never had its
+      # secrets set — otherwise the failure surfaces as an opaque 401 from the
+      # provider several minutes in. gotcha 1: COPILOT_API_KEY must be a
+      # `gho_*` OAuth token; `ghp_*` PATs 401.
+      - name: Verify required secrets
+        env:
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+          OPENWIKI_PUSH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          [ -n "$COPILOT_API_KEY" ] || { echo "::error::COPILOT_API_KEY is unset — see skills/openwiki/references/operations.md (must be a gho_* OAuth token, not a ghp_* PAT)"; missing=1; }
+          [ -n "$OPENWIKI_PUSH_TOKEN" ] || { echo "::error::OPENWIKI_PUSH_TOKEN is unset — a GITHUB_TOKEN-opened PR never triggers required checks and can never merge (gotcha 7)"; missing=1; }
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenWiki (locked)
+        run: |
+          npm ci --prefix .github/openwiki-toolchain
+          echo "$GITHUB_WORKSPACE/.github/openwiki-toolchain/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # `--print` is REQUIRED headless: without it a no-TTY run exits after a
+      # single agent turn ("I'll proceed now" → exit). gotcha 4.
+      - name: Run OpenWiki
+        run: openwiki code --update --print
+        env:
+          OPENWIKI_PROVIDER: ${{ vars.OPENWIKI_PROVIDER || 'copilot' }}
+          OPENWIKI_MODEL_ID: ${{ vars.OPENWIKI_MODEL_ID || 'gpt-5.5' }}
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+          OPENWIKI_TELEMETRY_DISABLED: "1"
+
+      # The gitHead watermark must commit WITH real content (or later runs
+      # rediff the same history), but a watermark-only diff must not open a
+      # PR. Revert it when nothing else changed. gotcha 8.
+      - name: Drop watermark-only churn
+        run: |
+          set -euo pipefail
+          if git status --porcelain -- 'openwiki/**/*.md' 'openwiki/.claims' AGENTS.md CLAUDE.md | grep -q .; then
+            echo "content changed; watermark rides along"
+          else
+            git checkout -- openwiki/.last-update.json 2>/dev/null || true
+            echo "watermark-only run; timestamp reverted, no PR"
+          fi
+
+      - name: Create OpenWiki update pull request
+        id: docs_pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          # NOT GITHUB_TOKEN: PRs opened with it never trigger required
+          # checks, so they can never satisfy branch protection (gotcha 7).
+          token: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+          add-paths: |
+            openwiki
+            AGENTS.md
+            CLAUDE.md
+          branch: openwiki/update
+          commit-message: "docs: update OpenWiki"
+          title: "docs: update OpenWiki"
+          body: |
+            Automated OpenWiki documentation update (delta since the last
+            documented commit).
+
+            Generated pages are not hand-editable — the update loop reverts
+            them. Corrections belong in `openwiki/INSTRUCTIONS.md`, phrased
+            as durable rules.
+
+      # `--auto` merges only once EVERY branch-protection condition is met.
+      # Where a ruleset requires an approving review (as claude-workflow-core
+      # does since 2026-08-25), green checks alone are NOT sufficient — the
+      # PR waits for a policy reviewer's APPROVED record. That is correct;
+      # do not "fix" it by loosening the gate.
+      - name: Arm auto-merge (zero-touch docs lane)
+        if: steps.docs_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+          PR_NUMBER: ${{ steps.docs_pr.outputs.pull-request-number }}
+        run: |
+          gh pr merge --auto --squash "$PR_NUMBER" -R "$GITHUB_REPOSITORY"

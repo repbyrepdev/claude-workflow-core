@@ -1188,6 +1188,231 @@ jobs:
           sync-labels: true
 EOF
 
+# --- OpenWiki docs lane (#2629) --------------------------------------
+#
+# Seeded UNCONDITIONALLY and safe to: both workflows are inert until a repo
+# opts in deliberately. openwiki-update.yml has NO schedule trigger (arming
+# the cron is a per-repo commit) and notify-wiki-hub.yml no-ops with a
+# notice while HUB_DISPATCH_TOKEN is unset. That is why there is no
+# --with-openwiki flag: nothing here spends credits or reddens a build by
+# merely existing, so it seeds like gitleaks/pr-lint.
+#
+# The operational contract (eight gotchas, the INSTRUCTIONS.md steering
+# rule, the three secrets) lives in the plugin's
+# skills/openwiki/references/operations.md.
+_write .github/workflows/openwiki-update.yml 644 <<'EOF'
+name: OpenWiki Update
+
+# (#2629) Regenerates the `openwiki/` evidence index and opens a docs PR.
+#
+# SHIPPED DISABLED ON PURPOSE. There is no `schedule:` trigger below — a
+# repo that receives this file via bootstrap must never start spending AI
+# credits merely by being bootstrapped. To arm it, uncomment the cron and
+# commit that deliberately:
+#
+#   schedule:
+#     - cron: "0 8 * * 1"   # Mondays
+#
+# Stagger the day/hour across repos; a shared credit pool drains fastest
+# when every repo regenerates on the same morning.
+#
+# COST MODEL (skills/openwiki/references/operations.md): this CI lane is
+# for cheap weekly DELTAS — it diffs HEAD against the commit it last
+# documented. The expensive first generation belongs in the in-chat MCP
+# lane, which runs on the host agent's own session for free.
+#
+# PROVIDER: `OPENWIKI_PROVIDER` + `OPENWIKI_MODEL_ID` are knobs, but do NOT
+# point them at a Claude model through the copilot provider — it crashes in
+# patchToolCallsMiddleware (operations.md gotcha 3). Use a GPT-family model
+# here; use the in-chat lane to drive OpenWiki with Claude.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read # checkout only reads; the PR step pushes with OPENWIKI_PUSH_TOKEN
+
+# Two overlapping runs race on the openwiki/update branch.
+concurrency:
+  group: openwiki-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Full history so `openwiki code --update` can diff HEAD against the
+          # commit it last documented.
+          fetch-depth: 0
+          persist-credentials: false # nothing later may inherit the write token
+
+      # Fail EARLY and legibly when a repo was bootstrapped but never had its
+      # secrets set — otherwise the failure surfaces as an opaque 401 from the
+      # provider several minutes in. gotcha 1: COPILOT_API_KEY must be a
+      # `gho_*` OAuth token; `ghp_*` PATs 401.
+      - name: Verify required secrets
+        env:
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+          OPENWIKI_PUSH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          [ -n "$COPILOT_API_KEY" ] || { echo "::error::COPILOT_API_KEY is unset — see skills/openwiki/references/operations.md (must be a gho_* OAuth token, not a ghp_* PAT)"; missing=1; }
+          [ -n "$OPENWIKI_PUSH_TOKEN" ] || { echo "::error::OPENWIKI_PUSH_TOKEN is unset — a GITHUB_TOKEN-opened PR never triggers required checks and can never merge (gotcha 7)"; missing=1; }
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenWiki (locked)
+        run: |
+          npm ci --prefix .github/openwiki-toolchain
+          echo "$GITHUB_WORKSPACE/.github/openwiki-toolchain/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # `--print` is REQUIRED headless: without it a no-TTY run exits after a
+      # single agent turn ("I'll proceed now" → exit). gotcha 4.
+      - name: Run OpenWiki
+        run: openwiki code --update --print
+        env:
+          OPENWIKI_PROVIDER: ${{ vars.OPENWIKI_PROVIDER || 'copilot' }}
+          OPENWIKI_MODEL_ID: ${{ vars.OPENWIKI_MODEL_ID || 'gpt-5.5' }}
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+          OPENWIKI_TELEMETRY_DISABLED: "1"
+
+      # The gitHead watermark must commit WITH real content (or later runs
+      # rediff the same history), but a watermark-only diff must not open a
+      # PR. Revert it when nothing else changed. gotcha 8.
+      - name: Drop watermark-only churn
+        run: |
+          set -euo pipefail
+          if git status --porcelain -- 'openwiki/**/*.md' 'openwiki/.claims' AGENTS.md CLAUDE.md | grep -q .; then
+            echo "content changed; watermark rides along"
+          else
+            git checkout -- openwiki/.last-update.json 2>/dev/null || true
+            echo "watermark-only run; timestamp reverted, no PR"
+          fi
+
+      - name: Create OpenWiki update pull request
+        id: docs_pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          # NOT GITHUB_TOKEN: PRs opened with it never trigger required
+          # checks, so they can never satisfy branch protection (gotcha 7).
+          token: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+          add-paths: |
+            openwiki
+            AGENTS.md
+            CLAUDE.md
+          branch: openwiki/update
+          commit-message: "docs: update OpenWiki"
+          title: "docs: update OpenWiki"
+          body: |
+            Automated OpenWiki documentation update (delta since the last
+            documented commit).
+
+            Generated pages are not hand-editable — the update loop reverts
+            them. Corrections belong in `openwiki/INSTRUCTIONS.md`, phrased
+            as durable rules.
+
+      # `--auto` merges only once EVERY branch-protection condition is met.
+      # Where a ruleset requires an approving review (as claude-workflow-core
+      # does since 2026-08-25), green checks alone are NOT sufficient — the
+      # PR waits for a policy reviewer's APPROVED record. That is correct;
+      # do not "fix" it by loosening the gate.
+      - name: Arm auto-merge (zero-touch docs lane)
+        if: steps.docs_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+          PR_NUMBER: ${{ steps.docs_pr.outputs.pull-request-number }}
+        run: |
+          gh pr merge --auto --squash "$PR_NUMBER" -R "$GITHUB_REPOSITORY"
+EOF
+
+_write .github/workflows/notify-wiki-hub.yml 644 <<'EOF'
+name: notify-wiki-hub
+
+# (#2629) Docs changed on main → ping the overarching wiki hub so it
+# rebuilds in ~a minute (its own cron is the backstop).
+#
+# SAFE BEFORE SECRETS EXIST: the dispatch step no-ops with a notice when
+# HUB_DISPATCH_TOKEN is unset, so a freshly bootstrapped repo does not turn
+# every docs push red. Set the secret to activate it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openwiki/**"
+      - "wiki/**"
+      - "docs/**"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "README.md"
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch docs-updated to the wiki hub
+        env:
+          # The secret enters via env, never via expression interpolation
+          # into the script body — no process-args exposure, no injection
+          # surface.
+          HUB_DISPATCH_TOKEN: ${{ secrets.HUB_DISPATCH_TOKEN }}
+          HUB_REPO: ${{ vars.WIKI_HUB_REPO || 'repbyrepdev/repbyrep-wiki' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HUB_DISPATCH_TOKEN" ]; then
+            echo "::notice::HUB_DISPATCH_TOKEN unset — skipping hub ping. Set the secret to activate (skills/openwiki/references/operations.md)."
+            exit 0
+          fi
+          curl -sf --connect-timeout 10 --max-time 60 -X POST \
+            -H "Authorization: Bearer $HUB_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$HUB_REPO/dispatches" \
+            -d "{\"event_type\": \"docs-updated\", \"client_payload\": {\"repo\": \"$REPO\"}}"
+EOF
+
+_write .github/openwiki-toolchain/package.json 644 <<'EOF'
+{
+  "name": "openwiki-toolchain",
+  "private": true,
+  "description": "Pinned docs-generation toolchain for openwiki-update.yml (lockfile = supply-chain gate). Keep openwiki in lockstep with OPENWIKI_PIN in scripts/bootstrap-machine.sh.",
+  "dependencies": {
+    "openwiki": "0.4.0",
+    "mermaid": "11.16.0",
+    "jsdom": "29.1.1"
+  }
+}
+EOF
+
+# The lockfile IS the supply-chain gate (`npm ci` in the workflow), and at
+# ~5.5k lines it cannot live in a heredoc. Generate it from the pinned
+# package.json instead — deterministic, and no network install needed.
+if [ "$DRY_RUN" = "1" ]; then
+	_log "[dry-run] would generate .github/openwiki-toolchain/package-lock.json"
+elif [ -f "$TARGET/.github/openwiki-toolchain/package-lock.json" ] && [ "$FORCE" != "1" ]; then
+	_log "  • .github/openwiki-toolchain/package-lock.json already exists — skipping (--force to overwrite)"
+elif command -v npm >/dev/null 2>&1; then
+	# MUST cd, not --prefix: `npm --prefix <dir>` invoked from elsewhere writes
+	# package keys RELATIVE TO CWD, baking this machine's absolute paths
+	# (/private/var/folders/...) into the consumer's committed lockfile.
+	_log "generating the OpenWiki toolchain lockfile..."
+	if ! (cd "$TARGET/.github/openwiki-toolchain" && npm install --package-lock-only --silent >/dev/null 2>&1); then
+		_log "  ⚠ lockfile generation failed — run manually before arming the workflow:"
+		_log "      (cd .github/openwiki-toolchain && npm install --package-lock-only)"
+	fi
+else
+	_log "  ⚠ npm not available — the OpenWiki workflow needs a lockfile ('npm ci')."
+	_log "    Run before arming it: npm install --prefix .github/openwiki-toolchain --package-lock-only"
+fi
+
 _write .gemini/policy.toml 644 <<'EOF'
 # v4.28-W4 (#643) — Gemini CLI policy.toml deny block.
 # SCHEMA CORRECTED (#236): the prior schema was WRONG and the deny rules were

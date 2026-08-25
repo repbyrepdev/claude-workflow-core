@@ -1,0 +1,44 @@
+name: notify-wiki-hub
+
+# (#2629) Docs changed on main → ping the overarching wiki hub so it
+# rebuilds in ~a minute (its own cron is the backstop).
+#
+# SAFE BEFORE SECRETS EXIST: the dispatch step no-ops with a notice when
+# HUB_DISPATCH_TOKEN is unset, so a freshly bootstrapped repo does not turn
+# every docs push red. Set the secret to activate it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openwiki/**"
+      - "wiki/**"
+      - "docs/**"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "README.md"
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch docs-updated to the wiki hub
+        env:
+          # The secret enters via env, never via expression interpolation
+          # into the script body — no process-args exposure, no injection
+          # surface.
+          HUB_DISPATCH_TOKEN: ${{ secrets.HUB_DISPATCH_TOKEN }}
+          HUB_REPO: ${{ vars.WIKI_HUB_REPO || 'repbyrepdev/repbyrep-wiki' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HUB_DISPATCH_TOKEN" ]; then
+            echo "::notice::HUB_DISPATCH_TOKEN unset — skipping hub ping. Set the secret to activate (skills/openwiki/references/operations.md)."
+            exit 0
+          fi
+          curl -sf --connect-timeout 10 --max-time 60 -X POST \
+            -H "Authorization: Bearer $HUB_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$HUB_REPO/dispatches" \
+            -d "{\"event_type\": \"docs-updated\", \"client_payload\": {\"repo\": \"$REPO\"}}"

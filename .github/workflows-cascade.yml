@@ -48,6 +48,13 @@ cascade:
                          # seeded to consumers (absent from bootstrap-
                          # manifest), so the approval-policy caveat
                          # stays scoped to THIS repo's workflows.
+  - openwiki-update.yml  # #2629 docs regeneration. Ships with NO schedule
+                         # trigger — a bootstrapped repo must never start
+                         # spending AI credits on its own; arming the cron
+                         # is a deliberate per-repo commit.
+  - notify-wiki-hub.yml  # #2629 docs-changed ping to the wiki hub. No-ops
+                         # with a notice when HUB_DISPATCH_TOKEN is unset,
+                         # so it cannot redden a repo that has not opted in.
 
 no_cascade:
   - plugin-self-bootstrap-verify.yml  # plugin-only — validates plugin

@@ -149,6 +149,19 @@ files:
     mode: "644"
   - path: .github/workflows/pr-labeler.yml
     mode: "644"
+  # OpenWiki docs lane (#2629). Seeded INERT — openwiki-update.yml carries no
+  # schedule trigger and notify-wiki-hub.yml no-ops without its secret — so
+  # these are safe to write into every repo and are armed per-repo later.
+  # Not hashed: like the other workflows, they are template-with-overrides.
+  - path: .github/workflows/openwiki-update.yml
+    mode: "644"
+  - path: .github/workflows/notify-wiki-hub.yml
+    mode: "644"
+  # The toolchain pin travels with the workflow (`npm ci` needs it). The
+  # lockfile beside it is GENERATED at bootstrap (5.5k lines — not a heredoc),
+  # so only the manifest-declared package.json is listed here.
+  - path: .github/openwiki-toolchain/package.json
+    mode: "644"
 
 labels:
   - name: bug

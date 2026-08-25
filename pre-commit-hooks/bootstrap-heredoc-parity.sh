@@ -43,6 +43,15 @@ PARITY_PATHS=(
 	".gemini/policy.toml"
 	".gemini/settings.json"
 	".codex/config.toml"
+	# (#2629) OpenWiki workflows. Unlike gitleaks/pr-lint — whose consumer
+	# heredocs are DELIBERATELY slim versions of this repo's fuller CI — the
+	# OpenWiki pair is meant to be byte-identical everywhere: the consumer
+	# copy carries the same inert-by-default guarantees (no schedule trigger,
+	# secret-guarded hub ping) that make unconditional seeding safe. Without
+	# this pin the heredoc is a third, unpinned copy that can silently arm a
+	# cron for every bootstrapped repo while the plugin's own copy stays inert.
+	".github/workflows/openwiki-update.yml"
+	".github/workflows/notify-wiki-hub.yml"
 )
 
 # Only run when the commit touches the script, manifest, or any of the
