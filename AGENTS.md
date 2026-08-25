@@ -75,3 +75,31 @@ Reference the SSOT rather than restating it here:
 - Required checks: `.github/required-checks-list.yml`
 - PR body: `.github/pull_request_template.md`
 - Review pipeline: `skills/ship-pr-cycle/SKILL.md`
+
+### The async Phase-1 panel hooks are REMOVED — do not reintroduce naively (#2564)
+
+Four hook registrations (`phase1-log-pending-gate`,
+`phase1-directive-pending-guard`, `phase1-post-agent-nudge`,
+`phase1-launch-completeness-gate`) were deleted from operator settings on
+2026-08-24. They assumed the `Agent` tool returned synchronously; the harness
+runs agents asynchronously now, so the nudge fired at *launch*, the gate
+demanded findings from agents that had not read a file yet, and the pair
+stacked into a deadlock whose only exit pressured the operator into
+fabricating review records — the exact dishonesty the gate exists to prevent.
+The full post-mortem lives at the top of
+`hooks/phase1-directive-pending-guard.sh` (pinned `auto-register: false` so
+`register-hook.sh --all-auto-register` cannot silently reinstate it). If a
+panel is ever rebuilt: key pending-state on agent **completion**, never let a
+guard block the command that clears it, and keep `Read` available to
+subagents.
+
+### `# audits:` header for repo-wide meta-lint suites (#2572, convention only)
+
+A bats file that POLICY-AUDITS many files (a repo-wide meta-lint) must not
+claim `# covers:` on them — that hands out false behavioral-test credit in
+`test-touched` and the mirror-drift gate. Declare `# audits: <paths…>`
+instead. Consumers (test.sh coverage, test-touched, refresh-from-source)
+treat `audits:` as routing-only — the suite still runs when its subjects
+change, but earns no behavioral credit. Enforcement + the
+`posttooluse-enforcement-contract.bats` migration are tracked under epic
+#2581; until that lands this section is the convention's SSOT.
