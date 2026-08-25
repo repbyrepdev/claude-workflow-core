@@ -329,7 +329,7 @@ EOF
 	# ai-triage's existing "skip any auto:* label" rule then mechanically
 	# excludes scaffolding from plan-me labeling (and CR from spending a
 	# plan comment on it) before the parse guards would refuse it anyway.
-	skill_args=(--title "EPIC: $issue_title (#$issue)" --body-file "$epic_body_file" --parent "$issue" --stamp-label "auto:cr-plan")
+	skill_args=(--title "EPIC: $issue_title (#$issue)" --body-file "$epic_body_file" --parent "$issue" --ensure-label "auto:cr-plan")
 	idx=0
 	while IFS= read -r ptitle; do
 		[ -z "$ptitle" ] && continue

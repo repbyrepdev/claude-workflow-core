@@ -111,7 +111,7 @@ _run_parse() {
 	[[ $output == *"CR plan structure differs"* ]]
 }
 
-@test "a full parse passes --stamp-label auto:cr-plan to epic-creation (upstream trim)" {
+@test "a full parse passes --ensure-label auto:cr-plan to epic-creation (upstream trim)" {
 	# End-to-end past both guards with a REAL plan body; the epic-creation
 	# skill is stubbed to log its args — the stamp must be among them so
 	# every scaffolding issue is born auto:*-labelled (ai-triage skips it).
@@ -124,6 +124,6 @@ _run_parse() {
 		GH_VIEW_JSON="$(_issue_json "plan-me" OPEN "ordinary hand-written issue body")" \
 		GH_PLAN_BODY="$plan" "$SKILL" parse 999
 	[ "$status" -eq 0 ]
-	run grep -q -- "--stamp-label auto:cr-plan" "$TEST_TMP/epic-args.log"
+	run grep -q -- "--ensure-label auto:cr-plan" "$TEST_TMP/epic-args.log"
 	[ "$status" -eq 0 ]
 }
