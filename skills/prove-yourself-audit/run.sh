@@ -285,6 +285,15 @@ Usage:
     [--cited-files "path1 path2 path3"] [--covers-count N] [--cluster-id ID]
   run.sh record-fix --finding-id X --finding-text "..." \
     --fix-summary "..." --retest-cmd "..." --retest-rc N \
+                             # #2562: --retest-cmd is RE-EXECUTED at record
+                             # time; its actual rc must equal N or the record
+                             # is refused (EVIDENCE MISMATCH). The command
+                             # must be idempotent — it runs again right here.
+                             # Timeout: PROVE_RETEST_TIMEOUT (default 120s).
+                             # Cited cycle-critical files (hooks/, _lib/,
+                             # pre-commit-hooks/, scripts/cr/local-review.sh)
+                             # must appear IN the command text (real entry
+                             # point, not only a bats fixture).
     --source {phase0.5|phase1|cr} \
     [--confidence 1-10]      # required for source phase0.5/phase1;
                              # optional for source=cr (validated 1-10
@@ -939,6 +948,76 @@ cmd_record_fix() {
 		}
 	fi
 
+	# #2562: EVIDENCE MUST BE A RUN, NOT A CLAIM. record-fix used to accept
+	# --retest-cmd/--retest-rc as free text — `--retest-cmd "trust me"
+	# --retest-rc 0` passed, so CLAIMING a fix was strictly easier than
+	# REJECTING a finding (which demands dogfood evidence). That asymmetry
+	# is backwards. Two mechanical requirements, both fail-closed:
+	#
+	# (1) Critical-path rule: when a cited file is cycle infrastructure
+	#     (hooks/, _lib/, pre-commit-hooks/, scripts/cr/local-review.sh),
+	#     the retest command must invoke the real entry point — the cited
+	#     repo-relative path must appear in the command text. A bats run
+	#     alone is a synthetic harness, not production-shaped evidence
+	#     (#2544's three escaped defects all had green bats).
+	local _crit_f
+	# shellcheck disable=SC2086
+	for _crit_f in $cited_files; do
+		case "$_crit_f" in
+		hooks/*.sh | _lib/*.sh | pre-commit-hooks/*.sh | scripts/cr/local-review.sh)
+			case "$retest_cmd" in
+			*"$_crit_f"*) ;;
+			*)
+				echo "error: cited file $_crit_f is cycle-critical — the retest command must invoke the real entry point (the cited path must appear in --retest-cmd; a bats fixture alone is not production-shaped evidence) (#2562)" >&2
+				exit 2
+				;;
+			esac
+			;;
+		esac
+	done
+
+	# (2) Re-execution: run the recorded command HERE and require its actual
+	#     rc to equal the claimed --retest-rc. The record then carries
+	#     retest_verified:true + retest_actual_rc; cmd_audit refuses fix
+	#     records without the stamp, so a hand-forged record cannot pass
+	#     the commit gate. The retest command must therefore be idempotent
+	#     (a test/check invocation — which is what retest evidence is).
+	#     A claimed NONZERO rc is legitimate evidence ("the gate refuses
+	#     with rc 1" proves enforcement) — the contract is match, not zero.
+	local _retest_timeout="${PROVE_RETEST_TIMEOUT:-120}"
+	if ! [[ $_retest_timeout =~ ^[1-9][0-9]*$ ]]; then
+		echo "WARN: PROVE_RETEST_TIMEOUT='$_retest_timeout' is not a positive integer — using 120" >&2
+		_retest_timeout=120
+	fi
+	local _retest_out _retest_actual_rc=0
+	_retest_out=$(mktemp) || {
+		echo "error: mktemp failed for retest output capture" >&2
+		exit 1
+	}
+	echo "record-fix: re-executing retest evidence (timeout ${_retest_timeout}s): $retest_cmd" >&2
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$_retest_timeout" bash -c "$retest_cmd" >"$_retest_out" 2>&1 || _retest_actual_rc=$?
+	else
+		# No timeout binary (stock macOS without coreutils): run unbounded —
+		# record-fix is operator-interactive, so a hang is visible, not silent.
+		bash -c "$retest_cmd" >"$_retest_out" 2>&1 || _retest_actual_rc=$?
+	fi
+	if [ "$_retest_actual_rc" -eq 124 ] && [ "$retest_rc" -ne 124 ]; then
+		echo "error: retest command timed out after ${_retest_timeout}s — raise PROVE_RETEST_TIMEOUT if the evidence genuinely needs longer (#2562)" >&2
+		rm -f "$_retest_out"
+		exit 1
+	fi
+	if [ "$_retest_actual_rc" -ne "$retest_rc" ]; then
+		echo "error: EVIDENCE MISMATCH — retest command exited rc=$_retest_actual_rc but --retest-rc claims $retest_rc; refusing the record (#2562)" >&2
+		echo "  last output:" >&2
+		tail -c 400 "$_retest_out" | sed 's/^/    /' >&2 || true
+		rm -f "$_retest_out"
+		exit 1
+	fi
+	local _retest_tail
+	_retest_tail=$(tail -c 800 "$_retest_out" 2>/dev/null || true)
+	rm -f "$_retest_out"
+
 	local ts state_file
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	state_file=$(_state_file_for_finding "$finding_id")
@@ -969,13 +1048,17 @@ cmd_record_fix() {
 		--arg sev "${severity:-}" \
 		--arg cluster "$cluster_id" \
 		--arg src "${src:-}" \
+		--argjson actual "$_retest_actual_rc" \
+		--arg rtail "$_retest_tail" \
 		'{finding_id: $fid, kind: "fix", finding_text: $ftext, ts: $ts,
 		  covers_count: $covers, confidence: $conf,
 		  severity: (if $sev == "" then null else $sev end),
 		  source: (if $src == "" then null else $src end),
 		  cluster_id: (if $cluster == "" then null else $cluster end),
 		  cited_files: $cited,
-		  decision_data: {fix_summary: $summary, retest_cmd: $cmd, retest_rc: $rc}}' >"$state_file"
+		  decision_data: {fix_summary: $summary, retest_cmd: $cmd, retest_rc: $rc,
+		                  retest_verified: true, retest_actual_rc: $actual,
+		                  retest_output_tail: $rtail}}' >"$state_file"
 
 	# Record per-cited-file cache entries under reviewer "prove-yourself-fix".
 	_record_cite_cache "prove-yourself-fix" "$cited_files"
@@ -1057,6 +1140,20 @@ cmd_audit() {
 				errs+=("$f: missing required field .decision_data.retest_rc")
 			elif ! [[ $val =~ ^[0-9]+$ ]]; then
 				errs+=("$f: .decision_data.retest_rc must be numeric integer (got: $val)")
+			fi
+			# #2562: record-time re-execution stamp. A fix record without
+			# retest_verified:true was hand-forged or written by a
+			# pre-#2562 recorder; either way the evidence was never RUN
+			# by the recorder — re-record via run.sh record-fix.
+			val=$(jq -r '.decision_data.retest_verified // ""' "$f")
+			if [ "$val" != "true" ]; then
+				errs+=("$f: fix record lacks .decision_data.retest_verified:true — re-record via run.sh record-fix (the recorder re-executes the retest; #2562)")
+			fi
+			val=$(jq -r '.decision_data.retest_actual_rc // ""' "$f")
+			if [ -z "$val" ]; then
+				errs+=("$f: missing required field .decision_data.retest_actual_rc")
+			elif ! [[ $val =~ ^[0-9]+$ ]]; then
+				errs+=("$f: .decision_data.retest_actual_rc must be numeric integer (got: $val)")
 			fi
 			;;
 		*)

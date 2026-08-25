@@ -56,6 +56,24 @@ Records that a finding was applied + re-tested. Distinct file shape from `record
   --retest-rc <integer>
 ```
 
+**The retest evidence is RUN, not trusted (#2562).** `record-fix` re-executes
+`--retest-cmd` at record time (timeout `PROVE_RETEST_TIMEOUT`, default 120s)
+and refuses the record unless the actual exit code equals `--retest-rc`
+(EVIDENCE MISMATCH otherwise). Consequences:
+
+- The retest command must be **idempotent/read-only** — it runs again right
+  here. A test or check invocation qualifies; a mutating command does not.
+- A claimed **nonzero** rc is legitimate evidence ("the gate refuses with
+  rc 1" proves enforcement) — the contract is *match*, not *zero*.
+- The record is stamped `retest_verified: true` + `retest_actual_rc` +
+  `retest_output_tail`; `audit`/`check-commit` refuse fix records without
+  the stamp, so hand-forged or pre-#2562 records cannot pass the gate.
+- **Cycle-critical citations demand the real entry point**: when
+  `--cited-files` names `hooks/*.sh`, `_lib/*.sh`, `pre-commit-hooks/*.sh`,
+  or `scripts/cr/local-review.sh`, that path must appear inside
+  `--retest-cmd` — a bats fixture alone is synthetic, not production-shaped
+  evidence (#2544's three escaped defects all had green bats).
+
 ### `audit`
 Read-only audit of all records under `.claude/.session-state/prove-yourself/`. Reports count of rejections / fixes / records with missing fields. Exits non-zero if any record is malformed.
 
