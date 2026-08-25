@@ -11,11 +11,12 @@
 # forces the write under bats), which is what blocks the NEXT tool call at
 # the point of violation instead of surfacing at commit time.
 #
-# Pinned ack-routing sites (5 of 6): shellcheck fail, shfmt auto-fixed,
-# shfmt auto-fix-failed, yamllint fail, actionlint fail. The shellcheck-
-# CRASH arm needs an input that crashes the linter itself and is exercised
-# only in production (phase1 r1 pr-test-analyzer + comment-analyzer: say
-# exactly what is pinned, or restart the rot cycle).
+# Pinned ack-routing sites (6 of 6, #2574): shellcheck fail, shellcheck
+# CRASH (stubbed linter — a real crasher input is linter-version-dependent,
+# so the stub emitting the Haskell-exception shape is the stable fixture),
+# shfmt auto-fixed, shfmt auto-fix-failed, yamllint fail, actionlint fail.
+# (phase1 r1 pr-test-analyzer + comment-analyzer: say exactly what is
+# pinned, or restart the rot cycle.)
 
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/lint-dispatch.sh"
@@ -225,4 +226,40 @@ _expect_clean_passthrough() {
 
 @test "#2547 payload without file_path passes through: exit 0, NO sentinel" {
 	_expect_clean_passthrough '{}' "empty payload"
+}
+
+@test "#2574 shellcheck CRASH routes crashed-upstream-bug: skip-not-fail + sentinel" {
+	# The 6th and last ack-routing site. A real crasher input is
+	# linter-version-dependent (Haskell exception in checkCmd), so
+	# the linter is STUBBED to emit the crash shape — explicitly allowed
+	# by the issue. Stub lives in a prepended PATH dir; shfmt/jq stay real.
+	mkdir -p "$TEST_TMP/stub"
+	printf '#!/bin/bash\necho "shellcheck: Non-exhaustive patterns in checkCmd"\nexit 2\n' >"$TEST_TMP/stub/shellcheck"
+	chmod +x "$TEST_TMP/stub/shellcheck"
+	printf '#!/bin/bash\nset -u\necho ok\n' >"$ROOT/crash.sh"
+	run env HOOK_ACK_BATS_SKIP=0 PATH="$TEST_TMP/stub:$PATH" bash "$HOOK" <<<"$(_payload "$ROOT/crash.sh")"
+	# Crash = LINTER broken, not code broken: must NOT block the commit...
+	[ "$status" -eq 0 ] || {
+		echo "crash arm blocked (rc=$status). output: $output"
+		return 1
+	}
+	# ...but must be VISIBLE: breadcrumb naming the actual exception...
+	[[ $output == *"CRASHED"* ]] || {
+		echo "no crash breadcrumb. output: $output"
+		return 1
+	}
+	[[ $output == *"Non-exhaustive patterns"* ]] || {
+		echo "breadcrumb lacks the exception text. output: $output"
+		return 1
+	}
+	# ...the sentinel reason names the not-fixable-in-code cause...
+	_sentinel_has shellcheck "crashed-upstream-bug" "$ROOT/crash.sh" || {
+		echo "sentinel: $(cat "$SENTINEL" 2>/dev/null)"
+		return 1
+	}
+	# ...and the lint log records skip (linter broken), never fail.
+	grep -q '"linter":"shellcheck","status":"skip"' "$ROOT/.claude/logs/lint-run.jsonl" || {
+		echo "log: $(cat "$ROOT/.claude/logs/lint-run.jsonl" 2>/dev/null)"
+		return 1
+	}
 }

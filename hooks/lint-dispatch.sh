@@ -12,8 +12,9 @@ set -u
 #
 # Drift guard: the reason-string list below (v4.28-W3-C block) is the
 # SINGLE enumeration of ack-routing call sites — bats
-# `lint-dispatch.bats` pins every arm except shellcheck-CRASH, which needs an input
-# that crashes the linter itself (#2574; exercised only in production).
+# `lint-dispatch.bats` pins ALL SIX arms — the shellcheck-CRASH arm via a
+# stubbed linter emitting the crash shape (#2574; a real crasher input is
+# linter-version-dependent, so the stub is the stable fixture).
 # (#2547 — the prior comment claimed full coverage for 20+ versions
 # while no bats existed; r8 caught THIS header keeping a second,
 # already-diverged copy of the same list.) New file type: add a `case`
