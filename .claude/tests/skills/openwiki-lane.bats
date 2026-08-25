@@ -128,6 +128,7 @@ _run_skill() { # $1 = subcommand; PATH includes the stub bin, HOME is the fixtur
 	echo "rules" >"$REPO/openwiki/INSTRUCTIONS.md"
 	_commit_all
 	_run_skill status
+	[ "$status" -eq 0 ]
 	[[ $output == *"the steering channel"* ]]
 }
 
@@ -224,6 +225,10 @@ _run_skill() { # $1 = subcommand; PATH includes the stub bin, HOME is the fixtur
 	_write_claude_json ""
 	printf 'GARBAGE' >"$REPO/.git/index"
 	_run_skill status
+	# status REPORTS state and never fails on it — including the unknown that
+	# preflight then refuses on. Pinning rc 0 here is what keeps those two
+	# contracts from collapsing into one.
+	[ "$status" -eq 0 ]
 	[[ $output == *"Tree:      UNKNOWN"* ]]
 	_run_skill preflight
 	[ "$status" -eq 1 ]

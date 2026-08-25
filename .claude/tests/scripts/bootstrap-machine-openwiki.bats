@@ -163,6 +163,11 @@ _dry_run() {
 	rm -f "$TEST_TMP/bin/npm" "$TEST_TMP/bin/openwiki"
 	_write_claude_json ""
 	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" bash "$SCRIPT" --tag v0.0.0
+	# A missing npm is a WARN-and-continue by design (openwiki is one step of a
+	# machine bootstrap, not its point). Asserting rc here is what separates
+	# that deliberate degrade from the script aborting — the exact confusion
+	# that let this suite run 6/6 green against a script exiting 2.
+	[ "$status" -eq 0 ]
 	[[ $output == *"npm not available"* ]]
 	[[ $output == *"SKIPPED the MCP wiring"* ]]
 	# ...and the skip is surfaced again at the end, so automation cannot read

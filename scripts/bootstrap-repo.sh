@@ -1462,6 +1462,9 @@ EOF
 # Copying is deterministic and needs no network.
 _OW_LOCK_SRC="$PLUGIN_SCRIPT_DIR/../.github/openwiki-toolchain/package-lock.json"
 _OW_LOCK_DST="$TARGET/.github/openwiki-toolchain/package-lock.json"
+# Set on either failure path below; consumed by the DEFERRED fail-closed exit
+# next to LABEL_RC/REFRESH_FAILED at the end of the run.
+OPENWIKI_LOCK_MISSING=0
 if [ "$DRY_RUN" = "1" ]; then
 	_log "[dry-run] would copy the reviewed OpenWiki lockfile to .github/openwiki-toolchain/"
 elif [ -e "$_OW_LOCK_DST" ] && [ "$FORCE" != "1" ]; then
@@ -1475,9 +1478,9 @@ elif [ -r "$_OW_LOCK_SRC" ]; then
 		OPENWIKI_LOCK_MISSING=1
 	fi
 else
-	# Fail LOUD rather than leaving a workflow that can never run. Not fatal
-	# (the rest of the bootstrap is still useful) but it must not read as a
-	# clean bootstrap, so it is surfaced in the summary too.
+	# Fail LOUD rather than leaving a workflow that can never run. The rest of
+	# the bootstrap is still useful, so this does not abort HERE — it sets the
+	# flag and the run exits 2 after the completion summary.
 	_log "  ⚠ plugin lockfile not readable at $_OW_LOCK_SRC — seeded OpenWiki workflow cannot run until one exists."
 	_log "    Fix: (cd .github/openwiki-toolchain && npm install --package-lock-only)"
 	OPENWIKI_LOCK_MISSING=1
@@ -2283,6 +2286,18 @@ if [ "$LABEL_RC" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then
 	_log ""
 	exit 2
 fi
+# (#2629 p2r1) Same DEFERRED fail-closed shape for a missing OpenWiki
+# lockfile: the seeded openwiki-update.yml hard-requires it (`npm ci`), so a
+# bootstrap that could not place it produced a workflow that can never run.
+# Warning alone let automation read that as a clean bootstrap.
+if [ "${OPENWIKI_LOCK_MISSING:-0}" = "1" ] && [ "$DRY_RUN" != "1" ]; then
+	_log "⚠ OpenWiki lockfile MISSING — the scaffold completed but"
+	_log "    .github/openwiki-toolchain/package-lock.json was not placed, so"
+	_log "    openwiki-update.yml would fail at 'npm ci' if armed. Fix with:"
+	_log "    (cd $TARGET/.github/openwiki-toolchain && npm install --package-lock-only)"
+	_log ""
+	exit 2
+fi
 if [ "$DRY_RUN" = "1" ]; then
 	_log "bootstrap-repo dry-run complete. Re-run without --dry-run to apply."
 	# Clean up the temp-created dir IF it was empty + we created it.
@@ -2298,9 +2313,6 @@ if [ "$DRY_RUN" = "1" ]; then
 		fi
 	fi
 else
-	if [ "${OPENWIKI_LOCK_MISSING:-0}" = "1" ]; then
-		_log "  ⚠ OpenWiki lockfile is MISSING — openwiki-update.yml will fail at 'npm ci' if armed."
-	fi
 	_log "bootstrap-repo complete at $TARGET (plugin pin $PIN_TAG)."
 fi
 _log ""

@@ -8,9 +8,9 @@
 # seeding, and a well-meaning "let's schedule it" edit would silently make
 # every bootstrapped repo start spending AI credits.
 #
-# The full-bootstrap test runs the real script once (it generates a ~5.5k
-# line lockfile via npm), so it asserts everything about the seeded output
-# in one pass; the cheap cross-file invariants run without bootstrapping.
+# The full-bootstrap test runs the real script once and asserts everything
+# about the seeded output in one pass; the cheap cross-file invariants run
+# without bootstrapping at all.
 # shellcheck disable=SC2030,SC2031
 
 setup() {
@@ -239,5 +239,57 @@ teardown() {
 	[ "$status" -eq 0 ]
 	# The skill's own probe must now report the healthy state.
 	run env HOME="$TEST_TMP" bash -c "cd '$target' && '$REPO_ROOT/skills/openwiki-lane/run.sh' status"
+	[ "$status" -eq 0 ]
 	[[ $output == *"the steering channel"* ]]
+}
+
+@test "a missing plugin lockfile fails the bootstrap CLOSED, deferred (p2r1)" {
+	# The seeded openwiki-update.yml runs `npm ci`, which hard-requires the
+	# lockfile — so a bootstrap that could not place it produced a workflow
+	# that can never run. A warning alone still exited 0, which automation
+	# reads as a clean scaffold. Deferred like LABEL_RC/REFRESH_FAILED: the
+	# scaffold still lands, the RUN exits 2.
+	#
+	# The script resolves the lockfile relative to its OWN directory, so the
+	# only honest way to make it absent is to run the real script from a
+	# plugin root where it is. Symlink farm: every path the script reads
+	# resolves to the real repo EXCEPT that one file. `scripts/` and
+	# `.github/` must be real dirs — a symlinked dir would make the script's
+	# own `$PLUGIN_SCRIPT_DIR/../` traverse back into the real repo.
+	local plug="$TEST_TMP/plugin" e
+	mkdir -p "$plug/scripts" "$plug/.github/openwiki-toolchain"
+	for e in "$REPO_ROOT"/* "$REPO_ROOT"/.[!.]*; do
+		[ -e "$e" ] || continue
+		case "${e##*/}" in scripts | .github) continue ;; esac
+		ln -s "$e" "$plug/${e##*/}"
+	done
+	for e in "$REPO_ROOT"/scripts/* "$REPO_ROOT"/scripts/.[!.]*; do
+		[ -e "$e" ] || continue
+		ln -s "$e" "$plug/scripts/${e##*/}"
+	done
+	for e in "$REPO_ROOT"/.github/* "$REPO_ROOT"/.github/.[!.]*; do
+		[ -e "$e" ] || continue
+		case "${e##*/}" in openwiki-toolchain) continue ;; esac
+		ln -s "$e" "$plug/.github/${e##*/}"
+	done
+	# package.json present, lockfile deliberately absent.
+	ln -s "$REPO_ROOT/.github/openwiki-toolchain/package.json" \
+		"$plug/.github/openwiki-toolchain/package.json"
+	[ ! -e "$plug/.github/openwiki-toolchain/package-lock.json" ]
+
+	local target="$TEST_TMP/lockless"
+	mkdir -p "$target"
+	(cd "$target" && git init -q)
+	run bash "$plug/scripts/bootstrap-repo.sh" "$target"
+
+	# Fails CLOSED, and says which of the two lockfile paths it took.
+	[ "$status" -eq 2 ]
+	[[ $output == *"lockfile not readable"* ]]
+	[[ $output == *"OpenWiki lockfile MISSING"* ]]
+	# ...but only AFTER scaffolding, like its siblings: the workflow lands, so
+	# re-running once the cause is fixed is cheap.
+	[ -f "$target/.github/workflows/openwiki-update.yml" ]
+	[ ! -f "$target/.github/openwiki-toolchain/package-lock.json" ]
+	# "complete" must never print on a failed run.
+	[[ $output != *"bootstrap-repo complete"* ]]
 }
