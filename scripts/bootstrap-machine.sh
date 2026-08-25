@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		grep '^#' "$0" | head -25
+		grep '^#' "$0" | head -28
 		exit 0
 		;;
 	*)
@@ -133,11 +133,15 @@ fi
 # the expensive first generation. `integrations install claude` is native
 # as of 0.4.0; earlier versions could not serve MCP at all, which forced a
 # pnpm source build at ~/.openwiki-main. If this machine still carries that
-# hack, the install below supersedes it — see skills/openwiki/references/
-# operations.md, and `skills/openwiki/run.sh status` names it explicitly.
+# hack, the install below supersedes it — see skills/openwiki-lane/references/
+# operations.md, and `skills/openwiki-lane/run.sh status` names it explicitly.
 #
-# Pinned: an unpinned global would drift the toolchain out from under the
-# repo-side .github/openwiki-toolchain pins.
+# Pinned so the machine CLI cannot drift out from under the repo-side
+# .github/openwiki-toolchain pin. NOTE this pins only the TOP-LEVEL version:
+# `npm install -g` does not honour a published package's lockfile, so the
+# transitive tree (~29 deps, mostly caret ranges) resolves fresh and its
+# lifecycle scripts run as this user. That is weaker than the CI lane, which
+# uses `npm ci` against a committed lockfile with integrity hashes.
 OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
 if ! command -v openwiki >/dev/null 2>&1; then
 	if ! command -v npm >/dev/null 2>&1; then
@@ -170,6 +174,15 @@ if command -v openwiki >/dev/null 2>&1 || [ "$DRY_RUN" = "1" ]; then
 		_run openwiki integrations install claude
 		_log "    ↳ restart the Claude Code session for the MCP server to load"
 	fi
+else
+	# Reachable on a REAL run: the npm-absent branch above warns and
+	# continues, and the global bin dir may not be on PATH. Skipping the
+	# whole section in silence would let automation read an openwiki-less
+	# bootstrap as clean — the same silent-skip the DRY_RUN guard prevents.
+	_log "  ⚠ openwiki CLI not on PATH — SKIPPED the MCP wiring (the free in-chat lane will not exist)."
+	_log "    Fix: install Node/npm, ensure the npm global bin is on PATH, then re-run;"
+	_log "    or run manually: npm i -g openwiki@$OPENWIKI_PIN && openwiki integrations install claude"
+	OPENWIKI_WIRING_SKIPPED=1
 fi
 
 # --- Copilot CLI (gh extension) --------------------------------------
@@ -258,6 +271,9 @@ done
 # --- Summary ---------------------------------------------------------
 _log ""
 _log "bootstrap-machine complete (DRY_RUN=$DRY_RUN, plugin pin=$PIN_TAG)."
+if [ "${OPENWIKI_WIRING_SKIPPED:-0}" = "1" ]; then
+	_log "  ⚠ openwiki MCP wiring was SKIPPED — see the warning above."
+fi
 _log "Next steps:"
 _log "  1. If ~/.claude/settings.json wasn't wired, enable the plugin via Claude Code"
 _log "  2. Add any missing Keychain entries listed above"

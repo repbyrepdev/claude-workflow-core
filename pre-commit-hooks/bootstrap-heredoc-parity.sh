@@ -5,9 +5,10 @@ set -euo pipefail
 # body matches the live plugin file. Catches the bug class where a
 # heredoc's quoting/whitespace drifts from the live ISSUE_TEMPLATE yml.
 #
-# Scope: deliberately narrow. Workflow files diverge intentionally
+# Scope: deliberately narrow. MOST workflow files diverge intentionally
 # (plugin runs production CI with history comments; heredoc is the
-# slim consumer-ship variant). Only paths in PARITY_PATHS get checked.
+# slim consumer-ship variant) — the exceptions are listed and justified
+# inline in PARITY_PATHS. Only paths in PARITY_PATHS get checked.
 #
 # Bypass: BOOTSTRAP_HEREDOC_PARITY_SKIP=1 git commit ... (audit-logged).
 
@@ -43,15 +44,19 @@ PARITY_PATHS=(
 	".gemini/policy.toml"
 	".gemini/settings.json"
 	".codex/config.toml"
-	# (#2629) OpenWiki workflows. Unlike gitleaks/pr-lint — whose consumer
-	# heredocs are DELIBERATELY slim versions of this repo's fuller CI — the
-	# OpenWiki pair is meant to be byte-identical everywhere: the consumer
-	# copy carries the same inert-by-default guarantees (no schedule trigger,
-	# secret-guarded hub ping) that make unconditional seeding safe. Without
-	# this pin the heredoc is a third, unpinned copy that can silently arm a
-	# cron for every bootstrapped repo while the plugin's own copy stays inert.
+	# (#2629) OpenWiki files. Unlike gitleaks/pr-lint — whose consumer
+	# heredocs are DELIBERATELY slim versions of this repo's fuller CI — this
+	# set is pinned because the heredoc would otherwise be a third, unpinned
+	# copy able to silently arm a cron (or bump the toolchain pin) for every
+	# bootstrapped repo while the plugin's own copy stayed inert.
+	#
+	# SCOPE, precisely: this pins heredoc ↔ this repo's live file. It does NOT
+	# make the files byte-identical *everywhere* — once seeded, a consumer
+	# owns its copy (bootstrap-manifest declares them non-hashed:
+	# template-with-overrides, like the other workflows).
 	".github/workflows/openwiki-update.yml"
 	".github/workflows/notify-wiki-hub.yml"
+	".github/openwiki-toolchain/package.json"
 )
 
 # Only run when the commit touches the script, manifest, or any of the

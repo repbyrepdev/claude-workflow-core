@@ -3,9 +3,16 @@ name: notify-wiki-hub
 # (#2629) Docs changed on main → ping the overarching wiki hub so it
 # rebuilds in ~a minute (its own cron is the backstop).
 #
-# SAFE BEFORE SECRETS EXIST: the dispatch step no-ops with a notice when
-# HUB_DISPATCH_TOKEN is unset, so a freshly bootstrapped repo does not turn
-# every docs push red. Set the secret to activate it.
+# TRULY INERT UNTIL OPTED IN: the job is gated on `vars.WIKI_HUB_REPO`, so a
+# bootstrapped repo that has not opted in never starts a runner at all. An
+# earlier revision only skipped INSIDE the step, which still spun up an
+# ubuntu VM and added a check run on every docs push forever — "cannot
+# redden a build" is not the same as "costs nothing", and on private repos
+# those are billed minutes.
+#
+# There is deliberately NO default hub repo. A cross-org default would send
+# a consumer's HUB_DISPATCH_TOKEN to a repository they do not own the first
+# time they set the secret without the variable.
 on:
   push:
     branches: [main]
@@ -21,23 +28,34 @@ permissions: {}
 
 jobs:
   ping:
+    # `vars` IS available in a job-level `if` (secrets are not), so the
+    # opt-in check can gate the whole job rather than one step.
+    if: vars.WIKI_HUB_REPO != ''
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch docs-updated to the wiki hub
         env:
-          # The secret enters via env, never via expression interpolation
-          # into the script body — no process-args exposure, no injection
-          # surface.
+          # The secret enters via env rather than ${{ }} interpolation into
+          # the script body, so there is no Actions-expression injection
+          # surface. It IS still expanded into curl's argv below, and is
+          # therefore visible in the runner's process table for the life of
+          # the request — acceptable here (no checkout, no third-party step
+          # shares this VM) but do not add steps to this job on the
+          # assumption the token is invisible.
           HUB_DISPATCH_TOKEN: ${{ secrets.HUB_DISPATCH_TOKEN }}
-          HUB_REPO: ${{ vars.WIKI_HUB_REPO || 'repbyrepdev/repbyrep-wiki' }}
+          HUB_REPO: ${{ vars.WIKI_HUB_REPO }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ -z "$HUB_DISPATCH_TOKEN" ]; then
-            echo "::notice::HUB_DISPATCH_TOKEN unset — skipping hub ping. Set the secret to activate (skills/openwiki/references/operations.md)."
+            echo "::warning::WIKI_HUB_REPO is set but HUB_DISPATCH_TOKEN is not — the hub will not learn about this change. Set the secret, or unset the variable to disable this lane."
             exit 0
           fi
-          curl -sf --connect-timeout 10 --max-time 60 -X POST \
+          # -sS (not -s) keeps curl's error text; --fail-with-body keeps the
+          # API's response body. With plain `-sf` a 401 (wrong token type),
+          # 403 (no dispatch rights on the hub), 404 (wrong WIKI_HUB_REPO)
+          # and a network timeout are all a bare non-zero exit with no output.
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 60 -X POST \
             -H "Authorization: Bearer $HUB_DISPATCH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$HUB_REPO/dispatches" \

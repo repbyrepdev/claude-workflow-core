@@ -158,9 +158,15 @@ files:
   - path: .github/workflows/notify-wiki-hub.yml
     mode: "644"
   # The toolchain pin travels with the workflow (`npm ci` needs it). The
-  # lockfile beside it is GENERATED at bootstrap (5.5k lines — not a heredoc),
-  # so only the manifest-declared package.json is listed here.
+  # lockfile beside it is COPIED from the plugin's reviewed one at bootstrap
+  # (5.5k lines — not a heredoc), so only the manifest-declared package.json
+  # is listed here.
   - path: .github/openwiki-toolchain/package.json
+    mode: "644"
+  # The standing brief the generator re-reads every run — the ONLY channel a
+  # correction survives in (edits to generated pages are reverted). Seeded so
+  # no repo starts without one.
+  - path: openwiki/INSTRUCTIONS.md
     mode: "644"
 
 labels:

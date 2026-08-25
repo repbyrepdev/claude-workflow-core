@@ -13,8 +13,8 @@ name: OpenWiki Update
 # Stagger the day/hour across repos; a shared credit pool drains fastest
 # when every repo regenerates on the same morning.
 #
-# COST MODEL (skills/openwiki/references/operations.md): this CI lane is
-# for cheap weekly DELTAS — it diffs HEAD against the commit it last
+# COST MODEL (skills/openwiki-lane/references/operations.md): this CI lane
+# is for cheap weekly DELTAS — it diffs HEAD against the commit it last
 # documented. The expensive first generation belongs in the in-chat MCP
 # lane, which runs on the host agent's own session for free.
 #
@@ -47,8 +47,7 @@ jobs:
 
       # Fail EARLY and legibly when a repo was bootstrapped but never had its
       # secrets set — otherwise the failure surfaces as an opaque 401 from the
-      # provider several minutes in. gotcha 1: COPILOT_API_KEY must be a
-      # `gho_*` OAuth token; `ghp_*` PATs 401.
+      # provider several minutes in.
       - name: Verify required secrets
         env:
           COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
@@ -56,7 +55,19 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          [ -n "$COPILOT_API_KEY" ] || { echo "::error::COPILOT_API_KEY is unset — see skills/openwiki/references/operations.md (must be a gho_* OAuth token, not a ghp_* PAT)"; missing=1; }
+          if [ -z "$COPILOT_API_KEY" ]; then
+            echo "::error::COPILOT_API_KEY is unset — see operations.md"
+            missing=1
+          else
+            # gotcha 1: the copilot provider 401s on ghp_* PATs and needs a
+            # gho_* OAuth token. Checking the PREFIX is the whole point of an
+            # early guard — a presence-only check lets the exact failure this
+            # step exists to preempt through unchallenged.
+            case "$COPILOT_API_KEY" in
+              gho_*) ;;
+              *) echo "::error::COPILOT_API_KEY is not a gho_* OAuth token — the copilot provider 401s on ghp_* PATs (operations.md gotcha 1). Re-mint via 'gh auth login' in a browser."; missing=1 ;;
+            esac
+          fi
           [ -n "$OPENWIKI_PUSH_TOKEN" ] || { echo "::error::OPENWIKI_PUSH_TOKEN is unset — a GITHUB_TOKEN-opened PR never triggers required checks and can never merge (gotcha 7)"; missing=1; }
           [ "$missing" -eq 0 ] || exit 1
 
@@ -80,17 +91,41 @@ jobs:
           COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
           OPENWIKI_TELEMETRY_DISABLED: "1"
 
-      # The gitHead watermark must commit WITH real content (or later runs
-      # rediff the same history), but a watermark-only diff must not open a
-      # PR. Revert it when nothing else changed. gotcha 8.
+      # gotcha 8, both halves. The watermark must commit WITH real content (or
+      # later runs re-diff the same history), but a watermark-only diff must
+      # not open a PR.
+      #
+      # PATHSPEC: plain `openwiki` — NOT 'openwiki/**/*.md'. Without the
+      # :(glob) magic prefix git matches pathspecs with fnmatch, where `*`
+      # also crosses `/`, so `openwiki/**/*.md` requires a literal directory
+      # between and never matches top-level pages (openwiki/quickstart.md).
+      # Since `add-paths: openwiki` commits the WHOLE directory, the detector
+      # must consider the whole directory too — otherwise a top-level-only or
+      # non-.md change is misread as watermark-only, the watermark is
+      # reverted, and the PR ships content with a stale gitHead.
       - name: Drop watermark-only churn
         run: |
           set -euo pipefail
-          if git status --porcelain -- 'openwiki/**/*.md' 'openwiki/.claims' AGENTS.md CLAUDE.md | grep -q .; then
+          # Everything under openwiki/ EXCEPT the watermark, plus the two
+          # instruction files openwiki rewrites.
+          changed=$(git status --porcelain -- openwiki ':(exclude)openwiki/.last-update.json' AGENTS.md CLAUDE.md)
+          if [ -n "$changed" ]; then
             echo "content changed; watermark rides along"
+          elif ! git ls-files --error-unmatch openwiki/.last-update.json >/dev/null 2>&1; then
+            # UNTRACKED watermark (every first run): `git checkout --` cannot
+            # revert what git does not track, so remove it explicitly. Left in
+            # place it would be committed by add-paths — the exact noise PR
+            # this step exists to prevent.
+            rm -f openwiki/.last-update.json
+            echo "watermark-only run (untracked watermark removed); no PR expected"
           else
-            git checkout -- openwiki/.last-update.json 2>/dev/null || true
-            echo "watermark-only run; timestamp reverted, no PR"
+            # Tracked: revert it, and FAIL LOUD if that does not work rather
+            # than printing a success message we did not earn.
+            if ! git checkout -- openwiki/.last-update.json; then
+              echo "::error::could not revert openwiki/.last-update.json — a watermark-only PR may be opened"
+              exit 1
+            fi
+            echo "watermark-only run; timestamp reverted, no PR expected"
           fi
 
       - name: Create OpenWiki update pull request
@@ -111,17 +146,24 @@ jobs:
             Automated OpenWiki documentation update (delta since the last
             documented commit).
 
+            NOTE: this PR can touch `AGENTS.md` / `CLAUDE.md`, which are read
+            as standing instructions by future agent sessions. Review those
+            hunks like code, not like docs.
+
             Generated pages are not hand-editable — the update loop reverts
             them. Corrections belong in `openwiki/INSTRUCTIONS.md`, phrased
             as durable rules.
 
-      # `--auto` merges only once EVERY branch-protection condition is met.
-      # Where a ruleset requires an approving review (as claude-workflow-core
-      # does since 2026-08-25), green checks alone are NOT sufficient — the
-      # PR waits for a policy reviewer's APPROVED record. That is correct;
-      # do not "fix" it by loosening the gate.
-      - name: Arm auto-merge (zero-touch docs lane)
-        if: steps.docs_pr.outputs.pull-request-number != ''
+      # OPT-IN, and deliberately separate from enabling generation. Arming the
+      # cron and auto-merging LLM-authored edits are different risk decisions:
+      # this PR can modify AGENTS.md/CLAUDE.md, i.e. the standing instructions
+      # every later agent session reads. `--auto` only merges once branch
+      # protection is satisfied — but in a repo with NO required review that
+      # condition set is empty, so auto-merge there means unreviewed agent
+      # instructions land on main. Requires the repo's "Allow auto-merge"
+      # setting; without it this step errors.
+      - name: Arm auto-merge (opt-in)
+        if: vars.OPENWIKI_AUTO_MERGE == 'true' && steps.docs_pr.outputs.pull-request-number != ''
         env:
           GH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
           PR_NUMBER: ${{ steps.docs_pr.outputs.pull-request-number }}

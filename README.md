@@ -8,7 +8,7 @@ Damien Adams' Claude Code plugin — **portable workflow skills + session-resili
 
 The current canonical version is the `version` field in `.claude-plugin/plugin.json` (SSOT — see GitHub Releases / CHANGELOG for per-version notes). The inventory below tracks the SHAPE of the plugin (skills + hooks), not version-specific deltas, so the document doesn't rot every release.
 
-### Skills (18 total)
+### Skills (19 total)
 
 **Ship-PR workflow** — extracted from homelab and FCP toolkit where they were duplicated:
 
@@ -36,6 +36,7 @@ The current canonical version is the `version` field in `.claude-plugin/plugin.j
 | `retro` | Session retrospective from `.claude/session-log.jsonl` |
 | `prove-yourself-audit` | Mechanical enforcement of the prove-yourself rule |
 | `cr-plan` | CodeRabbit Issue Planner parser → epic + sub-issues |
+| `openwiki-lane` | OpenWiki generated-docs lane — free in-chat MCP generation vs metered CI deltas, preflight refusals, the INSTRUCTIONS.md steering channel |
 | `bootstrap-repo` | Seed a new or existing repo with the canonical SSOT (hooks, configs, templates) from the plugin |
 
 ### Session-resilience hooks (3)

@@ -20,7 +20,7 @@ Earlier versions could not serve MCP, which forced a pnpm **source build** at
 is obsolete; do not reproduce it. If you meet a machine still running it (the
 office mini, as of this writing), the fix is the two commands above.
 
-The installer writes `~/.claude/skills/openwiki/` (vendor files with SHA-256
+The installer writes `~/.claude/skills/openwiki-lane/` (vendor files with SHA-256
 recorded in `.openwiki-install.json`) and the MCP server entry. Never commit
 those files into a repo — they are third-party, hash-verified, and regenerated
 on install; vendoring them creates silent drift.
@@ -48,9 +48,11 @@ on install; vendoring them creates silent drift.
 5. **`openwiki --init` edits `AGENTS.md` and `CLAUDE.md`** inside
    `<!-- OPENWIKI:START/END -->` blocks, in whatever repo is the current git
    root. Never run it against a dirty tree you are about to `git add -A`: it
-   bundles unrelated files into the commit. In this repo both files are
-   byte-SSOT-locked (hash-drift + bootstrap-heredoc parity), so a careless
-   init also trips those gates.
+   bundles unrelated files into the commit. (An earlier draft of this file
+   claimed those two files are byte-SSOT-locked here and that an init trips
+   hash-drift/parity gates. That was WRONG — neither appears in
+   `.claude/.source-hashes.json` or `PARITY_PATHS`, and this repo has no
+   `CLAUDE.md` at all. The bundling risk alone justifies the refusal.)
 6. **Never hand-edit generated pages.** The update loop tracks claims state
    and reverts them. The only sanctioned steering channel is
    `openwiki/INSTRUCTIONS.md`, a standing brief the generator reads every run.
@@ -65,6 +67,15 @@ on install; vendoring them creates silent drift.
    it alongside real content, or `gitHead` goes stale and later runs re-diff
    the same history.
 
+## Telemetry
+
+The CI lane sets `OPENWIKI_TELEMETRY_DISABLED=1`; openwiki ships vendor
+telemetry ON by default (posthog-node is a direct dependency). The in-chat
+MCP lane gets no such suppression from us — and that is the lane which reads
+the ENTIRE private codebase on a first generation, while CI only ever sees
+deltas. If that matters for a private repo, set the same variable in
+`~/.openwiki/.env` before the first in-chat run.
+
 ## Repo secrets (three, per repo)
 
 | Secret | Used by | Trap |
@@ -76,14 +87,31 @@ on install; vendoring them creates silent drift.
 `repbyrepdev` is a User account, not an org — there are no org-level secrets,
 so these are set per repo.
 
+**Scope caveat.** A `gho_*` OAuth token is a whole-ACCOUNT credential, not a
+Copilot-scoped one, and `COPILOT_API_KEY` is handed to a third-party LLM CLI
+that reads repo content and runs tools. A compromised dependency there, or
+repo content that steers the agent, would exfiltrate a credential whose blast
+radius is every repo the account can reach. `OPENWIKI_PUSH_TOKEN` is likewise
+a user token. Prefer a fine-grained or GitHub App token scoped to the single
+repo wherever the provider accepts one.
+
+**Repo settings.** `OPENWIKI_AUTO_MERGE=true` additionally requires the
+repo's "Allow auto-merge" setting; without it the arm step errors and reddens
+an otherwise-successful docs run.
+
 ## Interaction with this repo's merge gates
 
 Since 2026-08-25 the `main-approving-review` ruleset requires one approving
 review with **no bypass actors**. A robot docs PR therefore needs an approving
 review record, not merely green checks — it cannot self-merge on green alone.
-Both policy reviewers (CodeRabbit and the Claude backup reviewer) run on every
-PR here, so the record arrives on its own; the point is that any
-"auto-merge when green" design must not assume checks are sufficient.
+Do NOT assume the approving record arrives on its own. `.github/approval-policy.yml`
+records the opposite: PR #2561 ended COMMENTED-only, #2565 produced no record
+for the final head, and #2576 sat on a stale CHANGES_REQUESTED until nudged —
+which is why the gate carries nudge machinery at all. That nudge lives in the
+`github-pr-merge` skill, and `gh pr merge --auto` does NOT go through it, so
+an unattended robot docs PR can sit unmerged indefinitely with no remediation
+path. Treat auto-merge as "merges if the reviewers happen to act", not as
+zero-touch, and check the lane periodically.
 
 ## Doctrine worth inheriting
 

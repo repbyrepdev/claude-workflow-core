@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: skills/openwiki/run.sh
+# covers: skills/openwiki-lane/run.sh
 #
 # (#2629) The wrapper exists to make two expensive lessons MECHANICAL rather
 # than advisory: `openwiki --init` rewrites AGENTS.md/CLAUDE.md in the git
@@ -18,7 +18,7 @@
 
 setup() {
 	PLUGIN=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
-	SKILL="$PLUGIN/skills/openwiki/run.sh"
+	SKILL="$PLUGIN/skills/openwiki-lane/run.sh"
 	[ -x "$SKILL" ]
 	TEST_TMP=$(mktemp -d -t openwiki-skill.XXXXXX) || {
 		echo "FATAL: mktemp failed" >&2
@@ -168,4 +168,93 @@ _run_skill() { # $1 = subcommand; PATH includes the stub bin, HOME is the fixtur
 	[[ $output == *"REFUSING"* ]]
 	[[ $output == *"SESSION START"* ]]
 	[[ $output == *"INSTRUCTIONS.md"* ]]
+}
+
+@test "version probe: multi-line --version does NOT double-emit (p1r1)" {
+	# `cmd | head -1 || echo fallback` fires the fallback on the PIPELINE
+	# status: head closes the pipe, SIGPIPE + pipefail mark it failed, and the
+	# status table gets TWO lines in a one-line field.
+	cd "$REPO" || return 1
+	printf '#!/usr/bin/env bash\necho "openwiki/0.4.0"\necho "extra banner line"\necho "third"\nexit 0\n' >"$TEST_TMP/bin/openwiki"
+	chmod +x "$TEST_TMP/bin/openwiki"
+	_write_claude_json ""
+	_run_skill status
+	[ "$status" -eq 0 ]
+	[[ $output == *"0.4.0"* ]]
+	[[ $output != *"version unreadable"* ]]
+	# exactly one CLI line
+	[ "$(printf '%s\n' "$output" | grep -c 'CLI:')" -eq 1 ]
+}
+
+@test "version probe: empty --version output reports unreadable, not blank (p1r1)" {
+	cd "$REPO" || return 1
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/bin/openwiki"
+	chmod +x "$TEST_TMP/bin/openwiki"
+	_write_claude_json ""
+	_run_skill status
+	[ "$status" -eq 0 ]
+	[[ $output == *"version unreadable"* ]]
+}
+
+@test "MCP probe: corrupt ~/.claude.json is an ERROR state, not 'not wired' (p1r1)" {
+	# Reporting a corrupt config as "not wired" routes the operator to re-run
+	# bootstrap-machine, which cannot fix invalid JSON.
+	cd "$REPO" || return 1
+	printf 'NOT JSON{{{' >"$TEST_TMP/home/.claude.json"
+	_run_skill status
+	[ "$status" -eq 0 ]
+	[[ $output == *"not valid JSON"* ]]
+	[[ $output != *"MCP:       not wired"* ]]
+}
+
+@test "MCP probe: absent ~/.claude.json is reported as its own state (p1r1)" {
+	cd "$REPO" || return 1
+	rm -f "$TEST_TMP/home/.claude.json"
+	_run_skill status
+	[ "$status" -eq 0 ]
+	[[ $output == *"no ~/.claude.json"* ]]
+}
+
+@test "tree probe FAILS CLOSED: a git error is UNKNOWN and refuses (p1r1)" {
+	# The wrapper's primary refusal used to test only git's OUTPUT, so a
+	# corrupt index (rc 128, EMPTY stdout) read as "clean" and preflight said
+	# "safe to run" over uncommitted work.
+	cd "$REPO" || return 1
+	_stub_cli "openwiki/0.4.0"
+	_write_claude_json ""
+	printf 'GARBAGE' >"$REPO/.git/index"
+	_run_skill status
+	[[ $output == *"Tree:      UNKNOWN"* ]]
+	_run_skill preflight
+	[ "$status" -eq 1 ]
+	[[ $output == *"cannot determine tree state"* ]]
+	[[ $output != *"preflight OK"* ]]
+}
+
+@test "SKILL.md documents only invocations that actually exist (p1r1)" {
+	# Five reviewers caught SKILL.md advertising `--with-openwiki`, a flag
+	# bootstrap-repo.sh rejects with exit 2. Any flag the skill tells an agent
+	# to pass must be one the script accepts.
+	local skill_md="$PLUGIN/skills/openwiki-lane/SKILL.md"
+	local boot="$PLUGIN/scripts/bootstrap-repo.sh"
+	local flags
+	flags=$(grep -oE 'bootstrap-repo\.sh[^`]*--[a-z-]+' "$skill_md" | grep -oE '\-\-[a-z-]+' | sort -u || true)
+	for f in $flags; do
+		grep -qE "^[[:space:]]*$f\)" "$boot" || {
+			echo "SKILL.md documents $f but bootstrap-repo.sh has no such flag"
+			return 1
+		}
+	done
+	# And the run.sh subcommands it advertises must all be real.
+	for c in status preflight doctor; do
+		grep -q "run.sh $c" "$skill_md" || {
+			echo "SKILL.md stopped documenting the $c subcommand"
+			return 1
+		}
+		run env HOME="$TEST_TMP/home" bash -c "cd '$REPO' && '$SKILL' $c"
+		[ "$status" -ne 2 ] || {
+			echo "$c is documented but rejected as a usage error"
+			return 1
+		}
+	done
 }
