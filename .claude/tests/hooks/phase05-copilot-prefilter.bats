@@ -95,6 +95,9 @@ _last_agent_row() {
 	printf '[{"agent":"code-reviewer","file":"base.sh","line":1,"category":"c","severity":"low","description":"d","confidence":5}]\n' >copilot-out.txt
 	_run_prefilter
 	[ "$status" -eq 0 ]
+	# p2-cap residual (CR minor): assert the EMITTED stdout too — valid
+	# JSON, exactly one finding — not just the audit row.
+	[ "$(printf '%s' "$output" | jq 'type == "array" and length == 1')" = "true" ]
 	row=$(_last_agent_row)
 	[ "$(jq -r '.status' <<<"$row")" = "ok" ]
 	[ "$(jq -r '.partial' <<<"$row")" = "false" ]

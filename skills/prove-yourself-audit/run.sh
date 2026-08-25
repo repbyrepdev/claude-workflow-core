@@ -967,7 +967,15 @@ cmd_record_fix() {
 		# .claude/hooks/ + .claude/_lib/ in the consumer layout, and a
 		# citation spelled that way must not slip past the rule (nor must
 		# a legitimately-mirror-invoking retest command be refused).
+		# p2-cap residual (CR major): also strip leading ./ and resolve
+		# lexical .. segments — `./hooks/x.sh` or `hooks/../hooks/x.sh`
+		# otherwise escaped the pattern match entirely (fail-OPEN for a
+		# cycle-critical citation).
 		_crit_norm="${_crit_f#.claude/}"
+		_crit_norm="${_crit_norm#./}"
+		while [[ $_crit_norm == *"/../"* ]]; do
+			_crit_norm=$(printf '%s' "$_crit_norm" | sed -E 's|[^/]+/\.\./||')
+		done
 		case "$_crit_norm" in
 		hooks/*.sh | _lib/*.sh | pre-commit-hooks/*.sh | scripts/cr/local-review.sh)
 			# p2r1 (CR major): COMMAND-position, not substring — a command
@@ -1067,12 +1075,20 @@ cmd_record_fix() {
 	# silently skipped on exactly the CI hosts that have coreutils).
 	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 		(cd "$REPO_ROOT" && timeout "$_retest_timeout" bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
-	else
-		# No timeout binary (stock macOS without coreutils): run unbounded —
-		# record-fix is operator-interactive, so a hang is visible, not
-		# silent — but WARN that the deadline is unenforced on this host.
-		echo "WARN: no timeout binary — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED on this host (a hung retest must be interrupted manually)" >&2
+	elif [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
+		# The EXPLICIT unbounded seam (tests + operators who accept the
+		# risk). WARN so the transcript shows the deadline was off.
+		echo "WARN: PROVE_RETEST_NO_TIMEOUT=1 — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED for this record (a hung retest must be interrupted manually)" >&2
 		(cd "$REPO_ROOT" && bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
+	else
+		# p2-cap residual (CR major): FAIL CLOSED, don't silently run
+		# unbounded. A host without a timeout binary gets no deadline
+		# enforcement at all — the deadline-launder guard below would be
+		# theater. Refuse with the remedy; the explicit seam above is the
+		# only sanctioned unbounded path.
+		echo "error: no timeout binary on PATH — refusing to run retest evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2562)" >&2
+		rm -f "$_retest_out"
+		exit 1
 	fi
 	_retest_elapsed=$((SECONDS - _retest_t0))
 	# p2r1 (CR major): a DEADLINE kill is never valid evidence — even when

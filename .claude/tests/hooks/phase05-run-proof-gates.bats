@@ -83,6 +83,16 @@ _run_p1_gate() {
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
+@test "before-cr: a PER-AGENT skipped row is NOT run-proof (p2-cap deny)" {
+	# The cap-round residual: skipped-empty-canonical-brief is a per-agent
+	# row (one agent misconfigured), not a run terminal — only run-level
+	# <all> rows prove the run.
+	_row skipped-empty-canonical-brief code-reviewer
+	_run_cr_gate
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
 @test "before-phase1: an errored-emit-ONLY log is NOT run-proof (deny)" {
 	_row errored-emit
 	_run_p1_gate

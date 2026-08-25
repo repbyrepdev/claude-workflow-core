@@ -109,7 +109,7 @@ fi
 # never emitted. Only status:"emitted" (written by
 # phase05_emit_findings_logged after a successful emit) or a run-level
 # skipped-* row proves the run.
-if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s) | select((.status // "") as $st | $st == "emitted" or ($st | startswith("skipped")))] | length' "$LOG" 2>/dev/null); then
+if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s) | select(.agent == "<all>") | select((.status // "") as $st | $st == "emitted" or ($st | startswith("skipped")))] | length' "$LOG" 2>/dev/null); then
 	echo "phase0.5-before-phase1: warning — failed to parse $LOG (malformed JSONL?); treating as no match" >&2
 	entries=0
 fi

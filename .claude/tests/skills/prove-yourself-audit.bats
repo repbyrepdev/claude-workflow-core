@@ -278,3 +278,36 @@ _record_fix() {
 		--cited-files "hooks/x.sh" --source phase1 --confidence 5
 	[ "$status" -eq 0 ]
 }
+
+@test "a ./-prefixed citation still triggers the cycle-critical rule (p2-cap)" {
+	cd "$TEST_TMP" || return 1
+	_record_fix "true" 0 "./hooks/x.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"cycle-critical"* ]]
+	_record_fix "bash ./hooks/x.sh" 0 "./hooks/x.sh"
+	[ "$status" -eq 0 ]
+}
+
+@test "a lexical ..-segment citation still triggers the rule (p2-cap)" {
+	cd "$TEST_TMP" || return 1
+	_record_fix "true" 0 "hooks/../hooks/x.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"cycle-critical"* ]]
+}
+
+@test "no timeout binary WITHOUT the explicit seam refuses fail-closed (p2-cap)" {
+	# Deterministic only where PATH hiding works (macOS /usr/bin has no
+	# timeout — the primary dev platform); GNU hosts cover the seam arm.
+	cd "$TEST_TMP" || return 1
+	mkdir -p nb
+	for t in jq git bash grep sed tail date mktemp shasum ls find mkdir rm cat; do
+		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "nb/$t"
+	done
+	run env PATH="$TEST_TMP/nb:/usr/bin:/bin" bash -c "command -v timeout >/dev/null && echo HAVE-TIMEOUT; cd '$TEST_TMP' && '$SKILL' record-fix --finding-id nt1 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0 --source phase1 --confidence 5"
+	if [[ $output == *"HAVE-TIMEOUT"* ]]; then
+		skip "#2562 — host ships timeout in /usr/bin:/bin (GNU); the PROVE_RETEST_NO_TIMEOUT seam arm covers the unbounded branch on such hosts"
+	fi
+	[ "$status" -eq 1 ]
+	[[ $output == *"refusing to run retest evidence UNBOUNDED"* ]]
+	[[ $output == *"PROVE_RETEST_NO_TIMEOUT"* ]]
+}
