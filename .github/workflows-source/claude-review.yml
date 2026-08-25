@@ -37,11 +37,10 @@ jobs:
     name: Claude fresh-context backup review
     # Draft PRs are not reviewable intents yet.
     if: ${{ !github.event.pull_request.draft }}
-    # Job-scoped, least-privilege (phase2 CR): contents to read the
-    # checkout, pull-requests to submit the review. Nothing else.
+    # Job-scoped, least-privilege (phase2 CR). Nothing else.
     permissions:
-      contents: read
-      pull-requests: write
+      contents: read # checkout of the PR head (read-only tree)
+      pull-requests: write # gh pr review submission + reviews-API verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -120,10 +119,20 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # p2r5 CR: strict mode — an unnoticed command failure here would
+          # skip the whole verification this step exists to guarantee.
+          set -euo pipefail
           # CI r1 TOCTOU guard: if the PR head moved past this run's sha, a
           # newer run owns the review — this run is SUPERSEDED, not failed.
           # Going red here would blame a healthy pipeline for a normal race.
+          # The live sha must VALIDATE before the compare: an empty/garbage
+          # API answer must fail RED, never read as "superseded" (that
+          # would silently skip verification — fail-open).
           live=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha)
+          if ! printf '%s' "$live" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::could not resolve the live PR head (got '${live}') — cannot verify the review submission."
+            exit 1
+          fi
           if [ "$live" != "$HEAD_SHA" ]; then
             echo "::notice::superseded — PR head moved (${HEAD_SHA} -> ${live}); the newer run's verify step owns the check."
             exit 0

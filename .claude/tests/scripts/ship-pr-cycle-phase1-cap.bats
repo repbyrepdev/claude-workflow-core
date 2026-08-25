@@ -332,6 +332,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	chmod +x "$ROOT/.claude/hooks/phase1-scaler.sh"
 	cd "$TEST_TMP" || return 1
 	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ]
 	[[ $output == *"defaulting cap to 2"* ]]
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }
@@ -343,6 +344,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	chmod +x "$ROOT/.claude/hooks/phase1-scaler.sh"
 	cd "$TEST_TMP" || return 1
 	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ]
 	[[ $output == *"no parseable ROUNDS=N line"* ]]
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }

@@ -60,6 +60,19 @@ _stub_coderabbit() {
 	chmod +x "$TEST_TMP/bin/coderabbit"
 }
 
+# Write a `timeout` stub that records its first arg (the seconds value) to
+# $TIMEOUT_ARG_OUT, drops it, and execs the wrapped command (p2r5 CR — was
+# open-coded in three tests).
+_stub_timeout() {
+	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
+shift
+exec "$@"
+TSTUB
+	chmod +x "$TEST_TMP/bin/timeout"
+}
+
 # Write a `coderabbit` stub that prints EVERY arg as its own JSON line, then
 # exits with the LAST arg. Needed for the streamed-findings-then-timeout case:
 # CR emits findings incrementally and the timeout arrives after them.
@@ -370,13 +383,7 @@ _stub_coderabbit_lines() {
 	# budget slot discarded + a second spent on the retry). Pin the default
 	# AND the override plumbing via a stubbed `timeout` that records its arg.
 	cd "$TEST_TMP" || return 1
-	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
-#!/usr/bin/env bash
-printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
-shift
-exec "$@"
-TSTUB
-	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_timeout
 	_stub_coderabbit '{"type":"complete","findings":0}' 0
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" run "$LR" --force --base main
@@ -391,13 +398,7 @@ TSTUB
 	# Split from the default pin (p2 CR: one run per test — a second run in
 	# the same test resets \$output and hides which invocation failed).
 	cd "$TEST_TMP" || return 1
-	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
-#!/usr/bin/env bash
-printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
-shift
-exec "$@"
-TSTUB
-	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_timeout
 	_stub_coderabbit '{"type":"complete","findings":0}' 0
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=42 run "$LR" --force --base main
@@ -408,13 +409,7 @@ TSTUB
 
 @test "#2546: non-integer CR_LOCAL_REVIEW_TIMEOUT warns and uses 3600" {
 	cd "$TEST_TMP" || return 1
-	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
-#!/usr/bin/env bash
-printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
-shift
-exec "$@"
-TSTUB
-	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_timeout
 	_stub_coderabbit '{"type":"complete","findings":0}' 0
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=15m run "$LR" --force --base main
@@ -426,13 +421,7 @@ TSTUB
 
 @test "#2546: EMPTY CR_LOCAL_REVIEW_TIMEOUT warns and uses 3600 (not silently treated as unset)" {
 	cd "$TEST_TMP" || return 1
-	cat >"$TEST_TMP/bin/timeout" <<'TSTUB'
-#!/usr/bin/env bash
-printf '%s\n' "$1" >"$TIMEOUT_ARG_OUT"
-shift
-exec "$@"
-TSTUB
-	chmod +x "$TEST_TMP/bin/timeout"
+	_stub_timeout
 	_stub_coderabbit '{"type":"complete","findings":0}' 0
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT="" run "$LR" --force --base main
@@ -452,4 +441,23 @@ TSTUB
 	local sha
 	sha=$(git rev-parse --short HEAD)
 	grep -q '"fileName":"x.sh"' "$TEST_TMP/.claude/logs/cr-local-review-${sha}-detail.jsonl"
+}
+
+@test "#2546: deferred TERM — child ignores the signal, the trap flag still salvages (p2r5)" {
+	# The wrapper's TERM trap defers until the pipeline finishes; a child
+	# that swallows TERM and exits 0 must still route down salvage+exit-4
+	# via the _cr_termed flag.
+	{
+		echo '#!/usr/bin/env bash'
+		echo "trap '' TERM"
+		printf 'printf "%%s\\n" %q\n' '{"type":"finding","severity":"minor","fileName":"t.sh"}'
+		echo 'kill -TERM "$PPID" 2>/dev/null || true'
+		echo 'sleep 1'
+		echo 'exit 0'
+	} >"$TEST_TMP/bin/coderabbit"
+	chmod +x "$TEST_TMP/bin/coderabbit"
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 4 ]
+	[[ $output == *"salvaged 1 finding"* ]]
 }
