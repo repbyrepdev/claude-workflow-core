@@ -814,3 +814,25 @@ EOF
 	[[ $output == *"not verifiably reviewed"* ]]
 	[ ! -f "$NUDGE_MARKER" ]
 }
+
+@test "MALFORMED delimiters: end-before-start with the sha after the unmatched start is NOT a witness (CI r2)" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_write_findings 0
+	printf '[{"user":{"login":"coderabbitai[bot]"},"body":"<!-- end of auto-generated comment: rate limited by coderabbit.ai -->\\nnoise\\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\nsha smuggled: %s"}]' "$HEAD_SHA" >"$TEST_TMP/comments.json"
+	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
+	_run_gate
+	[ "$status" -eq 2 ]
+	[ ! -f "$NUDGE_MARKER" ]
+}
+
+@test "MALFORMED delimiters: a trailing unmatched start after a valid block is NOT a witness (CI r2)" {
+	_install_gh_shim
+	_reviews_stale_cr
+	_write_findings 0
+	printf '[{"user":{"login":"coderabbitai[bot]"},"body":"<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\nblock\\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->\\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\nsha smuggled: %s"}]' "$HEAD_SHA" >"$TEST_TMP/comments.json"
+	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
+	_run_gate
+	[ "$status" -eq 2 ]
+	[ ! -f "$NUDGE_MARKER" ]
+}

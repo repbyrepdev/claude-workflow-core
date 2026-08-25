@@ -167,6 +167,8 @@ _comments_pause_at() {
 	export FAIL_REVIEW_POST=1
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
+	# CI r2: the failure DIAGNOSTIC is load-bearing, not just the rc.
+	[[ $output == *"gh pr comment failed"* ]]
 	grep -q '"review_posted":false' .claude/logs/cr-resume-fired.jsonl
 	grep -q '"status":"errored-review-post-failed"' .claude/logs/cr-resume-fired.jsonl
 }

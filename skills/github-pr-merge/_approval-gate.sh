@@ -305,11 +305,16 @@ fi
 #   * start AND end markers present → strip the block(s), judge the rest
 #   * start marker only (the standalone notice shape) → whole body drops
 # jq def shared by both legs; [\s\S]*? crosses newlines flag-free.
+# CI r2 hardening: after the block gsub, ANY surviving marker means the
+# delimiters were unmatched/interleaved (end-before-start, a trailing
+# unmatched start) — content after an unmatched marker could smuggle a
+# notice-quoted sha past the witness. Malformed → whole body drops.
 _AG_JQ_STRIP_RL='def strip_rl:
 	if contains("<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->")
 	then
 		if contains("<!-- end of auto-generated comment: rate limited by coderabbit.ai -->")
-		then gsub("<!-- This is an auto-generated comment: rate limited by coderabbit\\.ai -->[\\s\\S]*?<!-- end of auto-generated comment: rate limited by coderabbit\\.ai -->"; "")
+		then (gsub("<!-- This is an auto-generated comment: rate limited by coderabbit\\.ai -->[\\s\\S]*?<!-- end of auto-generated comment: rate limited by coderabbit\\.ai -->"; "")
+			| if contains("rate limited by coderabbit.ai") then "" else . end)
 		else ""
 		end
 	else . end;'
