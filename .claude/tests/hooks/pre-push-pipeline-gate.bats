@@ -431,6 +431,56 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	[[ $output != *"INVAL"* ]]
 }
 
+# ---- #2569: the phase-2 GRADUATION path end-to-end through the real gate ----
+# cr_phase2_clean_for_sha's graduation (branch-ancestor review + at-or-after
+# coverage) is unit-tested in cr-phase2-coverage.bats and exercised via the
+# ship-pr-cycle cap suite — but the gate that actually protects origin never
+# drove a GRADUATED push end-to-end. These two do: accept and refuse.
+
+@test "GRADUATED push accepted: covered ancestor review, HEAD unreviewed (#2569)" {
+	read -r _cb c2 < <(_make_stale_fixture) # main(cb) → feat/x(c2), left on feat/x
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB"
+	graduation_mark "feat/x" "$c2" 1 # phase-0.5/1 short-circuit marker
+	echo fixwork >h
+	git add h
+	git commit -qm fixwork # c3 = HEAD: the fix delta, NEVER reviewed locally
+	c3=$(git rev-parse HEAD)
+	mkdir -p .claude/logs .claude/audit
+	# Ancestor c2 was reviewed (2 findings, complete) and both findings are
+	# covered by a prove-yourself record written AT c3 (at-or-after c2).
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${c2:0:7}" >.claude/logs/cr-local-review.jsonl
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$c3" >.claude/audit/prove-yourself.jsonl
+	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
+	[ "$status" -eq 0 ]
+	[[ $output == *"graduated past Phase 0.5/1"* ]]    # phase-1 marker honored
+	[[ $output == *"GRADUATED via branch ancestor"* ]] # phase-2 graduation fired
+	[[ $output == *"defers to CR-in-CI"* ]]            # ...with the deferral notice
+	[[ $output == *"accepting"* ]]                     # gate verdict
+}
+
+@test "REFUSED push: ancestor review with UNCOVERED findings blocks origin (#2569)" {
+	read -r cb c2 < <(_make_stale_fixture)
+	cd "$TMP"
+	# shellcheck disable=SC1090
+	source "$_GRAD_LIB"
+	graduation_mark "feat/x" "$c2" 1
+	echo fixwork >h
+	git add h
+	git commit -qm fixwork
+	c3=$(git rev-parse HEAD)
+	mkdir -p .claude/logs .claude/audit
+	printf '{"sha":"%s","findings":2,"complete":true}\n' "${c2:0:7}" >.claude/logs/cr-local-review.jsonl
+	# Coverage exists but is scoped BEFORE the reviewed ancestor (recorded at
+	# base cb) — stale coverage must not pay for c2's findings.
+	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$cb" >.claude/audit/prove-yourself.jsonl
+	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"at-or-after coverage is only 0"* ]] # the refusal names the gap
+	[[ $output != *"accepting"* ]]
+}
+
 # ---- #2567-r2 hardening: NO AUDIT ROW → NO BYPASS ---------------------------
 
 @test "PIPELINE_GATE_SKIP=1 bypass succeeds AND writes the audit row" {
