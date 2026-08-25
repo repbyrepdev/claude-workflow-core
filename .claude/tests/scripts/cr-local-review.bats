@@ -440,3 +440,16 @@ TSTUB
 	[[ $output == *"not an integer; using 3600"* ]]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }
+
+@test "#2546: external SIGTERM shape (rc 143) salvages streamed findings and exits 4" {
+	_stub_coderabbit_lines \
+		'{"type":"finding","severity":"major","fileName":"x.sh"}' \
+		143
+	cd "$TEST_TMP" || return 1
+	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
+	[ "$status" -eq 4 ]
+	[[ $output == *"salvaged 1 finding"* ]]
+	local sha
+	sha=$(git rev-parse --short HEAD)
+	grep -q '"fileName":"x.sh"' "$TEST_TMP/.claude/logs/cr-local-review-${sha}-detail.jsonl"
+}

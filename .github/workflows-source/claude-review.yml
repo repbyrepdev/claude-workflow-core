@@ -23,6 +23,10 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
 
+# Deny by default at workflow scope; the review job grants exactly what
+# it needs. A future job inherits nothing (p2r4 CR).
+permissions: {}
+
 # One run per PR at a time — a new push supersedes the in-flight review.
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
@@ -30,6 +34,7 @@ concurrency:
 
 jobs:
   review:
+    name: Claude fresh-context backup review
     # Draft PRs are not reviewable intents yet.
     if: ${{ !github.event.pull_request.draft }}
     # Job-scoped, least-privilege (phase2 CR): contents to read the
@@ -125,8 +130,10 @@ jobs:
           fi
           # jq -s 'add' merges --paginate's per-page arrays BEFORE counting
           # (per-page --jq would emit one count per page and break the -lt).
+          # HEAD_SHA rides --arg (data channel), not shell interpolation
+          # into the program (p2r4 CR).
           n=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews" --paginate |
-            jq -s "add // [] | [.[] | select(.user.login == \"github-actions[bot]\" and .commit_id == \"${HEAD_SHA}\")] | length")
+            jq -s --arg head "$HEAD_SHA" 'add // [] | [.[] | select(.user.login == "github-actions[bot]" and .commit_id == $head)] | length')
           if [ "${n:-0}" -lt 1 ]; then
             echo "::error::claude-review ran but NO github-actions[bot] review exists for head ${HEAD_SHA}. Likely causes: repo setting 'Allow GitHub Actions to create and approve pull requests' is OFF (#2571), or the reviewer submitted nothing."
             exit 1

@@ -266,7 +266,9 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"cannot count rounds"* ]] || [[ $output == *"jq failed"* ]]
+	# ONE exact diagnostic (p2r4): the or-chain could pass on a different
+	# error class than the one this fixture provokes.
+	[[ $output == *"cannot count rounds (corrupt review log?)"* ]]
 }
 
 @test "rev-list failure fails CLOSED (rc 2), never a vacuous zero (BASE_BRANCH not a ref)" {
@@ -321,4 +323,26 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
 	[[ $output == *"cannot prove zero rounds"* ]]
+}
+
+@test "scaler exiting nonzero degrades LOUDLY to the default cap, never silently (p2r4)" {
+	_seed_stage_phase1
+	_seed_rounds "$SHA" 1 1 4
+	printf '#!/usr/bin/env bash\nexit 3\n' >"$ROOT/.claude/hooks/phase1-scaler.sh"
+	chmod +x "$ROOT/.claude/hooks/phase1-scaler.sh"
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" next
+	[[ $output == *"defaulting cap to 2"* ]]
+	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
+}
+
+@test "scaler emitting no ROUNDS line degrades LOUDLY to the default cap (p2r4)" {
+	_seed_stage_phase1
+	_seed_rounds "$SHA" 1 1 4
+	printf '#!/usr/bin/env bash\necho "TIER=confused"\nexit 0\n' >"$ROOT/.claude/hooks/phase1-scaler.sh"
+	chmod +x "$ROOT/.claude/hooks/phase1-scaler.sh"
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" next
+	[[ $output == *"no parseable ROUNDS=N line"* ]]
+	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }

@@ -124,6 +124,13 @@ command -v coderabbit >/dev/null 2>&1 || scm_fail "coderabbit CLI not installed 
 # can't differentiate "CR CLI converged clean" from "CR CLI never ran."
 TEE_OUT=$(mktemp -t cr-local-review.XXXXXX)
 trap 'rm -f "$TEE_OUT"' EXIT
+# p2r4 CR: record an external SIGTERM WITHOUT dying mid-flight. Bash
+# defers the trap until the foreground pipeline finishes, so the child's
+# output is fully captured; the flag then routes the run down the same
+# salvage + exit-4 path as an rc-143 pipeline, even when the child
+# swallowed the signal and exited 0.
+_cr_termed=0
+trap '_cr_termed=1' TERM
 # v0.32.x (#234), reframed by #2546: cap the local review's wall-time as a
 # HANG guard, not a race. CR's server-side review legitimately runs up to
 # ~60min on a large diff; a ceiling BELOW that (the old 600s) killed paid
@@ -339,7 +346,7 @@ _timeout_detected=0
 # default raised to 3600s, external kills at 600s+ became the common
 # abort shape; treating them like 124 keeps the salvage + exit-4
 # defer-to-CI contract instead of dying with nothing persisted.
-if [ "$rc" = "124" ] || [ "$rc" = "137" ] || [ "$rc" = "143" ]; then
+if [ "$rc" = "124" ] || [ "$rc" = "137" ] || [ "$rc" = "143" ] || [ "${_cr_termed:-0}" = "1" ]; then
 	_timeout_detected=1
 elif [ -f "$TEE_OUT" ] && grep -qE '"errorType"[[:space:]]*:[[:space:]]*"timeout"' "$TEE_OUT"; then
 	_timeout_detected=1

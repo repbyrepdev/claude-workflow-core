@@ -33,6 +33,9 @@ setup() {
 printf '%s\n' "$*" >>"$GH_ARGS_LOG"
 case "$1 $2" in
 "pr comment")
+	if [ "${FAIL_REVIEW_POST:-0}" = "1" ] && printf '%s' "$*" | grep -q "coderabbitai review"; then
+		exit 1
+	fi
 	exit 0
 	;;
 "repo view")
@@ -156,4 +159,14 @@ _comments_pause_at() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"resume + review"* ]]
 	grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
+}
+
+@test "review post FAILS while resume succeeded: outcome false, status names the review post (p2r4)" {
+	_repo_with_head_at "2026-08-24T12:00:00Z"
+	_comments_pause_at "2026-08-24T11:00:00Z"
+	export FAIL_REVIEW_POST=1
+	run "$HOOK" --pr 42
+	[ "$status" -eq 0 ]
+	grep -q '"review_posted":false' .claude/logs/cr-resume-fired.jsonl
+	grep -q '"status":"errored-review-post-failed"' .claude/logs/cr-resume-fired.jsonl
 }

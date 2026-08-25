@@ -309,23 +309,31 @@ mkdir -p "$LOG_DIR" 2>/dev/null || {
 	exit 0
 }
 
-POST_RC=0
+# p2r4 CR: the two posts are tracked INDEPENDENTLY — one shared rc
+# could not say which failed, and the audit status blamed both.
+RESUME_RC=0
+REVIEW_RC=0
 REVIEW_POSTED_OK=0
-gh pr comment "$PR" --body "@coderabbitai resume" >/dev/null 2>&1 || POST_RC=$?
-if [ "$POST_RC" -eq 0 ] && [ "$NEED_REVIEW_POST" = "1" ]; then
+gh pr comment "$PR" --body "@coderabbitai resume" >/dev/null 2>&1 || RESUME_RC=$?
+if [ "$RESUME_RC" -eq 0 ] && [ "$NEED_REVIEW_POST" = "1" ]; then
 	# r1 F13: the audit field records the OUTCOME — a decided-but-failed
 	# post must not read as posted.
 	if gh pr comment "$PR" --body "@coderabbitai review" >/dev/null 2>&1; then
 		REVIEW_POSTED_OK=1
 	else
-		POST_RC=$?
+		REVIEW_RC=$?
 	fi
 fi
+POST_RC=$((RESUME_RC != 0 ? RESUME_RC : REVIEW_RC))
 
 # Audit-log the attempt regardless of POST_RC so a failed post still
-# leaves a breadcrumb for forensics. status reflects what happened.
+# leaves a breadcrumb for forensics. status names WHICH post failed.
 STATUS="ok"
-[ "$POST_RC" -ne 0 ] && STATUS="errored-post-failed"
+if [ "$RESUME_RC" -ne 0 ]; then
+	STATUS="errored-resume-post-failed"
+elif [ "$REVIEW_RC" -ne 0 ]; then
+	STATUS="errored-review-post-failed"
+fi
 # code-reviewer r1 #4: `prior_resume_ts` was emitted as empty string
 # when no prior resume existed — downstream couldn't distinguish
 # 'never resumed' from 'resumed at unparseable timestamp'. Now: emit
