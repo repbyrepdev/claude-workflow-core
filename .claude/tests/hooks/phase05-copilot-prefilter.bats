@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: hooks/phase0.5-copilot-prefilter.sh
+# covers: hooks/phase0.5-copilot-prefilter.sh hooks/phase1-dedup.sh _lib/phase05-dedupe.sh
 # shellcheck disable=SC2154  # $stderr/$output/$status are assigned by bats `run --separate-stderr`
 #
 # #2563: (1) an agent response wrapping its JSON array in prose is SALVAGED
@@ -150,6 +150,37 @@ _last_agent_row() {
 	row=$(jq -sc 'last' "$LOG")
 	[ "$(jq -r '.status' <<<"$row")" = "errored-emit" ]
 	[ "$(jq -r '.emit_rc' <<<"$row")" = "7" ]
+}
+
+@test "a WRONG .agent echo is overwritten — the producer owns the stamp (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	printf '[{"agent":"copilot","file":"base.sh","line":1,"category":"c","severity":"low","description":"d","confidence":5}]\n' >copilot-out.txt
+	_run_prefilter
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].agent')" = "code-reviewer" ]
+}
+
+@test "a NUMERIC .agent is overwritten and survives dedup e2e (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	printf '[{"agent":42,"file":"base.sh","line":1,"category":"c","severity":"low","description":"d","confidence":5}]\n' >copilot-out.txt
+	_run_prefilter
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].agent')" = "code-reviewer" ]
+	[ "$(jq -r '.findings' <<<"$(_last_agent_row)")" = "1" ]
+}
+
+@test "phase1-dedup unit: NUMERIC agent from a third-party producer no longer crashes (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	run --separate-stderr bash -c 'printf %s "[{\"agent\":42,\"file\":\"f\",\"line\":1,\"category\":\"c\"}]" | hooks/phase1-dedup.sh'
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].cluster_id // empty' | head -c 2)" = "c-" ]
+}
+
+@test "phase1-dedup unit: non-object drop WARNS from the consumer side (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	run --separate-stderr bash -c 'printf %s "[42,{\"agent\":\"code-reviewer\",\"file\":\"f\",\"line\":1,\"category\":\"c\"}]" | hooks/phase1-dedup.sh'
+	[ "$status" -eq 0 ]
+	[[ $stderr == *"dropped 1 non-object element"* ]]
 }
 
 @test "phase1-dedup unit: null-agent finding no longer crashes the batch" {

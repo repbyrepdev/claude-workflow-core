@@ -14,13 +14,13 @@ set -u
 #   signal). Appends one JSONL row. Honors $SKIP_LOG as the target override
 #   (the pre-push hook's existing test seam).
 #
-#   FAILURE IS LOUD, rc 1 — and the CALLER decides policy on it. Both
+#   FAILURE IS LOUD, rc 1 — and the CALLER decides policy on it. All
 #   production callers now REFUSE their override when the append fails
-#   (ship-pr-cycle cap overrides since #2575; the pre-push bypass since the
-#   #2567-r2 hardening): no audit row → no bypass, because the row is the
-#   only durable record that the operator approved that specific skip. A
-#   caller that must stay fail-open can still `|| true` — the stderr line
-#   keeps the failure visible either way.
+#   (ship-pr-cycle cap overrides since #2575; the approval-gate skip;
+#   the pre-push bypass since the #2567-r2 hardening): no audit row → no
+#   bypass, because the row is the only durable record that the operator
+#   approved that specific skip. A caller that must stay fail-open can
+#   still `|| true` — the stderr line keeps the failure visible either way.
 pipeline_skip_log() {
 	local gate="${1:?pipeline_skip_log: gate name required}"
 	local repo_root skip_log branch sha

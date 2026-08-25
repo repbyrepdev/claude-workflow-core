@@ -102,7 +102,13 @@ if [ ! -f "$LOG" ]; then
 	deny "Phase 0.5 log not found — run .claude/hooks/phase0.5-copilot-prefilter.sh --base main before phase1-launcher.sh. Override: PHASE05_GATE_SKIP=1."
 fi
 
-if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s)] | length' "$LOG" 2>/dev/null); then
+# (#2563 p1r1) Exclude errored-* rows: this log doubles as the run-proof
+# token, and the errored-emit row means "this round's findings were NOT
+# emitted" — counting it would let a FAILED phase 0.5 unlock the phase-1
+# launcher for a sha whose review produced nothing (same for
+# errored-list-agents-*). Skipped-* rows still count: a documented skip
+# IS a completed run.
+if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s) | select((.status // "ok") | startswith("errored") | not)] | length' "$LOG" 2>/dev/null); then
 	echo "phase0.5-before-phase1: warning — failed to parse $LOG (malformed JSONL?); treating as no match" >&2
 	entries=0
 fi

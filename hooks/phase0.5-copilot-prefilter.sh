@@ -393,70 +393,15 @@ No prose. No markdown fence. Just the array."
 	fi
 	rm -f "$_helper_err"
 
-	# Extract JSON array from output (Copilot sometimes wraps in markdown).
-	# Strip fenced code block markers + leading/trailing whitespace.
-	cleaned=$(printf '%s' "$raw" | sed -E 's/^```(json)?//' | sed -E 's/```$//' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
-	# (#2563) Preamble/trailer salvage: agents sometimes wrap the array in
-	# prose ("Here are my findings: [...] Hope this helps."). The old path
-	# recorded status:"non-array-output" findings:0 and THREW AWAY every
-	# finding the agent produced — a paid-for review reporting success-
-	# shaped zero, the same laundering class #2544 killed in phase 2,
-	# living in phase 0.5 (observed live: a confidence-9 real bug from
-	# comment-analyzer discarded over a one-line preamble). Mirror
-	# local-review.sh's salvage principle: extract the first-[ .. last-]
-	# span, validate it parses as an array, and flag the row partial:true
-	# so a salvaged count is never mistaken for a clean parse.
-	_p05_partial=false
-	if ! printf '%s' "$cleaned" | jq -e 'type == "array"' >/dev/null 2>&1; then
-		case "$raw" in
-		*\[*\]*)
-			_p05_salvage="[${raw#*\[}"
-			_p05_salvage="${_p05_salvage%\]*}]"
-			if printf '%s' "$_p05_salvage" | jq -e 'type == "array"' >/dev/null 2>&1; then
-				cleaned="$_p05_salvage"
-				_p05_partial=true
-				echo "phase0.5: salvaged a JSON array wrapped in prose for agent=$agent — logging partial:true" >&2
-			fi
-			;;
-		esac
-	fi
-	# Validate it's a JSON array (post-salvage).
-	if ! printf '%s' "$cleaned" | jq -e 'type == "array"' >/dev/null 2>&1; then
-		# No array anywhere in the output (refusal, pure prose). Count as 0.
-		jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" \
-			'{ts:$ts, sha:$sha, phase:"0.5", agent:$agent, findings:0, status:"non-array-output"}' \
-			>>"$LOG"
+	# (#2563 p1r1) Parse → salvage → stamp → count → log via the SHARED
+	# helper in _lib/phase05-dedupe.sh — the hardening originally landed
+	# inline here and round 1 caught codex/gemini still carrying every
+	# defect it closed; the lib is now the single implementation. rc 1 =
+	# no array recoverable (non-array-output row already logged).
+	if ! cleaned=$(phase05_parse_and_log_findings "$raw" "$agent" "$TS" "$SHA" "$LOG" ""); then
 		continue
 	fi
-
-	# (#2563) Stamp provenance: free-tier models occasionally drop the
-	# .agent field from the schema they were asked for. A null agent
-	# crashed phase1-dedup's `$agent_keys[$agent]` lookup ("Cannot index
-	# object with null") — jq's runtime-error exit code is 5, which leaked
-	# through pipefail as this script's undocumented rc=5 while the
-	# audit-dedup stage emitted [] from its empty stdin. Both halves of
-	# the #2563 report, one root cause. The producer KNOWS which agent it
-	# invoked — own the stamp instead of trusting the model's echo.
-	_pre_stamp_len=$(printf '%s' "$cleaned" | jq 'length')
-	if ! cleaned=$(printf '%s' "$cleaned" | jq -c --arg a "$agent" '[.[] | select(type == "object") | .agent //= $a]'); then
-		echo "phase0.5: agent-stamp normalization failed for agent=$agent — treating as non-array output" >&2
-		jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" \
-			'{ts:$ts, sha:$sha, phase:"0.5", agent:$agent, findings:0, status:"non-array-output"}' \
-			>>"$LOG"
-		continue
-	fi
-
-	count=$(echo "$cleaned" | jq 'length')
-	# Non-object elements are schema garbage (no file/line/description to
-	# act on) — dropped by the stamp filter above, but never silently:
-	# warn + mark the row partial so the count is known-lossy.
-	if [ "$count" -ne "$_pre_stamp_len" ]; then
-		echo "phase0.5: dropped $((_pre_stamp_len - count)) non-object element(s) from agent=$agent output — logging partial:true" >&2
-		_p05_partial=true
-	fi
-	jq -nc --arg ts "$TS" --arg sha "$SHA" --arg agent "$agent" --argjson n "$count" --argjson p "$_p05_partial" \
-		'{ts:$ts, sha:$sha, phase:"0.5", agent:$agent, findings:$n, status:"ok", partial:$p}' \
-		>>"$LOG"
+	count=$(printf '%s' "$cleaned" | jq 'length')
 
 	# Merge into ALL_FINDINGS.
 	ALL_FINDINGS=$(jq -nc --argjson a "$ALL_FINDINGS" --argjson b "$cleaned" '$a + $b')
@@ -476,20 +421,8 @@ phase05_emit_auth_summary "copilot" "copilot login" "$ERRORED" "$ATTEMPTED" "$ER
 phase05_log_no_reviewable_agents "copilot" "$SHA" "$LOG" "$TS" "$ATTEMPTED"
 
 # Two-stage dedup (#817 + #823 + #827): phase1-dedup → audit-dedup.
-# Wiring extracted to .claude/_lib/phase05-dedupe.sh (sourced above).
-# (#2563) Every terminal path must exit a DOCUMENTED code. Before this
-# wrap, a jq crash inside either dedup stage leaked its own rc through
-# pipefail as the script's exit (observed live: rc=5 — jq's runtime-error
-# code — with [] on stdout), so a caller matching documented codes saw
-# undefined behavior and the [] read as "clean". Collapse every emit
-# failure to rc=1 (tooling error) with an errored-emit audit row so the
-# round's findings are never silently lost.
-_emit_rc=0
-phase05_emit_findings "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK" || _emit_rc=$?
-if [ "$_emit_rc" -ne 0 ]; then
-	echo "phase0.5: findings emit/dedup pipeline failed (rc=$_emit_rc) — this round's findings were NOT emitted" >&2
-	jq -nc --arg ts "$TS" --arg sha "$SHA" --argjson rc "$_emit_rc" --argjson n "$TOTAL" \
-		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:$n, status:"errored-emit", emit_rc:$rc}' \
-		>>"$LOG"
-	exit 1
-fi
+# (#2563) Every terminal path must exit a DOCUMENTED code: the _logged
+# wrap in _lib/phase05-dedupe.sh collapses any dedup/emit failure to rc 1
+# with an errored-emit audit row (observed live pre-fix: jq's runtime
+# rc=5 leaked through pipefail with [] on stdout reading as "clean").
+phase05_emit_findings_logged "$TOTAL" "$ALL_FINDINGS" "$DEDUP_HOOK" "$LOG" "$SHA" "$TS" || exit 1

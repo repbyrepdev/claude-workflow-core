@@ -97,7 +97,12 @@ fi
 # prefilter logs full 40-char SHAs — exact-match `==` always failed,
 # blocking CR CLI even when Phase 0.5 had run cleanly. Switched to full
 # SHA comparison so the gate now correctly recognizes valid Phase 0.5 runs.
-if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s)] | length' "$LOG" 2>/dev/null); then
+# (#2563 p1r1) Exclude errored-* rows: this log doubles as the run-proof
+# token, and the errored-emit row means "this round's findings were NOT
+# emitted" — counting it would let a FAILED phase 0.5 unlock CR-CLI for
+# a sha whose review produced nothing (same for errored-list-agents-*).
+# Skipped-* rows still count: a documented skip IS a completed run.
+if ! entries=$(jq -rs --arg s "$SHA" '[.[] | select(.sha==$s) | select((.status // "ok") | startswith("errored") | not)] | length' "$LOG" 2>/dev/null); then
 	echo "phase0.5-before-cr: warning — failed to parse $LOG (malformed JSONL?); treating as no match" >&2
 	entries=0
 fi

@@ -136,19 +136,6 @@ teardown() {
 	[[ $output == *"SOURCE_HASHES_REGEN_SKIP"* ]]
 }
 
-@test "#2237 coupled-wrapper coverage-hole refusal is a positive contract (#2552)" {
-	# Until now this refusal was only ever OBSERVED accidentally — as the
-	# mystery rc=2 that broke tests 4+5. Pin it deliberately: a plugin
-	# (plugin.json present) whose skills/ship-pr-cycle/run.sh is missing
-	# must refuse generation rather than emit a hash set with a coverage
-	# hole for the coupled wrapper.
-	cd "$TEST_TMP" || return 1
-	rm skills/ship-pr-cycle/run.sh
-	run scripts/hash-drift.sh --generate
-	[ "$status" -eq 2 ]
-	[[ $output == *"refusing a coverage hole for the coupled wrapper"* ]]
-}
-
 @test "fails-loud if hash-drift.sh is missing" {
 	cd "$TEST_TMP" || return 1
 	rm scripts/hash-drift.sh

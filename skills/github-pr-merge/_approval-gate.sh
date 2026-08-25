@@ -189,8 +189,9 @@ if ! [[ $POLL =~ ^[0-9]+$ ]] || [ "$POLL" -lt 1 ]; then
 fi
 
 # ---- Audited escape — fail-closed like the phase2 round-cap override
-# (NOT like the pre-push gate, which warns and proceeds): the skip
-# spends ONLY after the audit row is durably written. -----------------
+# (and, since the #2567-r2 hardening, like the pre-push gate too — all
+# three bypass writers refuse UNLOGGED): the skip spends ONLY after the
+# audit row is durably written. ---------------------------------------
 if [ "${APPROVAL_GATE_SKIP:-0}" = "1" ]; then
 	_ag_skip_lib="$SCRIPT_DIR/../../_lib/pipeline-skip.sh"
 	_ag_logged=0

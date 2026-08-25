@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # covers: skills/prove-yourself-audit/run.sh
+# shellcheck disable=SC2030,SC2031  # each bats test runs in its own subshell — env exports (PROVE_RETEST_TIMEOUT) are deliberately per-test
 #
 # #2562: record-fix re-executes its retest evidence. These tests pin the
 # three mechanical guarantees: (1) the recorded command is RUN and its
@@ -146,4 +147,61 @@ _record_fix() {
 	local f
 	f=$(ls .claude/.session-state/prove-yourself/*.json)
 	[[ $(jq -r '.decision_data.retest_output_tail' "$f") == *"tail-marker-xyz"* ]]
+}
+
+@test "no-timeout-binary fallback still verifies match AND mismatch (p1r1)" {
+	# The branch that actually runs on stock macOS had zero coverage: hide
+	# `timeout` via a PATH that lacks it (jq/git/bash symlinked in).
+	cd "$TEST_TMP" || return 1
+	mkdir -p bin
+	for t in jq git bash grep sed tail date mktemp shasum ls; do
+		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "bin/$t"
+	done
+	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" bash -c "cd '$TEST_TMP' && ! command -v timeout >/dev/null && '$SKILL' record-fix --finding-id tf1 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0 --source phase1 --confidence 5"
+	if [[ $output == *"timeout"* ]] && [ "$status" -ne 0 ] && [[ $output != *"Recorded fix"* ]]; then
+		skip "could not hide timeout from PATH on this host"
+	fi
+	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
+	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" bash -c "cd '$TEST_TMP' && '$SKILL' record-fix --finding-id tf2 --finding-text x2 --fix-summary y --retest-cmd false --retest-rc 0 --source phase1 --confidence 5"
+	[ "$status" -eq 1 ]
+	[[ $output == *"EVIDENCE MISMATCH"* ]]
+}
+
+@test "retest runs anchored at REPO_ROOT even when invoked from a subdir (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	mkdir -p sub/deeper
+	cd sub/deeper || return 1
+	run "$SKILL" record-fix --finding-id cwd1 --finding-text x --fix-summary y \
+		--retest-cmd "bash hooks/x.sh" --retest-rc 0 --cited-files "hooks/x.sh" \
+		--source phase1 --confidence 5
+	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
+}
+
+@test "a .claude/-prefixed citation still triggers the cycle-critical rule (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/hooks
+	printf '#!/bin/bash\nexit 0\n' >.claude/hooks/m.sh
+	chmod +x .claude/hooks/m.sh
+	run "$SKILL" record-fix --finding-id mir1 --finding-text x --fix-summary y \
+		--retest-cmd "true" --retest-rc 0 --cited-files ".claude/hooks/m.sh" \
+		--source phase1 --confidence 5
+	[ "$status" -eq 2 ]
+	[[ $output == *"cycle-critical"* ]]
+	# And the SSOT-relative spelling of the entry point satisfies it.
+	run "$SKILL" record-fix --finding-id mir2 --finding-text x2 --fix-summary y \
+		--retest-cmd "bash .claude/hooks/m.sh" --retest-rc 0 --cited-files ".claude/hooks/m.sh" \
+		--source phase1 --confidence 5
+	[ "$status" -eq 0 ]
+}
+
+@test "non-integer PROVE_RETEST_TIMEOUT warns and falls back to 120 (p1r1)" {
+	cd "$TEST_TMP" || return 1
+	export PROVE_RETEST_TIMEOUT=abc
+	_record_fix "true" 0
+	unset PROVE_RETEST_TIMEOUT
+	[ "$status" -eq 0 ]
+	[[ $output == *"not a positive integer"* ]]
+	[[ $output == *"Recorded fix"* ]]
 }

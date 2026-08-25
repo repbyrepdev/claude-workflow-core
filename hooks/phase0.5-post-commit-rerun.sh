@@ -194,8 +194,9 @@ if command -v setsid >/dev/null 2>&1; then
 	(setsid nohup "$PREFILTER" --base "$BASE_REF" --sha "$HEAD_SHA" </dev/null >"$DETACH_LOG" 2>&1 &) ||
 		echo "phase0.5-post-commit-rerun: WARN: failed to detach prefilter via setsid+nohup" >&2
 else
-	# setsid is util-linux/coreutils — absent on stock macOS, so THIS branch
-	# is the primary path on the main dev platform (not a rare fallback).
+	# setsid ships in util-linux (not in coreutils, not on stock macOS), so
+	# THIS branch is the primary path on the main dev platform (not a rare
+	# fallback).
 	# Plain nohup + backgrounded subshell orphans the child to launchd,
 	# which detaches it from the hook's process group just as well for our
 	# purpose (outliving the 15s PostToolUse timeout).

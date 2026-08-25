@@ -960,13 +960,18 @@ cmd_record_fix() {
 	#     repo-relative path must appear in the command text. A bats run
 	#     alone is a synthetic harness, not production-shaped evidence
 	#     (#2544's three escaped defects all had green bats).
-	local _crit_f
+	local _crit_f _crit_norm
 	# shellcheck disable=SC2086
 	for _crit_f in $cited_files; do
-		case "$_crit_f" in
+		# p1r1: normalize the mirror prefix — the same files execute at
+		# .claude/hooks/ + .claude/_lib/ in the consumer layout, and a
+		# citation spelled that way must not slip past the rule (nor must
+		# a legitimately-mirror-invoking retest command be refused).
+		_crit_norm="${_crit_f#.claude/}"
+		case "$_crit_norm" in
 		hooks/*.sh | _lib/*.sh | pre-commit-hooks/*.sh | scripts/cr/local-review.sh)
 			case "$retest_cmd" in
-			*"$_crit_f"*) ;;
+			*"$_crit_f"* | *"$_crit_norm"*) ;;
 			*)
 				echo "error: cited file $_crit_f is cycle-critical — the retest command must invoke the real entry point (the cited path must appear in --retest-cmd; a bats fixture alone is not production-shaped evidence) (#2562)" >&2
 				exit 2
@@ -995,12 +1000,16 @@ cmd_record_fix() {
 		exit 1
 	}
 	echo "record-fix: re-executing retest evidence (timeout ${_retest_timeout}s): $retest_cmd" >&2
+	# p1r1: anchor the retest at $REPO_ROOT — every other path in this file
+	# resolves against it, and a repo-relative command (which the critical-
+	# path rule REQUIRES) would fail rc=127 from a subdirectory and surface
+	# as a bogus EVIDENCE MISMATCH.
 	if command -v timeout >/dev/null 2>&1; then
-		timeout "$_retest_timeout" bash -c "$retest_cmd" >"$_retest_out" 2>&1 || _retest_actual_rc=$?
+		(cd "$REPO_ROOT" && timeout "$_retest_timeout" bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
 	else
 		# No timeout binary (stock macOS without coreutils): run unbounded —
 		# record-fix is operator-interactive, so a hang is visible, not silent.
-		bash -c "$retest_cmd" >"$_retest_out" 2>&1 || _retest_actual_rc=$?
+		(cd "$REPO_ROOT" && bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
 	fi
 	if [ "$_retest_actual_rc" -eq 124 ] && [ "$retest_rc" -ne 124 ]; then
 		echo "error: retest command timed out after ${_retest_timeout}s — raise PROVE_RETEST_TIMEOUT if the evidence genuinely needs longer (#2562)" >&2

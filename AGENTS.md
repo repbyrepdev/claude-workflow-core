@@ -93,13 +93,15 @@ panel is ever rebuilt: key pending-state on agent **completion**, never let a
 guard block the command that clears it, and keep `Read` available to
 subagents.
 
-### `# audits:` header for repo-wide meta-lint suites (#2572, convention only)
+### `# audits:` header for repo-wide meta-lint suites (#2572, convention only — NOT yet parsed)
 
 A bats file that POLICY-AUDITS many files (a repo-wide meta-lint) must not
 claim `# covers:` on them — that hands out false behavioral-test credit in
-`test-touched` and the mirror-drift gate. Declare `# audits: <paths…>`
-instead. Consumers (test.sh coverage, test-touched, refresh-from-source)
-treat `audits:` as routing-only — the suite still runs when its subjects
-change, but earns no behavioral credit. Enforcement + the
-`posttooluse-enforcement-contract.bats` migration are tracked under epic
-#2581; until that lands this section is the convention's SSOT.
+`test-touched` and the mirror-drift gate. The convention: declare
+`# audits: <paths…>` instead. **No consumer parses `audits:` yet** —
+test.sh coverage, test-touched, and refresh-from-source WILL treat it as
+routing-only (run-on-subject-change, no behavioral credit) when epic #2581
+lands the parsers. Until then an `audits:`-only suite drops out of
+change-triggered routing entirely, so do NOT migrate a suite off `covers:`
+before #2581 ships; this section exists so the header's meaning is settled
+before the parsers are written.
