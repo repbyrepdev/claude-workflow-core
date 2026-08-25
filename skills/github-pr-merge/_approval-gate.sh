@@ -285,19 +285,42 @@ if ! "$FINDINGS_BIN" "$PR"; then
 	exit 2
 fi
 
-# CodeRabbit stamps its rate-limit notice with an HTML comment
-# CONTAINING this substring — the EXACT needle both witness legs
-# exclude on (do not paste the full <!-- --> comment here: contains()
-# would then require the whole thing verbatim). The notice quotes the head
-# sha while announcing the review did NOT run (Phase 1 critical
-# finding): matching it would nudge-approve an unreviewed head, the
-# exact laundering the witness exists to prevent. Single point of
-# drift: if CodeRabbit rewords the marker, the notice becomes a false
-# witness again — keep in sync with their auto-generated comment.
-RATE_LIMIT_MARKER="rate limited by coderabbit.ai"
+# CodeRabbit stamps its rate-limit notices with "rate limited by
+# coderabbit.ai" HTML comments. The notice quotes the head sha while
+# announcing the review did NOT run (Phase 1 critical finding): matching
+# it would nudge-approve an unreviewed head — the exact laundering the
+# witness exists to prevent. Single point of drift: if CodeRabbit
+# rewords those markers, the notice becomes a false witness again —
+# keep the strings in strip_rl in sync with their auto-generated
+# comment.
+#
+# Rate-limit exclusion is BLOCK-scoped, not whole-body (live dogfood on
+# PR #2600, the gate's first production refusal): CR EDITS its summary
+# comment in place, and a past rate-limit episode leaves a DELIMITED
+# block — "<!-- This is an auto-generated comment: <marker> -->" through
+# "<!-- end of auto-generated comment: <marker> -->" — inside the same
+# 10KB body whose walkthrough carries the genuine reviewed-range
+# witness. Dropping the whole body threw away the only witness and
+# refused a fully-reviewed head. Rules, fail-toward-no-witness:
+#   * start AND end markers present → strip the block(s), judge the rest
+#   * start marker only (the standalone notice shape) → whole body drops
+# jq def shared by both legs; [\s\S]*? crosses newlines flag-free.
+# CI r2 hardening: after the block gsub, ANY surviving marker means the
+# delimiters were unmatched/interleaved (end-before-start, a trailing
+# unmatched start) — content after an unmatched marker could smuggle a
+# notice-quoted sha past the witness. Malformed → whole body drops.
+_AG_JQ_STRIP_RL='def strip_rl:
+	if contains("<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->")
+	then
+		if contains("<!-- end of auto-generated comment: rate limited by coderabbit.ai -->")
+		then (gsub("<!-- This is an auto-generated comment: rate limited by coderabbit\\.ai -->[\\s\\S]*?<!-- end of auto-generated comment: rate limited by coderabbit\\.ai -->"; "")
+			| if contains("rate limited by coderabbit.ai") then "" else . end)
+		else ""
+		end
+	else . end;'
 
 # Positive review signal for the pinned head, two accepted forms — BOTH
-# exclude rate-limit bodies (r2: the structural leg initially didn't,
+# exclude rate-limit content (r2: the structural leg initially didn't,
 # reopening the r1 critical through the leg that runs first):
 #   1. STRUCTURED: a policy-bot review record whose commit_id == head,
 #      from the payload _approved_at_head fetched. Any decisive-or-
@@ -305,13 +328,18 @@ RATE_LIMIT_MARKER="rate limited by coderabbit.ai"
 #      CHANGES_REQUESTED at head, which is exactly the stale-verdict
 #      shape the nudge exists to remediate (all four findings buckets
 #      already read clean by this point).
-#   2. TEXT: the head sha inside a policy-bot comment body.
+#   2. TEXT: the head sha inside a policy-bot comment body, after
+#      rate-limit blocks are stripped (see strip_rl above).
 _head_witness() {
 	local pinned
-	pinned=$(jq -rs --argjson bots "$APPROVERS_JSON" --arg head "$HEAD_SHA" --arg marker "$RATE_LIMIT_MARKER" '
+	pinned=$(jq -rs --argjson bots "$APPROVERS_JSON" --arg head "$HEAD_SHA" "$_AG_JQ_STRIP_RL"'
 		add // [] | [.[] | select(.user.login as $l | $bots | index($l))
 			| select(.commit_id == $head)
-			| select((.body // "") | contains($marker) | not)] | length' \
+			# An EMPTY body is a normal review record (counts); a non-empty
+			# body counts only if non-whitespace content survives the
+			# rate-limit strip (a pure notice must not witness).
+			| select(((.body // "") == "")
+				or ((((.body // "") | strip_rl) | gsub("^\\s+|\\s+$"; "")) != ""))] | length' \
 		"$AG_TMP/reviews.json" 2>"$AG_TMP/err") || {
 		echo "approval-gate: ERROR — witness parse of reviews payload failed: $(cat "$AG_TMP/err")" >&2
 		return 2
@@ -332,9 +360,9 @@ _head_witness() {
 	# .body // "" — a null body (deleted/edited-away) must not error the
 	# whole parse and permanently block on a "re-run when the API
 	# recovers" that will never come (r2); it just contributes nothing.
-	jq -rs --argjson bots "$APPROVERS_JSON" --arg marker "$RATE_LIMIT_MARKER" '
+	jq -rs --argjson bots "$APPROVERS_JSON" "$_AG_JQ_STRIP_RL"'
 		add // [] | .[] | select(.user.login as $l | $bots | index($l))
-		| (.body // "") | select(contains($marker) | not)' \
+		| (.body // "") | strip_rl' \
 		"$AG_TMP/comments.json" >"$AG_TMP/witness-bodies.txt" 2>"$AG_TMP/err" || {
 		echo "approval-gate: ERROR — witness parse of comments payload failed: $(cat "$AG_TMP/err")" >&2
 		return 2

@@ -33,7 +33,7 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 [phase0.5]        copilot prefilter logged for HEAD
     ↓ next (gate-checked: phase0.5-run.jsonl entry exists for sha)
 [phase1]          claude review-log convergence (cap = scaler tier)
-    ↓ next (gate-checked: 2-streak clean rounds with all expected agents)
+    ↓ next (gate-checked: EXIT CONTRACT #2570 — see below)
 [phase2]          local CR-CLI invocation
     ↓ next (gate-checked: 0 findings; >0 emits operator directive)
 [push]            git push -u origin <branch>
@@ -56,16 +56,47 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 
 ## Phase 1 firing — operator-driven
 
-When state advances to `phase1` and clean-streak < 2, `next` prints a DIRECTIVE FOR OPERATOR block. Phase 1's `security-review` MUST be fired in a separate Claude turn from the 5 parallel Agent calls — the pending-file gate kills the Skill when bundled. The directive layout:
+When state advances to `phase1`, neither exit-contract door is open, AND the branch round count is under the cap (or the audited override is set), `next` prints a DIRECTIVE FOR OPERATOR block; at the cap it refuses instead (rc 2, no directive). Phase 1's `security-review` MUST be fired in a separate Claude turn from the 5 parallel Agent calls — the pending-file gate kills the Skill when bundled. The directive layout:
 
 1. Block A: 5 parallel Agent calls (code-reviewer, code-simplifier, comment-analyzer, pr-test-analyzer, silent-failure-hunter)
 2. Barrier: log all 5 via `.claude/hooks/review-log.sh phase1 <round> <agent> <findings-count> ok`
 3. Run semgrep against the PR diff and log: invoke the `semgrep:semgrep_scan` MCP tool against the changed files (auto-config), then log via `.claude/hooks/review-log.sh phase1 <round> semgrep <findings-count> ok`. (The MCP tool is the canonical entry — direct CLI invocation works too but bypasses the MCP-side rate budgeting.)
 4. Fire `Skill(security-review)` SEPARATELY (NOT in same parallel block — pending-file gate kills the Skill)
 5. Log security-review: `.claude/hooks/review-log.sh phase1 <round> security-review <findings-count> ok`
-6. Re-run `next` — orchestrator detects 2-streak clean and advances to phase2
+6. Re-run `next` — the orchestrator advances to phase2 through one of the
+   exit-contract doors below
 
 **Why operator-driven:** bash can't fire Claude agents. A future enhancement (#732) would wire a UserPromptSubmit hook that emits the directive into Claude's context after a post-commit cascade; until then, the operator runs the agent calls.
+
+## Phase 1 EXIT CONTRACT (#2570, enforced by #2575)
+
+Phase 1 ends through exactly TWO doors — this section is the SSOT (the
+old "2-clean-streak" wording described only door 1 with a hardcoded 2;
+the cap comes from the scaler tier, and door 2 is how real branches
+with findings converge without treadmilling):
+
+1. **Clean convergence:** `clean_streak >= cap` — consecutive TRAILING
+   rounds with zero findings and all expected agents logged, read from
+   the CURRENT HEAD's review log only (clean rounds on earlier fix-
+   commit shas count toward the cap, never toward the streak).
+2. **Covered at cap:** the branch has spent `>= cap` rounds AND EVERY
+   findings-bearing branch sha has its findings covered by
+   prove-yourself records (cumulative covers >= cumulative findings,
+   PER SHA — a fresh 0-finding commit cannot wash out older uncovered
+   findings), with at least ONE findings-bearing sha as positive
+   evidence (all-zero rounds at the cap mean errored/partial panels,
+   not cleanliness). `next` then GRADUATES to phase2 without arming
+   another round. The refusal clears the directive marker, so Edit/
+   Write stay available for the record-fix/record-rejection remedies.
+
+Anything else at the cap is a REFUSAL (`_phase1_cap_gate`, rc 2,
+hook-ack routed): cover the findings, then re-run `next`. A deliberate
+extra round past the cap requires the audited escape —
+`PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON="why"` — which refuses
+to proceed unless the audit row is durably written (same posture as the
+phase-2 cap, #2545). Branch-level graduation (`phase-graduation.sh`)
+still short-circuits phase 1 entirely once the branch converged on any
+earlier sha (#63/#792).
 
 ## Phase 1 SendMessage resume — agent-team peer review (#193)
 

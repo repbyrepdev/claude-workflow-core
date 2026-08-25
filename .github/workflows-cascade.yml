@@ -42,6 +42,12 @@ cascade:
   - gitleaks.yml         # secret scan
   - pr-labeler.yml       # PR labels from the repo's .github/labeler.yml
   - label-sync.yml       # sync .github/labels.yml to GitHub label set
+  - claude-review.yml    # #2571 backup approver (fresh-context Claude
+                         # review feeding the #2567 merge gate). Plugin-
+                         # side pin ONLY, like every cascade entry: NOT
+                         # seeded to consumers (absent from bootstrap-
+                         # manifest), so the approval-policy caveat
+                         # stays scoped to THIS repo's workflows.
 
 no_cascade:
   - plugin-self-bootstrap-verify.yml  # plugin-only — validates plugin

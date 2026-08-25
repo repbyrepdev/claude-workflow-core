@@ -69,7 +69,7 @@
     "hooks/cr-auto-parse-poll.sh": "c533bef95f5307f9745ba87e856b3b6f73a9f67f4a965129559c4f10359ef65e",
     "hooks/cr-budget-check.sh": "015821ceee9c4658df35d7b5c409c130b47d838fb84da130600f8af8cb08bb82",
     "hooks/cr-log-invocation.sh": "9bf43a494d8b4a6683a1ea2b6d56788cb037c379e4ed85e84bf856bd0d87e811",
-    "hooks/cr-pause-detector.sh": "0bb6cd68e95caa0256015cf4173a5d0bf33e5394a7749c9a5bb81889922edcf9",
+    "hooks/cr-pause-detector.sh": "5828ceef0ef62cf894a2583b827b5197b9e92234f278f67aef40d694f0c41e90",
     "hooks/detect-actions-cap.sh": "038210d0d1b4a97de2e6d56075545e67c41f8b44e41b073924be2b3cb669ef25",
     "hooks/edit-corruption-pretooluse-guard.sh": "d52d0fcbfb39b3720f9aab4d97eae966a91b2d0df80418310adce15f9e122cc0",
     "hooks/hook-ack-clear.sh": "90d5b43f291c0eb414a9de0a0c8059a7108e913ffb9fec5bbab14fb39bcb35f4",

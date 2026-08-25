@@ -60,5 +60,17 @@ require_approving_review: true
 approvers:
   - coderabbitai[bot]
   - copilot-pull-request-reviewer[bot]
+  # github-actions[bot] = the claude-review.yml backup approver (#2571):
+  # a fresh-context Claude review submitted under the Actions identity.
+  # CAVEAT accepted for this single-operator repo, stated in FULL (p2r4
+  # CR sharpened it): (a) any existing workflow with pull-requests:write
+  # shares this login, AND (b) on `pull_request` events GitHub runs the
+  # workflow definition FROM THE PR BRANCH — a same-repo PR can therefore
+  # INTRODUCE a workflow that self-approves once the Actions-can-approve
+  # setting is on. Both reduce to "whoever can push same-repo branches
+  # can approve", which in this repo is the single operator. The moment
+  # additional pushers exist, REMOVE this line and move the backup
+  # approver to a dedicated GitHub App identity (tracked, epic #2566).
+  - github-actions[bot]
 nudge_comment: "@coderabbitai approve"
 nudge_timeout_seconds: 180
