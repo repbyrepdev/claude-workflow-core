@@ -73,7 +73,7 @@ teardown() {
 @test "epic-labelled issue is SKIPPED, never parsed (anti-nesting guard)" {
 	# epic + plan-me + a CR plan present: the OLD code WOULD parse it (creating a
 	# nested epic); the fix must skip it on the `epic` label.
-	local j='{"labels":[{"name":"epic"},{"name":"plan-me"}],"number":999,"title":"EPIC: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z"}'
+	local j='{"labels":[{"name":"epic"},{"name":"plan-me"}],"number":999,"title":"EPIC: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
@@ -88,7 +88,7 @@ teardown() {
 }
 
 @test "non-epic plan-me issue WITH a CR plan WOULD parse (guard not over-broad)" {
-	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"feat: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z"}'
+	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"feat: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
@@ -107,7 +107,7 @@ teardown() {
 	# issues leave it) ran only under --dry-run, so it was never exercised. Stub
 	# cr-plan (no-op success) at the first-candidate path + capture the gh edit;
 	# assert BOTH the parse event and the exact relabel fire.
-	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: y","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z"}'
+	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: y","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
 	cd "$TEST_TMP"
 	# cr-plan resolves $REPO_ROOT/.claude/skills/cr-plan/run.sh first (REPO_ROOT
 	# == this tmp git repo) — stub it as a no-op success so parse "succeeds".
@@ -152,7 +152,7 @@ teardown() {
 	# still drops plan-me so the poll set is bounded). Stub gh so ONLY the
 	# add-label-plan-parsed edit returns non-zero; all other gh calls behave
 	# normally + log their args.
-	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: z","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z"}'
+	local j='{"labels":[{"name":"plan-me"}],"number":777,"title":"feat: z","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"ordinary hand-written issue body"}'
 	cd "$TEST_TMP"
 	# cr-plan no-op success (parse "succeeds") so we reach the relabel block.
 	mkdir -p "$TEST_TMP/.claude/skills/cr-plan"
@@ -185,5 +185,41 @@ teardown() {
 	# The marker-add WAS attempted (the stub logs the args BEFORE failing it) —
 	# proves the failure path ran through the real add op, not a skip.
 	run grep -q -- '--add-label plan-parsed' "$TEST_TMP/gh-edit.log"
+	[ "$status" -eq 0 ]
+}
+
+@test "auto-created SUB-issue is SKIPPED — scaffolding never re-enters the parser (2026-08-25 explosion)" {
+	# The June guard covered epic-labelled outputs only; ai-triage plan-me'd
+	# the auto-created SUBS and the parser decomposed decompositions three
+	# levels deep. Any body carrying the auto-created markers must skip.
+	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"Thread-reply helper","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"Sub-issue auto-created from CodeRabbit plan on epic for #2548."}'
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output != *"WOULD parse"* ]]
+	run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
+	[ "$status" -eq 0 ]
+}
+
+@test "epic that LOST its label is still skipped via the body marker (defense in depth)" {
+	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"EPIC: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"OPEN","body":"Epic auto-created from CodeRabbit plan on issue #2574."}'
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output != *"WOULD parse"* ]]
+	run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
+	[ "$status" -eq 0 ]
+}
+
+@test "a CLOSED source issue is never decomposed (close-race / --issue guard)" {
+	# The bulk poll lists --state open, but --issue <N> and sources closed
+	# mid-flight (batch-PR merge) reached the parser closed — creating
+	# scaffolding for work that is already done (#2578 → #2623-#2625).
+	local j='{"labels":[{"name":"plan-me"}],"number":999,"title":"feat: x","comments":[{"author":{"login":"coderabbitai"},"body":"## Implementation Steps - foo"}],"createdAt":"2026-01-01T00:00:00Z","state":"CLOSED","body":"ordinary issue"}'
+	cd "$TEST_TMP"
+	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output != *"WOULD parse"* ]]
+	run grep -q '"event":"skip-not-open"' "$LOG"
 	[ "$status" -eq 0 ]
 }
