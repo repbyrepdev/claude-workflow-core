@@ -58,6 +58,7 @@ TITLE=""
 BODY_FILE=""
 MILESTONE=""
 LABELS=()
+ENSURE_LABELS=()
 SUB_TITLES=()
 SUB_BODIES=()
 NO_COPILOT=0
@@ -108,6 +109,25 @@ while [ $# -gt 0 ]; do
 			echo "error: --label requires a value" >&2
 			exit 2
 		}
+		LABELS+=("$2")
+		shift 2
+		;;
+	--ensure-label)
+		# (2026-08-25 board explosion, upstream trim): exactly like
+		# --label — the value reaches the epic AND every sub-issue via the
+		# normal LABELS flow (p1r1 correction: subs DO inherit every
+		# caller --label; only the wrapper-injected epic/enhancement pair
+		# is parent-only) — PLUS the label is created first if missing,
+		# so a first-ever use cannot fail `gh issue create` on a
+		# nonexistent label. cr-plan passes `auto:cr-plan` so ai-triage's
+		# existing "skip any auto:* label" rule mechanically excludes
+		# scaffolding from plan-me labeling (and CR from spending a plan
+		# comment on it) BEFORE the parser guards would refuse it anyway.
+		[ $# -ge 2 ] || {
+			echo "error: --ensure-label requires a value" >&2
+			exit 2
+		}
+		ENSURE_LABELS+=("$2")
 		LABELS+=("$2")
 		shift 2
 		;;
@@ -176,7 +196,7 @@ if [ "${COPILOT_DRAFT_OFF:-0}" = "1" ]; then
 fi
 
 if [ -z "$TITLE" ]; then
-	echo "Usage: $0 --title <title> [--body-file <path>] [--sub-title ... [--sub-body-file ...]]... [--label ...] [--milestone ...] [--parent <issue-num>] [--no-copilot]" >&2
+	echo "Usage: $0 --title <title> [--body-file <path>] [--sub-title ... [--sub-body-file ...]]... [--label ...] [--ensure-label <label>] [--milestone ...] [--parent <issue-num>] [--no-copilot]" >&2
 	echo "Note: --body-file is optional — Copilot-default auto-drafts when omitted (v4.28-W3-CD #747)." >&2
 	echo "Note: --parent N links the created epic AS A SUB-ISSUE of #N via addSubIssue (v4.30 #779 PR1)." >&2
 	exit 2
@@ -415,6 +435,21 @@ for l in "${PARENT_LABELS[@]}"; do
 done
 [ "$have_epic" = "0" ] && PARENT_LABELS+=("epic")
 [ "$have_enhancement" = "0" ] && PARENT_LABELS+=("enhancement")
+# --ensure-label: create each such label BEFORE first use (the missing-
+# plan-parsed-label wholesale-relabel failure is the precedent).
+# p2r1 (CR major): `--force` makes the create idempotent on an EXISTING
+# label (updates instead of HTTP-422ing), so NO `|| true` — a real
+# failure (auth, network, validation) propagates under set -euo pipefail
+# and aborts HERE with a clear error instead of resurfacing downstream
+# as a confusing issue-create failure on a nonexistent label. --force
+# resets color/description on repeat runs; fine for a label whose
+# description declares it auto-managed. Values flow to parent + subs
+# via LABELS.
+for _el in "${ENSURE_LABELS[@]:-}"; do
+	[ -n "$_el" ] || continue
+	gh label create "$_el" --force --color "ededed" \
+		--description "auto-managed: ensured pre-use by github-epic-creation --ensure-label"
+done
 GH_ARGS=(issue create --title "$TITLE" --body-file "$BODY_FILE")
 for l in "${PARENT_LABELS[@]}"; do GH_ARGS+=(--label "$l"); done
 [ -n "$MILESTONE" ] && GH_ARGS+=(--milestone "$MILESTONE")
@@ -539,6 +574,9 @@ for i in "${!SUB_TITLES[@]}"; do
 	sub_title="${SUB_TITLES[$i]}"
 	sub_body="${SUB_BODIES[$i]}"
 	SUB_ARGS=(issue create --title "$sub_title" --body-file "$sub_body")
+	# Every caller-passed label (incl. --ensure-label values, already in
+	# LABELS) reaches each sub; only the wrapper-injected epic/enhancement
+	# pair is parent-only (PARENT_LABELS, CR pass 3).
 	for l in "${LABELS[@]:-}"; do [ -n "$l" ] && SUB_ARGS+=(--label "$l"); done
 	[ -n "$MILESTONE" ] && SUB_ARGS+=(--milestone "$MILESTONE")
 	sub_url=$(gh "${SUB_ARGS[@]}")
