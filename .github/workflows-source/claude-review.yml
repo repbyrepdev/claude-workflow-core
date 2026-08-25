@@ -72,6 +72,10 @@ jobs:
         uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # TEMPORARY (this test PR only): surface the hidden error from
+          # the first activation attempt (1 turn, $0, is_error) — remove
+          # before any merge.
+          show_full_output: true
           # Explicit github_token pins the review IDENTITY to
           # github-actions[bot] — matching the approval-policy line and the
           # Actions-can-approve setting. Without it the action mints a
