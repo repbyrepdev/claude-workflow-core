@@ -436,16 +436,19 @@ done
 [ "$have_epic" = "0" ] && PARENT_LABELS+=("epic")
 [ "$have_enhancement" = "0" ] && PARENT_LABELS+=("enhancement")
 # --ensure-label: create each such label BEFORE first use (the missing-
-# plan-parsed-label wholesale-relabel failure is the precedent). NOTE:
-# `gh label create` on an EXISTING label FAILS (HTTP 422 already_exists,
-# nonzero exit) — the `|| true` is load-bearing under set -euo pipefail
-# on the common repeat-run path, not decoration (p1r1 comment-analyzer).
-# The label VALUES already flow to parent + subs via LABELS.
+# plan-parsed-label wholesale-relabel failure is the precedent).
+# p2r1 (CR major): `--force` makes the create idempotent on an EXISTING
+# label (updates instead of HTTP-422ing), so NO `|| true` — a real
+# failure (auth, network, validation) propagates under set -euo pipefail
+# and aborts HERE with a clear error instead of resurfacing downstream
+# as a confusing issue-create failure on a nonexistent label. --force
+# resets color/description on repeat runs; fine for a label whose
+# description declares it auto-managed. Values flow to parent + subs
+# via LABELS.
 for _el in "${ENSURE_LABELS[@]:-}"; do
 	[ -n "$_el" ] || continue
-	gh label create "$_el" --color "ededed" \
-		--description "auto-managed: ensured pre-use by github-epic-creation --ensure-label" \
-		2>/dev/null || true
+	gh label create "$_el" --force --color "ededed" \
+		--description "auto-managed: ensured pre-use by github-epic-creation --ensure-label"
 done
 GH_ARGS=(issue create --title "$TITLE" --body-file "$BODY_FILE")
 for l in "${PARENT_LABELS[@]}"; do GH_ARGS+=(--label "$l"); done

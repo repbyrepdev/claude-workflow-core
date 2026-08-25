@@ -145,18 +145,23 @@ _run_skill() { # extra args appended
 	[ "$status" -eq 0 ]
 }
 
-@test "ensure-create FAILURE (label exists, gh 422) is tolerated — the run completes stamped" {
-	# gh label create on an EXISTING label exits nonzero; the || true is
-	# load-bearing on every repeat run (p1r1 test-analyzer + comment-
-	# analyzer). Stub models the failure AFTER logging.
+@test "ensure-create uses --force (idempotent on existing) and a REAL failure fails CLOSED" {
+	# p2r1 CR major: --force makes repeat runs idempotent WITHOUT || true,
+	# so auth/network/validation failures propagate — the run must abort
+	# BEFORE creating any issues (no orphan epic on a broken label step).
 	cd "$TEST_TMP"
-	_write_gh_stub 1
 	_run_skill --ensure-label "auto:cr-plan"
 	[ "$status" -eq 0 ]
-	run grep -q "label create auto:cr-plan" "$GH_LOG"
+	run grep -qE "label create auto:cr-plan --force" "$GH_LOG"
 	[ "$status" -eq 0 ]
-	run grep -qE "issue create --title sub two.*--label auto:cr-plan" "$GH_LOG"
-	[ "$status" -eq 0 ]
+	# Now a genuinely failing create (auth/network): fail closed, zero
+	# issue creates.
+	: >"$GH_LOG"
+	_write_gh_stub 1
+	_run_skill --ensure-label "auto:cr-plan"
+	[ "$status" -ne 0 ]
+	run grep -q "issue create" "$GH_LOG"
+	[ "$status" -ne 0 ]
 }
 
 @test "combined --label + --ensure-label: subs receive BOTH (the REAL inheritance contract)" {

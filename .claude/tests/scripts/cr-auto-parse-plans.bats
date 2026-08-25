@@ -377,4 +377,23 @@ teardown() {
 		echo "bootstrap heredoc mirror lost producer marker: $m1"
 		return 1
 	}
+	grep -qF "$m3" "$PLUGIN/scripts/bootstrap-repo.sh" || {
+		echo "bootstrap heredoc mirror lost producer marker: $m3"
+		return 1
+	}
+	# p2r1: exercise the COMPOSITION path too, not just source greps — a
+	# fresh compose of base+overlay must carry the markers into the
+	# generated config.
+	local composed="$TEST_TMP/composed.yaml"
+	run "$PLUGIN/scripts/compose-coderabbit.sh" --base "$PLUGIN/.coderabbit.base.yaml" \
+		--overlay "$PLUGIN/.coderabbit.overlay.yaml" --out "$composed"
+	[ "$status" -eq 0 ]
+	grep -qF "$m1" "$composed" || {
+		echo "freshly COMPOSED config lost producer marker: $m1"
+		return 1
+	}
+	grep -qF "$m3" "$composed" || {
+		echo "freshly COMPOSED config lost producer marker: $m3"
+		return 1
+	}
 }
