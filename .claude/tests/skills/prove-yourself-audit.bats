@@ -257,15 +257,19 @@ _record_fix() {
 
 @test "rc-swallowing operator after the entry point is refused (p2-ci-r2)" {
 	# The backup reviewer's laundering: hooks/x.sh || true always reports
-	# 0 regardless of the entry point's real exit status.
+	# 0 regardless of the entry point's real exit status. p2-ci-r3: each
+	# refusal asserts the SPECIFIC message — status 2 alone could be any
+	# validation failure.
 	cd "$TEST_TMP" || return 1
 	_record_fix "bash hooks/x.sh || true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
 	[[ $output == *"rc-swallowing"* ]]
 	_record_fix "bash hooks/x.sh; true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
+	[[ $output == *"rc-swallowing"* ]]
 	_record_fix "bash hooks/x.sh | cat" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
+	[[ $output == *"rc-swallowing"* ]]
 }
 
 @test "operators FEEDING the entry point stay legal; redirect digraphs are not operators (p2-ci-r2)" {
@@ -277,6 +281,7 @@ _record_fix() {
 		--retest-cmd "bash hooks/x.sh >/dev/null 2>&1" --retest-rc 0 \
 		--cited-files "hooks/x.sh" --source phase1 --confidence 5
 	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
 }
 
 @test "a ./-prefixed citation still triggers the cycle-critical rule (p2-cap)" {
@@ -286,6 +291,17 @@ _record_fix() {
 	[[ $output == *"cycle-critical"* ]]
 	_record_fix "bash ./hooks/x.sh" 0 "./hooks/x.sh"
 	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
+}
+
+@test "COMBINED ./.claude/ prefixes still trigger the rule (p2-ci-r3)" {
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/hooks
+	printf '#!/bin/bash\nexit 0\n' >.claude/hooks/c.sh
+	chmod +x .claude/hooks/c.sh
+	_record_fix "true" 0 "./.claude/hooks/c.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"cycle-critical"* ]]
 }
 
 @test "a lexical ..-segment citation still triggers the rule (p2-cap)" {
@@ -295,18 +311,17 @@ _record_fix() {
 	[[ $output == *"cycle-critical"* ]]
 }
 
-@test "no timeout binary WITHOUT the explicit seam refuses fail-closed (p2-cap)" {
-	# Deterministic only where PATH hiding works (macOS /usr/bin has no
-	# timeout — the primary dev platform); GNU hosts cover the seam arm.
+@test "no timeout binary WITHOUT the explicit seam refuses fail-closed (p2-cap, p2-ci-r3 deterministic)" {
+	# p2-ci-r3 CR: nb-ONLY PATH — /usr/bin:/bin exposed GNU timeout and
+	# the old skip guard neutered the only fail-closed coverage there.
+	# Every tool the skill needs is symlinked in, timeout deliberately
+	# NOT, so the refusal branch runs on every host. No skip.
 	cd "$TEST_TMP" || return 1
 	mkdir -p nb
-	for t in jq git bash grep sed tail date mktemp shasum ls find mkdir rm cat; do
+	for t in jq git bash sh grep sed tail head date mktemp shasum ls find mkdir rm cat sort tr uniq cut dirname basename wc env; do
 		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "nb/$t"
 	done
-	run env PATH="$TEST_TMP/nb:/usr/bin:/bin" bash -c "command -v timeout >/dev/null && echo HAVE-TIMEOUT; cd '$TEST_TMP' && '$SKILL' record-fix --finding-id nt1 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0 --source phase1 --confidence 5"
-	if [[ $output == *"HAVE-TIMEOUT"* ]]; then
-		skip "#2562 — host ships timeout in /usr/bin:/bin (GNU); the PROVE_RETEST_NO_TIMEOUT seam arm covers the unbounded branch on such hosts"
-	fi
+	run env PATH="$TEST_TMP/nb" bash -c "cd '$TEST_TMP' && '$SKILL' record-fix --finding-id nt1 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0 --source phase1 --confidence 5"
 	[ "$status" -eq 1 ]
 	[[ $output == *"refusing to run retest evidence UNBOUNDED"* ]]
 	[[ $output == *"PROVE_RETEST_NO_TIMEOUT"* ]]

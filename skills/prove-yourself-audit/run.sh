@@ -971,8 +971,16 @@ cmd_record_fix() {
 		# lexical .. segments — `./hooks/x.sh` or `hooks/../hooks/x.sh`
 		# otherwise escaped the pattern match entirely (fail-OPEN for a
 		# cycle-critical citation).
-		_crit_norm="${_crit_f#.claude/}"
-		_crit_norm="${_crit_norm#./}"
+		# p2-ci-r3 (CR major): COMBINED prefixes (./.claude/hooks/x.sh)
+		# survived a single-pass strip — loop until stable so no ordering
+		# of ./ and .claude/ escapes classification.
+		_crit_norm="$_crit_f"
+		while :; do
+			_crit_prev="$_crit_norm"
+			_crit_norm="${_crit_norm#./}"
+			_crit_norm="${_crit_norm#.claude/}"
+			[ "$_crit_norm" = "$_crit_prev" ] && break
+		done
 		while [[ $_crit_norm == *"/../"* ]]; do
 			_crit_norm=$(printf '%s' "$_crit_norm" | sed -E 's|[^/]+/\.\./||')
 		done

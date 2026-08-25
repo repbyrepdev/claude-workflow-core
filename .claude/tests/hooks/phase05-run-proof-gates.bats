@@ -83,6 +83,15 @@ _run_p1_gate() {
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
+@test "before-cr: a BARE 'skipped' status is NOT run-proof (p2-ci-r3 deny)" {
+	# startswith("skipped") also matched the malformed bare value — the
+	# documented terminals are skipped-<reason> only.
+	_row skipped
+	_run_cr_gate
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
 @test "before-cr: a PER-AGENT skipped row is NOT run-proof (p2-cap deny)" {
 	# The cap-round residual: skipped-empty-canonical-brief is a per-agent
 	# row (one agent misconfigured), not a run terminal — only run-level
