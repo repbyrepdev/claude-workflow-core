@@ -117,13 +117,16 @@ _run_parse() {
 	# every scaffolding issue is born auto:*-labelled (ai-triage skips it).
 	cd "$TEST_TMP"
 	mkdir -p .claude/skills/github-epic-creation
-	printf '#!/usr/bin/env bash\necho "$*" >"$EPIC_ARGS_LOG"\nexit 0\n' >.claude/skills/github-epic-creation/run.sh
+	printf '#!/usr/bin/env bash\necho "$*" >"$EPIC_ARGS_LOG"\necho "EPIC-STUB-INVOKED" >&2\nexit 0\n' >.claude/skills/github-epic-creation/run.sh
 	chmod +x .claude/skills/github-epic-creation/run.sh
 	local plan=$'## Implementation Steps\n\n### Phase 1: Do the thing\n\ndetails here\n'
 	run env PATH="$TEST_TMP/bin:$PATH" APPROVE=1 EPIC_ARGS_LOG="$TEST_TMP/epic-args.log" \
 		GH_VIEW_JSON="$(_issue_json "plan-me" OPEN "ordinary hand-written issue body")" \
 		GH_PLAN_BODY="$plan" "$SKILL" parse 999
 	[ "$status" -eq 0 ]
+	# p2r2: OUTPUT channel too — the stub's stderr marker proves the skill
+	# was actually invoked in THIS run, not that a stale args-log matched.
+	[[ $output == *"EPIC-STUB-INVOKED"* ]]
 	run grep -q -- "--ensure-label auto:cr-plan" "$TEST_TMP/epic-args.log"
 	[ "$status" -eq 0 ]
 }

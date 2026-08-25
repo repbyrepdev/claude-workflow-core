@@ -388,12 +388,20 @@ teardown() {
 	run "$PLUGIN/scripts/compose-coderabbit.sh" --base "$PLUGIN/.coderabbit.base.yaml" \
 		--overlay "$PLUGIN/.coderabbit.overlay.yaml" --out "$composed"
 	[ "$status" -eq 0 ]
-	grep -qF "$m1" "$composed" || {
+	# p2r2: assert compose's own OUTPUT channel (its wrote-confirmation)
+	# and use non-quiet greps so a failure shows WHAT the composed file
+	# actually contains, not just a bare rc.
+	[[ $output == *"wrote"* ]]
+	run grep -F "$m1" "$composed"
+	[ "$status" -eq 0 ] || {
 		echo "freshly COMPOSED config lost producer marker: $m1"
 		return 1
 	}
-	grep -qF "$m3" "$composed" || {
+	[ -n "$output" ]
+	run grep -F "$m3" "$composed"
+	[ "$status" -eq 0 ] || {
 		echo "freshly COMPOSED config lost producer marker: $m3"
 		return 1
 	}
+	[ -n "$output" ]
 }

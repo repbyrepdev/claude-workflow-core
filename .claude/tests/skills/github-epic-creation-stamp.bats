@@ -84,9 +84,11 @@ _write_gh_stub() {
 #!/usr/bin/env bash
 echo "\$*" >>"\$GH_LOG"
 if [ "\$1" = "label" ] && [ "\$2" = "create" ]; then
+	echo "STUB-LABEL-CREATE:\$3" >&2
 	exit $label_rc
 fi
 if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then
+	echo "STUB-ISSUE-CREATE" >&2
 	n=\$(cat "\$GH_COUNT" 2>/dev/null || echo 100)
 	n=\$((n + 1))
 	echo "\$n" >"\$GH_COUNT"
@@ -152,6 +154,8 @@ _run_skill() { # extra args appended
 	cd "$TEST_TMP"
 	_run_skill --ensure-label "auto:cr-plan"
 	[ "$status" -eq 0 ]
+	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]]
+	[[ $output == *"STUB-ISSUE-CREATE"* ]]
 	run grep -qE "label create auto:cr-plan --force" "$GH_LOG"
 	[ "$status" -eq 0 ]
 	# Now a genuinely failing create (auth/network): fail closed, zero
