@@ -38,7 +38,23 @@ setup() {
 		echo "FATAL: fixture init failed" >&2
 		return 1
 	}
-	printf '#!/usr/bin/env bash\nif [ "$1" = "issue" ] && [ "$2" = "view" ]; then printf "%%s" "$GH_VIEW_JSON"; exit 0; fi\nexit 0\n' >"$TEST_TMP/bin/gh"
+	# gh stub: the COMMENTS fetch (2nd view call, `--json comments`) gets
+	# $GH_PLAN_BODY when set (simulating the --jq'd plan text); every
+	# other view gets $GH_VIEW_JSON.
+	cat >"$TEST_TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+	case "$*" in
+	*"--json comments"*) [ -n "${GH_PLAN_BODY:-}" ] && {
+		printf "%s" "$GH_PLAN_BODY"
+		exit 0
+	} ;;
+	esac
+	printf "%s" "$GH_VIEW_JSON"
+	exit 0
+fi
+exit 0
+EOF
 	chmod +x "$TEST_TMP/bin/gh"
 }
 
@@ -93,4 +109,21 @@ _run_parse() {
 	[[ $output != *"SCAFFOLDING"* ]]
 	[[ $output != *"not OPEN"* ]]
 	[[ $output == *"CR plan structure differs"* ]]
+}
+
+@test "a full parse passes --stamp-label auto:cr-plan to epic-creation (upstream trim)" {
+	# End-to-end past both guards with a REAL plan body; the epic-creation
+	# skill is stubbed to log its args — the stamp must be among them so
+	# every scaffolding issue is born auto:*-labelled (ai-triage skips it).
+	cd "$TEST_TMP"
+	mkdir -p .claude/skills/github-epic-creation
+	printf '#!/usr/bin/env bash\necho "$*" >"$EPIC_ARGS_LOG"\nexit 0\n' >.claude/skills/github-epic-creation/run.sh
+	chmod +x .claude/skills/github-epic-creation/run.sh
+	local plan=$'## Implementation Steps\n\n### Phase 1: Do the thing\n\ndetails here\n'
+	run env PATH="$TEST_TMP/bin:$PATH" APPROVE=1 EPIC_ARGS_LOG="$TEST_TMP/epic-args.log" \
+		GH_VIEW_JSON="$(_issue_json "plan-me" OPEN "ordinary hand-written issue body")" \
+		GH_PLAN_BODY="$plan" "$SKILL" parse 999
+	[ "$status" -eq 0 ]
+	run grep -q -- "--stamp-label auto:cr-plan" "$TEST_TMP/epic-args.log"
+	[ "$status" -eq 0 ]
 }

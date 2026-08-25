@@ -325,7 +325,11 @@ EOF
 	# epic edge is text-only ("auto-created from CodeRabbit plan on issue
 	# #$issue") and auto-close-parent.sh can't cascade source closure when
 	# the epic closes — see #807 + #785/#781 retrofit precedent.
-	skill_args=(--title "EPIC: $issue_title (#$issue)" --body-file "$epic_body_file" --parent "$issue")
+	# (2026-08-25 upstream trim): stamp every output with auto:cr-plan —
+	# ai-triage's existing "skip any auto:* label" rule then mechanically
+	# excludes scaffolding from plan-me labeling (and CR from spending a
+	# plan comment on it) before the parse guards would refuse it anyway.
+	skill_args=(--title "EPIC: $issue_title (#$issue)" --body-file "$epic_body_file" --parent "$issue" --stamp-label "auto:cr-plan")
 	idx=0
 	while IFS= read -r ptitle; do
 		[ -z "$ptitle" ] && continue

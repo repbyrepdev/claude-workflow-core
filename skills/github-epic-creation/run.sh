@@ -58,6 +58,7 @@ TITLE=""
 BODY_FILE=""
 MILESTONE=""
 LABELS=()
+STAMP_LABEL=""
 SUB_TITLES=()
 SUB_BODIES=()
 NO_COPILOT=0
@@ -109,6 +110,21 @@ while [ $# -gt 0 ]; do
 			exit 2
 		}
 		LABELS+=("$2")
+		shift 2
+		;;
+	--stamp-label)
+		# (2026-08-25 board explosion, upstream trim): a label applied to
+		# the EPIC AND every sub-issue — unlike --label, which subs do not
+		# inherit for area labels (CR pass 3). cr-plan passes
+		# `auto:cr-plan` so ai-triage's existing "skip any auto:* label"
+		# rule mechanically excludes scaffolding from plan-me labeling
+		# (and CR from spending a plan comment on it) BEFORE the parser
+		# guards would refuse it anyway. Created if missing, pre-use.
+		[ $# -ge 2 ] || {
+			echo "error: --stamp-label requires a value" >&2
+			exit 2
+		}
+		STAMP_LABEL="$2"
 		shift 2
 		;;
 	# Sub-issues: each --sub-title creates a new slot; the optional
@@ -176,7 +192,7 @@ if [ "${COPILOT_DRAFT_OFF:-0}" = "1" ]; then
 fi
 
 if [ -z "$TITLE" ]; then
-	echo "Usage: $0 --title <title> [--body-file <path>] [--sub-title ... [--sub-body-file ...]]... [--label ...] [--milestone ...] [--parent <issue-num>] [--no-copilot]" >&2
+	echo "Usage: $0 --title <title> [--body-file <path>] [--sub-title ... [--sub-body-file ...]]... [--label ...] [--stamp-label <label>] [--milestone ...] [--parent <issue-num>] [--no-copilot]" >&2
 	echo "Note: --body-file is optional — Copilot-default auto-drafts when omitted (v4.28-W3-CD #747)." >&2
 	echo "Note: --parent N links the created epic AS A SUB-ISSUE of #N via addSubIssue (v4.30 #779 PR1)." >&2
 	exit 2
@@ -415,6 +431,16 @@ for l in "${PARENT_LABELS[@]}"; do
 done
 [ "$have_epic" = "0" ] && PARENT_LABELS+=("epic")
 [ "$have_enhancement" = "0" ] && PARENT_LABELS+=("enhancement")
+# --stamp-label: ensure the label EXISTS before first use (the missing-
+# plan-parsed-label wholesale-relabel failure is the precedent — a create
+# on an existing label is a harmless no-op), then stamp the parent; the
+# sub loop below stamps each sub.
+if [ -n "${STAMP_LABEL:-}" ]; then
+	gh label create "$STAMP_LABEL" --color "ededed" \
+		--description "cr-plan scaffolding — auto:* labels are never triaged plan-me" \
+		2>/dev/null || true
+	PARENT_LABELS+=("$STAMP_LABEL")
+fi
 GH_ARGS=(issue create --title "$TITLE" --body-file "$BODY_FILE")
 for l in "${PARENT_LABELS[@]}"; do GH_ARGS+=(--label "$l"); done
 [ -n "$MILESTONE" ] && GH_ARGS+=(--milestone "$MILESTONE")
@@ -540,6 +566,10 @@ for i in "${!SUB_TITLES[@]}"; do
 	sub_body="${SUB_BODIES[$i]}"
 	SUB_ARGS=(issue create --title "$sub_title" --body-file "$sub_body")
 	for l in "${LABELS[@]:-}"; do [ -n "$l" ] && SUB_ARGS+=(--label "$l"); done
+	# Subs do NOT inherit --label (area labels, CR pass 3) but DO get the
+	# stamp — the whole point is excluding every scaffolding issue from
+	# plan-me triage, and the runaway recursion came through SUBS.
+	[ -n "${STAMP_LABEL:-}" ] && SUB_ARGS+=(--label "$STAMP_LABEL")
 	[ -n "$MILESTONE" ] && SUB_ARGS+=(--milestone "$MILESTONE")
 	sub_url=$(gh "${SUB_ARGS[@]}")
 	sub_num=$(printf '%s' "$sub_url" | grep -oE '[0-9]+$')
