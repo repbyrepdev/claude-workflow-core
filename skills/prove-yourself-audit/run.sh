@@ -1003,6 +1003,36 @@ cmd_record_fix() {
 				echo "error: cited file $_crit_f is cycle-critical — the retest command must INVOKE the real entry point (the cited path in command position, not merely mentioned; a bats fixture alone is not production-shaped evidence) (#2562)" >&2
 				exit 2
 			fi
+			# p2-ci-r2 (backup-reviewer CHANGES_REQUESTED, material): the
+			# overall shell rc is launderable — `hooks/x.sh || true` sits
+			# in command position AND always reports 0, so a failing entry
+			# point recorded as "verified" evidence. For cycle-critical
+			# citations, refuse any rc-SWALLOWING operator after the cited
+			# path: `;` (rc = last cmd), `|` (rc = pipe tail), `&`
+			# (backgrounded, rc lost), and newlines. `>&`/`<&` redirect
+			# digraphs are stripped first (2>&1 is not an operator); the
+			# conservative cost is that `&&` after the path is refused too
+			# — put the entry point LAST, or split into one record per
+			# invocation. Operators feeding the path (`printf x | bash
+			# hooks/y.sh`) stay legal: only what FOLLOWS the path can
+			# swallow its exit status. Scope: this structural rule rides
+			# the cycle-critical contract; for non-critical citations the
+			# operator chooses what constitutes evidence and only the rc
+			# match is enforced — the mechanical system cannot judge the
+			# semantic relevance of arbitrary commands.
+			local _crit_after _crit_after_scan
+			case "$retest_cmd" in
+			*"$_crit_f"*) _crit_after="${retest_cmd#*"$_crit_f"}" ;;
+			*) _crit_after="${retest_cmd#*"$_crit_norm"}" ;;
+			esac
+			_crit_after_scan="${_crit_after//>&/}"
+			_crit_after_scan="${_crit_after_scan//<&/}"
+			case "$_crit_after_scan" in
+			*';'* | *'|'* | *'&'* | *$'\n'*)
+				echo "error: cited file $_crit_f is cycle-critical and the retest command carries an rc-swallowing operator (; | & or newline) AFTER the entry point — the overall exit status would not be the entry point's own (e.g. '|| true' launders a failure). Put the invocation last, or split into one record per entry point (#2562 p2-ci-r2)" >&2
+				exit 2
+				;;
+			esac
 			;;
 		esac
 	done

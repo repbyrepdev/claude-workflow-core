@@ -70,9 +70,16 @@ and refuses the record unless the actual exit code equals `--retest-rc`
   the stamp, so hand-forged or pre-#2562 records cannot pass the gate.
 - **Cycle-critical citations demand the real entry point**: when
   `--cited-files` names `hooks/*.sh`, `_lib/*.sh`, `pre-commit-hooks/*.sh`,
-  or `scripts/cr/local-review.sh`, that path must appear inside
-  `--retest-cmd` — a bats fixture alone is synthetic, not production-shaped
-  evidence (#2544's three escaped defects all had green bats).
+  or `scripts/cr/local-review.sh` (`.claude/`-mirror spellings normalized),
+  that path must appear in **command position** inside `--retest-cmd` — a
+  bats fixture alone, or a command that merely *mentions* the path, is not
+  production-shaped evidence (#2544's three escaped defects all had green
+  bats). Additionally, nothing that can SWALLOW the entry point's exit
+  status may follow it: `;`, `|`, `&`, or a newline after the cited path
+  refuses the record (`hooks/x.sh || true` would report 0 regardless —
+  the laundering the backup reviewer caught on #2626). Put the invocation
+  last, or split into one record per entry point; operators *feeding* the
+  path (`printf x | bash hooks/y.sh`) remain legal.
 
 ### `audit`
 Read-only audit of all records under `.claude/.session-state/prove-yourself/`. Reports count of rejections / fixes / records with missing fields. Exits non-zero if any record is malformed.

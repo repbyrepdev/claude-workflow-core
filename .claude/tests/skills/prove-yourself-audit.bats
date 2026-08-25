@@ -254,3 +254,27 @@ _record_fix() {
 	[[ $output == *"not a positive integer"* ]]
 	[[ $output == *"Recorded fix"* ]]
 }
+
+@test "rc-swallowing operator after the entry point is refused (p2-ci-r2)" {
+	# The backup reviewer's laundering: hooks/x.sh || true always reports
+	# 0 regardless of the entry point's real exit status.
+	cd "$TEST_TMP" || return 1
+	_record_fix "bash hooks/x.sh || true" 0 "hooks/x.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"rc-swallowing"* ]]
+	_record_fix "bash hooks/x.sh; true" 0 "hooks/x.sh"
+	[ "$status" -eq 2 ]
+	_record_fix "bash hooks/x.sh | cat" 0 "hooks/x.sh"
+	[ "$status" -eq 2 ]
+}
+
+@test "operators FEEDING the entry point stay legal; redirect digraphs are not operators (p2-ci-r2)" {
+	cd "$TEST_TMP" || return 1
+	_record_fix "printf x | bash hooks/x.sh" 0 "hooks/x.sh"
+	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
+	run "$SKILL" record-fix --finding-id rd1 --finding-text xr --fix-summary y \
+		--retest-cmd "bash hooks/x.sh >/dev/null 2>&1" --retest-rc 0 \
+		--cited-files "hooks/x.sh" --source phase1 --confidence 5
+	[ "$status" -eq 0 ]
+}
