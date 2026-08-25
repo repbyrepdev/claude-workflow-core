@@ -77,9 +77,13 @@ and refuses the record unless the actual exit code equals `--retest-rc`
   bats). Additionally, nothing that can SWALLOW the entry point's exit
   status may follow it: `;`, `|`, `&`, or a newline after the cited path
   refuses the record (`hooks/x.sh || true` would report 0 regardless —
-  the laundering the backup reviewer caught on #2626). Put the invocation
-  last, or split into one record per entry point; operators *feeding* the
-  path (`printf x | bash hooks/y.sh`) remain legal.
+  the laundering the backup reviewer caught on #2626). The full contract
+  after its second catch (`true || hooks/x.sh` SKIPS the entry point via
+  short-circuit while reporting `true`'s rc): a cycle-critical retest is
+  a **single pipeline** — no `;`, `&`, `&&`, `||`, or newlines anywhere.
+  Feed-pipes (`printf x | bash hooks/y.sh`) remain legal because every
+  pipeline stage executes unconditionally; a pipe *after* the path still
+  refuses (rc = pipe tail). One record per entry point.
 
 ### `audit`
 Read-only audit of all records under `.claude/.session-state/prove-yourself/`. Reports count of rejections / fixes / records with missing fields. Exits non-zero if any record is malformed.

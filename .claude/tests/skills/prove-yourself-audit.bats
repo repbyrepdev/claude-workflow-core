@@ -255,21 +255,36 @@ _record_fix() {
 	[[ $output == *"Recorded fix"* ]]
 }
 
-@test "rc-swallowing operator after the entry point is refused (p2-ci-r2)" {
-	# The backup reviewer's laundering: hooks/x.sh || true always reports
-	# 0 regardless of the entry point's real exit status. p2-ci-r3: each
-	# refusal asserts the SPECIFIC message — status 2 alone could be any
-	# validation failure.
+@test "rc-swallowing operator after the entry point is refused (p2-ci-r2/r4)" {
+	# The backup reviewer's laundering, round 1: hooks/x.sh || true always
+	# reports 0 regardless of the entry point's real exit status. The `;`
+	# and `||` shapes now refuse at the single-pipeline rule; the trailing
+	# single-pipe shape refuses at the after-path check. Each refusal
+	# asserts its SPECIFIC message.
 	cd "$TEST_TMP" || return 1
 	_record_fix "bash hooks/x.sh || true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"rc-swallowing"* ]]
+	[[ $output == *"SINGLE PIPELINE"* ]]
 	_record_fix "bash hooks/x.sh; true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"rc-swallowing"* ]]
+	[[ $output == *"SINGLE PIPELINE"* ]]
 	_record_fix "bash hooks/x.sh | cat" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
 	[[ $output == *"rc-swallowing"* ]]
+}
+
+@test "short-circuit BEFORE the entry point cannot skip its execution (p2-ci-r4)" {
+	# The backup reviewer's round 2: `true || bash hooks/x.sh` NEVER runs
+	# the entry point (shell short-circuit) yet reports true's rc 0 —
+	# verified evidence for a hook that never executed. Mirror: `false &&`
+	# launders a claimed nonzero.
+	cd "$TEST_TMP" || return 1
+	_record_fix "true || bash hooks/x.sh" 0 "hooks/x.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"SINGLE PIPELINE"* ]]
+	_record_fix "false && bash hooks/x.sh" 1 "hooks/x.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"SINGLE PIPELINE"* ]]
 }
 
 @test "operators FEEDING the entry point stay legal; redirect digraphs are not operators (p2-ci-r2)" {

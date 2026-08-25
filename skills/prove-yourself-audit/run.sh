@@ -995,6 +995,23 @@ cmd_record_fix() {
 			# still a textual proxy — the trust boundary remains the
 			# re-execution + rc match below — but the mention-only shapes
 			# are rejected, fail-closed (unknown shapes do not count).
+			# p2-ci-r4 (backup-reviewer material): short-circuit operators
+			# BEFORE the cited path skip its execution entirely — `true ||
+			# bash hooks/x.sh` never runs the entry point yet reports rc 0
+			# (mirror: `false && …` launders a claimed nonzero). The
+			# trailing-swallow guard below only saw the AFTER half. Contract
+			# now: a cycle-critical retest is a SINGLE PIPELINE — no `;`,
+			# no `&`/`&&`, no `||`, no newlines ANYWHERE (a plain feed-pipe
+			# is fine: every pipeline stage executes unconditionally).
+			# `>&`/`<&` redirect digraphs are stripped before the scan.
+			local _crit_whole="${retest_cmd//>&/}"
+			_crit_whole="${_crit_whole//<&/}"
+			case "$_crit_whole" in
+			*';'* | *'&'* | *'||'* | *$'\n'*)
+				echo "error: cited file $_crit_f is cycle-critical — the retest command must be a SINGLE PIPELINE (no ; & && || or newlines): short-circuit operators before the entry point can skip executing it entirely while reporting an unrelated rc (#2562 p2-ci-r4)" >&2
+				exit 2
+				;;
+			esac
 			local _crit_ok=0 _expect=1 _w _wq
 			# shellcheck disable=SC2086
 			for _w in $retest_cmd; do
