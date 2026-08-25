@@ -7,9 +7,12 @@ set -euo pipefail
 #   - gh, jq, yq, pre-commit, shellcheck, shfmt, actionlint
 #   - gitleaks, semgrep (via pip), age, sops
 #   - coderabbit CLI (npm), copilot CLI (gh extension)
+#   - openwiki CLI (npm, pinned via OPENWIKI_PIN)
 #
 # Wires:
 #   - Plugin cache install at latest tagged version
+#   - openwiki MCP server (`integrations install claude`) — the free
+#     in-chat lane; loaded at SESSION START, so restart after a fresh wire
 #   - ~/.claude/settings.json: reference check only (no auto-edit —
 #     operator enables via `/plugin enable` to avoid magic mutation)
 #   - Keychain entries: presence check only, prints add commands
@@ -123,6 +126,52 @@ else
 	_log "  ✓ coderabbit CLI already installed"
 fi
 
+# --- OpenWiki CLI + in-chat MCP lane (npm global) --------------------
+#
+# (#2629) The in-chat lane runs OpenWiki on the HOST agent's own session —
+# no provider key, no Copilot credits — which makes it the right place for
+# the expensive first generation. `integrations install claude` is native
+# as of 0.4.0; earlier versions could not serve MCP at all, which forced a
+# pnpm source build at ~/.openwiki-main. If this machine still carries that
+# hack, the install below supersedes it — see skills/openwiki/references/
+# operations.md, and `skills/openwiki/run.sh status` names it explicitly.
+#
+# Pinned: an unpinned global would drift the toolchain out from under the
+# repo-side .github/openwiki-toolchain pins.
+OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
+if ! command -v openwiki >/dev/null 2>&1; then
+	if ! command -v npm >/dev/null 2>&1; then
+		_log "  ⚠ npm not available — install Node.js first (brew install node)"
+		_log "    then re-run, or: npm install -g openwiki@$OPENWIKI_PIN"
+	else
+		_log "installing openwiki@$OPENWIKI_PIN via npm..."
+		_run npm install -g "openwiki@$OPENWIKI_PIN"
+	fi
+else
+	_log "  ✓ openwiki CLI already installed ($(openwiki --version 2>/dev/null | head -1))"
+fi
+
+# Wire the MCP server. Idempotent: the installer rewrites its own entry, and
+# re-running is how a source-build hack gets replaced by the published CLI.
+# NOTE: Claude Code reads MCP servers at SESSION START — a fresh install is
+# usable in the NEXT session, not the current one.
+#
+# DRY_RUN is in the condition on purpose: under --dry-run nothing was
+# installed above, so a bare `command -v openwiki` would silently hide a step
+# the real run WOULD perform — a preview that omits work is the same
+# silent-skip class this repo refuses elsewhere.
+if command -v openwiki >/dev/null 2>&1 || [ "$DRY_RUN" = "1" ]; then
+	if [ -r "$HOME/.claude.json" ] &&
+		jq -e '.mcpServers.openwiki' "$HOME/.claude.json" >/dev/null 2>&1 &&
+		! jq -r '.mcpServers.openwiki | (.args // []) | join(" ")' "$HOME/.claude.json" 2>/dev/null | grep -q "openwiki-main"; then
+		_log "  ✓ openwiki MCP server already wired"
+	else
+		_log "wiring the openwiki MCP server (integrations install claude)..."
+		_run openwiki integrations install claude
+		_log "    ↳ restart the Claude Code session for the MCP server to load"
+	fi
+fi
+
 # --- Copilot CLI (gh extension) --------------------------------------
 if gh extension list 2>/dev/null | grep -q "github/gh-copilot"; then
 	_log "  ✓ gh-copilot extension already installed"
@@ -140,7 +189,7 @@ if [ -z "$PIN_TAG" ]; then
 	_log "resolving latest plugin tag from $PLUGIN_REPO_URL..."
 	# Strip protocol + .git suffix → owner/repo. Supports both https + ssh.
 	owner_repo=$(echo "$PLUGIN_REPO_URL" | sed -E 's|^https?://github\.com/||; s|^git@github\.com:||; s|\.git$||')
-	if [ -z "$owner_repo" ] || [[ ! "$owner_repo" =~ ^[^/]+/[^/]+$ ]]; then
+	if [ -z "$owner_repo" ] || [[ ! $owner_repo =~ ^[^/]+/[^/]+$ ]]; then
 		_log "  ⚠ cannot parse owner/repo from PLUGIN_REPO_URL='$PLUGIN_REPO_URL'"
 		_log "    expected format: https://github.com/<owner>/<repo>"
 		exit 2
@@ -179,7 +228,7 @@ else
 	else
 		_log "  ⚠ ~/.claude/settings.json does not reference claude-workflow-core."
 		_log "    Add the plugin via: /plugin enable claude-workflow-core@<marketplace>"
-		_log "    Or manually wire enabledPlugins.\"claude-workflow-core@<marketplace>\": true"
+		_log '    Or manually wire enabledPlugins."claude-workflow-core@<marketplace>": true'
 	fi
 fi
 
