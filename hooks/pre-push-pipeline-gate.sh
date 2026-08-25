@@ -503,15 +503,23 @@ if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
 	# ship-pr-cycle.sh, which already refuse UNLOGGED overrides; this
 	# aligns the last gate with that fail-closed contract.
 	_ppg_skip_lib="$PPG_DIR/../_lib/pipeline-skip.sh"
+	_ppg_skip_sourced=0
 	if [ -r "$_ppg_skip_lib" ]; then
 		# shellcheck source=../_lib/pipeline-skip.sh
 		# Source failures surface distinctly (phase2 r2: 2>/dev/null || true
 		# swallowed them into the generic 'unavailable' fallback below —
 		# a broken lib and an absent lib are different repairs).
-		. "$_ppg_skip_lib" ||
+		if . "$_ppg_skip_lib"; then
+			_ppg_skip_sourced=1
+		else
 			echo "pre-push-pipeline-gate: WARN: sourcing _lib/pipeline-skip.sh returned non-zero — the audit writer is unavailable" >&2
+		fi
 	fi
-	if command -v pipeline_skip_log >/dev/null 2>&1; then
+	# p2r1: require the SOURCED shell function specifically — `command -v`
+	# is also satisfied by a PATH executable named pipeline_skip_log, so a
+	# same-named binary could stand in for the audit writer. declare -F
+	# matches only functions, and the sourced flag pins where it came from.
+	if [ "$_ppg_skip_sourced" = "1" ] && declare -F pipeline_skip_log >/dev/null 2>&1; then
 		if ! pipeline_skip_log "pre-push"; then
 			echo "pre-push-pipeline-gate: ERROR: bypass audit append FAILED (see writer error above) — refusing an UNLOGGED bypass (fix .claude/logs perms, or drop PIPELINE_GATE_SKIP)" >&2
 			exit 1

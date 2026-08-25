@@ -493,11 +493,26 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 }
 
 @test "bypass REFUSES when the audit append fails — no unlogged skip" {
+	# p2r1 CR: a regular FILE at the parent path (not chmod-555, which
+	# root/DAC-relaxed hosts bypass) — mkdir/traversal under a file fails
+	# for EVERY user.
 	(cd "$TMP" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
-	mkdir -p "$TMP/ro"
-	chmod 555 "$TMP/ro"
-	run bash -c "cd '$TMP' && printf '' | PIPELINE_GATE_SKIP=1 SKIP_LOG='$TMP/ro/deeper/skip.jsonl' bash '$HOOK'"
-	chmod 755 "$TMP/ro"
+	: >"$TMP/not-a-directory"
+	run bash -c "cd '$TMP' && printf '' | PIPELINE_GATE_SKIP=1 SKIP_LOG='$TMP/not-a-directory/skip.jsonl' bash '$HOOK'"
+	[ "$status" -eq 1 ]
+	[[ $output == *"refusing an UNLOGGED bypass"* ]]
+}
+
+@test "a PATH executable named pipeline_skip_log cannot stand in for the sourced writer (p2r1)" {
+	# p2r1 CR major: `command -v` also finds executables, so a same-named
+	# binary could satisfy the audit requirement without the lib. The gate
+	# now requires the SOURCED function (declare -F + sourced flag).
+	(cd "$TMP" && git init -q && git config user.email t@t.t && git config user.name t && git commit -q --allow-empty -m init)
+	mkdir -p "$TMP/hooks" "$TMP/fakebin"
+	cp "$HOOK" "$TMP/hooks/pre-push-pipeline-gate.sh" # no sibling _lib
+	printf '#!/bin/bash\nexit 0\n' >"$TMP/fakebin/pipeline_skip_log"
+	chmod +x "$TMP/fakebin/pipeline_skip_log"
+	run bash -c "cd '$TMP' && printf '' | PATH='$TMP/fakebin:$PATH' PIPELINE_GATE_SKIP=1 bash '$TMP/hooks/pre-push-pipeline-gate.sh'"
 	[ "$status" -eq 1 ]
 	[[ $output == *"refusing an UNLOGGED bypass"* ]]
 }

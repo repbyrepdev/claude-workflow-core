@@ -55,9 +55,20 @@ _run_p1_gate() {
 	[[ $output == *"no run logged"* ]]
 }
 
-@test "before-cr: an ok row IS run-proof (pass), even beside errored rows" {
+@test "before-cr: per-agent ok rows WITHOUT a terminal are NOT run-proof (p2r1 deny)" {
+	# The p2r1 CR major: ok rows are written BEFORE emission, so a crashed
+	# emit leaves them behind — they alone must never unlock downstream.
+	_row ok code-reviewer
+	_row ok silent-failure-hunter
+	_run_cr_gate
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "before-cr: the TERMINAL emitted row IS run-proof (pass), even beside errored rows" {
 	_row errored code-reviewer
 	_row ok code-reviewer
+	_row emitted
 	_run_cr_gate
 	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]
@@ -77,8 +88,16 @@ _run_p1_gate() {
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
-@test "before-phase1: an ok row IS run-proof (pass)" {
+@test "before-phase1: ok rows without a terminal are NOT run-proof (p2r1 deny)" {
 	_row ok code-reviewer
+	_run_p1_gate
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "before-phase1: the TERMINAL emitted row IS run-proof (pass)" {
+	_row ok code-reviewer
+	_row emitted
 	_run_p1_gate
 	[ "$status" -eq 0 ]
 	[[ $output != *'"permissionDecision":"deny"'* ]]

@@ -148,6 +148,18 @@ phase05_emit_findings_logged() {
 			>>"$log"
 		return 1
 	fi
+	# (#2563 p2r1) TERMINAL success record. Per-agent ok rows are written
+	# BEFORE emission, so they alone must not prove the run: a crashed
+	# emit leaves ok rows behind and the run-proof gates would unlock
+	# downstream on a round whose findings were never emitted. The gates
+	# key on THIS row (status:"emitted") or a run-level skipped-* row —
+	# both are written only at a genuine terminal.
+	jq -nc --arg ts "$ts" --arg sha "$sha" --argjson n "$total" \
+		'{ts:$ts, sha:$sha, phase:"0.5", agent:"<all>", findings:$n, status:"emitted"}' \
+		>>"$log" || {
+		echo "phase0.5: WARN — could not append the terminal emitted row to $log; the run-proof gates will treat this sha as no-run" >&2
+		return 1
+	}
 }
 
 # Absent-CLI graceful skip (#2259, CR r2 dedup): shared by the codex +

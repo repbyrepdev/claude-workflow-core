@@ -44,6 +44,17 @@ teardown() {
 	[ -n "${TEST_TMP:-}" ] && rm -rf "$TEST_TMP"
 }
 
+# p2r1: guarantee a `timeout` on PATH — real one if present, else a stub
+# that sleeps out the duration and returns 124 (the deadline shape) so
+# the refusal branches execute on every host instead of skipping.
+_ensure_timeout_on_path() {
+	command -v timeout >/dev/null 2>&1 && return 0
+	mkdir -p "$TEST_TMP/tbin"
+	printf '#!/bin/bash\nd="$1"; shift\n"$@" &\np=$!\nfor _ in $(seq 1 "$d"); do sleep 1; kill -0 "$p" 2>/dev/null || { wait "$p"; exit $?; }\ndone\nkill "$p" 2>/dev/null\nexit 124\n' >"$TEST_TMP/tbin/timeout"
+	chmod +x "$TEST_TMP/tbin/timeout"
+	export PATH="$TEST_TMP/tbin:$PATH"
+}
+
 # Shorthand: record a fix with overridable retest cmd/rc + cited files.
 _record_fix() {
 	local cmd="$1" rc="$2" cited="${3:-}"
@@ -88,14 +99,52 @@ _record_fix() {
 }
 
 @test "retest timeout refuses with the PROVE_RETEST_TIMEOUT hint" {
-	command -v timeout >/dev/null 2>&1 || skip "no timeout binary"
+	# p2r1 CR: no skip — hosts without a real timeout binary get a stub
+	# emulating the deadline shape so the refusal branch always executes.
 	cd "$TEST_TMP" || return 1
+	_ensure_timeout_on_path
 	export PROVE_RETEST_TIMEOUT=1
 	_record_fix "sleep 5" 0
 	unset PROVE_RETEST_TIMEOUT
 	[ "$status" -eq 1 ]
-	[[ $output == *"timed out"* ]]
+	[[ $output == *"deadline"* ]]
 	[[ $output == *"PROVE_RETEST_TIMEOUT"* ]]
+}
+
+@test "claimed rc 124 cannot launder a deadline kill (p2r1)" {
+	# The CR major: claim 124, supply a hanging command — the wrapper's
+	# own kill used to produce a matching 124 that proved nothing. A
+	# deadline-elapsed 124 now refuses regardless of the claim.
+	cd "$TEST_TMP" || return 1
+	_ensure_timeout_on_path
+	export PROVE_RETEST_TIMEOUT=1
+	_record_fix "sleep 5" 124
+	unset PROVE_RETEST_TIMEOUT
+	[ "$status" -eq 1 ]
+	[[ $output == *"never valid evidence"* ]]
+}
+
+@test "a child's own FAST inner timeout (rc 124 before the deadline) is still valid evidence (p2r1)" {
+	cd "$TEST_TMP" || return 1
+	# rc 124 returned instantly — far below the 120s default deadline, so
+	# it is the CHILD's own semantics, not our wrapper kill.
+	_record_fix "bash -c 'exit 124'" 124
+	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
+}
+
+@test "MENTIONING a critical path without invoking it is refused (p2r1)" {
+	cd "$TEST_TMP" || return 1
+	_record_fix "echo hooks/x.sh" 0 "hooks/x.sh"
+	[ "$status" -eq 2 ]
+	[[ $output == *"command position"* ]]
+}
+
+@test "a launcher chain (env bash <path>) satisfies command position (p2r1)" {
+	cd "$TEST_TMP" || return 1
+	_record_fix "env bash hooks/x.sh" 0 "hooks/x.sh"
+	[ "$status" -eq 0 ]
+	[[ $output == *"Recorded fix"* ]]
 }
 
 @test "cycle-critical cited file demands its path inside the retest command" {

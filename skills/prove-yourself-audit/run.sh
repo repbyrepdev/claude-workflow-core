@@ -970,13 +970,39 @@ cmd_record_fix() {
 		_crit_norm="${_crit_f#.claude/}"
 		case "$_crit_norm" in
 		hooks/*.sh | _lib/*.sh | pre-commit-hooks/*.sh | scripts/cr/local-review.sh)
-			case "$retest_cmd" in
-			*"$_crit_f"* | *"$_crit_norm"*) ;;
-			*)
-				echo "error: cited file $_crit_f is cycle-critical — the retest command must invoke the real entry point (the cited path must appear in --retest-cmd; a bats fixture alone is not production-shaped evidence) (#2562)" >&2
+			# p2r1 (CR major): COMMAND-position, not substring — a command
+			# that merely MENTIONS the path (`echo hooks/x.sh`) must not
+			# satisfy the rule. Word-scan with a simple-command state
+			# machine: the path counts only where a command can start
+			# (string start, after ; & | && ||, or after interpreter/
+			# launcher words + their flag/duration/K=V args). This is
+			# still a textual proxy — the trust boundary remains the
+			# re-execution + rc match below — but the mention-only shapes
+			# are rejected, fail-closed (unknown shapes do not count).
+			local _crit_ok=0 _expect=1 _w _wq
+			# shellcheck disable=SC2086
+			for _w in $retest_cmd; do
+				_wq="${_w%\'}" _wq="${_wq#\'}"
+				_wq="${_wq%\"}" _wq="${_wq#\"}"
+				if [ "$_expect" = 1 ]; then
+					if [ "$_wq" = "$_crit_f" ] || [ "$_wq" = "$_crit_norm" ]; then
+						_crit_ok=1
+						break
+					fi
+					case "$_wq" in
+					bash | sh | source | . | env | exec | nohup | sudo | timeout) ;; # launcher — next word may be the cmd
+					[0-9]* | -* | *=*) ;;                                            # launcher args (duration, flags, K=V)
+					*) _expect=0 ;;                                                  # a different command — its args don't count
+					esac
+				fi
+				case "$_w" in
+				';' | '&&' | '||' | '|' | '&' | *';' | *'|' | *'&') _expect=1 ;;
+				esac
+			done
+			if [ "$_crit_ok" != 1 ]; then
+				echo "error: cited file $_crit_f is cycle-critical — the retest command must INVOKE the real entry point (the cited path in command position, not merely mentioned; a bats fixture alone is not production-shaped evidence) (#2562)" >&2
 				exit 2
-				;;
-			esac
+			fi
 			;;
 		esac
 	done
@@ -994,7 +1020,7 @@ cmd_record_fix() {
 		echo "WARN: PROVE_RETEST_TIMEOUT='$_retest_timeout' is not a positive integer — using 120" >&2
 		_retest_timeout=120
 	fi
-	local _retest_out _retest_actual_rc=0
+	local _retest_out _retest_actual_rc=0 _retest_t0 _retest_elapsed
 	_retest_out=$(mktemp) || {
 		echo "error: mktemp failed for retest output capture" >&2
 		exit 1
@@ -1004,15 +1030,25 @@ cmd_record_fix() {
 	# resolves against it, and a repo-relative command (which the critical-
 	# path rule REQUIRES) would fail rc=127 from a subdirectory and surface
 	# as a bogus EVIDENCE MISMATCH.
+	_retest_t0=$SECONDS
 	if command -v timeout >/dev/null 2>&1; then
 		(cd "$REPO_ROOT" && timeout "$_retest_timeout" bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
 	else
 		# No timeout binary (stock macOS without coreutils): run unbounded —
-		# record-fix is operator-interactive, so a hang is visible, not silent.
+		# record-fix is operator-interactive, so a hang is visible, not
+		# silent — but WARN that the deadline is unenforced on this host.
+		echo "WARN: no timeout binary — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED on this host (a hung retest must be interrupted manually)" >&2
 		(cd "$REPO_ROOT" && bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
 	fi
-	if [ "$_retest_actual_rc" -eq 124 ] && [ "$retest_rc" -ne 124 ]; then
-		echo "error: retest command timed out after ${_retest_timeout}s — raise PROVE_RETEST_TIMEOUT if the evidence genuinely needs longer (#2562)" >&2
+	_retest_elapsed=$((SECONDS - _retest_t0))
+	# p2r1 (CR major): a DEADLINE kill is never valid evidence — even when
+	# --retest-rc claims 124. The old exemption (claimed-124 passes) was
+	# launderable: claim 124, supply a hanging command, and the wrapper's
+	# own kill produces a matching 124 that proves nothing. Distinguish
+	# the wrapper's deadline from a child's own fast inner timeout by
+	# elapsed time: rc 124 at-or-past the deadline is OURS — refuse.
+	if [ "$_retest_actual_rc" -eq 124 ] && [ "$_retest_elapsed" -ge "$_retest_timeout" ]; then
+		echo "error: retest hit the PROVE_RETEST_TIMEOUT deadline (${_retest_elapsed}s >= ${_retest_timeout}s) — a deadline kill is never valid evidence, regardless of the claimed rc; raise PROVE_RETEST_TIMEOUT if the evidence genuinely needs longer (#2562)" >&2
 		rm -f "$_retest_out"
 		exit 1
 	fi
