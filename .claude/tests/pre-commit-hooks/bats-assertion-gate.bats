@@ -465,3 +465,43 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 		return 1
 	}
 }
+
+@test "a MESSAGE containing a terminator word is not a terminator" {
+	# Found by the backup reviewer on #2635. The brace-group body check
+	# matched the raw line, so the word `fail` inside an echo argument
+	# satisfied it — and a guard body that only PRINTS was certified as real
+	# while nothing terminated. This repo writes exactly those messages, so
+	# it was a matter of time. Same bug class as the 31 comment-hidden
+	# guards, reintroduced through the mechanism built to catch them.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "guard should fail here"\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+	# ...and the same body WITH a real terminator still passes, so the fix
+	# did not simply reject every brace group.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "this will fail loudly"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a literal ]] inside a trailing comment does not move the anchor" {
+	# The other half of the same finding, failing in the safe direction:
+	# guard_pos took the LAST `]]` on the line, so a comment mentioning
+	# `[[ ]]` moved the anchor past the real close and the genuine
+	# `|| return 1` became invisible — over-flagging a correct assertion.
+	# Strings are blanked and the comment cut before the search now.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]] || return 1  # see [[ ]] docs\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a terminator word inside the COMPARED string is not a guard either" {
+	# Symmetric case: the assertion tests output for the word `return`, with
+	# no guard at all. Blanking strings must not let the pattern text stand
+	# in for command position.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"return 1"* ]]\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "a semicolon-separated terminator in a guard body still counts" {
+	# Blanking strings must not break the legitimate one-line body, where the
+	# terminator follows a `;` rather than starting the line.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"; return 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}

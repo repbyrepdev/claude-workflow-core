@@ -90,15 +90,44 @@ bats_assertion_scan() {
 		# lib exists to catch, and it hid 31 of them. Anchoring also avoids
 		# the opposite error: a `#` inside a quoted pattern is left alone,
 		# because only text after the final `]]` is considered.
-		function guard_pos(line,   i, p, tail, h) {
+		# Blank out quoted spans, keeping the line length so positions still
+		# line up. Everything downstream then judges CODE only — a keyword or
+		# a bracket inside a message string is invisible.
+		#
+		# The backup reviewer on #2635 found why this matters: the terminator
+		# check matched `fail` inside `echo "guard should fail here"`, so a
+		# brace-group body that only PRINTED was accepted as a real guard.
+		# This repo writes exactly those messages, so it was a matter of time.
+		function strip_strings(line,   i, c, q, out) {
+			q = ""
+			out = ""
+			for (i = 1; i <= length(line); i++) {
+				c = substr(line, i, 1)
+				if (q == "") {
+					if (c == "\"" || c == "'"'"'") {
+						q = c
+						out = out " "
+					} else
+						out = out c
+				} else {
+					if (c == q) q = ""
+					out = out " "
+				}
+			}
+			return out
+		}
+		# Code after the closing `]]`. Strings are blanked and any trailing
+		# comment cut BEFORE the search, so neither a `#` inside a pattern nor
+		# a literal `]]` inside a comment can move the anchor.
+		function guard_pos(line,   code, i, p, h) {
+			code = strip_strings(line)
+			h = index(code, "#")
+			if (h > 0) code = substr(code, 1, h - 1)
 			p = 0
-			for (i = 1; i < length(line); i++)
-				if (substr(line, i, 2) == "]]") p = i
+			for (i = 1; i < length(code); i++)
+				if (substr(code, i, 2) == "]]") p = i
 			if (p == 0) return ""
-			tail = substr(line, p + 2)
-			h = index(tail, "#")
-			if (h > 0) tail = substr(tail, 1, h - 1)
-			return tail
+			return substr(code, p + 2)
 		}
 		# A block is an `@test` body OR a file-local function — setup,
 		# teardown, a helper. The rule is the same in all of them: a bare
@@ -176,7 +205,14 @@ bats_assertion_scan() {
 			# inside makes the deferred assertion a real guard. Depth-counted
 			# so a nested group cannot close the outer one early.
 			if (pending > 0) {
-				if (line ~ /(^|[ \t;])(return|exit|break|continue|skip|fail|false)([ \t;)]|$)/)
+				# CODE only. Matching the raw line accepted a body that merely
+				# printed the word — `echo "guard should fail here"` set this,
+				# and the guard was certified while nothing terminated. Strings
+				# are blanked and the comment cut before the test.
+				pline = strip_strings(line)
+				ph = index(pline, "#")
+				if (ph > 0) pline = substr(pline, 1, ph - 1)
+				if (pline ~ /(^|[ \t;])(return|exit|break|continue|skip|fail|false)([ \t;)]|$)/)
 					pending_ok = 1
 				d = line
 				pending_depth += gsub(/\{/, "", d)
