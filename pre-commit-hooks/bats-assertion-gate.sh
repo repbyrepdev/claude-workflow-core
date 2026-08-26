@@ -48,10 +48,30 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 
 if [ "${BATS_ASSERTION_GATE_SKIP:-0}" = "1" ]; then
 	echo "bats-assertion-gate: SKIPPED via BATS_ASSERTION_GATE_SKIP=1" >&2
-	mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
+	# The audit row is the ENTIRE justification for having a bypass. Written
+	# with `|| true` it was optional: an unwritable .claude/logs let the skip
+	# proceed unrecorded, which is the invisible skip this hook's own header
+	# promises against. Fail closed instead — if the skip cannot be recorded,
+	# it does not happen.
+	_reason=${BATS_ASSERTION_GATE_SKIP_REASON:-unstated}
+	# Minimal JSON escaping, so a reason containing a quote or a newline
+	# cannot produce a malformed row that breaks every later reader of the
+	# log. Backslash first, or it would double-escape the quotes it adds.
+	_reason=${_reason//\\/\\\\}
+	_reason=${_reason//\"/\\\"}
+	_reason=${_reason//$'\n'/ }
+	_reason=${_reason//$'\t'/ }
+	_reason=${_reason//$'\r'/ }
+	mkdir -p "$REPO_ROOT/.claude/logs" || {
+		echo "bats-assertion-gate: cannot create .claude/logs to record the skip — refusing" >&2
+		exit 2
+	}
 	printf '{"ts":"%s","kind":"bats-assertion-gate-skip","reason":"%s"}\n' \
-		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${BATS_ASSERTION_GATE_SKIP_REASON:-unstated}" \
-		>>"$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_reason" \
+		>>"$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" || {
+		echo "bats-assertion-gate: cannot append to pipeline-skip.jsonl — refusing" >&2
+		exit 2
+	}
 	exit 0
 fi
 

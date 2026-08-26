@@ -856,6 +856,12 @@ HASH64="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 @test "#2531: absent inline-sentinel lib warns the advertised bypass is unavailable" {
 	_setup_pending_repo
 	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' >/dev/null
+	# The status is half the contract: a warning that the bypass is
+	# unavailable means nothing if the guard let the call through anyway.
+	[ "$NOLIB_STATUS" -eq 2 ] || {
+		echo "expected fail-closed status 2, got $NOLIB_STATUS"
+		return 1
+	}
 	[[ $NOLIB_STDERR == *"hook-inline-sentinel.sh not found"* ]] || return 1
 	[[ $NOLIB_STDERR == *"PHASE1_DIRECTIVE_GUARD_SKIP bypass is UNAVAILABLE"* ]]
 }

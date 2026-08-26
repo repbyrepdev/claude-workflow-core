@@ -151,6 +151,13 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 	work=$(_staged_repo repo2 "$(printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n')") || return 1
 	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
 	[ "$status" -eq 0 ]
+	# Silent, too. A clean staged run that emitted a warning or a skip notice
+	# would still exit 0, so status alone cannot distinguish "gate ran and
+	# found nothing" from "gate bailed out early and said so".
+	[ -z "$output" ] || {
+		echo "expected no output on a clean run; got: $output"
+		return 1
+	}
 }
 
 @test "the gate scans the STAGED blob, not the worktree" {

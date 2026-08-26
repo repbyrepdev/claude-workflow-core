@@ -100,6 +100,15 @@ bats_assertion_scan() {
 			next
 		}
 		intest && /^}/ {
+			# A brace group still open when the block ends never found its
+			# terminator — the lookahead would otherwise drop the deferred
+			# verdict on the floor and the assertion would read as clean.
+			if (pending > 0 && !pending_ok) {
+				ln[pending] = pending_ln
+				tx[pending] = pending_tx
+			}
+			pending = 0
+			pending_ok = 0
 			# Everything except the LAST recorded command is unguarded.
 			for (i = 1; i < n; i++)
 				if (ln[i] > 0) print ln[i] ":" tx[i]
