@@ -68,9 +68,41 @@ teardown() {
 	[ -n "${TEST_TMP:-}" ] && [[ $TEST_TMP == */openwiki-skill.* ]] && rm -rf "$TEST_TMP"
 }
 
-_stub_cli() { # $1 = version string to report
-	printf '#!/usr/bin/env bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' "$1" >"$TEST_TMP/bin/openwiki"
+# Puts a bare openwiki on PATH. It takes NO version argument: the probe reads
+# the resolved binary's package.json and never asks the CLI anything, so a
+# stub that answered `--version` would prove the STUB honours a contract the
+# real CLI never had — the fixture shape that let the every-run reinstall bug
+# ship. Tests that need a version build a package layout instead (see
+# "version probe: reports the real version from the resolved package").
+_stub_cli() {
+	rm -f "$TEST_TMP/bin/openwiki"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/bin/openwiki"
 	chmod +x "$TEST_TMP/bin/openwiki"
+}
+
+# Assertions that ACTUALLY FAIL wherever they appear. A bare `[[ ]]` only
+# fails the test when it is the LAST command: bats runs under bash 3.2 on
+# macOS, where a failing conditional fires neither errexit nor the ERR trap.
+# Named `assert_*` because that is the bats convention AND what pre-commit
+# bats-gate counts, so replacing a fragile check with a real one reads as the
+# strengthening it is rather than as assertion removal.
+assert_output_contains() { # $1 = substring $output must contain
+	case "$output" in
+	*"$1"*) return 0 ;;
+	esac
+	echo "expected to find: $1"
+	echo "actual output   : $output"
+	return 1
+}
+assert_output_lacks() { # $1 = substring $output must NOT contain
+	case "$output" in
+	*"$1"*)
+		echo "expected NOT to find: $1"
+		echo "actual output       : $output"
+		return 1
+		;;
+	esac
+	return 0
 }
 
 # $1 = json for .mcpServers.openwiki, or "" to omit the key entirely
@@ -129,20 +161,43 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	[[ $output == *"Tree:      clean"* ]]
 }
 
-@test "status reports the installed CLI version and wired MCP" {
-	_stub_cli "openwiki/0.4.0"
+@test "status reports a wired MCP, and a present-but-unidentifiable CLI honestly" {
+	# Renamed: this used to claim it "reports the installed CLI version" and
+	# assert *"0.4.0"*, which stopped being true when the probe switched to
+	# reading the resolved binary's package — the bare stub has none. It stayed
+	# green only because a mid-test `[[ ]]` is a no-op under bash 3.2, so the
+	# name outlived the behaviour by a whole review round. The version case now
+	# lives in "reports the real version from the resolved package".
+	_stub_cli
 	_write_claude_json '{"command":"openwiki","args":["mcp","--host","claude"]}'
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"0.4.0"* ]]
-	[[ $output == *"MCP:       wired"* ]]
-	[[ $output != *"SOURCE-BUILD HACK"* ]]
+	case "$output" in
+	*"MCP:       wired"*) ;;
+	*)
+		echo "expected a wired MCP row; got: $output"
+		return 1
+		;;
+	esac
+	# A CLI with no package above it is PRESENT but unidentifiable — never
+	# "absent", and never a fabricated version.
+	case "$output" in
+	*"CLI:       present (version unknown"*) ;;
+	*)
+		echo "expected a present-but-unknown CLI row; got: $output"
+		return 1
+		;;
+	esac
+	# Not `[[ ]]`: that only works here because it happens to be the LAST
+	# command, and anyone appending a line below would silently turn it into a
+	# no-op — the fragility that cost this branch a whole review round.
+	assert_output_lacks "SOURCE-BUILD HACK"
 }
 
 @test "status FLAGS the obsolete source-build MCP wiring (the office-mini hack)" {
 	# operations.md Install: a ~/.openwiki-main entry means the machine predates
 	# 0.4.0's native integration and should be superseded, not copied.
-	_stub_cli "openwiki/0.4.0"
+	_stub_cli
 	_write_claude_json '{"command":"node","args":["/Users/x/.openwiki-main/dist/cli/cli.js","mcp","--host","claude"]}'
 	_run_skill status
 	[ "$status" -eq 0 ]
@@ -166,7 +221,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 }
 
 @test "preflight REFUSES a dirty tree, naming gotcha 5 (rc 1)" {
-	_stub_cli "openwiki/0.4.0"
+	_stub_cli
 	_write_claude_json '{"command":"openwiki","args":["mcp"]}'
 	echo "uncommitted" >"$REPO/scratch.txt"
 	_run_skill preflight
@@ -185,7 +240,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 }
 
 @test "preflight PASSES on a clean tree with the CLI present (not over-broad)" {
-	_stub_cli "openwiki/0.4.0"
+	_stub_cli
 	_write_claude_json '{"command":"openwiki","args":["mcp"]}'
 	_run_skill preflight
 	[ "$status" -eq 0 ]
@@ -204,30 +259,67 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	[[ $output == *"INSTRUCTIONS.md"* ]]
 }
 
-@test "version probe: multi-line --version does NOT double-emit (p1r1)" {
-	# `cmd | head -1 || echo fallback` fires the fallback on the PIPELINE
-	# status: head closes the pipe, SIGPIPE + pipefail mark it failed, and the
-	# status table gets TWO lines in a one-line field.
+@test "version probe: reads the PACKAGE, never asks the CLI (ci-followup)" {
+	# The probe used to run `openwiki --version`, which the real CLI answers
+	# with "Unknown option: --version" — so a healthy machine reported the
+	# version as unreadable forever, and the same wrong assumption made
+	# bootstrap-machine reinstall on every run.
+	#
+	# The stub below SCREAMS a version on every invocation. If the probe ever
+	# goes back to asking the CLI, that string reaches the table and this test
+	# fails — the assertion that matters here.
+	#
+	# NOTE the case/[ ] forms: on bash 3.2 (what bats runs under on macOS) a
+	# failing `[[ ]]` fires neither errexit nor the ERR trap unless it is the
+	# test's LAST command, so mid-test `[[ ]]` assertions are silent no-ops.
 	cd "$REPO" || return 1
-	printf '#!/usr/bin/env bash\necho "openwiki/0.4.0"\necho "extra banner line"\necho "third"\nexit 0\n' >"$TEST_TMP/bin/openwiki"
+	rm -f "$TEST_TMP/bin/openwiki"
+	printf '#!/usr/bin/env bash\necho "openwiki/9.9.9-FROM-CLI"\nexit 0\n' >"$TEST_TMP/bin/openwiki"
 	chmod +x "$TEST_TMP/bin/openwiki"
 	_write_claude_json ""
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"0.4.0"* ]]
-	[[ $output != *"version unreadable"* ]]
-	# exactly one CLI line
+	case "$output" in
+	*9.9.9-FROM-CLI*)
+		echo "the probe asked the CLI for its version: $output"
+		return 1
+		;;
+	esac
+	# The stub is a plain file with no openwiki package.json above it, so the
+	# honest answer names THAT — not some other cause the probe never checked.
+	case "$output" in
+	*"no openwiki package.json above the resolved binary"*) ;;
+	*)
+		echo "expected the not-found sentence; got: $output"
+		return 1
+		;;
+	esac
+	# Exactly one CLI line — a multi-line probe would break the table.
 	[ "$(printf '%s\n' "$output" | grep -c 'CLI:')" -eq 1 ]
 }
 
-@test "version probe: empty --version output reports unreadable, not blank (p1r1)" {
+@test "version probe: reports the real version from the resolved package (ci-followup)" {
+	# The positive half, and the proof it follows PATH rather than npm: the
+	# package sits under the fixture's own tree, nowhere `npm root -g` knows.
 	cd "$REPO" || return 1
-	printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/bin/openwiki"
-	chmod +x "$TEST_TMP/bin/openwiki"
+	local pkg="$TEST_TMP/lanepkg/openwiki"
+	mkdir -p "$pkg/dist"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/dist/cli.js"
+	chmod +x "$pkg/dist/cli.js"
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/package.json"
+	rm -f "$TEST_TMP/bin/openwiki"
+	ln -s "$pkg/dist/cli.js" "$TEST_TMP/bin/openwiki"
 	_write_claude_json ""
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"version unreadable"* ]]
+	case "$output" in
+	*"CLI:       0.4.0"*) ;;
+	*)
+		echo "expected the package version in the table; got: $output"
+		return 1
+		;;
+	esac
+	[ "$(printf '%s\n' "$output" | grep -c 'CLI:')" -eq 1 ]
 }
 
 @test "MCP probe: corrupt ~/.claude.json is an ERROR state, not 'not wired' (p1r1)" {
@@ -313,7 +405,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	# crash mid-probe was indistinguishable from the ordinary "unsafe" it is
 	# meant to absorb. rc 1 stays quiet; anything else says so out loud.
 	cd "$REPO" || return 1
-	_stub_cli "openwiki/0.4.0"
+	_stub_cli
 	_write_claude_json ""
 	echo dirty >"$REPO/uncommitted"
 	_run_skill doctor
@@ -390,6 +482,251 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	[ "$output" = "wired" ]
 }
 
+@test "installed-version: every token, driven directly (ci-r1)" {
+	# The version probe is the one whose bug got past the entire suite and was
+	# caught only by running the real thing on a real machine. Drive every
+	# branch through the lib's own CLI mode, where each is actually reachable —
+	# the bootstrap-machine suite cannot make jq absent, because macOS ships
+	# /usr/bin/jq.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	local b="$TEST_TMP/probebin"
+	mkdir -p "$b"
+	# Everything the probe itself needs, minus jq — so the no-jq branch is
+	# reachable by simply not linking it.
+	local tool tp
+	for tool in readlink dirname; do
+		tp=$(command -v "$tool") || {
+			echo "FATAL: probe dependency '$tool' not on PATH"
+			return 1
+		}
+		ln -sf "$tp" "$b/$tool"
+	done
+
+	# no-cli — nothing named openwiki anywhere on PATH.
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-cli" ]
+
+	# A real package layout: bin symlink -> pkg/dist/cli.js, package.json at
+	# the package root. This is nowhere npm knows about, which is the point:
+	# the probe follows PATH, not `npm root -g`.
+	local pkg="$TEST_TMP/probepkg/openwiki"
+	mkdir -p "$pkg/dist"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/dist/cli.js"
+	chmod +x "$pkg/dist/cli.js"
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/package.json"
+	ln -sf "$pkg/dist/cli.js" "$b/openwiki"
+
+	# no-jq — the CLI resolves, but nothing can parse its package.json. This
+	# is NOT a reinstallable state, which is why it gets its own token.
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-jq" ]
+
+	# With jq: the healthy case, reported from the package the BINARY belongs
+	# to rather than from any global root.
+	ln -sf "$(command -v jq)" "$b/jq"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+
+	# not-found — a CLI on PATH with no openwiki package.json above it.
+	rm -f "$pkg/package.json"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "not-found" ]
+
+	# A package.json belonging to something ELSE must not answer for openwiki:
+	# the walk matches on .name, not on "first package.json found".
+	printf '{"name":"not-openwiki","version":"9.9.9"}' >"$pkg/package.json"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "not-found" ]
+
+	# bad-version — found the package, but .version is not a bare semver.
+	# Refused rather than rendered: it is self-attested, from a user-writable
+	# directory, and it reaches operator logs and an agent's status field.
+	local bad
+	for bad in '"0.4.0\u001b[31mEVIL"' '"v0.4.0"' '"not-a-version"' 'null'; do
+		printf '{"name":"openwiki","version":%s}' "$bad" >"$pkg/package.json"
+		run env PATH="$b" "$lib" installed-version
+		[ "$status" -eq 0 ]
+		[ "$output" = "bad-version" ] || {
+			echo "version $bad should be refused; got: $output"
+			return 1
+		}
+	done
+
+	# p2r1: a LOOSE three-group glob also lets these through. Exactly three
+	# non-empty numeric fields, or it is refused.
+	for bad in '"1.2.3.4"' '"1..2"' '".1.2"' '"1.2."' '"1.2"'; do
+		printf '{"name":"openwiki","version":%s}' "$bad" >"$pkg/package.json"
+		run env PATH="$b" "$lib" installed-version
+		[ "$status" -eq 0 ]
+		[ "$output" = "bad-version" ] || {
+			echo "malformed version $bad should be refused; got: $output"
+			return 1
+		}
+	done
+	# ...and a legitimate multi-digit semver still passes.
+	printf '{"name":"openwiki","version":"10.20.30"}' >"$pkg/package.json"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "10.20.30" ]
+
+	# A DANGLING symlink is reported as no-cli, not unresolvable: `command -v`
+	# refuses a link that does not resolve to an executable, so the probe never
+	# reaches its own resolver. Asserting what actually happens rather than what
+	# the token list suggests — `unresolvable` is defence for a resolver failure
+	# that PATH lookup does not currently let through.
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/package.json"
+	rm -f "$b/openwiki"
+	ln -s "$TEST_TMP/definitely-not-here/cli.js" "$b/openwiki"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-cli" ]
+}
+
+@test "a RELATIVE bin symlink under a symlinked dir still resolves (ci-r1)" {
+	# How npm and brew actually link a global binary: bin/openwiki ->
+	# ../lib/openwiki/dist/cli.js, and the bin dir itself often reached
+	# through a prefix symlink. The loop only resolves links in the LEAF, so
+	# the path it returned carried `..` segments; access checks resolve those
+	# through the kernel, but the caller then WALKS UP that path, and walking
+	# a logical path makes every step a guess the kernel has to rescue.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	local b="$TEST_TMP/relbin" pkg="$TEST_TMP/relprefix"
+	mkdir -p "$b" "$pkg/bin" "$pkg/lib/openwiki/dist"
+	local tool tp
+	for tool in readlink dirname jq; do
+		tp=$(command -v "$tool") || {
+			echo "FATAL: probe dependency '$tool' not on PATH"
+			return 1
+		}
+		ln -sf "$tp" "$b/$tool"
+	done
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/lib/openwiki/dist/cli.js"
+	chmod +x "$pkg/lib/openwiki/dist/cli.js"
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/lib/openwiki/package.json"
+	ln -s "../lib/openwiki/dist/cli.js" "$pkg/bin/openwiki"
+
+	# A: the real bin dir, relative target.
+	run env PATH="$pkg/bin:$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+
+	# B: the SAME bin dir reached through a symlink.
+	ln -s "$pkg/bin" "$TEST_TMP/rellink"
+	run env PATH="$TEST_TMP/rellink:$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+
+	# The probe must need nothing beyond readlink/dirname/jq. An earlier cut
+	# of the canonicalisation called `basename`, and this minimal PATH is what
+	# caught it — a probe answering "unresolvable" because a coreutil is
+	# missing is the same misleading answer this file exists to remove.
+	case "$output" in
+	*"command not found"*)
+		echo "the probe grew a new PATH dependency: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a bare EXISTING filename is still a config path, a typo is not (ci-r1)" {
+	# `config.json` in the cwd has no slash but is a legitimate argument; the
+	# slash-only rule rejected it as an unknown subcommand. The filesystem
+	# decides: if it exists, it was a path.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	cd "$TEST_TMP" || return 1
+	echo '{"mcpServers":{}}' >"$TEST_TMP/bare-config.json"
+	run env HOME="$TEST_TMP/home" bash -c "cd '$TEST_TMP' && '$lib' bare-config.json"
+	[ "$status" -eq 0 ]
+	[ "$output" = "not-wired" ]
+	# ...and a bare word that is NOT a file is still refused rather than
+	# silently answered as "no-config".
+	run env HOME="$TEST_TMP/home" bash -c "cd '$TEST_TMP' && '$lib' instaled-version"
+	[ "$status" -eq 2 ]
+	case "$output" in
+	*"unknown subcommand"*) ;;
+	*)
+		echo "expected a refusal; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "the resolver refuses an over-long symlink chain (p2r3)" {
+	# The 40-hop budget existed but nothing acted on exhausting it: `[ -e ]`
+	# accepts a >40-hop chain that still resolves, so the caller would have
+	# trusted a version read from wherever the walk happened to stop.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	local b="$TEST_TMP/loopbin"
+	mkdir -p "$b"
+	local tool tp
+	for tool in readlink dirname jq; do
+		tp=$(command -v "$tool") || {
+			echo "FATAL: probe dependency '$tool' not on PATH"
+			return 1
+		}
+		ln -sf "$tp" "$b/$tool"
+	done
+	# A real target, then a chain of 60 links in front of it — resolvable, but
+	# past the budget.
+	local pkg="$TEST_TMP/looppkg/openwiki"
+	mkdir -p "$pkg/dist"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/dist/cli.js"
+	chmod +x "$pkg/dist/cli.js"
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/package.json"
+	local chain="$TEST_TMP/chain"
+	mkdir -p "$chain"
+	ln -sf "$pkg/dist/cli.js" "$chain/link0"
+	local i=1
+	while [ "$i" -le 60 ]; do
+		ln -sf "$chain/link$((i - 1))" "$chain/link$i"
+		i=$((i + 1))
+	done
+	ln -sf "$chain/link60" "$b/openwiki"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	# no-cli, not unresolvable: the KERNEL's own symlink limit (~32 on macOS)
+	# fires first, so `command -v` never resolves it and the probe's resolver
+	# is never reached. Asserting what actually happens — the hop budget and
+	# the still-a-link refusal are defence for a resolver the OS does not
+	# currently let us exercise, and pretending otherwise would be the same
+	# kind of test-shaped fiction this branch spent a round removing.
+	[ "$output" = "no-cli" ]
+
+	# A chain INSIDE the budget still resolves — the guard is not over-broad.
+	ln -sf "$chain/link5" "$b/openwiki"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+}
+
+@test "the probe CLI refuses an unknown subcommand instead of guessing (p2r1)" {
+	# A bare WORD used to fall through to mcp-state as a config path, which
+	# answered "no-config" — a real-looking state for what is actually a typo.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	run "$lib" instaled-version
+	[ "$status" -eq 2 ]
+	case "$output" in
+	*"unknown subcommand"*) ;;
+	*)
+		echo "expected an unknown-subcommand refusal; got: $output"
+		return 1
+		;;
+	esac
+	# Back-compat is preserved for the two shapes callers actually use: a bare
+	# PATH (the stored prove-yourself retest) and no argument at all.
+	run "$lib" /nonexistent/nope.json
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-config" ]
+	run "$lib"
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-config" ]
+}
+
 @test "an rc-0 git WARNING does not turn a clean tree DIRTY (ci-r1)" {
 	# `git status --porcelain 2>&1` folded stderr into the porcelain output,
 	# and the verdict was `[ -n "$out" ]`. git writes advice, CRLF notices and
@@ -397,7 +734,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	# came back DIRTY, preflight said "commit or stash", `git status` showed
 	# nothing to commit, and the warning itself was never printed.
 	cd "$REPO" || return 1
-	_stub_cli "openwiki/0.4.0"
+	_stub_cli
 	_write_claude_json ""
 	rm -f "$TEST_TMP/bin/git"
 	cat >"$TEST_TMP/bin/git" <<STUB
@@ -453,7 +790,7 @@ STUB
 	# corrupt index (rc 128, EMPTY stdout) read as "clean" and preflight said
 	# "safe to run" over uncommitted work.
 	cd "$REPO" || return 1
-	_stub_cli "openwiki/0.4.0"
+	_stub_cli
 	_write_claude_json ""
 	printf 'GARBAGE' >"$REPO/.git/index"
 	_run_skill status

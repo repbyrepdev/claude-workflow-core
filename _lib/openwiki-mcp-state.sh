@@ -5,7 +5,12 @@ set -u
 # inheriting `set -e` + pipefail aborts callers that use fail-soft idioms.
 #
 # auto-register: false
-# (#2629) SSOT for one question: what state is the openwiki MCP entry in?
+# (#2629) SSOT for the openwiki state probes. The filename says mcp-state
+# because that was the first one; it now also owns the installed-version
+# probe, for the same reason — two callers, one question, and duplicating the
+# MCP parse is precisely what grew the same fail-open bug in both copies.
+#
+# Question 1: what state is the openwiki MCP entry in?
 #
 # Two callers ask it — scripts/bootstrap-machine.sh (which REPAIRS) and
 # skills/openwiki-lane/run.sh (which REPORTS) — and their policies genuinely
@@ -91,13 +96,145 @@ openwiki_mcp_state() {
 	return 0
 }
 
-# EXECUTED directly (not sourced): behave as a one-shot CLI over the same
-# function. `openwiki-mcp-state.sh <config-path>` prints the token.
+# Resolve a PATH entry through its symlinks WITHOUT depending on `readlink -f`
+# (a GNU-ism macOS only grew recently; this repo runs on bash 3.2).
+# Echoes the real path; rc 1 if it cannot be resolved.
+_openwiki_realpath() {
+	local p="${1:-}" target hops=0
+	[ -n "$p" ] || return 1
+	while [ -L "$p" ] && [ "$hops" -lt 40 ]; do
+		target=$(readlink "$p") || return 1
+		case "$target" in
+		/*) p=$target ;;
+		*) p=$(dirname "$p")/$target ;;
+		esac
+		hops=$((hops + 1))
+	done
+	# Budget exhausted while still a link: a cycle, or a chain long enough to
+	# be one. Refuse rather than answer about a path we did not finish
+	# resolving — `[ -e ]` alone would accept a >40-hop chain that still
+	# resolves, and the caller would trust a version from the wrong package.
+	[ ! -L "$p" ] || return 1
+	[ -e "$p" ] || return 1
+	# Canonicalise the PARENT so the path we hand back is physical, not
+	# logical. The loop above only resolves links in the leaf, so a relative
+	# target under a symlinked bin dir (how npm and brew actually link a
+	# global binary) leaves `..` segments behind. Access checks resolve those
+	# through the kernel anyway — I built both shapes and they answer
+	# correctly — but the caller then WALKS UP this path, and walking a
+	# logical path means each step is a guess the kernel has to rescue.
+	#
+	# `${p##*/}` rather than `basename`: the first cut of this called
+	# basename and a fixture with a deliberately minimal PATH caught the new
+	# dependency immediately — a probe that reports "unresolvable" because a
+	# coreutil is missing would be the same class of misleading answer this
+	# whole file exists to eliminate.
+	local d b="${p##*/}"
+	d=$(dirname "$p") || return 1
+	d=$(cd -P "$d" 2>/dev/null && pwd) || return 1
+	printf '%s\n' "$d/$b"
+}
+
+# Question 2: which openwiki version is actually installed — meaning the one
+# `command -v openwiki` resolves to, which is the binary that will actually
+# run and the one both callers already gate on.
 #
-# This exists so the probe can be exercised as itself — by an operator
-# debugging a machine, and by prove-yourself retest evidence, which requires a
-# cycle-critical file to appear in COMMAND position rather than only inside a
-# bats fixture. Sourcing callers never reach this block.
+# Echoes exactly ONE token, always rc 0, same contract as its sibling:
+#
+#   no-cli        nothing named openwiki on PATH
+#   no-jq         jq absent, so no package.json can be parsed
+#   unresolvable  the PATH entry could not be followed to a real file
+#   not-found     resolved, but no openwiki package.json above it
+#   bad-version   found the package, but .version is missing or not a semver
+#   <semver>      the version that binary belongs to
+#
+# Do NOT ask the CLI: `openwiki --version` is not a supported flag (the real
+# binary answers "Unknown option: --version"), which is how the every-run
+# reinstall bug shipped.
+#
+# Do NOT use `npm root -g` either — that answers "what did npm-global
+# install", while the callers gate on PATH. A CLI from volta/pnpm/asdf, or the
+# ~/.openwiki-main source build this repo tracks, resolves on PATH and is
+# invisible to npm's root: the pin check would either reinstall on every run
+# (the same bug relocated) or, worse, report "at the pin" about a package that
+# is NOT the binary being run. Walk up from the resolved binary instead.
+openwiki_installed_version() {
+	local bin real dir name v
+	bin=$(command -v openwiki 2>/dev/null) || bin=""
+	if [ -z "$bin" ]; then
+		echo "no-cli"
+		return 0
+	fi
+	if ! command -v jq >/dev/null 2>&1; then
+		echo "no-jq"
+		return 0
+	fi
+	real=$(_openwiki_realpath "$bin") || real=""
+	if [ -z "$real" ]; then
+		echo "unresolvable"
+		return 0
+	fi
+	# Nearest ancestor package.json that IS openwiki's — matched on .name
+	# rather than "first package.json found", so a stray dist/package.json
+	# cannot answer for the package.
+	dir=$(dirname "$real")
+	while [ -n "$dir" ] && [ "$dir" != "/" ] && [ "$dir" != "." ]; do
+		if [ -r "$dir/package.json" ]; then
+			name=$(jq -r '.name // empty' "$dir/package.json" 2>/dev/null) || name=""
+			if [ "$name" = "openwiki" ]; then
+				v=$(jq -r '.version // empty' "$dir/package.json" 2>/dev/null) || v=""
+				# NORMALISE. `.version` is a string the package writes about
+				# itself, in a user-writable directory, and it is echoed into
+				# operator logs and into an agent's status context. jq passes
+				# embedded ANSI escapes and newlines through untouched, so
+				# anything that is not a bare semver is refused, not rendered.
+				# EXACTLY three non-empty numeric fields. The rejects are
+				# listed first and deliberately cover the shapes a loose
+				# three-group glob lets through: a non-digit anywhere, an
+				# empty field (1..2), a leading or trailing dot, and a
+				# fourth field (1.2.3.4).
+				case "$v" in
+				*[!0-9.]* | *..* | .* | *. | *.*.*.*) echo "bad-version" ;;
+				[0-9]*.[0-9]*.[0-9]*) echo "$v" ;;
+				*) echo "bad-version" ;;
+				esac
+				return 0
+			fi
+		fi
+		dir=$(dirname "$dir")
+	done
+	echo "not-found"
+	return 0
+}
+
+# EXECUTED directly (not sourced): a one-shot CLI over BOTH probes, so each
+# can be exercised as itself — by an operator debugging a machine, and by
+# prove-yourself retest evidence, which requires a cycle-critical file in
+# COMMAND position rather than only inside a bats fixture. The version probe
+# is the one whose bug got past the whole suite and was caught only by running
+# the real thing, so it needs this surface most.
+#
+# A bare first argument still means mcp-state, so the existing lockstep test
+# and the stored retest command keep working. Sourcing callers never get here.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-	openwiki_mcp_state "${1:-}"
+	case "${1:-}" in
+	installed-version) openwiki_installed_version ;;
+	mcp-state) openwiki_mcp_state "${2:-}" ;;
+	# Back-compat: a bare argument that LOOKS like a path (or is absent) still
+	# means mcp-state. A bare WORD does not — silently treating a mistyped
+	# subcommand as a config path would answer "no-config", which reads as a
+	# real state rather than as the typo it is.
+	*/* | "") openwiki_mcp_state "${1:-}" ;;
+	*)
+		# A bare word with no slash is ambiguous: `config.json` in the cwd is a
+		# legitimate config path, and `instaled-version` is a typo. Let the
+		# filesystem decide — if it exists, it was a path.
+		if [ -e "$1" ]; then
+			openwiki_mcp_state "$1"
+		else
+			echo "openwiki-mcp-state: unknown subcommand '$1' (want: installed-version, mcp-state, or a config path)" >&2
+			exit 2
+		fi
+		;;
+	esac
 fi

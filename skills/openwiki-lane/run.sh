@@ -83,23 +83,25 @@ fi
 
 # ---- state probes (each prints ONE line; none exit non-zero on absence) ----
 
+# Shared with bootstrap-machine's pin check — see the lib header. This used to
+# ask `openwiki --version`, which is not a supported flag (the real binary
+# answers "Unknown option: --version"), so a healthy machine reported the
+# version as unreadable forever and the pin check reinstalled on every run.
+#
+# Each token gets its OWN sentence. The previous message named one cause
+# ("not under $(npm root -g)") for an emptiness that had four possible
+# causes — asserting as fact something the probe never established.
 _cli_version() {
-	command -v openwiki >/dev/null 2>&1 || {
-		echo "absent"
-		return
-	}
-	# Capture FIRST, then branch on emptiness. A piped `|| echo` fires on the
-	# PIPELINE status, so under `set -o pipefail` it can print a fallback IN
-	# ADDITION to real output — e.g. multi-line --version output makes head
-	# close the pipe, SIGPIPE fails the pipeline, and the status table gets a
-	# two-line field. stderr is folded in so a broken CLI explains itself.
-	local v
-	v=$(openwiki --version 2>&1 | head -1) || v=""
-	if [ -n "$v" ]; then
-		echo "$v"
-	else
-		echo "present (version unreadable)"
-	fi
+	local st
+	st=$(openwiki_installed_version)
+	case "$st" in
+	no-cli) echo "absent" ;;
+	no-jq) echo "present (version unknown — jq missing, cannot read its package.json)" ;;
+	unresolvable) echo "present (version unknown — the openwiki on PATH does not resolve to a real file)" ;;
+	not-found) echo "present (version unknown — no openwiki package.json above the resolved binary)" ;;
+	bad-version) echo "present (version unknown — its package.json .version is missing or not a semver)" ;;
+	*) echo "$st" ;;
+	esac
 }
 
 # The MCP entry lives in the user's ~/.claude.json. Absence is a STATE; a

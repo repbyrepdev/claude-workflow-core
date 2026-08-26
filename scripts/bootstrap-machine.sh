@@ -158,13 +158,21 @@ OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
 # two-lanes-disagree failure the lockstep test exists to prevent. Compare, and
 # reinstall on any answer that is not the pin.
 #
-# Version output is matched by extracting the first semver rather than by
-# equality, because the CLI's format is not part of its contract ("0.4.0" and
-# "openwiki/0.4.0" both occur in the wild). An UNREADABLE version counts as a
-# mismatch: "cannot confirm the pin holds" must not report as "the pin holds".
-_ow_installed_version() {
-	openwiki --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
-}
+# An UNREADABLE version counts as a MISMATCH: "cannot confirm the pin holds"
+# must not report as "the pin holds". That choice is only safe if the probe
+# actually works — the first cut asked `openwiki --version`, which is NOT a
+# supported flag (the CLI answers "Unknown option: --version"), so a correctly
+# pinned machine read as unreadable and reinstalled on EVERY run. Caught by
+# running the real thing after merging it, not by any test: the fixture stub
+# implemented --version, so the suite proved the stub honoured a contract the
+# real CLI never had.
+#
+# Read the INSTALLED PACKAGE instead. It is offline, authoritative, and
+# independent of whichever flags the CLI happens to expose this release —
+# `openwiki --help` does print the version, but it boots the whole agent
+# banner to do it.
+# shellcheck source=../_lib/openwiki-mcp-state.sh
+. "$BM_SCRIPT_DIR/../_lib/openwiki-mcp-state.sh"
 # CI r1: `_run` under `set -e` makes every OpenWiki command load-bearing for
 # the WHOLE bootstrap — a registry blip during `npm install -g openwiki` would
 # abort before the plugin cache install, the Keychain report and the summary.
@@ -185,20 +193,58 @@ if ! command -v openwiki >/dev/null 2>&1; then
 		_log "    then re-run, or: npm install -g openwiki@$OPENWIKI_PIN"
 	else
 		_log "installing openwiki@$OPENWIKI_PIN via npm..."
-		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
+		# rc discarded ON PURPOSE: _ow_run_optional has already logged the
+		# failure and set OPENWIKI_WIRING_SKIPPED, which the end-of-run
+		# summary reads. Without the `||` this would abort the bootstrap
+		# under `set -e`, which is the whole point of the wrapper.
+		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || :
 	fi
 else
-	OW_HAVE=$(_ow_installed_version) || OW_HAVE=""
-	if [ "$OW_HAVE" = "$OPENWIKI_PIN" ]; then
+	# The probe returns a TOKEN (see the lib header). Each one gets its own
+	# policy: `no-jq` is the only state a reinstall cannot fix, so it is named
+	# rather than folded into the drift branch — otherwise a jq-less machine
+	# would npm-install openwiki on every single run and never say why.
+	OW_HAVE=$(openwiki_installed_version)
+	case "$OW_HAVE" in
+	"$OPENWIKI_PIN")
 		_log "  ✓ openwiki CLI already installed at the pin ($OPENWIKI_PIN)"
-	elif ! command -v npm >/dev/null 2>&1; then
-		_log "  ⚠ openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN,"
-		_log "    and npm is not available to correct it. Install Node.js, then:"
-		_log "    npm install -g openwiki@$OPENWIKI_PIN"
-	else
-		_log "openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN — reinstalling..."
-		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
-	fi
+		;;
+	no-jq)
+		_log "  ⚠ cannot verify the openwiki pin — jq is not installed, so its"
+		_log "    package.json cannot be read. Install jq, then re-run."
+		OPENWIKI_WIRING_SKIPPED=1
+		;;
+	*)
+		# Everything else — a different semver, no-cli, unresolvable,
+		# not-found, bad-version — means the pin is NOT confirmed, and
+		# reinstalling is what makes it true.
+		case "$OW_HAVE" in
+		[0-9]*) OW_DESC="openwiki is $OW_HAVE" ;;
+		# Unreachable from here today — this branch sits inside the
+		# `command -v openwiki` success arm — but if the CLI vanishes between
+		# the two checks, "not installed" is the truth and "could not be
+		# identified (no-cli)" would be a riddle.
+		no-cli) OW_DESC="openwiki is not installed" ;;
+		*) OW_DESC="the openwiki on PATH could not be identified ($OW_HAVE)" ;;
+		esac
+		if ! command -v npm >/dev/null 2>&1; then
+			_log "  ⚠ $OW_DESC, pin is $OPENWIKI_PIN,"
+			_log "    and npm is not available to correct it. Install Node.js, then:"
+			_log "    npm install -g openwiki@$OPENWIKI_PIN"
+			# Same reason as the no-jq branch: the pin is UNCONFIRMED and this
+			# run cannot fix it, so it has to reach the end-of-run summary
+			# rather than scroll past as one warning among many.
+			OPENWIKI_WIRING_SKIPPED=1
+		else
+			_log "$OW_DESC, pin is $OPENWIKI_PIN — reinstalling..."
+			# rc discarded ON PURPOSE: _ow_run_optional has already logged the
+			# failure and set OPENWIKI_WIRING_SKIPPED, which the end-of-run
+			# summary reads. Without the `||` this would abort the bootstrap
+			# under `set -e`, which is the whole point of the wrapper.
+			_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || :
+		fi
+		;;
+	esac
 fi
 
 # Wire the MCP server. Idempotent: the installer rewrites its own entry, and
@@ -219,9 +265,8 @@ fi
 # the obsolete ~/.openwiki-main source build, which the installer supersedes.
 #
 # `no-jq` is the one state that is NOT repairable by re-running the installer,
-# so it is called out rather than folded in silently.
-# shellcheck source=../_lib/openwiki-mcp-state.sh
-. "$BM_SCRIPT_DIR/../_lib/openwiki-mcp-state.sh"
+# so it is called out rather than folded in silently. (The lib is sourced once,
+# above, next to the version probe that shares it.)
 if command -v openwiki >/dev/null 2>&1 || [ "$DRY_RUN" = "1" ]; then
 	OW_MCP_STATE=$(openwiki_mcp_state "$HOME/.claude.json")
 	if [ "$OW_MCP_STATE" = "no-jq" ]; then

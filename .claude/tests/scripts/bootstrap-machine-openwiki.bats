@@ -58,6 +58,13 @@ setup() {
 		echo "FATAL: openwiki present in /usr/bin or /bin — fixture PATH isolation broken" >&2
 		return 1
 	fi
+	# Same guard for npm: the no-npm tests delete the fixture's npm stub and
+	# depend on none being reachable via /usr/bin:/bin. Asserted rather than
+	# assumed, so a machine that has one fails with the real cause.
+	if [ -x /usr/bin/npm ] || [ -x /bin/npm ]; then
+		echo "FATAL: npm present in /usr/bin or /bin — fixture PATH isolation broken" >&2
+		return 1
+	fi
 	# Earlier steps `exit 2` when these are missing (semgrep block on pip3,
 	# coderabbit block on npm), which would abort before the openwiki section
 	# under test. Stubs make those steps take their already-installed path.
@@ -80,10 +87,57 @@ _write_claude_json() { # $1 = json for .mcpServers.openwiki, "" = key absent
 	fi
 }
 
-_stub_openwiki() { # $1 = --version output (default: the pinned version)
-	printf '#!/usr/bin/env bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' \
-		"${1-openwiki/0.4.0}" >"$TEST_TMP/bin/openwiki"
-	chmod +x "$TEST_TMP/bin/openwiki"
+# Assertions that ACTUALLY FAIL. bats runs under bash 3.2 on macOS, where a
+# failing `[[ ]]` fires neither errexit nor the ERR trap unless it is the
+# test's last command — so every mid-test `[[ ]]` was a silent no-op, which is
+# how three broken assertions in this file survived a full review round. These
+# two return non-zero and print the real output, so a failure names itself.
+#
+# Named `assert_*` on purpose: that is the bats convention, AND it is what
+# pre-commit bats-gate counts as an assertion — so converting a no-op `[[ ]]`
+# into a real check reads as strengthening rather than tripping the
+# assertion-weakening refusal, which would otherwise need an audited
+# override for a change that makes the suite stricter.
+assert_output_contains() { # $1 = substring $output must contain
+	case "$output" in
+	*"$1"*) return 0 ;;
+	esac
+	echo "expected to find: $1"
+	echo "actual output   : $output"
+	return 1
+}
+assert_output_lacks() { # $1 = substring $output must NOT contain
+	case "$output" in
+	*"$1"*)
+		echo "expected NOT to find: $1"
+		echo "actual output       : $output"
+		return 1
+		;;
+	esac
+	return 0
+}
+
+# $1 = the semver its package.json declares. "" installs the CLI with NO
+# package above it (the `not-found` token). Default 0.4.0 = the pin.
+#
+# Builds a REAL package layout — bin symlink → package/dist/cli.js, with
+# package.json beside the package root — because the probe resolves
+# `command -v openwiki` and walks up from the resolved file. It deliberately
+# does NOT stub `openwiki --version`: that is not a supported flag, and a
+# fixture implementing one proves the STUB honours a contract the real CLI
+# never had, which is exactly how the every-run reinstall bug shipped.
+_stub_openwiki() {
+	local version="${1-0.4.0}"
+	local pkg="$TEST_TMP/nodepkgs/openwiki"
+	rm -rf "$TEST_TMP/nodepkgs"
+	mkdir -p "$pkg/dist"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/dist/cli.js"
+	chmod +x "$pkg/dist/cli.js"
+	if [ -n "$version" ]; then
+		printf '{"name":"openwiki","version":"%s"}' "$version" >"$pkg/package.json"
+	fi
+	rm -f "$TEST_TMP/bin/openwiki"
+	ln -s "$pkg/dist/cli.js" "$TEST_TMP/bin/openwiki"
 }
 
 # --tag pins the plugin version so the script never reaches the network
@@ -113,66 +167,105 @@ _dry_run() {
 	[[ $output == *"restart the Claude Code session"* ]]
 }
 
-@test "already-installed CLI is reported, not reinstalled" {
+@test "a CLI already at the pin is reported, not reinstalled" {
 	# Previously unreachable: the suite silently relied on openwiki being
 	# absent from the ambient PATH, so this branch had zero coverage.
+	#
+	# ASSERTION STYLE, and why it is not [[ ]]: bats runs under bash 3.2 on
+	# macOS, where a failing `[[ ]]` fires neither errexit nor the ERR trap
+	# unless it is the test's LAST command. Every mid-test `[[ ]]` in this file
+	# was therefore a no-op, which is how three broken assertions here stayed
+	# green through a whole review round. `[ ]` and `case` do fail.
 	_stub_openwiki
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"already installed at the pin (0.4.0)"* ]]
-	[[ $output != *"npm install -g openwiki@"* ]]
+	assert_output_contains "already installed at the pin (0.4.0)"
+	assert_output_lacks "npm install -g openwiki@"
 }
 
 @test "an installed CLI at the WRONG version is reinstalled at the pin (p2r1)" {
 	# `command -v openwiki` enforces "some openwiki exists" — the one thing a
 	# pin is meant to rule out. A machine that installed 0.3.x before this
-	# step existed kept it forever while the repo-side toolchain pin moved,
-	# which is precisely the two-lanes-disagree failure the lockstep test
-	# exists to prevent.
-	_stub_openwiki "openwiki/0.3.1"
+	# step existed kept it forever while the repo-side toolchain pin moved.
+	_stub_openwiki "0.3.1"
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"openwiki is 0.3.1, pin is 0.4.0 — reinstalling"* ]]
-	[[ $output == *"npm install -g openwiki@0.4.0"* ]]
-	[[ $output != *"already installed at the pin"* ]]
+	assert_output_contains "openwiki is 0.3.1, pin is 0.4.0 — reinstalling"
+	assert_output_contains "npm install -g openwiki@0.4.0"
+	assert_output_lacks "already installed at the pin"
 }
 
-@test "a bare-semver --version is matched too (format is not a contract) (p2r1)" {
-	# The CLI prints "0.4.0" in some builds and "openwiki/0.4.0" in others, so
-	# the comparison extracts a semver rather than testing equality. Matching
-	# on the whole string would reinstall on every run of a healthy machine.
+@test "the version comes from the RESOLVED BINARY's package, not a CLI flag (ci-followup)" {
+	# The probe used to run `openwiki --version`, which the real CLI answers
+	# with "Unknown option: --version" — so a correctly pinned machine read as
+	# unreadable and reinstalled on every run.
+	#
+	# It resolves `command -v openwiki` and walks up to that package's own
+	# package.json now. NOT `npm root -g`: the callers gate on PATH, so a CLI
+	# from volta/pnpm/asdf would be invisible to npm's root and the every-run
+	# reinstall would simply move to a different machine. The fixture proves
+	# that directly — the package lives under nodepkgs/, nowhere npm knows.
 	_stub_openwiki "0.4.0"
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"already installed at the pin (0.4.0)"* ]]
-	[[ $output != *"reinstalling"* ]]
+	assert_output_contains "already installed at the pin (0.4.0)"
+	assert_output_lacks "reinstalling"
 }
 
-@test "an UNREADABLE version counts as a mismatch, not as 'fine' (p2r1)" {
+@test "a CLI with NO package above it cannot confirm the pin (p2r1)" {
 	# "cannot confirm the pin holds" must not report as "the pin holds".
 	_stub_openwiki ""
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"an unreadable version, pin is 0.4.0 — reinstalling"* ]]
-	[[ $output != *"already installed at the pin"* ]]
+	assert_output_contains "could not be identified (not-found)"
+	assert_output_contains "reinstalling"
+	assert_output_lacks "already installed at the pin"
 }
 
-@test "version drift with no npm WARNS and hands over the command (p2r1)" {
+@test "a non-semver .version is REFUSED, not rendered (ci-r1 security)" {
+	# `.version` is a string the package writes about itself, in a
+	# user-writable directory, echoed into operator logs and into an agent's
+	# status context. jq passes ANSI escapes and newlines through untouched,
+	# so the probe refuses anything that is not a bare semver.
+	_stub_openwiki "0.4.0"
+	# printf '%s' so the \u001b is written as the literal JSON escape rather
+	# than as a raw ESC byte. A raw control character inside a JSON string is
+	# INVALID JSON, which jq rejects — so the previous form passed for the
+	# wrong reason (parse failure) and never exercised the normalisation at
+	# all. This is valid JSON whose DECODED value carries the escape.
+	printf '%s' '{"name":"openwiki","version":"0.4.0\u001b[31mEVIL\u001b[0m"}' \
+		>"$TEST_TMP/nodepkgs/openwiki/package.json"
+	# Prove the premise: the fixture really is parseable JSON.
+	run jq -e . "$TEST_TMP/nodepkgs/openwiki/package.json"
+	[ "$status" -eq 0 ]
+	_write_claude_json ""
+	_dry_run
+	[ "$status" -eq 0 ]
+	assert_output_contains "could not be identified (bad-version)"
+	assert_output_lacks "EVIL"
+	assert_output_lacks "already installed at the pin"
+}
+
+@test "drift with no npm WARNS and hands over the command (p2r1)" {
 	# The correction needs npm. Without it the run must still refuse to call
-	# the drifted install healthy — the same warn-and-continue shape as the
-	# no-CLI-at-all case, but naming the version it actually found.
-	_stub_openwiki "openwiki/0.3.1"
+	# the drifted install healthy — and must still NAME the version it found,
+	# which is only possible because the probe no longer depends on npm.
+	_stub_openwiki "0.3.1"
 	rm -f "$TEST_TMP/bin/npm"
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"openwiki is 0.3.1, pin is 0.4.0,"* ]]
-	[[ $output == *"npm install -g openwiki@0.4.0"* ]]
-	[[ $output != *"already installed at the pin"* ]]
+	assert_output_contains "openwiki is 0.3.1, pin is 0.4.0,"
+	assert_output_contains "npm install -g openwiki@0.4.0"
+	assert_output_lacks "already installed at the pin"
+	# p2r1: an UNCONFIRMED pin this run cannot fix has to reach the end-of-run
+	# summary, exactly like the no-jq case — otherwise it scrolls past as one
+	# warning among dozens and automation reads the bootstrap as clean.
+	assert_output_contains "MCP wiring was SKIPPED"
 }
 
 @test "already-wired MCP is reported as satisfied, not re-wired" {
