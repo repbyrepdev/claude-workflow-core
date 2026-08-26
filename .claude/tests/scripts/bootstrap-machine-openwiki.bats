@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: scripts/bootstrap-machine.sh
+# covers: scripts/bootstrap-machine.sh scripts/meta-bootstrap-manifest.yml
 #
 # (#2629) bootstrap-machine had NO suite before this. These tests pin the
 # OpenWiki step — the machine lane that makes the free in-chat MCP path
@@ -209,6 +209,22 @@ _dry_run() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"wiring the openwiki MCP server"* ]]
 	[[ $output != *"MCP server already wired"* ]]
+}
+
+@test "openwiki is registered in the machine-verification SSOT (#2632)" {
+	# meta-bootstrap.sh verifies a machine against targets.machine in
+	# scripts/meta-bootstrap-manifest.yml. A tool this script INSTALLS but
+	# that the manifest does not list is unverifiable: a machine that skipped
+	# the step, or lost the CLI to an npm prefix change, still reports clean.
+	# The manifest suite drives stub manifests only, so nothing else pins the
+	# real file's contents.
+	run env M="openwiki" yq -r '.targets.machine.commands[] | select(. == strenv(M))' \
+		"$REPO_ROOT/scripts/meta-bootstrap-manifest.yml"
+	[ "$status" -eq 0 ]
+	[ "$output" = "openwiki" ] || {
+		echo "targets.machine.commands does not list openwiki"
+		return 1
+	}
 }
 
 @test "OPENWIKI_PIN overrides the default pin (toolchain stays controllable)" {

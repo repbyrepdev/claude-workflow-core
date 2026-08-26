@@ -55,6 +55,12 @@ targets:
       - yq
       - pre-commit
       - git
+      # (#2632) bootstrap-machine.sh installs a PINNED openwiki@X.Y.Z and
+      # wires its MCP server; registering the command here is what makes a
+      # machine that skipped or lost that step verifiable. Presence only —
+      # the pin itself is enforced by bootstrap-machine, which compares the
+      # installed version and reinstalls on drift.
+      - openwiki
     # Keychain entries — presence check only; never reads the value.
     keychain_entries:
       - sops-age-key
