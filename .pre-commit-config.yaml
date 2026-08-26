@@ -206,6 +206,12 @@ repos:
         language: script
         pass_filenames: false
         stages: [pre-commit]
+      - id: bats-assertion-gate
+        name: bats-assertion-gate — no NEW `[[ ]]` assertions that cannot fail
+        entry: pre-commit-hooks/bats-assertion-gate.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
 # Hooks intentionally OMITTED from this dogfood config:
 #
 #   - dogfood-gate: requires .claude/dogfood-registry.yml + recent-pass

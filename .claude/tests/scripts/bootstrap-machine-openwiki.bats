@@ -273,7 +273,7 @@ _dry_run() {
 	_write_claude_json '{"command":"openwiki","args":["mcp","--host","claude"]}'
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"MCP server already wired"* ]]
+	assert_output_contains "MCP server already wired"
 	[[ $output != *"wiring the openwiki MCP server"* ]]
 }
 
@@ -284,7 +284,7 @@ _dry_run() {
 	_write_claude_json '{"command":"node","args":["/Users/x/.openwiki-main/dist/cli/cli.js","mcp"]}'
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"wiring the openwiki MCP server"* ]]
+	assert_output_contains "wiring the openwiki MCP server"
 	[[ $output != *"MCP server already wired"* ]]
 }
 
@@ -314,7 +314,7 @@ _dry_run() {
 	printf 'NOT JSON{{{' >"$TEST_TMP/home/.claude.json"
 	_dry_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"wiring the openwiki MCP server"* ]]
+	assert_output_contains "wiring the openwiki MCP server"
 	[[ $output != *"MCP server already wired"* ]]
 }
 
@@ -325,7 +325,7 @@ _dry_run() {
 	# comment lines, which the OpenWiki block did. Nothing covered --help.
 	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" bash "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"bootstrap-machine"* ]]
+	assert_output_contains "bootstrap-machine"
 	# Still prints a usable help body, not one truncated line.
 	[ "$(printf '%s\n' "$output" | wc -l)" -ge 10 ]
 }
@@ -353,9 +353,9 @@ _dry_run() {
 	# A REAL run (not --dry-run): _run only executes for real.
 	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" bash "$SCRIPT" --tag v0.0.0
 	[ "$status" -eq 0 ]
-	[[ $output == *"FAILED"* ]]
+	assert_output_contains "FAILED"
 	# The run REACHES its end rather than dying at the failed install...
-	[[ $output == *"bootstrap-machine complete"* ]]
+	assert_output_contains "bootstrap-machine complete"
 	# ...and the summary says the wiring was skipped, so automation cannot
 	# read an openwiki-less bootstrap as clean.
 	[[ $output == *"MCP wiring was SKIPPED"* ]]
@@ -416,8 +416,8 @@ _dry_run() {
 	# that deliberate degrade from the script aborting — the exact confusion
 	# that let this suite run 6/6 green against a script exiting 2.
 	[ "$status" -eq 0 ]
-	[[ $output == *"npm not available"* ]]
-	[[ $output == *"SKIPPED the MCP wiring"* ]]
+	assert_output_contains "npm not available"
+	assert_output_contains "SKIPPED the MCP wiring"
 	# ...and the skip is surfaced again at the end, so automation cannot read
 	# an openwiki-less bootstrap as clean.
 	[[ $output == *"MCP wiring was SKIPPED"* ]]

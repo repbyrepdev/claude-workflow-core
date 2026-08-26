@@ -129,7 +129,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 @test "usage: no subcommand exits 2; --help exits 0" {
 	run env HOME="$TEST_TMP/home" bash -c "cd '$REPO' && '$SKILL'"
 	[ "$status" -eq 2 ]
-	[[ $output == *"subcommand required"* ]]
+	assert_output_contains "subcommand required"
 	run env HOME="$TEST_TMP/home" bash -c "cd '$REPO' && '$SKILL' --help"
 	[ "$status" -eq 0 ]
 	[[ $output == *"Usage:"* ]]
@@ -145,7 +145,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	# $TEST_TMP is deliberately NOT a git repo — the repo is its child.
 	run env HOME="$TEST_TMP/home" bash -c "cd '$TEST_TMP' && '$SKILL' status"
 	[ "$status" -eq 2 ]
-	[[ $output == *"cannot resolve a git repo root"* ]]
+	assert_output_contains "cannot resolve a git repo root"
 	# The real "not a repository" text comes through from git itself now, so
 	# this case and the broken-git case below read differently (p2r1).
 	[[ $output == *"not a git repository"* ]]
@@ -155,9 +155,9 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	_write_claude_json ""
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"CLI:       absent"* ]]
-	[[ $output == *"not wired"* ]]
-	[[ $output == *"never generated"* ]]
+	assert_output_contains "CLI:       absent"
+	assert_output_contains "not wired"
+	assert_output_contains "never generated"
 	[[ $output == *"Tree:      clean"* ]]
 }
 
@@ -211,7 +211,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	_commit_all
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"NO INSTRUCTIONS.md"* ]]
+	assert_output_contains "NO INSTRUCTIONS.md"
 	# ...and reports it present once the channel exists.
 	echo "rules" >"$REPO/openwiki/INSTRUCTIONS.md"
 	_commit_all
@@ -226,8 +226,8 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	echo "uncommitted" >"$REPO/scratch.txt"
 	_run_skill preflight
 	[ "$status" -eq 1 ]
-	[[ $output == *"working tree is dirty"* ]]
-	[[ $output == *"AGENTS.md"* ]]
+	assert_output_contains "working tree is dirty"
+	assert_output_contains "AGENTS.md"
 	[[ $output == *"gotcha 5"* ]]
 }
 
@@ -235,7 +235,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	_write_claude_json ""
 	_run_skill preflight
 	[ "$status" -eq 1 ]
-	[[ $output == *"CLI not installed"* ]]
+	assert_output_contains "CLI not installed"
 	[[ $output == *"bootstrap-machine.sh"* ]]
 }
 
@@ -253,10 +253,15 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	_run_skill doctor
 	# doctor never fails on state — it is diagnostic.
 	[ "$status" -eq 0 ]
-	[[ $output == *"openwiki status"* ]]
-	[[ $output == *"REFUSING"* ]]
-	[[ $output == *"SESSION START"* ]]
-	[[ $output == *"INSTRUCTIONS.md"* ]]
+	# ci-followup: this asserted "openwiki status" — a string the wrapper has
+	# never printed, since the skill was named `openwiki-lane` before this
+	# test existed. It passed for the whole of #2629 and #2631 because a bare
+	# mid-test `[[ ]]` cannot fail under bash 3.2. First thing to fall out
+	# when the assertions were made real.
+	assert_output_contains "openwiki-lane status"
+	assert_output_contains "REFUSING"
+	assert_output_contains "SESSION START"
+	assert_output_contains "INSTRUCTIONS.md"
 }
 
 @test "version probe: reads the PACKAGE, never asks the CLI (ci-followup)" {
@@ -329,7 +334,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	printf 'NOT JSON{{{' >"$TEST_TMP/home/.claude.json"
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"not valid JSON"* ]]
+	assert_output_contains "not valid JSON"
 	[[ $output != *"MCP:       not wired"* ]]
 }
 
@@ -364,7 +369,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	_write_claude_json 'false'
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"MCP:       unknown"* ]]
+	assert_output_contains "MCP:       unknown"
 	# ...and a real object still reads as wired, so this is not over-broad.
 	_write_claude_json '{"command":"openwiki","args":["mcp"]}'
 	_run_skill status
@@ -410,7 +415,7 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	echo dirty >"$REPO/uncommitted"
 	_run_skill doctor
 	[ "$status" -eq 0 ]
-	[[ $output == *"REFUSING"* ]]
+	assert_output_contains "REFUSING"
 	[[ $output != *"preflight itself failed"* ]]
 
 	# The already-covered UNKNOWN path (a corrupt index) is preflight's rc 1
@@ -758,8 +763,8 @@ STUB
 	}
 	# ...and the warning is still SHOWN. Fixing the verdict by discarding the
 	# message would trade one silent failure for another.
-	[[ $output == *"Tree warn:"* ]]
-	[[ $output == *"Permission denied"* ]]
+	assert_output_contains "Tree warn:"
+	assert_output_contains "Permission denied"
 
 	# preflight agrees: nothing to refuse.
 	_run_skill preflight
@@ -781,7 +786,7 @@ STUB
 	chmod +x "$TEST_TMP/bin/git"
 	_run_skill doctor
 	[ "$status" -eq 2 ]
-	[[ $output == *"git said: git: broken toolchain"* ]]
+	assert_output_contains "git said: git: broken toolchain"
 	[[ $output == *"git itself is broken or missing"* ]]
 }
 
@@ -798,10 +803,10 @@ STUB
 	# preflight then refuses on. Pinning rc 0 here is what keeps those two
 	# contracts from collapsing into one.
 	[ "$status" -eq 0 ]
-	[[ $output == *"Tree:      UNKNOWN"* ]]
+	assert_output_contains "Tree:      UNKNOWN"
 	_run_skill preflight
 	[ "$status" -eq 1 ]
-	[[ $output == *"cannot determine tree state"* ]]
+	assert_output_contains "cannot determine tree state"
 	[[ $output != *"preflight OK"* ]]
 }
 

@@ -43,6 +43,57 @@ if ! command -v bats >/dev/null 2>&1; then
 	exit 2
 fi
 
+# --- harness trust gate (#2631 follow-up) --------------------------------
+#
+# bats reports a failed test through an ERR trap. On bash 3.2 — the 2007
+# build macOS ships at /bin/bash and can never update, because bash 4.0
+# relicensed to GPLv3 — a failing `[[ ]]` fires NEITHER that trap NOR
+# `set -e`, so the script simply continues and the test PASSES. Demonstrate
+# it in one line:
+#
+#   /bin/bash -c 'set -eET; trap "echo TRAP" ERR; [[ a == b ]]; echo REACHED'
+#   → REACHED        (with bash 5: TRAP, and the script stops)
+#
+# Consequence: every `[[ ]]` assertion that is not a test's LAST command is
+# a silent no-op. Measured at 749 across 96 files when this was found. A
+# green run under 3.2 therefore proves only that the single-bracket `[ ]`
+# assertions held — which is not what "green" is read to mean.
+#
+# `bats` is `#!/usr/bin/env bash`, so it runs under the FIRST bash on PATH.
+# That is what we inspect — not this script's own interpreter, which may
+# differ. Installing Homebrew's bash is the entire fix; /opt/homebrew/bin
+# already precedes /bin, so nothing else has to change.
+_harness_bash=$(command -v bash 2>/dev/null || echo /bin/bash)
+_harness_major=$("$_harness_bash" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)
+if [ "${_harness_major:-0}" -lt 4 ]; then
+	_harness_ver=$("$_harness_bash" -c 'echo "$BASH_VERSION"' 2>/dev/null || echo unknown)
+	if [ "${TEST_HARNESS_ALLOW_BASH32:-0}" = "1" ]; then
+		echo "WARN: bats will run under $_harness_bash ($_harness_ver)." >&2
+		echo '      Mid-test `[[ ]]` assertions CANNOT FAIL there — a green run' >&2
+		echo '      only proves the single-bracket `[ ]` assertions held.' >&2
+		echo "      Proceeding because TEST_HARNESS_ALLOW_BASH32=1 (audit-logged)." >&2
+		mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
+		printf '{"ts":"%s","kind":"bash32-harness-allowed","bash":"%s","version":"%s"}\n' \
+			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_harness_bash" "$_harness_ver" \
+			>>"$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
+	else
+		echo "ERROR: bats would run under $_harness_bash ($_harness_ver)." >&2
+		echo "" >&2
+		echo '  On bash 3.x a failing `[[ ]]` fires neither errexit nor the ERR' >&2
+		echo '  trap, so any mid-test `[[ ]]` assertion silently passes. Results' >&2
+		echo "  from this harness cannot be trusted, and refusing is cheaper than" >&2
+		echo "  a green suite that proves less than it claims." >&2
+		echo "" >&2
+		echo "  Fix (one command — /opt/homebrew/bin already precedes /bin, so" >&2
+		echo "  bats picks it up with no further change):" >&2
+		echo "      brew install bash" >&2
+		echo "" >&2
+		echo "  Deliberate override (audit-logged):" >&2
+		echo "      TEST_HARNESS_ALLOW_BASH32=1 scripts/test.sh ..." >&2
+		exit 2
+	fi
+fi
+
 LOG_FILE="${BATS_LOG:-$REPO_ROOT/.claude/logs/bats-run.jsonl}"
 mkdir -p "$(dirname "$LOG_FILE")"
 
