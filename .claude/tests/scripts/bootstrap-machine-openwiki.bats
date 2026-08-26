@@ -232,8 +232,16 @@ _dry_run() {
 	# status context. jq passes ANSI escapes and newlines through untouched,
 	# so the probe refuses anything that is not a bare semver.
 	_stub_openwiki "0.4.0"
-	printf '{"name":"openwiki","version":"0.4.0\u001b[31mEVIL\u001b[0m"}' \
+	# printf '%s' so the \u001b is written as the literal JSON escape rather
+	# than as a raw ESC byte. A raw control character inside a JSON string is
+	# INVALID JSON, which jq rejects — so the previous form passed for the
+	# wrong reason (parse failure) and never exercised the normalisation at
+	# all. This is valid JSON whose DECODED value carries the escape.
+	printf '%s' '{"name":"openwiki","version":"0.4.0\u001b[31mEVIL\u001b[0m"}' \
 		>"$TEST_TMP/nodepkgs/openwiki/package.json"
+	# Prove the premise: the fixture really is parseable JSON.
+	run jq -e . "$TEST_TMP/nodepkgs/openwiki/package.json"
+	[ "$status" -eq 0 ]
 	_write_claude_json ""
 	_dry_run
 	[ "$status" -eq 0 ]
