@@ -307,3 +307,46 @@ teardown() {
 		;;
 	esac
 }
+
+@test "--shell reaches the test body even where only ONE bash exists" {
+	# The two-major test above skips on a standard Linux runner, where
+	# /bin/bash, /usr/bin/bash and `command -v bash` all resolve to the same
+	# bash 5 — so the invariant went unverified precisely in CI, which is
+	# where the regression would land. This checks the same property without
+	# needing a second bash: --shell points at a WRAPPER that execs the real
+	# bash after setting a marker. If the shim reaches the test body, the
+	# marker is visible inside it; if bats re-execs some other `bash` from
+	# PATH — the original defect — it is not.
+	mkdir -p "$TEST_TMP/wrap" "$TEST_TMP/.claude/tests"
+	local real
+	real=$(command -v bash) || skip "no bash on PATH"
+	cat >"$TEST_TMP/wrap/bash" <<-WRAP
+		#!/bin/sh
+		SHELL_SHIM_MARKER=reached-the-body
+		export SHELL_SHIM_MARKER
+		exec "$real" "\$@"
+	WRAP
+	chmod +x "$TEST_TMP/wrap/bash"
+
+	cat >"$TEST_TMP/.claude/tests/marker.bats" <<-'PROBE'
+		#!/usr/bin/env bats
+		@test "the body was interpreted by the requested shell" {
+			[ "${SHELL_SHIM_MARKER:-}" = "reached-the-body" ]
+		}
+	PROBE
+
+	run "$SCRIPT" --no-log --shell "$TEST_TMP/wrap/bash" "$TEST_TMP/.claude/tests/marker.bats"
+	[ "$status" -eq 0 ] || {
+		echo "--shell did not reach the test body: $output"
+		return 1
+	}
+
+	# Negative control: without --shell the marker must be absent, which is
+	# what proves the assertion above is load-bearing rather than passing
+	# because the variable leaked in from this process.
+	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/marker.bats"
+	[ "$status" -ne 0 ] || {
+		echo "the marker was set without --shell — the probe proves nothing"
+		return 1
+	}
+}

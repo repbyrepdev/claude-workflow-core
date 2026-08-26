@@ -12,9 +12,18 @@
 # assertions rather than as control flow, and print BOTH sides on failure —
 # a bats failure otherwise shows only the line that failed, not the value.
 #
-# Named `assert_*` because that is the bats convention AND what
-# pre-commit-hooks/bats-gate.sh counts, so replacing a fragile check with a
-# real one reads as the strengthening it is rather than as assertion removal.
+# Named `assert_*` because that is the bats convention AND because two
+# different pre-commit hooks read the name — worth spelling out, since the
+# similar names invite a wrong guess:
+#
+#   bats-gate.sh            counts ` [ `, ` [[ `, ` run ` and ` assert_` per
+#                           diff line to detect assertion WEAKENING. Naming
+#                           these helpers `assert_*` is what makes replacing
+#                           a fragile `[[ ]]` with one read as a
+#                           strengthening rather than as a removal.
+#   bats-assertion-gate.sh  checks whether each assertion CAN FAIL. It does
+#                           not count anything; it lists these helpers as an
+#                           accepted form in its guidance.
 #
 # Extracted from five suites carrying byte-identical copies (#2631 phase-1
 # review): a fix or rename to the assertion semantics had to be applied N

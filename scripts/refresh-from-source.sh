@@ -615,9 +615,18 @@ _refresh_one_consumer() {
 	# instead of by accident mid-review. Real (non-dry) runs only. The
 	# helper returns 1 on drift; map that to the caller's rc=4 contract.
 	if [ "$DRY_RUN" -eq 0 ] && [ "${#_replaced_sh[@]}" -gt 0 ]; then
-		if ! _mirror_test_drift_gate "$cpath" "$plugin_version" "${_replaced_sh[@]}"; then
-			return 4
-		fi
+		_dg_rc=0
+		_mirror_test_drift_gate "$cpath" "$plugin_version" "${_replaced_sh[@]}" || _dg_rc=$?
+		# Distinguish the two failures. rc 2 is "coverage could not be
+		# DETERMINED" (a candidate suite was unreadable) — a precondition
+		# error, and the caller's documented meaning for 2. Collapsing it into
+		# 4 would report test DRIFT, sending the operator to refresh tests
+		# that were never the problem.
+		case "$_dg_rc" in
+		0) ;;
+		2) return 2 ;;
+		*) return 4 ;;
+		esac
 	fi
 
 	# TODO (deferred to other unshipped subs):

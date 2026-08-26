@@ -481,7 +481,9 @@ for f in "${FILES[@]}"; do
 		out="${out}
 # no tests executed — refusing to report this file as passing"
 	fi
-	[ "$rc" -ne 0 ] && FAIL_FILES=$((FAIL_FILES + 1))
+	if [ "$rc" -ne 0 ]; then
+		FAIL_FILES=$((FAIL_FILES + 1))
+	fi
 	log_one "$f" "$rc" "$passed" "$failed"
 	if [ "$rc" -eq 0 ]; then
 		echo "✓ $f ($passed passed)"

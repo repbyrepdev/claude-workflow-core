@@ -320,3 +320,61 @@ _fixture() {
 		;;
 	esac
 }
+
+@test "BEHAVIOUR: audits: earns no coverage credit, covers: does" {
+	# The counterpart to the source-grep test above, and the stronger claim:
+	# not "the scan reads covers:" but "a path declared ONLY in audits: comes
+	# back UNCOVERED, while one in covers: comes back covered". Asserted by
+	# running the real --coverage against a fixture rather than by reading
+	# its implementation.
+	#
+	# --coverage scans .claude/scripts|hooks|skills|local-backups and
+	# scripts/, so the fixture puts both hooks under .claude/hooks/.
+	local w="$TEST_TMP/covrepo"
+	mkdir -p "$w/.claude/hooks" "$w/.claude/tests"
+	printf '#!/bin/bash\nexit 0\n' >"$w/.claude/hooks/audited.sh"
+	printf '#!/bin/bash\nexit 0\n' >"$w/.claude/hooks/covered.sh"
+	printf '#!/usr/bin/env bats\n# audits: .claude/hooks/*.sh\n@test "a" { true; }\n' \
+		>"$w/.claude/tests/auditor.bats"
+	printf '#!/usr/bin/env bats\n# covers: .claude/hooks/covered.sh\n@test "c" { true; }\n' \
+		>"$w/.claude/tests/coverer.bats"
+
+	run env TEST_REPO_ROOT="$w" "$REPO_ROOT/scripts/test.sh" --coverage
+	[ "$status" -eq 0 ] || {
+		echo "--coverage failed: $output"
+		return 1
+	}
+	# Two scripts in scope, exactly one of them credited — so the audited-only
+	# one is not. 50%, not 100%: that difference IS the invariant.
+	case "$output" in
+	*"Shell scripts in scope: 2"*) ;;
+	*)
+		echo "fixture wrong — expected 2 scripts in scope: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"Coverage: 50%"*) ;;
+	*)
+		echo "audits: appears to have earned coverage credit: $output"
+		return 1
+		;;
+	esac
+	# `--coverage` reports counts, not paths, so the count is the assertion.
+	# Pin the uncovered tally too: "Coverage: 50%" alone would also hold if
+	# the scan credited the audited hook and missed the covered one.
+	case "$output" in
+	*"Covered (referenced in some .bats): 1"*) ;;
+	*)
+		echo "expected exactly 1 covered: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"Uncovered:"*"1"*) ;;
+	*)
+		echo "expected exactly 1 uncovered: $output"
+		return 1
+		;;
+	esac
+}

@@ -381,3 +381,71 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 		;;
 	esac
 }
+
+@test "the bypass records an audit row — and refuses when it cannot" {
+	# The bypass is the one path where the gate exits 0 having scanned
+	# nothing, so the audit row is its entire justification. This PR made the
+	# write fail-closed; nothing exercised it, so a regression back to
+	# `|| true` would have passed the suite.
+	local work
+	work=$(_staged_repo bypass1 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
+	# Without the bypass the staged file is refused.
+	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 1 ]
+	# With it, the gate passes AND writes the row.
+	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='under test' ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 0 ] || {
+		echo "bypass did not pass: $output"
+		return 1
+	}
+	local log="$work/.claude/logs/pipeline-skip.jsonl"
+	[ -s "$log" ] || {
+		echo "bypass wrote no audit row"
+		return 1
+	}
+	run grep -c 'bats-assertion-gate-skip' "$log"
+	[ "$output" -ge 1 ] || return 1
+	run grep -c 'under test' "$log"
+	[ "$output" -ge 1 ] || {
+		echo "the reason was not recorded"
+		return 1
+	}
+}
+
+@test "a bypass whose audit row cannot be written is REFUSED" {
+	# "Skipping is available but never invisible" is only true if an
+	# unwritable log stops the skip. Make .claude/logs a FILE so mkdir -p
+	# fails, and the bypass must refuse rather than proceed unrecorded.
+	local work
+	work=$(_staged_repo bypass2 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
+	rm -rf "$work/.claude/logs"
+	printf 'not a directory\n' >"$work/.claude/logs"
+	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='cannot record' ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 2 ] || {
+		echo "expected refusal (2) when the audit row cannot be written; got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*"record the skip"* | *"pipeline-skip"*) ;;
+	*)
+		echo "expected the refusal to name the audit failure; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a reason containing quotes and newlines stays valid JSON" {
+	# The reason is interpolated into a JSON row. Unescaped, a quote or a
+	# newline produces a malformed line that breaks every later reader.
+	local work
+	work=$(_staged_repo bypass3 "$(printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n')") || return 1
+	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='he said \"stop\" \\ then
+a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 0 ] || return 1
+	# Every row must parse. `jq -e .` fails on malformed JSON.
+	run bash -c "cd '$work' && jq -e . .claude/logs/pipeline-skip.jsonl >/dev/null"
+	[ "$status" -eq 0 ] || {
+		echo "the audit row is not valid JSON: $output"
+		return 1
+	}
+}

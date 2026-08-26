@@ -97,7 +97,8 @@ subagents.
 
 A bats file that POLICY-AUDITS many files (a repo-wide meta-lint) must not
 claim `# covers:` on them — that hands out false behavioral-test credit in
-`test-touched` and the mirror-drift gate. Declare `# audits: <paths…>`
+`test.sh --coverage` and the mirror-drift gate (`test-touched.sh` only ROUTES;
+it grants no credit). Declare `# audits: <paths…>`
 instead. Both headers are per-file and space-separated, and all four consumers
 read only the FIRST line of each (`grep -m1`) — a second `covers:` line is
 ignored, not merged. `test.sh --coverage` used to read every line, so a path

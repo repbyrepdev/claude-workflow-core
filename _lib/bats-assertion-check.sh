@@ -106,7 +106,15 @@ bats_assertion_scan() {
 		# the verdict for the whole block. Helpers went unscanned until now,
 		# and the teardown of the suite covering THIS lib carried one.
 		# (No apostrophes here: the awk program is single-quoted.)
-		/^@test / || /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{/ {
+		# All four shapes bash accepts, not just `name(){`. `f () {` (space
+		# before the parens) and `function f {` (keyword, no parens) are
+		# equally valid and were silently unscanned — intest stayed 0, so a
+		# bare `[[ ]]` in such a body was neither reported nor flagged as an
+		# unterminated block. A detector that quietly skips a whole syntax is
+		# the same failure as one that reports clean on a file it cannot read.
+		/^@test / ||
+		/^[A-Za-z_][A-Za-z0-9_]*[ \t]*\([ \t]*\)[ \t]*\{/ ||
+		/^function[ \t]+[A-Za-z_][A-Za-z0-9_]*([ \t]*\([ \t]*\))?[ \t]*\{/ {
 			intest = 1
 			n = 0
 			opened = NR
@@ -259,6 +267,18 @@ bats_assertion_scan() {
 # for a bisect, for a single suite mid-edit, and as the real entry point that
 # prove-yourself evidence has to invoke.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	# Zero arguments is an ERROR, not a clean sweep. The loop body simply
+	# never runs, so a bare invocation — or a glob that expanded to nothing —
+	# would exit 0. This path is named above as the real entry point for
+	# prove-yourself evidence, so an evidence command whose path list
+	# silently collapsed would produce a pass: the same green-light-on-
+	# nothing that bats_assertion_scan rejects with rc 2 for an empty
+	# argument.
+	if [ "$#" -eq 0 ]; then
+		echo "usage: bats-assertion-check.sh <file.bats> [...]" >&2
+		echo "  (no paths given — refusing to report a clean sweep of nothing)" >&2
+		exit 2
+	fi
 	_rc=0
 	for _f in "$@"; do
 		bats_assertion_scan "$_f" || {
