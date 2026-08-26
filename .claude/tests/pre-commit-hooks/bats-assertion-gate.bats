@@ -516,15 +516,30 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# Symmetric case: the assertion tests output for the word `return`, with
 	# no guard at all. Blanking strings must not let the pattern text stand
 	# in for command position.
-	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"return 1"* ]]\n\ttrue\n}\n')"
-	[ "$output" -eq 1 ]
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"return 1"* ]]\n\ttrue\n}\n')"
+	# Exactly one finding, AND it names the right line. A count alone would
+	# also hold if the scanner blamed the wrong line; the line alone would not
+	# catch a spurious second finding.
+	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+	case "$output" in
+	3:*'"return 1"'*) ;;
+	*)
+		echo "expected line 3 (the bare assertion) to be named; got: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "a semicolon-separated terminator in a guard body still counts" {
 	# Blanking strings must not break the legitimate one-line body, where the
 	# terminator follows a `;` rather than starting the line.
-	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"; return 1\n\t}\n\ttrue\n}\n')"
-	[ "$output" -eq 0 ]
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"; return 1\n\t}\n\ttrue\n}\n')"
+	# Silence, not a zero count: a scanner that emitted a diagnostic while
+	# reporting nothing would still satisfy a count check.
+	[ -z "$output" ] || {
+		echo "a valid one-line guard body produced a diagnostic: $output"
+		return 1
+	}
 }
 
 @test "an ESCAPED quote does not re-expose a terminator word" {
