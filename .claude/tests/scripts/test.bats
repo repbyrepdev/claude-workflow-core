@@ -249,7 +249,27 @@ teardown() {
 	# reported 'bash 3.2' and executed under 5. The fixture below asserts the
 	# major version it actually sees, so it can only pass if --shell reached
 	# the test body.
-	[ -x /bin/bash ] || skip "no /bin/bash"
+	# Two bashes of DIFFERENT major versions, discovered by asking each
+	# candidate rather than assuming /bin/bash is 3.x — true on macOS, false
+	# on Linux runners, where /bin/bash is 5 and this test would have been
+	# comparing a shell against itself and passing vacuously.
+	local cand maj a="" a_maj="" b="" b_maj=""
+	for cand in /bin/bash /usr/bin/bash /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash 2>/dev/null)"; do
+		[ -n "$cand" ] && [ -x "$cand" ] || continue
+		maj=$("$cand" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null) || continue
+		[ -n "$maj" ] || continue
+		if [ -z "$a" ]; then
+			a=$cand
+			a_maj=$maj
+		elif [ "$maj" != "$a_maj" ]; then
+			b=$cand
+			b_maj=$maj
+			break
+		fi
+	done
+	[ -n "$a" ] || skip "no usable bash found"
+	[ -n "$b" ] || skip "only one bash major version available ($a_maj) — nothing to contrast"
+
 	mkdir -p "$TEST_TMP/.claude/tests"
 	cat >"$TEST_TMP/.claude/tests/probe.bats" <<-'PROBE'
 		#!/usr/bin/env bats
@@ -257,18 +277,18 @@ teardown() {
 			[ "${BASH_VERSINFO[0]}" = "$WANT_MAJOR" ]
 		}
 	PROBE
-	WANT_MAJOR=3 run "$SCRIPT" --no-log --shell /bin/bash "$TEST_TMP/.claude/tests/probe.bats"
+	# Positive: ask for A's major, run under A.
+	WANT_MAJOR="$a_maj" run "$SCRIPT" --no-log --shell "$a" "$TEST_TMP/.claude/tests/probe.bats"
 	[ "$status" -eq 0 ] || {
-		echo "--shell /bin/bash did not reach the test body: $output"
+		echo "--shell $a ($a_maj) did not reach the test body: $output"
 		return 1
 	}
-	# ...and the negative control: asking for 3 while running 5 must FAIL,
-	# which is what proves the assertion above is load-bearing.
-	local newer="/opt/homebrew/bin/bash"
-	[ -x "$newer" ] || skip "no second bash to compare against"
-	WANT_MAJOR=3 run "$SCRIPT" --no-log --shell "$newer" "$TEST_TMP/.claude/tests/probe.bats"
+	# Negative control: ask for A's major while running B. This must FAIL —
+	# it is what proves the assertion above is load-bearing rather than
+	# passing because the probe never ran.
+	WANT_MAJOR="$a_maj" run "$SCRIPT" --no-log --shell "$b" "$TEST_TMP/.claude/tests/probe.bats"
 	[ "$status" -ne 0 ] || {
-		echo "--shell $newer still reported bash 3 — the shim is not selecting"
+		echo "--shell $b ($b_maj) still reported major $a_maj — the shim is not selecting"
 		return 1
 	}
 }

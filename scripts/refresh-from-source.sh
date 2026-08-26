@@ -312,15 +312,21 @@ _mirror_test_drift_gate() {
 			# test.sh --coverage, bats-gate.sh. `grep -rl` matched ANY line,
 			# so a path on a second covers: line earned drift-gate credit
 			# here while counting nowhere else.
+			# find's status is captured in the PARENT: assigning grc inside a
+			# process substitution sets it in a subshell that dies with the
+			# construct, so a failed enumeration read as "no matches" and the
+			# drift gate silently verified nothing.
+			_bats_list=$(find "$tests_dir" -name '*.bats' -type f 2>/dev/null) || grc=$?
+			if [ "$grc" -gt 0 ]; then
+				echo "  [drift-gate] WARN: find failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+			fi
 			while IFS= read -r _b; do
 				[ -n "$_b" ] || continue
 				_hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$_b" 2>/dev/null) || continue
 				printf '%s\n' "$_hdr" |
 					grep -qE "(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" &&
 					printf '%s\n' "$_b"
-			done < <(find "$tests_dir" -name '*.bats' -type f 2>/dev/null || grc=$?)
-			[ "$grc" -gt 1 ] &&
-				echo "  [drift-gate] WARN: find failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+			done <<<"$_bats_list"
 		done | sort -u
 	)
 	[ "${#bats_to_run[@]}" -gt 0 ] || {

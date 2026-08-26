@@ -279,3 +279,40 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 		return 1
 	}
 }
+
+@test "|| with a fallback that SUCCEEDS is not a guard" {
+	# The subtle one. It looks like a guard and prints on failure, but the
+	# echo succeeds, so the OR-list returns 0 and — being non-last — its
+	# status is discarded anyway. Verified directly:
+	#   bash -c 'set -eET; trap "echo TRAP" ERR;
+	#            t(){ [[ a == b ]] || echo warn; echo REACHED; }; t'
+	#   -> warn / REACHED   (no TRAP, on 3.2 AND 5)
+	# Accepting any `||` let this through; the operator is not what matters,
+	# whether the right-hand side ENDS the block is.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || echo warn\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "|| { ... return 1; } across lines IS a guard" {
+	# The commonest guard shape in this repo. The terminator is inside the
+	# brace group, on a later physical line, so a line-at-a-time rule cannot
+	# see it — the detector defers the verdict and resolves it at the closing
+	# brace. Getting this wrong reported 82 false positives in one sweep.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "|| { ... } with NO terminator inside is still reported" {
+	# Same shape, but the block only prints. Nothing fails the test, so the
+	# deferred verdict must come back as a finding.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "just noise"\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "a nested brace group does not close the outer guard early" {
+	# Depth counting: an inner `{ }` inside the guard body must not be read
+	# as the outer group's close, which would resolve the verdict before the
+	# terminator is reached.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\tif true; then { echo a; }; fi\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}

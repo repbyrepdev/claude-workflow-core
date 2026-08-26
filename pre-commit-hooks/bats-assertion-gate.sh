@@ -26,7 +26,18 @@ set -euo pipefail
 #   bats-assertion-gate.sh          # staged .bats files (pre-commit)
 #   bats-assertion-gate.sh --all    # every .bats in .claude/tests
 #
-# Exit: 0 clean · 2 refused.
+# Env:
+#   BATS_ASSERTION_GATE_SKIP=1         bypass the gate for one invocation.
+#   BATS_ASSERTION_GATE_SKIP_REASON=…  the rationale, recorded with it.
+#
+# A bypass appends a row to .claude/logs/pipeline-skip.jsonl (kind
+# `bats-assertion-gate-skip`) carrying the reason, or "unstated" when none was
+# given — so skipping is available but never invisible.
+#
+# Exit: 0 clean · 2 refused, or the gate could not run (bad argument, not a
+# git repo, unreadable staged blob, git failure). There is deliberately no
+# distinct "violations" code: every refusal is a refusal, and every sibling
+# hook in this directory exits 2.
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "bats-assertion-gate: not in a git repo" >&2
@@ -45,7 +56,17 @@ if [ "${BATS_ASSERTION_GATE_SKIP:-0}" = "1" ]; then
 fi
 
 MODE="staged"
-[ "${1:-}" = "--all" ] && MODE="all"
+case "${1:-}" in
+"") ;;
+--all) MODE="all" ;;
+*)
+	# Refuse rather than silently ignore: an unrecognised argument in a
+	# pre-commit hook most likely means a caller expected behaviour this
+	# script does not have, and quietly running the default hides that.
+	echo "bats-assertion-gate: unknown argument '$1' (expected nothing, or --all)" >&2
+	exit 2
+	;;
+esac
 
 tmp=$(mktemp) || exit 2
 staged_list=$(mktemp) || exit 2

@@ -114,25 +114,69 @@ bats_assertion_scan() {
 			# Record every command; only bare `[[ ]]` ones are reportable,
 			# but non-assertions still occupy the "last command" slot.
 			#
-			# `&&` is accepted ONLY when its right-hand side is control flow
-			# (`return`, `exit`, `break`, `continue`, `skip`, `fail`). The
-			# distinction is intent, and it is visible:
+			# EITHER operator counts only when its right-hand side actually
+			# ENDS the block — return, exit, break, continue, skip, fail.
+			# What matters is not which operator, but whether anything
+			# non-zero survives to the block s verdict:
 			#
-			#   [[ $path == $glob ]] && return 0     control flow — correct
-			#   [[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ]   an ASSERTION — a no-op
+			#   [[ x ]] || return 1     guard      — the return supplies it
+			#   [[ x ]] || echo warn    NO-OP      — echo succeeds, list is 0
+			#   [[ x ]] && return 0     control flow, correct on every bash
+			#   [[ x ]] && [ y ]        NO-OP      — reads as "both must hold"
 			#
-			# The second shape reads as "both must hold" and enforces neither:
-			# the failing `[[ ]]` is a non-last AND-list member, so nothing
-			# fires on any bash. That exact line shipped here carrying a
-			# comment saying it would "fail LOUD".
-			g = guard_pos(line)
-			if (line ~ /^\[\[ / && index(g, "||") == 0 &&
-				g !~ /^[ \t]*&&[ \t]*(return|exit|break|continue|skip|fail)([ \t;)]|$)/) {
-				ln[n] = NR
-				tx[n] = line
-			} else {
+			# The `||`-with-a-printing-fallback shape is the subtle one: it
+			# looks like a guard, prints on failure, and enforces nothing,
+			# because a non-last AND/OR list contributes no status.
+			#
+			# The brace-group form spans lines and is the commonest guard in
+			# this repo, so it gets a bounded lookahead rather than a guess:
+			#
+			#   [[ x ]] || {          <- pending: verdict deferred
+			#           echo "why"
+			#           return 1      <- terminator found => it IS a guard
+			#   }                     <- none found => report it
+			# Resolve an open brace-group FIRST: while one is pending, these
+			# lines are its body, not new assertions. A terminator anywhere
+			# inside makes the deferred assertion a real guard. Depth-counted
+			# so a nested group cannot close the outer one early.
+			if (pending > 0) {
+				if (line ~ /(^|[ \t;])(return|exit|break|continue|skip|fail|false)([ \t;)]|$)/)
+					pending_ok = 1
+				d = line
+				pending_depth += gsub(/\{/, "", d)
+				d = line
+				pending_depth -= gsub(/\}/, "", d)
+				if (pending_depth <= 0) {
+					if (!pending_ok) {
+						ln[pending] = pending_ln
+						tx[pending] = pending_tx
+					}
+					pending = 0
+					pending_ok = 0
+				}
 				ln[n] = 0
 				tx[n] = ""
+				next
+			}
+			g = guard_pos(line)
+			if (line !~ /^\[\[ /) {
+				ln[n] = 0
+				tx[n] = ""
+			} else if (g ~ /(\|\||&&)[ \t]*(return|exit|break|continue|skip|fail)([ \t;)]|$)/) {
+				ln[n] = 0
+				tx[n] = ""
+			} else if (g ~ /(\|\||&&)[ \t]*\{[ \t]*$/) {
+				# Defer: the brace-group body decides, above.
+				pending = n
+				pending_ln = NR
+				pending_tx = line
+				pending_depth = 1
+				pending_ok = 0
+				ln[n] = 0
+				tx[n] = ""
+			} else {
+				ln[n] = NR
+				tx[n] = line
 			}
 		}
 		END {
