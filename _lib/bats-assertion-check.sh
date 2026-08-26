@@ -29,6 +29,21 @@ set -u
 # DOES NOT WORK:
 #   [[ $output == *x* ]]                      bare, not the last command
 #
+# DELIBERATE BOUNDARY — the last command of a block is exempt, and that is
+# a compromise, not a principle. Verified in real bats on both shells: a
+# failing `[[ ]]` in final position DOES fail the test, because bats takes
+# the block's last exit status. But by the rule three paragraphs up, an
+# assertion that only enforces because of where it sits is not an assertion:
+# add one line after it and it silently becomes a no-op.
+#
+# Closing that would mean appending `|| return 1` to 927 last-position
+# assertions across this suite (measured, not estimated) — and would let
+# this scanner drop its command-position bookkeeping entirely, since the
+# rule would collapse to "a bare `[[ ]]` is never acceptable". That is the
+# right end state and it is a separate, purely mechanical change; doing it
+# inside the PR that established the rule would bury the rule under the
+# migration. Recorded here so the number does not have to be rediscovered.
+#
 # KNOWN LIMITATION, stated rather than papered over: this reads PHYSICAL
 # lines. A multi-line quoted string inside a test — a fixture that embeds
 # bats source as data — puts literal `[[ ... ]]` at the start of real lines,
