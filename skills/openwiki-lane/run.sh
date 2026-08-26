@@ -133,6 +133,18 @@ _mcp_state() {
 	esac
 	# Distinguish the published-CLI wiring from the obsolete source-build hack
 	# (operations.md "Install"): the hack points at ~/.openwiki-main.
+	# The entry is an object, but .args may still be the wrong shape, and
+	# swallowing that into args="" dropped through to the *_) "wired" arm —
+	# the same fail-open one level down. Assert the TYPE rather than relying
+	# on jq to error: `join` rejects a string but happily joins an OBJECT's
+	# values, so an rc check alone lets `"args": {"a":1}` read as wired.
+	# `.args // []` keeps a legitimately absent .args an array.
+	local atype
+	atype=$(jq -r '.mcpServers.openwiki | (.args // []) | type' "$cfg" 2>/dev/null) || atype=""
+	if [ "$atype" != "array" ]; then
+		echo "unknown (~/.claude.json .mcpServers.openwiki .args is ${atype:-unreadable}, not an array)"
+		return
+	fi
 	local args
 	args=$(jq -r '.mcpServers.openwiki | (.args // []) | join(" ")' "$cfg" 2>/dev/null) || args=""
 	case "$args" in

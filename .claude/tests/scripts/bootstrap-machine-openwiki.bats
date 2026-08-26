@@ -181,6 +181,36 @@ _dry_run() {
 	[[ $output != *"MCP server already wired"* ]]
 }
 
+@test "a MALFORMED MCP entry is re-wired, not accepted as wired (p2r3)" {
+	# The inline condition here reported malformed entries as WIRED: `jq -e
+	# .mcpServers.openwiki` is truthy for a string, `"str" | (.args // [])`
+	# then errors to EMPTY stdout, and `! grep -q openwiki-main` reads empty
+	# as "not the hack". So a hand-broken config took the already-wired path
+	# and the repair this step exists to perform never ran.
+	_stub_openwiki
+	for bad in '"just-a-string"' '42' 'true' '["a"]' \
+		'{"command":"openwiki","args":"mcp"}' \
+		'{"command":"openwiki","args":{"a":1}}'; do
+		_write_claude_json "$bad"
+		_dry_run
+		[ "$status" -eq 0 ]
+		[[ $output == *"wiring the openwiki MCP server"* ]] || {
+			echo "entry $bad was NOT re-wired: $output"
+			return 1
+		}
+		[[ $output != *"MCP server already wired"* ]] || {
+			echo "entry $bad reported already wired: $output"
+			return 1
+		}
+	done
+	# Invalid JSON entirely must also route to the repair, not to "wired".
+	printf 'NOT JSON{{{' >"$TEST_TMP/home/.claude.json"
+	_dry_run
+	[ "$status" -eq 0 ]
+	[[ $output == *"wiring the openwiki MCP server"* ]]
+	[[ $output != *"MCP server already wired"* ]]
+}
+
 @test "OPENWIKI_PIN overrides the default pin (toolchain stays controllable)" {
 	_write_claude_json ""
 	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" OPENWIKI_PIN=9.9.9 \

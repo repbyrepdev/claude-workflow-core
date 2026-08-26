@@ -188,10 +188,36 @@ fi
 # installed above, so a bare `command -v openwiki` would silently hide a step
 # the real run WOULD perform — a preview that omits work is the same
 # silent-skip class this repo refuses elsewhere.
+#
+# (#2629 p2r3) Returns 0 ONLY for a valid published-CLI entry. Everything else
+# — absent, unreadable, invalid JSON, jq missing, a non-object entry, a
+# malformed .args — returns 1, so the installer runs and repairs it.
+#
+# The inline condition this replaces reported malformed entries as WIRED:
+# `jq -e .mcpServers.openwiki` is truthy for a string, `"str" | (.args // [])`
+# then errors to EMPTY stdout, and `! grep -q openwiki-main` reads empty as
+# "not the hack" — so a hand-broken config took the already-wired path and the
+# repair never ran. Same shape as the skill probe's p2r1 fix, which is how it
+# was found: two implementations of one question disagreed.
+_ow_mcp_wired() {
+	local cfg="$HOME/.claude.json" t args
+	[ -r "$cfg" ] || return 1
+	command -v jq >/dev/null 2>&1 || return 1
+	t=$(jq -r '.mcpServers.openwiki | type' "$cfg" 2>/dev/null) || return 1
+	[ "$t" = "object" ] || return 1
+	# Assert .args is an ARRAY rather than trusting jq to error: `join`
+	# rejects a string but happily joins an OBJECT's values, so an rc check
+	# alone would let `"args": {"a":1}` pass as a healthy entry.
+	t=$(jq -r '.mcpServers.openwiki | (.args // []) | type' "$cfg" 2>/dev/null) || return 1
+	[ "$t" = "array" ] || return 1
+	args=$(jq -r '.mcpServers.openwiki | (.args // []) | join(" ")' "$cfg" 2>/dev/null) || return 1
+	case "$args" in
+	*openwiki-main*) return 1 ;; # the obsolete source-build hack
+	esac
+	return 0
+}
 if command -v openwiki >/dev/null 2>&1 || [ "$DRY_RUN" = "1" ]; then
-	if [ -r "$HOME/.claude.json" ] &&
-		jq -e '.mcpServers.openwiki' "$HOME/.claude.json" >/dev/null 2>&1 &&
-		! jq -r '.mcpServers.openwiki | (.args // []) | join(" ")' "$HOME/.claude.json" 2>/dev/null | grep -q "openwiki-main"; then
+	if _ow_mcp_wired; then
 		_log "  ✓ openwiki MCP server already wired"
 	else
 		_log "wiring the openwiki MCP server (integrations install claude)..."

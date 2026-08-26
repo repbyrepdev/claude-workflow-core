@@ -260,10 +260,39 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	# `false` is falsy to `jq -e` but is still a malformed entry, not absence.
 	_write_claude_json 'false'
 	_run_skill status
+	[ "$status" -eq 0 ]
 	[[ $output == *"MCP:       unknown"* ]]
 	# ...and a real object still reads as wired, so this is not over-broad.
 	_write_claude_json '{"command":"openwiki","args":["mcp"]}'
 	_run_skill status
+	[ "$status" -eq 0 ]
+	[[ $output == *"MCP:       wired"* ]]
+}
+
+@test "MCP probe: an object with malformed .args is unknown, not wired (p2r3)" {
+	# One level below the type check: the ENTRY is an object but .args is a
+	# string, so `(.args // []) | join(" ")` errors — and swallowing that into
+	# args="" dropped straight through to the *_) "wired" arm. Same fail-open,
+	# one nesting level down.
+	cd "$REPO" || return 1
+	for bad in '{"command":"openwiki","args":"mcp"}' '{"command":"openwiki","args":42}' '{"command":"openwiki","args":{"a":1}}'; do
+		_write_claude_json "$bad"
+		_run_skill status
+		[ "$status" -eq 0 ]
+		[[ $output == *".args is"*"not an array"* ]] || {
+			echo "entry $bad did not report a malformed .args: $output"
+			return 1
+		}
+		[[ $output != *"MCP:       wired"* ]] || {
+			echo "entry $bad reported WIRED: $output"
+			return 1
+		}
+	done
+	# An entry with NO .args at all is legitimate (the `// []` default), so
+	# this must not have become an over-broad refusal.
+	_write_claude_json '{"command":"openwiki"}'
+	_run_skill status
+	[ "$status" -eq 0 ]
 	[[ $output == *"MCP:       wired"* ]]
 }
 
