@@ -136,7 +136,8 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 	local work
 	work=$(_staged_repo repo1 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
 	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
-	[ "$status" -eq 2 ]
+	# 1, not 2: the gate RAN and found something. 2 means it could not run.
+	[ "$status" -eq 1 ]
 	case "$output" in
 	*"cannot fail"*) ;;
 	*)
@@ -171,7 +172,7 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 	printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n' \
 		>"$work/.claude/tests/new.bats"
 	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
-	[ "$status" -eq 2 ] || {
+	[ "$status" -eq 1 ] || {
 		echo "gate read the worktree, not the index — staged content was not gated"
 		echo "output: $output"
 		return 1

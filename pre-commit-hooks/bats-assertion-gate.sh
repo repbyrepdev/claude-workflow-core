@@ -34,10 +34,16 @@ set -euo pipefail
 # `bats-assertion-gate-skip`) carrying the reason, or "unstated" when none was
 # given — so skipping is available but never invisible.
 #
-# Exit: 0 clean · 2 refused, or the gate could not run (bad argument, not a
-# git repo, unreadable staged blob, git failure). There is deliberately no
-# distinct "violations" code: every refusal is a refusal, and every sibling
-# hook in this directory exits 2.
+# Exit: 0 clean · 1 assertions found · 2 the gate could not run (bad
+# argument, not a git repo, unreadable staged blob, git failure).
+#
+# The two are distinct because the remedies are: 1 means fix the assertions,
+# 2 means the check did not happen and nothing was verified. This shipped
+# collapsing both into 2, on the stated grounds that "every sibling hook in
+# this directory exits 2" — which was asserted rather than checked, and is
+# false: bats-gate.sh, check-ssot-drift.sh, compose-coderabbit-regen.sh,
+# consumers-schema-check.sh, edit-corruption-guard.sh and others all use
+# 0/1/2 exactly this way.
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "bats-assertion-gate: not in a git repo" >&2
@@ -105,10 +111,13 @@ _scan_one() { # $1 = path to scan, $2 = display path
 	0) return 0 ;;
 	1) ;;
 	*)
+		# Exit 2 directly, not via the violations counter: "could not judge"
+		# is the check failing to run, whose remedy is different from "fix
+		# these assertions". Collapsing it into 1 would tell the caller to go
+		# looking for assertions that were never found.
 		echo "" >&2
 		echo "bats-assertion-gate: could not judge $2 — refusing rather than passing it" >&2
-		violations=$((violations + 1))
-		return 0
+		exit 2
 		;;
 	esac
 	echo "" >&2
@@ -176,7 +185,9 @@ if [ "$violations" -gt 0 ]; then
 		  See _lib/bats-assertion-check.sh for the one-line demonstration.
 		  Bypass (audit-logged): BATS_ASSERTION_GATE_SKIP=1 git commit ...
 	EOF
-	exit 2
+	# 1, not 2: the check RAN and found something. 2 is reserved for "the
+	# check could not run", which needs a different remedy.
+	exit 1
 fi
 
 if [ "$MODE" = "all" ]; then

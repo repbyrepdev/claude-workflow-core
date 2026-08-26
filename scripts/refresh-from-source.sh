@@ -322,7 +322,18 @@ _mirror_test_drift_gate() {
 			fi
 			while IFS= read -r _b; do
 				[ -n "$_b" ] || continue
-				_hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$_b" 2>/dev/null) || continue
+				# grep rc 1 is "no covers: header", which is normal. rc>1 is
+				# an unreadable file — the header may well name this hook, so
+				# treating it as "no coverage" would quietly drop a suite from
+				# the verification set and let the gate report nothing to do.
+				_hgrc=0
+				_hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$_b" 2>/dev/null) || _hgrc=$?
+				if [ "$_hgrc" -gt 1 ]; then
+					echo "  [drift-gate] WARN: cannot read $_b (grep rc=$_hgrc) — coverage for $relpath is UNVERIFIED" >&2
+					grc=2
+					continue
+				fi
+				[ -n "$_hdr" ] || continue
 				printf '%s\n' "$_hdr" |
 					grep -qE "(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" &&
 					printf '%s\n' "$_b"
