@@ -38,12 +38,17 @@ supported way to run OpenWiki on Claude (see `references/operations.md`).
 
 ## What `run.sh preflight` actually refuses
 
-Two things, both mechanical:
+Three things, all mechanical:
 
 - **A dirty tree.** `openwiki --init` rewrites `AGENTS.md` and `CLAUDE.md`
   inside `<!-- OPENWIKI:START/END -->` blocks in the current git root, so an
   init against uncommitted work bundles unrelated files into your next
   commit.
+- **An UNKNOWN tree.** `git status` failed — a corrupt index, a broken
+  toolchain — so the tree state could not be determined. That refuses too, on
+  its own message ("cannot determine tree state"), because a git error read
+  as "clean" is the fail-open this probe exists to prevent. Expect rc 1 from
+  a corrupt index, not a pass.
 - **A missing CLI.** `scripts/bootstrap-machine.sh` installs the pinned CLI
   and runs `openwiki integrations install claude`.
 

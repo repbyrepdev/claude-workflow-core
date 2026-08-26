@@ -317,4 +317,11 @@ teardown() {
 	[ ! -f "$target/.github/openwiki-toolchain/package-lock.json" ]
 	# "complete" must never print on a failed run.
 	[[ $output != *"bootstrap-repo complete"* ]]
+	# (ci-r1) The deferred handlers REPORT and a single exit follows them, so
+	# a second overlapping failure is not suppressed by the first. Nothing
+	# here forces a second one, but the lockfile handler is now the LAST of
+	# the three, and it used to be unreachable whenever an earlier handler
+	# fired — so reaching its text at all is the assertion that the exits
+	# were aggregated rather than taken in place.
+	[[ $output == *"OpenWiki lockfile MISSING"* ]]
 }

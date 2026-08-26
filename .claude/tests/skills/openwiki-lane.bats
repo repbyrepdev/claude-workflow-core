@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: skills/openwiki-lane/run.sh
+# covers: skills/openwiki-lane/run.sh skills/openwiki-lane/SKILL.md _lib/openwiki-mcp-state.sh
 #
 # (#2629) The wrapper exists to make two expensive lessons MECHANICAL rather
 # than advisory: `openwiki --init` rewrites AGENTS.md/CLAUDE.md in the git
@@ -40,8 +40,19 @@ setup() {
 	# _run_skill pins PATH to the fixture bin + /usr/bin:/bin, so anything the
 	# wrapper needs that lives elsewhere (jq, on a Homebrew machine) has to be
 	# linked in explicitly.
+	#
+	# FAIL LOUD when one is absent. `cmd -v && ln -sf` alone links nothing and
+	# continues, so the wrapper takes a DIFFERENT branch — a missing jq turns
+	# every MCP assertion into "unknown (jq missing)" and the failure names an
+	# output mismatch instead of the real cause. Both tools are load-bearing:
+	# git backs the fixture repo and every tree assertion, jq backs
+	# _write_claude_json and the whole MCP probe.
 	for t in jq git; do
-		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$TEST_TMP/bin/$t"
+		p=$(command -v "$t" 2>/dev/null) || {
+			echo "FATAL: required fixture tool '$t' not on PATH — this suite cannot test what it claims to" >&2
+			return 1
+		}
+		ln -sf "$p" "$TEST_TMP/bin/$t"
 	done
 	# Fail LOUD rather than silently testing the wrong branch: the CLI-absent
 	# cases depend on openwiki being unreachable except via _stub_cli, and
@@ -319,6 +330,97 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	# exists for the next probe someone adds to _preflight — the point of the
 	# finding — and these assertions pin that today's paths all stay inside
 	# the documented vocabulary.
+}
+
+@test "the shared probe is executable as itself and covers every state (ci-r1)" {
+	# _lib/openwiki-mcp-state.sh is the SSOT both callers parse through. Its
+	# direct-execution mode is the only way to exercise the parser without a
+	# caller's policy layered on top — and it is what makes the probe citable
+	# as prove-yourself evidence, which needs a cycle-critical file in COMMAND
+	# position rather than only inside a fixture.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	[ -x "$lib" ]
+	local cfg="$TEST_TMP/probe.json"
+
+	run "$lib" "$TEST_TMP/definitely-not-here.json"
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-config" ]
+
+	printf 'NOT JSON{{{' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
+	[ "$output" = "bad-json" ]
+
+	# Every shape → its own token. The parser must never answer "wired" for
+	# anything it did not fully validate.
+	printf '%s' '{"mcpServers":{}}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "not-wired" ]
+
+	printf '%s' '{"mcpServers":"oops"}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "unreadable" ]
+
+	printf '%s' '{"mcpServers":{"openwiki":"str"}}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "bad-entry:string" ]
+
+	printf '%s' '{"mcpServers":{"openwiki":{"args":{"a":1}}}}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "bad-args:object" ]
+
+	printf '%s' '{"mcpServers":{"openwiki":{"command":"node","args":["/x/.openwiki-main/dist/cli/cli.js","mcp"]}}}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "source-hack" ]
+
+	printf '%s' '{"mcpServers":{"openwiki":{"command":"openwiki","args":["mcp"]}}}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "wired" ]
+
+	# An entry with no .args at all is legitimate — `.args // []` defaults it.
+	printf '%s' '{"mcpServers":{"openwiki":{"command":"openwiki"}}}' >"$cfg"
+	run "$lib" "$cfg"
+	[ "$output" = "wired" ]
+}
+
+@test "an rc-0 git WARNING does not turn a clean tree DIRTY (ci-r1)" {
+	# `git status --porcelain 2>&1` folded stderr into the porcelain output,
+	# and the verdict was `[ -n "$out" ]`. git writes advice, CRLF notices and
+	# unreadable-config warnings to stderr and still exits 0 — so a CLEAN tree
+	# came back DIRTY, preflight said "commit or stash", `git status` showed
+	# nothing to commit, and the warning itself was never printed.
+	cd "$REPO" || return 1
+	_stub_cli "openwiki/0.4.0"
+	_write_claude_json ""
+	rm -f "$TEST_TMP/bin/git"
+	cat >"$TEST_TMP/bin/git" <<STUB
+#!/usr/bin/env bash
+# Clean porcelain on stdout, a warning on stderr, exit 0 — what a real git
+# does with e.g. an unreadable global config.
+if [ "\$1" = "-C" ]; then shift 2; fi
+if [ "\$1" = "status" ]; then
+  echo "warning: unable to access '/nonexistent/.gitconfig': Permission denied" >&2
+  exit 0
+fi
+if [ "\$1" = "rev-parse" ]; then echo "$REPO"; exit 0; fi
+exit 0
+STUB
+	chmod +x "$TEST_TMP/bin/git"
+	_run_skill status
+	[ "$status" -eq 0 ]
+	[[ $output == *"Tree:      clean"* ]] || {
+		echo "an rc-0 warning was read as tree state: $output"
+		return 1
+	}
+	# ...and the warning is still SHOWN. Fixing the verdict by discarding the
+	# message would trade one silent failure for another.
+	[[ $output == *"Tree warn:"* ]]
+	[[ $output == *"Permission denied"* ]]
+
+	# preflight agrees: nothing to refuse.
+	_run_skill preflight
+	[ "$status" -eq 0 ]
+	[[ $output != *"REFUSING"* ]]
 }
 
 @test "a BROKEN git is not reported as 'wrong directory' (p2r1)" {

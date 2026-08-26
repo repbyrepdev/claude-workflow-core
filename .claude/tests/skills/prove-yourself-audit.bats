@@ -369,10 +369,14 @@ _record_rejection_reason() {
 	cd "$TEST_TMP" || return 1
 	# Standalone, mid-sentence, and sentence-initial — every position a
 	# boundary check has to get right.
+	# The last two END at the field boundary: with text after every case, a
+	# regression that rejected a match on an EMPTY `$after` would go unseen.
 	for r in "od shows the bytes are fine" \
 		"I checked and od shows nothing" \
 		"memory says this was already settled" \
-		"i remember rejecting this one before"; do
+		"i remember rejecting this one before" \
+		"od shows" \
+		"I already checked and od shows"; do
 		_record_rejection_reason "$r"
 		# rc 2 is this skill's validation-refusal status (not 1).
 		[ "$status" -eq 2 ] || {

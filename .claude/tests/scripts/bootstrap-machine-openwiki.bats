@@ -34,7 +34,21 @@ setup() {
 	# Real tools the script needs, minus anything that would make the
 	# openwiki branch nondeterministic.
 	# Only the tools that do NOT live in /usr/bin:/bin need linking in.
-	for t in jq brew npm gh; do
+	#
+	# jq and npm are LOAD-BEARING, so their absence fails loud: jq backs
+	# _write_claude_json and every MCP-state assertion, npm backs every
+	# install/reinstall assertion (without it the script takes its
+	# npm-not-available branch and the failure names an output mismatch
+	# rather than the missing tool). brew and gh stay soft — the steps that
+	# use them are stubbed or irrelevant here.
+	for t in jq npm; do
+		p=$(command -v "$t" 2>/dev/null) || {
+			echo "FATAL: required fixture tool '$t' not on PATH — this suite cannot test what it claims to" >&2
+			return 1
+		}
+		ln -sf "$p" "$TEST_TMP/bin/$t"
+	done
+	for t in brew gh; do
 		p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$TEST_TMP/bin/$t"
 	done
 	# Fail LOUD rather than silently testing the wrong branch: this suite's
@@ -209,6 +223,49 @@ _dry_run() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"wiring the openwiki MCP server"* ]]
 	[[ $output != *"MCP server already wired"* ]]
+}
+
+@test "--help exits 0 despite the file's comment count (ci-r1)" {
+	# `grep '^#' "$0" | head -28` makes head close the pipe, grep take
+	# SIGPIPE, and `set -o pipefail` + `set -e` abort the help path BEFORE its
+	# own `exit 0` — so --help returned non-zero once this file grew past 28
+	# comment lines, which the OpenWiki block did. Nothing covered --help.
+	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" bash "$SCRIPT" --help
+	[ "$status" -eq 0 ]
+	[[ $output == *"bootstrap-machine"* ]]
+	# Still prints a usable help body, not one truncated line.
+	[ "$(printf '%s\n' "$output" | wc -l)" -ge 10 ]
+}
+
+@test "a FAILED openwiki install degrades, it does not abort the bootstrap (ci-r1)" {
+	# `_run` under `set -e` made every OpenWiki command load-bearing for the
+	# WHOLE run: a registry blip during the install would abort before the
+	# plugin cache, the Keychain report and the summary. The section already
+	# warns-and-continues when npm is MISSING; a FAILED install has to degrade
+	# the same way.
+	# Stub the LATER real-run steps (gh extension install, brew, security,
+	# git) so the only failure under test is the openwiki one — an
+	# unauthenticated `gh` would otherwise abort the run after this section
+	# and the assertion would pass for the wrong reason.
+	rm -f "$TEST_TMP/bin/brew" "$TEST_TMP/bin/gh" "$TEST_TMP/bin/security" "$TEST_TMP/bin/git"
+	for t in brew gh security git; do
+		printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/bin/$t"
+		chmod +x "$TEST_TMP/bin/$t"
+	done
+	rm -f "$TEST_TMP/bin/npm"
+	printf '#!/usr/bin/env bash\necho "npm ERR! network timeout" >&2\nexit 1\n' >"$TEST_TMP/bin/npm"
+	chmod +x "$TEST_TMP/bin/npm"
+	rm -f "$TEST_TMP/bin/openwiki"
+	_write_claude_json ""
+	# A REAL run (not --dry-run): _run only executes for real.
+	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" HOME="$TEST_TMP/home" bash "$SCRIPT" --tag v0.0.0
+	[ "$status" -eq 0 ]
+	[[ $output == *"FAILED"* ]]
+	# The run REACHES its end rather than dying at the failed install...
+	[[ $output == *"bootstrap-machine complete"* ]]
+	# ...and the summary says the wiring was skipped, so automation cannot
+	# read an openwiki-less bootstrap as clean.
+	[[ $output == *"MCP wiring was SKIPPED"* ]]
 }
 
 @test "openwiki is registered in the machine-verification SSOT (#2632)" {

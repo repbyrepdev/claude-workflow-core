@@ -70,6 +70,17 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	exit 2
 }
 
+# The MCP state PARSER is shared with scripts/bootstrap-machine.sh — see the
+# header of the lib for why. This skill ships inside the plugin, so the path
+# is fixed relative to this file.
+_OW_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../_lib/openwiki-mcp-state.sh"
+if [ ! -r "$_OW_LIB" ]; then
+	echo "openwiki-lane: missing shared probe $_OW_LIB — the plugin checkout is incomplete" >&2
+	exit 2
+fi
+# shellcheck source=../../_lib/openwiki-mcp-state.sh
+. "$_OW_LIB"
+
 # ---- state probes (each prints ONE line; none exit non-zero on absence) ----
 
 _cli_version() {
@@ -94,62 +105,30 @@ _cli_version() {
 # The MCP entry lives in the user's ~/.claude.json. Absence is a STATE; a
 # corrupt file or a missing jq are ERRORS, and reporting those as "not wired"
 # would send the operator to re-run bootstrap-machine, which cannot fix them.
+#
+# The PARSE is shared with scripts/bootstrap-machine.sh via
+# _lib/openwiki-mcp-state.sh (CI r1: one question answered by two copies grew
+# the same fail-open bug in both). Only the POLICY is local — this caller
+# REPORTS, so every state gets its own sentence, where the machine bootstrap
+# collapses everything repairable into "run the installer".
 _mcp_state() {
-	local cfg="$HOME/.claude.json"
-	[ -r "$cfg" ] || {
-		echo "no ~/.claude.json"
-		return
-	}
-	command -v jq >/dev/null 2>&1 || {
-		echo "unknown (jq missing — cannot read ~/.claude.json)"
-		return
-	}
-	if ! jq -e . "$cfg" >/dev/null 2>&1; then
-		echo "unknown (~/.claude.json is not valid JSON)"
-		return
-	fi
-	# Branch on the entry's TYPE, not merely its truthiness. `jq -e .x` is true
-	# for a string or a number too, and `"str" | (.args // [])` then errors —
-	# which the `|| args=""` below turns into the empty string, i.e. a
-	# malformed entry reported as "wired". Read the type once and let every
-	# shape land somewhere honest.
-	local t rc=0
-	t=$(jq -r '.mcpServers.openwiki | type' "$cfg" 2>/dev/null) || rc=$?
-	if [ "$rc" -ne 0 ]; then
-		# .mcpServers itself is not an object, so the lookup could not run.
-		echo "unknown (~/.claude.json: cannot read .mcpServers.openwiki)"
-		return
-	fi
-	case "$t" in
-	null)
-		echo "not wired"
-		return
-		;;
-	object) ;;
-	*)
-		echo "unknown (~/.claude.json .mcpServers.openwiki is a $t, not an object)"
-		return
-		;;
-	esac
-	# Distinguish the published-CLI wiring from the obsolete source-build hack
-	# (operations.md "Install"): the hack points at ~/.openwiki-main.
-	# The entry is an object, but .args may still be the wrong shape, and
-	# swallowing that into args="" dropped through to the *_) "wired" arm —
-	# the same fail-open one level down. Assert the TYPE rather than relying
-	# on jq to error: `join` rejects a string but happily joins an OBJECT's
-	# values, so an rc check alone lets `"args": {"a":1}` read as wired.
-	# `.args // []` keeps a legitimately absent .args an array.
-	local atype
-	atype=$(jq -r '.mcpServers.openwiki | (.args // []) | type' "$cfg" 2>/dev/null) || atype=""
-	if [ "$atype" != "array" ]; then
-		echo "unknown (~/.claude.json .mcpServers.openwiki .args is ${atype:-unreadable}, not an array)"
-		return
-	fi
-	local args
-	args=$(jq -r '.mcpServers.openwiki | (.args // []) | join(" ")' "$cfg" 2>/dev/null) || args=""
-	case "$args" in
-	*openwiki-main*) echo "wired (SOURCE-BUILD HACK — supersede with the published CLI)" ;;
-	*) echo "wired" ;;
+	local st
+	st=$(openwiki_mcp_state "$HOME/.claude.json")
+	case "$st" in
+	no-config) echo "no ~/.claude.json" ;;
+	no-jq) echo "unknown (jq missing — cannot read ~/.claude.json)" ;;
+	bad-json) echo "unknown (~/.claude.json is not valid JSON)" ;;
+	unreadable) echo "unknown (~/.claude.json: cannot read .mcpServers.openwiki)" ;;
+	not-wired) echo "not wired" ;;
+	bad-entry:*) echo "unknown (~/.claude.json .mcpServers.openwiki is a ${st#bad-entry:}, not an object)" ;;
+	bad-args:*) echo "unknown (~/.claude.json .mcpServers.openwiki .args is ${st#bad-args:}, not an array)" ;;
+	# The obsolete source build (operations.md "Install") points at
+	# ~/.openwiki-main; it IS wired, just at the wrong thing.
+	source-hack) echo "wired (SOURCE-BUILD HACK — supersede with the published CLI)" ;;
+	wired) echo "wired" ;;
+	# An unrecognised token means parser/consumer drift, not a healthy
+	# server. Say that rather than defaulting into either answer.
+	*) echo "unknown (unrecognised probe state '$st' — parser/consumer drift)" ;;
 	esac
 }
 
@@ -170,13 +149,29 @@ _repo_state() {
 # index exits 128 with EMPTY stdout, which reads as "clean" over uncommitted
 # work — in the wrapper's own primary refusal.
 _TREE_ERR=""
+_TREE_WARN=""
 _tree_state() {
-	local out rc=0
-	out=$(git -C "$REPO_ROOT" status --porcelain 2>&1) || rc=$?
+	local out rc=0 errf
+	# CI r1: folding stderr into $out made an rc-0 WARNING read as porcelain
+	# output, so a clean tree came back DIRTY and the operator was told to
+	# "commit or stash" while `git status` showed nothing to commit — with the
+	# warning itself never printed. git writes advice, CRLF notices and
+	# unreadable-config warnings to stderr and still exits 0. Capture the two
+	# streams separately: stdout decides dirty/clean, stderr is reported.
+	errf=$(mktemp -t openwiki-lane-tree.XXXXXX) || {
+		_TREE_ERR="could not create a temp file for git's stderr"
+		return 2
+	}
+	out=$(git -C "$REPO_ROOT" status --porcelain 2>"$errf") || rc=$?
 	if [ "$rc" -ne 0 ]; then
-		_TREE_ERR="$out"
+		_TREE_ERR=$(cat "$errf" 2>/dev/null)
+		rm -f "$errf"
 		return 2
 	fi
+	# rc 0 with stderr text is a WARNING, not a failure — surfaced alongside
+	# the verdict rather than folded into it.
+	_TREE_WARN=$(cat "$errf" 2>/dev/null)
+	rm -f "$errf"
 	[ -n "$out" ]
 }
 
@@ -192,6 +187,11 @@ _print_status() {
 	1) echo "  Tree:      clean" ;;
 	*) echo "  Tree:      UNKNOWN (git failed: ${_TREE_ERR:-no stderr})" ;;
 	esac
+	# A warning that did not change the verdict still has to be visible —
+	# silently discarding it is how "clean tree, reported dirty" became
+	# unexplainable in the first place.
+	[ -n "$_TREE_WARN" ] && echo "  Tree warn: $_TREE_WARN"
+	return 0
 }
 
 # ---- preflight: the refusals ----------------------------------------------
@@ -205,6 +205,7 @@ _preflight() {
 		echo "  dirty tree that bundles unrelated files into your next commit" >&2
 		echo "  (operations.md gotcha 5)." >&2
 		echo "  Fix: commit or stash, then re-run." >&2
+		[ -n "$_TREE_WARN" ] && echo "  (git also warned: $_TREE_WARN)" >&2
 		unsafe=1
 	elif [ "$ts" -eq 2 ]; then
 		echo "openwiki-lane: REFUSING — cannot determine tree state; git failed:" >&2

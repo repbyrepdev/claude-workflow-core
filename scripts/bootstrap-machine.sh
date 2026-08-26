@@ -30,6 +30,9 @@ set -euo pipefail
 
 DRY_RUN=0
 PIN_TAG=""
+# Resolved once so sourced helpers (see _lib/openwiki-mcp-state.sh below) keep
+# working regardless of the caller's cwd.
+BM_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -46,7 +49,12 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		grep '^#' "$0" | head -28
+		# NOT `grep '^#' "$0" | head -28`: this file has far more than 28
+		# comment lines, so head closes the pipe, grep takes SIGPIPE, and
+		# under `set -o pipefail` + `set -e` the help path aborts BEFORE its
+		# own `exit 0` — making --help exit non-zero. awk stops on its own
+		# instead of having the pipe closed under it.
+		awk '/^#/ { print; if (++n >= 28) exit }' "$0"
 		exit 0
 		;;
 	*)
@@ -157,13 +165,27 @@ OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
 _ow_installed_version() {
 	openwiki --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
+# CI r1: `_run` under `set -e` makes every OpenWiki command load-bearing for
+# the WHOLE bootstrap — a registry blip during `npm install -g openwiki` would
+# abort before the plugin cache install, the Keychain report and the summary.
+# OpenWiki is one optional step of a machine setup, and the section already
+# warns-and-continues when npm is missing entirely; a FAILED install has to
+# degrade the same way rather than taking the run down with it.
+_ow_run_optional() { # never fails the bootstrap; records the skip instead
+	if _run "$@"; then
+		return 0
+	fi
+	_log "  ⚠ '$*' FAILED — continuing without it."
+	OPENWIKI_WIRING_SKIPPED=1
+	return 1
+}
 if ! command -v openwiki >/dev/null 2>&1; then
 	if ! command -v npm >/dev/null 2>&1; then
 		_log "  ⚠ npm not available — install Node.js first (brew install node)"
 		_log "    then re-run, or: npm install -g openwiki@$OPENWIKI_PIN"
 	else
 		_log "installing openwiki@$OPENWIKI_PIN via npm..."
-		_run npm install -g "openwiki@$OPENWIKI_PIN"
+		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
 	fi
 else
 	OW_HAVE=$(_ow_installed_version) || OW_HAVE=""
@@ -175,7 +197,7 @@ else
 		_log "    npm install -g openwiki@$OPENWIKI_PIN"
 	else
 		_log "openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN — reinstalling..."
-		_run npm install -g "openwiki@$OPENWIKI_PIN"
+		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
 	fi
 fi
 
@@ -189,40 +211,30 @@ fi
 # the real run WOULD perform — a preview that omits work is the same
 # silent-skip class this repo refuses elsewhere.
 #
-# (#2629 p2r3) Returns 0 ONLY for a valid published-CLI entry. Everything else
-# — absent, unreadable, invalid JSON, jq missing, a non-object entry, a
-# malformed .args — returns 1, so the installer runs and repairs it.
+# The state parse is SHARED with skills/openwiki-lane/run.sh via
+# _lib/openwiki-mcp-state.sh — one question, one parser. Duplicating it once
+# produced the identical fail-open bug in both copies, and fixing one is how
+# the other was found (CI r1). This caller's POLICY is repair: every state
+# that is not a healthy published-CLI entry routes to the installer, including
+# the obsolete ~/.openwiki-main source build, which the installer supersedes.
 #
-# The inline condition this replaces reported malformed entries as WIRED:
-# `jq -e .mcpServers.openwiki` is truthy for a string, `"str" | (.args // [])`
-# then errors to EMPTY stdout, and `! grep -q openwiki-main` reads empty as
-# "not the hack" — so a hand-broken config took the already-wired path and the
-# repair never ran. Same shape as the skill probe's p2r1 fix, which is how it
-# was found: two implementations of one question disagreed.
-_ow_mcp_wired() {
-	local cfg="$HOME/.claude.json" t args
-	[ -r "$cfg" ] || return 1
-	command -v jq >/dev/null 2>&1 || return 1
-	t=$(jq -r '.mcpServers.openwiki | type' "$cfg" 2>/dev/null) || return 1
-	[ "$t" = "object" ] || return 1
-	# Assert .args is an ARRAY rather than trusting jq to error: `join`
-	# rejects a string but happily joins an OBJECT's values, so an rc check
-	# alone would let `"args": {"a":1}` pass as a healthy entry.
-	t=$(jq -r '.mcpServers.openwiki | (.args // []) | type' "$cfg" 2>/dev/null) || return 1
-	[ "$t" = "array" ] || return 1
-	args=$(jq -r '.mcpServers.openwiki | (.args // []) | join(" ")' "$cfg" 2>/dev/null) || return 1
-	case "$args" in
-	*openwiki-main*) return 1 ;; # the obsolete source-build hack
-	esac
-	return 0
-}
+# `no-jq` is the one state that is NOT repairable by re-running the installer,
+# so it is called out rather than folded in silently.
+# shellcheck source=../_lib/openwiki-mcp-state.sh
+. "$BM_SCRIPT_DIR/../_lib/openwiki-mcp-state.sh"
 if command -v openwiki >/dev/null 2>&1 || [ "$DRY_RUN" = "1" ]; then
-	if _ow_mcp_wired; then
+	OW_MCP_STATE=$(openwiki_mcp_state "$HOME/.claude.json")
+	if [ "$OW_MCP_STATE" = "no-jq" ]; then
+		_log "  ⚠ cannot read ~/.claude.json — jq is not installed, so the openwiki"
+		_log "    MCP entry could not be checked. Install jq and re-run."
+		OPENWIKI_WIRING_SKIPPED=1
+	elif [ "$OW_MCP_STATE" = "wired" ]; then
 		_log "  ✓ openwiki MCP server already wired"
 	else
 		_log "wiring the openwiki MCP server (integrations install claude)..."
-		_run openwiki integrations install claude
-		_log "    ↳ restart the Claude Code session for the MCP server to load"
+		if _ow_run_optional openwiki integrations install claude; then
+			_log "    ↳ restart the Claude Code session for the MCP server to load"
+		fi
 	fi
 else
 	# Reachable on a REAL run: the npm-absent branch above warns and

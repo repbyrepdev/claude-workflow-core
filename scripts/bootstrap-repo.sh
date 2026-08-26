@@ -1200,7 +1200,9 @@ EOF
 #
 # The operational contract (eight gotchas, the INSTRUCTIONS.md steering
 # rule, the three secrets) lives in the plugin's
-# skills/openwiki/references/operations.md.
+# skills/openwiki-lane/references/operations.md. The `-lane` suffix is
+# deliberate: `openwiki integrations install claude` owns the `openwiki`
+# skill name.
 _write .github/workflows/openwiki-update.yml 644 <<'EOF'
 name: OpenWiki Update
 
@@ -2266,8 +2268,14 @@ if [ "$REFRESH_FAILED" = "1" ]; then
 	# never set REFRESH_FAILED for a real failure (they only preview), so this
 	# fires only on a genuine real-install failure — but guard on DRY_RUN anyway
 	# so the dry-run "complete" path below is never pre-empted.
+	#
+	# CI r1: this used to `exit 2` HERE, which meant the first deferred
+	# failure suppressed every later one's remediation text — an operator
+	# with both a failed refresh AND a failed label apply fixed one, re-ran,
+	# and only then learned about the other. All three handlers now REPORT,
+	# and a single exit follows them.
 	if [ "$DRY_RUN" != "1" ]; then
-		exit 2
+		DEFERRED_FAIL=1
 	fi
 fi
 # CR-CLI #1607: DEFERRED fail-closed for a label-apply failure (LABEL_RC from the
@@ -2284,7 +2292,7 @@ if [ "$LABEL_RC" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then
 	_log "    fixing the cause: scripts/bootstrap-repo.sh $TARGET --apply-labels"
 	_log "    See the label-apply error above."
 	_log ""
-	exit 2
+	DEFERRED_FAIL=1
 fi
 # (#2629 p2r1) Same DEFERRED fail-closed shape for a missing OpenWiki
 # lockfile: the seeded openwiki-update.yml hard-requires it (`npm ci`), so a
@@ -2296,6 +2304,12 @@ if [ "${OPENWIKI_LOCK_MISSING:-0}" = "1" ] && [ "$DRY_RUN" != "1" ]; then
 	_log "    openwiki-update.yml would fail at 'npm ci' if armed. Fix with:"
 	_log "    (cd $TARGET/.github/openwiki-toolchain && npm install --package-lock-only)"
 	_log ""
+	DEFERRED_FAIL=1
+fi
+# The single exit for every deferred failure reported above. Placed BEFORE the
+# success message so "complete" never prints over one, and after all three
+# handlers so overlapping failures each get their own remediation text.
+if [ "${DEFERRED_FAIL:-0}" = "1" ]; then
 	exit 2
 fi
 if [ "$DRY_RUN" = "1" ]; then
