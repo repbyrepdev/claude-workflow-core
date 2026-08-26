@@ -173,7 +173,6 @@ OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
 # banner to do it.
 # shellcheck source=../_lib/openwiki-mcp-state.sh
 . "$BM_SCRIPT_DIR/../_lib/openwiki-mcp-state.sh"
-_ow_installed_version() { openwiki_installed_version; }
 # CI r1: `_run` under `set -e` makes every OpenWiki command load-bearing for
 # the WHOLE bootstrap — a registry blip during `npm install -g openwiki` would
 # abort before the plugin cache install, the Keychain report and the summary.
@@ -197,7 +196,7 @@ if ! command -v openwiki >/dev/null 2>&1; then
 		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
 	fi
 else
-	OW_HAVE=$(_ow_installed_version) || OW_HAVE=""
+	OW_HAVE=$(openwiki_installed_version) || OW_HAVE=""
 	if [ "$OW_HAVE" = "$OPENWIKI_PIN" ]; then
 		_log "  ✓ openwiki CLI already installed at the pin ($OPENWIKI_PIN)"
 	elif ! command -v npm >/dev/null 2>&1; then
