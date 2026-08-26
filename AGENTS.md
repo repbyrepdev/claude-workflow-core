@@ -179,6 +179,24 @@ Put the guard in **command position**, before any trailing comment:
 inside the comment also satisfied a detector that scanned the whole line, so
 the audit reported them clean.
 
+`&&` counts only when its right-hand side is control flow (`&& return`,
+`&& break`). `|| return 0` does **not** count: the fallback fires exactly
+when the condition failed, and hands back success.
+
+### The boundary this stops at
+
+The gate exempts the **last command** of a block, because bats takes the
+block's final exit status — so a bare `[[ ]]` there does fail (verified on
+3.2 and 5). It is still position-dependent: add one line after it and the
+assertion silently dies. By the rule above, that is not an assertion.
+
+Closing it means appending `|| return 1` to **927** last-position assertions
+(measured), and would let the detector drop its command-position bookkeeping
+entirely — the rule collapses to "a bare `[[ ]]` is never acceptable". That
+is the right end state and a purely mechanical follow-up; it was kept out of
+the PR that established the rule so the rule would not be buried under its
+own migration. Reasoning also recorded in `_lib/bats-assertion-check.sh`.
+
 Enforced mechanically, in layers:
 
 1. **`pre-commit-hooks/bats-assertion-gate.sh`** refuses *any* such
