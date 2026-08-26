@@ -222,6 +222,10 @@ else
 			_log "  ⚠ $OW_DESC, pin is $OPENWIKI_PIN,"
 			_log "    and npm is not available to correct it. Install Node.js, then:"
 			_log "    npm install -g openwiki@$OPENWIKI_PIN"
+			# Same reason as the no-jq branch: the pin is UNCONFIRMED and this
+			# run cannot fix it, so it has to reach the end-of-run summary
+			# rather than scroll past as one warning among many.
+			OPENWIKI_WIRING_SKIPPED=1
 		else
 			_log "$OW_DESC, pin is $OPENWIKI_PIN — reinstalling..."
 			_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true

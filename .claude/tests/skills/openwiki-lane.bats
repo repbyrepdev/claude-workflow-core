@@ -529,6 +529,23 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 		}
 	done
 
+	# p2r1: a LOOSE three-group glob also lets these through. Exactly three
+	# non-empty numeric fields, or it is refused.
+	for bad in '"1.2.3.4"' '"1..2"' '".1.2"' '"1.2."' '"1.2"'; do
+		printf '{"name":"openwiki","version":%s}' "$bad" >"$pkg/package.json"
+		run env PATH="$b" "$lib" installed-version
+		[ "$status" -eq 0 ]
+		[ "$output" = "bad-version" ] || {
+			echo "malformed version $bad should be refused; got: $output"
+			return 1
+		}
+	done
+	# ...and a legitimate multi-digit semver still passes.
+	printf '{"name":"openwiki","version":"10.20.30"}' >"$pkg/package.json"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "10.20.30" ]
+
 	# A DANGLING symlink is reported as no-cli, not unresolvable: `command -v`
 	# refuses a link that does not resolve to an executable, so the probe never
 	# reaches its own resolver. Asserting what actually happens rather than what
@@ -540,6 +557,29 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	run env PATH="$b" "$lib" installed-version
 	[ "$status" -eq 0 ]
 	[ "$output" = "no-cli" ]
+}
+
+@test "the probe CLI refuses an unknown subcommand instead of guessing (p2r1)" {
+	# A bare WORD used to fall through to mcp-state as a config path, which
+	# answered "no-config" — a real-looking state for what is actually a typo.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	run "$lib" instaled-version
+	[ "$status" -eq 2 ]
+	case "$output" in
+	*"unknown subcommand"*) ;;
+	*)
+		echo "expected an unknown-subcommand refusal; got: $output"
+		return 1
+		;;
+	esac
+	# Back-compat is preserved for the two shapes callers actually use: a bare
+	# PATH (the stored prove-yourself retest) and no argument at all.
+	run "$lib" /nonexistent/nope.json
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-config" ]
+	run "$lib"
+	[ "$status" -eq 0 ]
+	[ "$output" = "no-config" ]
 }
 
 @test "an rc-0 git WARNING does not turn a clean tree DIRTY (ci-r1)" {

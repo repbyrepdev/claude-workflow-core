@@ -167,13 +167,14 @@ openwiki_installed_version() {
 				# operator logs and into an agent's status context. jq passes
 				# embedded ANSI escapes and newlines through untouched, so
 				# anything that is not a bare semver is refused, not rendered.
+				# EXACTLY three non-empty numeric fields. The rejects are
+				# listed first and deliberately cover the shapes a loose
+				# three-group glob lets through: a non-digit anywhere, an
+				# empty field (1..2), a leading or trailing dot, and a
+				# fourth field (1.2.3.4).
 				case "$v" in
-				[0-9]*.[0-9]*.[0-9]*)
-					case "$v" in
-					*[!0-9.]*) echo "bad-version" ;;
-					*) echo "$v" ;;
-					esac
-					;;
+				*[!0-9.]* | *..* | .* | *. | *.*.*.*) echo "bad-version" ;;
+				[0-9]*.[0-9]*.[0-9]*) echo "$v" ;;
 				*) echo "bad-version" ;;
 				esac
 				return 0
@@ -198,6 +199,14 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	case "${1:-}" in
 	installed-version) openwiki_installed_version ;;
 	mcp-state) openwiki_mcp_state "${2:-}" ;;
-	*) openwiki_mcp_state "${1:-}" ;;
+	# Back-compat: a bare argument that LOOKS like a path (or is absent) still
+	# means mcp-state. A bare WORD does not — silently treating a mistyped
+	# subcommand as a config path would answer "no-config", which reads as a
+	# real state rather than as the typo it is.
+	*/* | "") openwiki_mcp_state "${1:-}" ;;
+	*)
+		echo "openwiki-mcp-state: unknown subcommand '$1' (want: installed-version, mcp-state, or a config path)" >&2
+		exit 2
+		;;
 	esac
 fi

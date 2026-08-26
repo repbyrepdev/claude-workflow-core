@@ -254,6 +254,10 @@ _dry_run() {
 	assert_output_contains "openwiki is 0.3.1, pin is 0.4.0,"
 	assert_output_contains "npm install -g openwiki@0.4.0"
 	assert_output_lacks "already installed at the pin"
+	# p2r1: an UNCONFIRMED pin this run cannot fix has to reach the end-of-run
+	# summary, exactly like the no-jq case — otherwise it scrolls past as one
+	# warning among dozens and automation reads the bootstrap as clean.
+	assert_output_contains "MCP wiring was SKIPPED"
 }
 
 @test "already-wired MCP is reported as satisfied, not re-wired" {
