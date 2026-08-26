@@ -2264,19 +2264,25 @@ if [ "$REFRESH_FAILED" = "1" ]; then
 	# refresh is an INCOMPLETE repo — exit 2 so exit-code-driven automation never
 	# treats it as a clean bootstrap. Deferred to HERE (after the summary above)
 	# so the operator-facing remediation summary always prints first; previously
-	# the in-function `exit 2` skipped this summary for real installs. Dry-runs
-	# never set REFRESH_FAILED for a real failure (they only preview), so this
-	# fires only on a genuine real-install failure — but guard on DRY_RUN anyway
-	# so the dry-run "complete" path below is never pre-empted.
+	# the in-function `exit 2` skipped this summary for real installs.
 	#
 	# CI r1: this used to `exit 2` HERE, which meant the first deferred
 	# failure suppressed every later one's remediation text — an operator
 	# with both a failed refresh AND a failed label apply fixed one, re-ran,
 	# and only then learned about the other. All three handlers now REPORT,
 	# and a single exit follows them.
-	if [ "$DRY_RUN" != "1" ]; then
-		DEFERRED_FAIL=1
-	fi
+	#
+	# CI r2: the DRY_RUN guard that used to sit here rested on a comment
+	# claiming "dry-runs never set REFRESH_FAILED for a real failure (they
+	# only preview)". That is FALSE for the second setter: _sync_full_ssot
+	# passes --dry-run THROUGH to refresh-from-source.sh and sets
+	# REFRESH_FAILED=1 when it exits non-zero, dry-run or not. (Only the
+	# MISSING-refresher arm returns early under DRY_RUN.) So a preview whose
+	# refresher actually failed printed "dry-run complete" and exited 0 — a
+	# false success about a preview the operator never got. Fails closed now,
+	# in both modes. A failed dry-run therefore skips the temp-dir cleanup
+	# below, which is the right trade: the operator wants to inspect it.
+	DEFERRED_FAIL=1
 fi
 # CR-CLI #1607: DEFERRED fail-closed for a label-apply failure (LABEL_RC from the
 # _apply_labels call site above). A failed `gh label` apply must not report a

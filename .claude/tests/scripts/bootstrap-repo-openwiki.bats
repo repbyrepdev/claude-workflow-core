@@ -288,8 +288,13 @@ teardown() {
 		case "${e##*/}" in scripts | .github) continue ;; esac
 		ln -s "$e" "$plug/${e##*/}"
 	done
+	# refresh-from-source.sh is deliberately LEFT OUT so a SECOND, independent
+	# deferred failure fires alongside the lockfile one (ci-r2). With only the
+	# lockfile failing, the assertions below would pass even if an earlier
+	# handler still exited in place — the aggregation would be untested.
 	for e in "$REPO_ROOT"/scripts/* "$REPO_ROOT"/scripts/.[!.]*; do
 		[ -e "$e" ] || continue
+		case "${e##*/}" in refresh-from-source.sh) continue ;; esac
 		ln -s "$e" "$plug/scripts/${e##*/}"
 	done
 	for e in "$REPO_ROOT"/.github/* "$REPO_ROOT"/.github/.[!.]*; do
@@ -311,6 +316,14 @@ teardown() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"lockfile not readable"* ]]
 	[[ $output == *"OpenWiki lockfile MISSING"* ]]
+	# ci-r2: BOTH deferred failures report. The refresh handler runs FIRST and
+	# used to exit in place, which would have hidden every lockfile line above
+	# — so seeing both remediation blocks in one run is the actual proof that
+	# the exits were aggregated rather than taken where they were detected.
+	[[ $output == *"Full SSOT sync did NOT complete"* ]] || {
+		echo "the earlier deferred failure did not report — exits are not aggregated"
+		return 1
+	}
 	# ...but only AFTER scaffolding, like its siblings: the workflow lands, so
 	# re-running once the cause is fixed is cheap.
 	[ -f "$target/.github/workflows/openwiki-update.yml" ]

@@ -355,31 +355,38 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	# anything it did not fully validate.
 	printf '%s' '{"mcpServers":{}}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "not-wired" ]
 
 	printf '%s' '{"mcpServers":"oops"}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "unreadable" ]
 
 	printf '%s' '{"mcpServers":{"openwiki":"str"}}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "bad-entry:string" ]
 
 	printf '%s' '{"mcpServers":{"openwiki":{"args":{"a":1}}}}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "bad-args:object" ]
 
 	printf '%s' '{"mcpServers":{"openwiki":{"command":"node","args":["/x/.openwiki-main/dist/cli/cli.js","mcp"]}}}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "source-hack" ]
 
 	printf '%s' '{"mcpServers":{"openwiki":{"command":"openwiki","args":["mcp"]}}}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "wired" ]
 
 	# An entry with no .args at all is legitimate — `.args // []` defaults it.
 	printf '%s' '{"mcpServers":{"openwiki":{"command":"openwiki"}}}' >"$cfg"
 	run "$lib" "$cfg"
+	[ "$status" -eq 0 ]
 	[ "$output" = "wired" ]
 }
 
