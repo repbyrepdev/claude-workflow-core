@@ -130,8 +130,17 @@ teardown() {
 	cp "$SCRIPT" "$TEST_TMP/sandbox/bootstrap-repo.sh"
 	cp "$TEST_TMP/manifest-drifted.yml" "$TEST_TMP/sandbox/bootstrap-manifest.yml"
 	chmod +x "$TEST_TMP/sandbox/bootstrap-repo.sh"
+	# ci-r3: these sandboxes are PARTIAL plugin roots by construction — the
+	# script and a doctored manifest, with no refresh-from-source.sh beside
+	# them. bootstrap-repo now fails closed (rc 2) when the declared SSOT
+	# propagator is absent, in --dry-run too, because a preview that silently
+	# omits the whole SSOT-sync section while printing "complete" is a false
+	# success. Adding the real refresher does not restore rc 0 — it then
+	# fails on the sandbox's missing .github/consumers.yml — so the honest
+	# expectation here is 2. The SUBJECT of each test is the parity-check
+	# text below, which is emitted long before that exit.
 	run bash -c "\"$TEST_TMP/sandbox/bootstrap-repo.sh\" \"$TEST_TMP/target-drift\" --dry-run 2>&1"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 2 ]
 	[[ $output == *"WARN: manifest drift"* ]]
 }
 
@@ -144,7 +153,7 @@ teardown() {
 	cp "$TEST_TMP/manifest-renamed.yml" "$TEST_TMP/sandbox/bootstrap-manifest.yml"
 	chmod +x "$TEST_TMP/sandbox/bootstrap-repo.sh"
 	run bash -c "\"$TEST_TMP/sandbox/bootstrap-repo.sh\" \"$TEST_TMP/target-rename\" --dry-run 2>&1"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 2 ]
 	[[ $output == *"manifest path(s) not found"* ]]
 }
 
@@ -153,7 +162,7 @@ teardown() {
 	cp "$SCRIPT" "$TEST_TMP/sandbox-no-manifest/bootstrap-repo.sh"
 	chmod +x "$TEST_TMP/sandbox-no-manifest/bootstrap-repo.sh"
 	run bash -c "\"$TEST_TMP/sandbox-no-manifest/bootstrap-repo.sh\" \"$TEST_TMP/target-nomanifest\" --dry-run 2>&1"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 2 ]
 	[[ $output == *"NOTE: bootstrap-manifest.yml not found"* ]]
 	[[ $output != *"WARN: manifest"* ]]
 }
@@ -164,7 +173,7 @@ teardown() {
 	printf 'files:\n  - path: ok\n  bad-indent\n' >"$TEST_TMP/sandbox-bad-manifest/bootstrap-manifest.yml"
 	chmod +x "$TEST_TMP/sandbox-bad-manifest/bootstrap-repo.sh"
 	run bash -c "\"$TEST_TMP/sandbox-bad-manifest/bootstrap-repo.sh\" \"$TEST_TMP/target-bad\" --dry-run 2>&1"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 2 ]
 	[[ $output == *"unparseable"* ]]
 }
 
@@ -175,7 +184,7 @@ teardown() {
 	chmod +x "$TEST_TMP/sandbox-no-yq/bootstrap-repo.sh"
 	# Strip yq from PATH by running with a minimal PATH
 	run env PATH="/usr/bin:/bin" bash -c "\"$TEST_TMP/sandbox-no-yq/bootstrap-repo.sh\" \"$TEST_TMP/target-no-yq\" --dry-run 2>&1"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 2 ]
 	[[ $output == *"NOTE: yq not on PATH"* ]]
 	[[ $output != *"WARN: manifest"* ]]
 }

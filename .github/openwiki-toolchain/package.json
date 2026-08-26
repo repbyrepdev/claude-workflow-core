@@ -1,0 +1,10 @@
+{
+  "name": "openwiki-toolchain",
+  "private": true,
+  "description": "Pinned docs-generation toolchain for openwiki-update.yml (lockfile = supply-chain gate). Keep openwiki in lockstep with OPENWIKI_PIN in scripts/bootstrap-machine.sh.",
+  "dependencies": {
+    "openwiki": "0.4.0",
+    "mermaid": "11.16.0",
+    "jsdom": "29.1.1"
+  }
+}

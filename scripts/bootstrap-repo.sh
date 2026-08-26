@@ -1188,6 +1188,340 @@ jobs:
           sync-labels: true
 EOF
 
+# --- OpenWiki docs lane (#2629) --------------------------------------
+#
+# Seeded UNCONDITIONALLY, and safe to seed that way: both workflows are inert
+# until a repo opts in deliberately. openwiki-update.yml has NO schedule
+# trigger (arming the cron is a per-repo commit), and notify-wiki-hub.yml's
+# JOB is gated on vars.WIKI_HUB_REPO, so an un-opted-in repo never even
+# starts a runner. That is why there is no --with-openwiki flag: nothing
+# here spends credits, burns Actions minutes, or reddens a build by merely
+# existing, so it seeds like gitleaks/pr-lint.
+#
+# The operational contract (eight gotchas, the INSTRUCTIONS.md steering
+# rule, the three secrets) lives in the plugin's
+# skills/openwiki-lane/references/operations.md. The `-lane` suffix is
+# deliberate: `openwiki integrations install claude` owns the `openwiki`
+# skill name.
+_write .github/workflows/openwiki-update.yml 644 <<'EOF'
+name: OpenWiki Update
+
+# (#2629) Regenerates the `openwiki/` evidence index and opens a docs PR.
+#
+# SHIPPED DISABLED ON PURPOSE. There is no `schedule:` trigger below — a
+# repo that receives this file via bootstrap must never start spending AI
+# credits merely by being bootstrapped. To arm it, uncomment the cron and
+# commit that deliberately:
+#
+#   schedule:
+#     - cron: "0 8 * * 1"   # Mondays
+#
+# Stagger the day/hour across repos; a shared credit pool drains fastest
+# when every repo regenerates on the same morning.
+#
+# COST MODEL (skills/openwiki-lane/references/operations.md): this CI lane
+# is for cheap weekly DELTAS — it diffs HEAD against the commit it last
+# documented. The expensive first generation belongs in the in-chat MCP
+# lane, which runs on the host agent's own session for free.
+#
+# PROVIDER: `OPENWIKI_PROVIDER` + `OPENWIKI_MODEL_ID` are knobs, but do NOT
+# point them at a Claude model through the copilot provider — it crashes in
+# patchToolCallsMiddleware (operations.md gotcha 3). Use a GPT-family model
+# here; use the in-chat lane to drive OpenWiki with Claude.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read # checkout only reads; the PR step pushes with OPENWIKI_PUSH_TOKEN
+
+# Two overlapping runs race on the openwiki/update branch.
+concurrency:
+  group: openwiki-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Full history so `openwiki code --update` can diff HEAD against the
+          # commit it last documented.
+          fetch-depth: 0
+          persist-credentials: false # nothing later may inherit the write token
+
+      # Fail EARLY and legibly when a repo was bootstrapped but never had its
+      # secrets set — otherwise the failure surfaces as an opaque 401 from the
+      # provider several minutes in.
+      - name: Verify required secrets
+        env:
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+          OPENWIKI_PUSH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "$COPILOT_API_KEY" ]; then
+            echo "::error::COPILOT_API_KEY is unset — see operations.md"
+            missing=1
+          else
+            # gotcha 1: the copilot provider 401s on ghp_* PATs and needs a
+            # gho_* OAuth token. Checking the PREFIX is the whole point of an
+            # early guard — a presence-only check lets the exact failure this
+            # step exists to preempt through unchallenged.
+            case "$COPILOT_API_KEY" in
+              gho_*) ;;
+              *) echo "::error::COPILOT_API_KEY is not a gho_* OAuth token — the copilot provider 401s on ghp_* PATs (operations.md gotcha 1). Re-mint via 'gh auth login' in a browser."; missing=1 ;;
+            esac
+          fi
+          [ -n "$OPENWIKI_PUSH_TOKEN" ] || { echo "::error::OPENWIKI_PUSH_TOKEN is unset — a GITHUB_TOKEN-opened PR never triggers required checks and can never merge (gotcha 7)"; missing=1; }
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenWiki (locked)
+        run: |
+          npm ci --prefix .github/openwiki-toolchain
+          echo "$GITHUB_WORKSPACE/.github/openwiki-toolchain/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # `--print` is REQUIRED headless: without it a no-TTY run exits after a
+      # single agent turn ("I'll proceed now" → exit). gotcha 4.
+      - name: Run OpenWiki
+        run: openwiki code --update --print
+        env:
+          OPENWIKI_PROVIDER: ${{ vars.OPENWIKI_PROVIDER || 'copilot' }}
+          OPENWIKI_MODEL_ID: ${{ vars.OPENWIKI_MODEL_ID || 'gpt-5.5' }}
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+          OPENWIKI_TELEMETRY_DISABLED: "1"
+
+      # gotcha 8, both halves. The watermark must commit WITH real content (or
+      # later runs re-diff the same history), but a watermark-only diff must
+      # not open a PR.
+      #
+      # PATHSPEC: plain `openwiki` — NOT 'openwiki/**/*.md'. Without the
+      # :(glob) magic prefix git matches pathspecs with fnmatch, where `*`
+      # also crosses `/`, so `openwiki/**/*.md` requires a literal directory
+      # between and never matches top-level pages (openwiki/quickstart.md).
+      # Since `add-paths: openwiki` commits the WHOLE directory, the detector
+      # must consider the whole directory too — otherwise a top-level-only or
+      # non-.md change is misread as watermark-only, the watermark is
+      # reverted, and the PR ships content with a stale gitHead.
+      - name: Drop watermark-only churn
+        run: |
+          set -euo pipefail
+          # Everything under openwiki/ EXCEPT the watermark, plus the two
+          # instruction files openwiki rewrites.
+          changed=$(git status --porcelain -- openwiki ':(exclude)openwiki/.last-update.json' AGENTS.md CLAUDE.md)
+          if [ -n "$changed" ]; then
+            echo "content changed; watermark rides along"
+          elif ! git ls-files --error-unmatch openwiki/.last-update.json >/dev/null 2>&1; then
+            # UNTRACKED watermark (every first run): `git checkout --` cannot
+            # revert what git does not track, so remove it explicitly. Left in
+            # place it would be committed by add-paths — the exact noise PR
+            # this step exists to prevent.
+            rm -f openwiki/.last-update.json
+            echo "watermark-only run (untracked watermark removed); no PR expected"
+          else
+            # Tracked: revert it, and FAIL LOUD if that does not work rather
+            # than printing a success message we did not earn.
+            if ! git checkout -- openwiki/.last-update.json; then
+              echo "::error::could not revert openwiki/.last-update.json — a watermark-only PR may be opened"
+              exit 1
+            fi
+            echo "watermark-only run; timestamp reverted, no PR expected"
+          fi
+
+      - name: Create OpenWiki update pull request
+        id: docs_pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          # NOT GITHUB_TOKEN: PRs opened with it never trigger required
+          # checks, so they can never satisfy branch protection (gotcha 7).
+          token: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+          add-paths: |
+            openwiki
+            AGENTS.md
+            CLAUDE.md
+          branch: openwiki/update
+          commit-message: "docs: update OpenWiki"
+          title: "docs: update OpenWiki"
+          body: |
+            Automated OpenWiki documentation update (delta since the last
+            documented commit).
+
+            NOTE: this PR can touch `AGENTS.md` / `CLAUDE.md`, which are read
+            as standing instructions by future agent sessions. Review those
+            hunks like code, not like docs.
+
+            Generated pages are not hand-editable — the update loop reverts
+            them. Corrections belong in `openwiki/INSTRUCTIONS.md`, phrased
+            as durable rules.
+
+      # OPT-IN, and deliberately separate from enabling generation. Arming the
+      # cron and auto-merging LLM-authored edits are different risk decisions:
+      # this PR can modify AGENTS.md/CLAUDE.md, i.e. the standing instructions
+      # every later agent session reads. `--auto` only merges once branch
+      # protection is satisfied — but in a repo with NO required review that
+      # condition set is empty, so auto-merge there means unreviewed agent
+      # instructions land on main. Requires the repo's "Allow auto-merge"
+      # setting; without it this step errors.
+      - name: Arm auto-merge (opt-in)
+        if: vars.OPENWIKI_AUTO_MERGE == 'true' && steps.docs_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.OPENWIKI_PUSH_TOKEN }}
+          PR_NUMBER: ${{ steps.docs_pr.outputs.pull-request-number }}
+        run: |
+          gh pr merge --auto --squash "$PR_NUMBER" -R "$GITHUB_REPOSITORY"
+EOF
+
+_write .github/workflows/notify-wiki-hub.yml 644 <<'EOF'
+name: notify-wiki-hub
+
+# (#2629) Docs changed on main → ping the overarching wiki hub so it
+# rebuilds in ~a minute (its own cron is the backstop).
+#
+# TRULY INERT UNTIL OPTED IN: the job is gated on `vars.WIKI_HUB_REPO`, so a
+# bootstrapped repo that has not opted in never starts a runner at all. An
+# earlier revision only skipped INSIDE the step, which still spun up an
+# ubuntu VM and added a check run on every docs push forever — "cannot
+# redden a build" is not the same as "costs nothing", and on private repos
+# those are billed minutes.
+#
+# There is deliberately NO default hub repo. A cross-org default would send
+# a consumer's HUB_DISPATCH_TOKEN to a repository they do not own the first
+# time they set the secret without the variable.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openwiki/**"
+      - "wiki/**"
+      - "docs/**"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "README.md"
+
+permissions: {}
+
+jobs:
+  ping:
+    # `vars` IS available in a job-level `if` (secrets are not), so the
+    # opt-in check can gate the whole job rather than one step.
+    if: vars.WIKI_HUB_REPO != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch docs-updated to the wiki hub
+        env:
+          # The secret enters via env rather than ${{ }} interpolation into
+          # the script body, so there is no Actions-expression injection
+          # surface. It IS still expanded into curl's argv below, and is
+          # therefore visible in the runner's process table for the life of
+          # the request — acceptable here (no checkout, no third-party step
+          # shares this VM) but do not add steps to this job on the
+          # assumption the token is invisible.
+          HUB_DISPATCH_TOKEN: ${{ secrets.HUB_DISPATCH_TOKEN }}
+          HUB_REPO: ${{ vars.WIKI_HUB_REPO }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HUB_DISPATCH_TOKEN" ]; then
+            echo "::warning::WIKI_HUB_REPO is set but HUB_DISPATCH_TOKEN is not — the hub will not learn about this change. Set the secret, or unset the variable to disable this lane."
+            exit 0
+          fi
+          # -sS (not -s) keeps curl's error text; --fail-with-body keeps the
+          # API's response body. With plain `-sf` a 401 (wrong token type),
+          # 403 (no dispatch rights on the hub), 404 (wrong WIKI_HUB_REPO)
+          # and a network timeout are all a bare non-zero exit with no output.
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 60 -X POST \
+            -H "Authorization: Bearer $HUB_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$HUB_REPO/dispatches" \
+            -d "{\"event_type\": \"docs-updated\", \"client_payload\": {\"repo\": \"$REPO\"}}"
+EOF
+
+_write .github/openwiki-toolchain/package.json 644 <<'EOF'
+{
+  "name": "openwiki-toolchain",
+  "private": true,
+  "description": "Pinned docs-generation toolchain for openwiki-update.yml (lockfile = supply-chain gate). Keep openwiki in lockstep with OPENWIKI_PIN in scripts/bootstrap-machine.sh.",
+  "dependencies": {
+    "openwiki": "0.4.0",
+    "mermaid": "11.16.0",
+    "jsdom": "29.1.1"
+  }
+}
+EOF
+
+# The lockfile IS the supply-chain gate (`npm ci` in the workflow), and at
+# ~5.5k lines it cannot live in a heredoc. COPY the plugin's reviewed
+# lockfile rather than regenerating: `npm install --package-lock-only`
+# re-resolves every transitive range against the registry, so each consumer
+# would get a different, never-reviewed closure depending on the day it was
+# bootstrapped — and the audited lockfile in this repo would govern nothing.
+# Copying is deterministic and needs no network.
+_OW_LOCK_SRC="$PLUGIN_SCRIPT_DIR/../.github/openwiki-toolchain/package-lock.json"
+_OW_LOCK_DST="$TARGET/.github/openwiki-toolchain/package-lock.json"
+# Set on either failure path below; consumed by the DEFERRED fail-closed exit
+# next to LABEL_RC/REFRESH_FAILED at the end of the run.
+OPENWIKI_LOCK_MISSING=0
+if [ "$DRY_RUN" = "1" ]; then
+	_log "[dry-run] would copy the reviewed OpenWiki lockfile to .github/openwiki-toolchain/"
+elif [ -e "$_OW_LOCK_DST" ] && [ "$FORCE" != "1" ]; then
+	_log "  • .github/openwiki-toolchain/package-lock.json already exists — skipping (--force to overwrite)"
+	SKIPPED_FILES+=(".github/openwiki-toolchain/package-lock.json")
+elif [ -r "$_OW_LOCK_SRC" ]; then
+	if cp "$_OW_LOCK_SRC" "$_OW_LOCK_DST"; then
+		_log "  ✓ .github/openwiki-toolchain/package-lock.json (reviewed copy)"
+	else
+		_log "  ⚠ could not copy the OpenWiki lockfile — the seeded workflow cannot run ('npm ci' requires it)."
+		OPENWIKI_LOCK_MISSING=1
+	fi
+else
+	# Fail LOUD rather than leaving a workflow that can never run. The rest of
+	# the bootstrap is still useful, so this does not abort HERE — it sets the
+	# flag and the run exits 2 after the completion summary.
+	_log "  ⚠ plugin lockfile not readable at $_OW_LOCK_SRC — seeded OpenWiki workflow cannot run until one exists."
+	_log "    Fix: (cd .github/openwiki-toolchain && npm install --package-lock-only)"
+	OPENWIKI_LOCK_MISSING=1
+fi
+
+# openwiki/INSTRUCTIONS.md — the standing brief the generator re-reads every
+# run, and the ONLY place a correction survives (gotcha 6: hand-edits to
+# generated pages are reverted by the update loop). Seeded so a repo never
+# lands in the state run.sh reports as "corrections have nowhere durable to
+# go"; the starter rules are the ones that generalise across repos.
+_write openwiki/INSTRUCTIONS.md 644 <<'EOF'
+# OpenWiki standing instructions
+
+The generator reads this file on EVERY run. It is the only sanctioned way to
+steer output: edits to generated pages under `openwiki/` are reverted by the
+update loop, so a correction only survives if it is written here as a rule.
+
+Phrase entries as durable rules ("never describe X by value"), not as one-off
+patches ("fix the typo on line 12").
+
+## Rules
+
+- Treat source code and tests as authoritative. When a doc claim and the code
+  disagree, the code wins and the doc is the bug.
+- Never reproduce secret VALUES. Describe what a secret is for and where it
+  is configured, never its contents — this includes anything under an
+  encrypted store (SOPS/age) and any CI secret.
+- Diagrams: decompose, never truncate. If a view has more nodes than fit,
+  split it into multiple complete views rather than capping the node count —
+  a truncated diagram silently misrepresents the system.
+- Prefer the narrowest accurate statement. Unknowns are verification gaps to
+  name, not requirements to invent.
+
+## Repo-specific rules
+
+(Add rules here as corrections come up. Each one you add is a correction that
+will not need making twice.)
+EOF
+
 _write .gemini/policy.toml 644 <<'EOF'
 # v4.28-W4 (#643) — Gemini CLI policy.toml deny block.
 # SCHEMA CORRECTED (#236): the prior schema was WRONG and the deny rules were
@@ -1846,12 +2180,23 @@ REFRESH_FAILED=0
 _sync_full_ssot() {
 	local refresher="$PLUGIN_SCRIPT_DIR/refresh-from-source.sh"
 	if [ ! -x "$refresher" ]; then
-		# Dry-run is a preview that writes nothing, so it cannot produce an
-		# incomplete repo — NOTE and continue. A REAL install with no refresher
-		# IS a broken plugin → fail-closed (exit 2) rather than silently lay down
-		# an INCOMPLETE repo (#223 CR-CLI r1).
+		# A REAL install with no refresher IS a broken plugin → fail-closed
+		# (exit 2) rather than silently lay down an INCOMPLETE repo (#223
+		# CR-CLI r1).
+		#
+		# CI r3: the dry-run arm used to return 0 on the reasoning that "a
+		# preview writes nothing, so it cannot produce an incomplete repo".
+		# True about the repo, wrong about the PREVIEW: with the propagator
+		# absent the preview silently omits the ENTIRE SSOT-sync section and
+		# still prints "dry-run complete", so the operator believes they have
+		# seen everything the real run would lay down. That is the same false
+		# success as the failed-refresher arm below, on a strictly worse
+		# input — the file is not merely erroring, it is missing. Both arms
+		# fail closed now; only the message differs, so the operator can tell
+		# "absent" from "errored".
 		if [ "${DRY_RUN:-0}" = "1" ]; then
-			_log "NOTE: refresh-from-source.sh not found at $refresher — dry-run previews seed files only (full SSOT sync not shown)"
+			_log "ERROR: refresh-from-source.sh not found at $refresher — this preview shows SEED FILES ONLY; the full SSOT sync could not be previewed at all"
+			REFRESH_FAILED=1
 			return 0
 		fi
 		# #223 CR-CLI: a REAL install with no refresher IS a broken plugin →
@@ -1930,13 +2275,25 @@ if [ "$REFRESH_FAILED" = "1" ]; then
 	# refresh is an INCOMPLETE repo — exit 2 so exit-code-driven automation never
 	# treats it as a clean bootstrap. Deferred to HERE (after the summary above)
 	# so the operator-facing remediation summary always prints first; previously
-	# the in-function `exit 2` skipped this summary for real installs. Dry-runs
-	# never set REFRESH_FAILED for a real failure (they only preview), so this
-	# fires only on a genuine real-install failure — but guard on DRY_RUN anyway
-	# so the dry-run "complete" path below is never pre-empted.
-	if [ "$DRY_RUN" != "1" ]; then
-		exit 2
-	fi
+	# the in-function `exit 2` skipped this summary for real installs.
+	#
+	# CI r1: this used to `exit 2` HERE, which meant the first deferred
+	# failure suppressed every later one's remediation text — an operator
+	# with both a failed refresh AND a failed label apply fixed one, re-ran,
+	# and only then learned about the other. All three handlers now REPORT,
+	# and a single exit follows them.
+	#
+	# CI r2: the DRY_RUN guard that used to sit here rested on a comment
+	# claiming "dry-runs never set REFRESH_FAILED for a real failure (they
+	# only preview)". That is FALSE for the second setter: _sync_full_ssot
+	# passes --dry-run THROUGH to refresh-from-source.sh and sets
+	# REFRESH_FAILED=1 when it exits non-zero, dry-run or not. (Only the
+	# MISSING-refresher arm returns early under DRY_RUN.) So a preview whose
+	# refresher actually failed printed "dry-run complete" and exited 0 — a
+	# false success about a preview the operator never got. Fails closed now,
+	# in both modes. A failed dry-run therefore skips the temp-dir cleanup
+	# below, which is the right trade: the operator wants to inspect it.
+	DEFERRED_FAIL=1
 fi
 # CR-CLI #1607: DEFERRED fail-closed for a label-apply failure (LABEL_RC from the
 # _apply_labels call site above). A failed `gh label` apply must not report a
@@ -1952,6 +2309,24 @@ if [ "$LABEL_RC" -ne 0 ] && [ "$DRY_RUN" != "1" ]; then
 	_log "    fixing the cause: scripts/bootstrap-repo.sh $TARGET --apply-labels"
 	_log "    See the label-apply error above."
 	_log ""
+	DEFERRED_FAIL=1
+fi
+# (#2629 p2r1) Same DEFERRED fail-closed shape for a missing OpenWiki
+# lockfile: the seeded openwiki-update.yml hard-requires it (`npm ci`), so a
+# bootstrap that could not place it produced a workflow that can never run.
+# Warning alone let automation read that as a clean bootstrap.
+if [ "${OPENWIKI_LOCK_MISSING:-0}" = "1" ] && [ "$DRY_RUN" != "1" ]; then
+	_log "⚠ OpenWiki lockfile MISSING — the scaffold completed but"
+	_log "    .github/openwiki-toolchain/package-lock.json was not placed, so"
+	_log "    openwiki-update.yml would fail at 'npm ci' if armed. Fix with:"
+	_log "    (cd $TARGET/.github/openwiki-toolchain && npm install --package-lock-only)"
+	_log ""
+	DEFERRED_FAIL=1
+fi
+# The single exit for every deferred failure reported above. Placed BEFORE the
+# success message so "complete" never prints over one, and after all three
+# handlers so overlapping failures each get their own remediation text.
+if [ "${DEFERRED_FAIL:-0}" = "1" ]; then
 	exit 2
 fi
 if [ "$DRY_RUN" = "1" ]; then

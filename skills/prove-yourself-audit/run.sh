@@ -207,6 +207,35 @@ _jaccard_advise() {
 	fi
 }
 
+# (#2629 p2r1) Word-bounded containment. A bare `*"$n"*` made every
+# anti-pattern match inside longer words: "od shows" fired on "dogfood shows",
+# and "i remember" would fire on "multi remembered". That is not a cosmetic
+# false positive — this guard's remedy line is "APPLY the fix instead of
+# rejecting", so a spurious hit pushes the reviewer toward making a change
+# they had correctly judged wrong. Found exactly that way, blocking a
+# rejection whose evidence was a docs quote.
+#
+# A match counts only when the characters flanking it are not word
+# characters. Start/end of string count as boundaries (an unset var is not
+# alnum), so a phrase alone in the field still hits.
+_word_bounded_contains() { # $1 haystack, $2 needle — both already lowercased
+	local rest=$1 n=$2 pre post before after
+	[ -n "$n" ] || return 1
+	while [[ $rest == *"$n"* ]]; do
+		pre=${rest%%"$n"*}
+		post=${rest#*"$n"}
+		before=""
+		[ -n "$pre" ] && before=${pre: -1}
+		after=""
+		[ -n "$post" ] && after=${post:0:1}
+		if [[ ! $before =~ [[:alnum:]_] ]] && [[ ! $after =~ [[:alnum:]_] ]]; then
+			return 0
+		fi
+		rest=$post
+	done
+	return 1
+}
+
 _check_antipatterns() {
 	local text=$1 field=${2:---external-authority} lower
 	# Lowercase for substring comparison.
@@ -214,7 +243,7 @@ _check_antipatterns() {
 	local ap ap_lower
 	for ap in "${_ANTIPATTERNS[@]}"; do
 		ap_lower=$(printf '%s' "$ap" | tr '[:upper:]' '[:lower:]')
-		if [[ $lower == *"$ap_lower"* ]]; then
+		if _word_bounded_contains "$lower" "$ap_lower"; then
 			echo "BLOCK: $field contains anti-pattern '$ap'." >&2
 			echo "" >&2
 			echo "Per memory:feedback_dont_dismiss_cr_as_hallucination.md, evidence" >&2
