@@ -116,7 +116,23 @@ _openwiki_realpath() {
 	# resolves, and the caller would trust a version from the wrong package.
 	[ ! -L "$p" ] || return 1
 	[ -e "$p" ] || return 1
-	printf '%s\n' "$p"
+	# Canonicalise the PARENT so the path we hand back is physical, not
+	# logical. The loop above only resolves links in the leaf, so a relative
+	# target under a symlinked bin dir (how npm and brew actually link a
+	# global binary) leaves `..` segments behind. Access checks resolve those
+	# through the kernel anyway — I built both shapes and they answer
+	# correctly — but the caller then WALKS UP this path, and walking a
+	# logical path means each step is a guess the kernel has to rescue.
+	#
+	# `${p##*/}` rather than `basename`: the first cut of this called
+	# basename and a fixture with a deliberately minimal PATH caught the new
+	# dependency immediately — a probe that reports "unresolvable" because a
+	# coreutil is missing would be the same class of misleading answer this
+	# whole file exists to eliminate.
+	local d b="${p##*/}"
+	d=$(dirname "$p") || return 1
+	d=$(cd -P "$d" 2>/dev/null && pwd) || return 1
+	printf '%s\n' "$d/$b"
 }
 
 # Question 2: which openwiki version is actually installed — meaning the one
@@ -210,8 +226,15 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 	# real state rather than as the typo it is.
 	*/* | "") openwiki_mcp_state "${1:-}" ;;
 	*)
-		echo "openwiki-mcp-state: unknown subcommand '$1' (want: installed-version, mcp-state, or a config path)" >&2
-		exit 2
+		# A bare word with no slash is ambiguous: `config.json` in the cwd is a
+		# legitimate config path, and `instaled-version` is a typo. Let the
+		# filesystem decide — if it exists, it was a path.
+		if [ -e "$1" ]; then
+			openwiki_mcp_state "$1"
+		else
+			echo "openwiki-mcp-state: unknown subcommand '$1' (want: installed-version, mcp-state, or a config path)" >&2
+			exit 2
+		fi
 		;;
 	esac
 fi

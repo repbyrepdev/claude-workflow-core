@@ -587,6 +587,75 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	[ "$output" = "no-cli" ]
 }
 
+@test "a RELATIVE bin symlink under a symlinked dir still resolves (ci-r1)" {
+	# How npm and brew actually link a global binary: bin/openwiki ->
+	# ../lib/openwiki/dist/cli.js, and the bin dir itself often reached
+	# through a prefix symlink. The loop only resolves links in the LEAF, so
+	# the path it returned carried `..` segments; access checks resolve those
+	# through the kernel, but the caller then WALKS UP that path, and walking
+	# a logical path makes every step a guess the kernel has to rescue.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	local b="$TEST_TMP/relbin" pkg="$TEST_TMP/relprefix"
+	mkdir -p "$b" "$pkg/bin" "$pkg/lib/openwiki/dist"
+	local tool tp
+	for tool in readlink dirname jq; do
+		tp=$(command -v "$tool") || {
+			echo "FATAL: probe dependency '$tool' not on PATH"
+			return 1
+		}
+		ln -sf "$tp" "$b/$tool"
+	done
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/lib/openwiki/dist/cli.js"
+	chmod +x "$pkg/lib/openwiki/dist/cli.js"
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/lib/openwiki/package.json"
+	ln -s "../lib/openwiki/dist/cli.js" "$pkg/bin/openwiki"
+
+	# A: the real bin dir, relative target.
+	run env PATH="$pkg/bin:$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+
+	# B: the SAME bin dir reached through a symlink.
+	ln -s "$pkg/bin" "$TEST_TMP/rellink"
+	run env PATH="$TEST_TMP/rellink:$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+
+	# The probe must need nothing beyond readlink/dirname/jq. An earlier cut
+	# of the canonicalisation called `basename`, and this minimal PATH is what
+	# caught it — a probe answering "unresolvable" because a coreutil is
+	# missing is the same misleading answer this file exists to remove.
+	case "$output" in
+	*"command not found"*)
+		echo "the probe grew a new PATH dependency: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a bare EXISTING filename is still a config path, a typo is not (ci-r1)" {
+	# `config.json` in the cwd has no slash but is a legitimate argument; the
+	# slash-only rule rejected it as an unknown subcommand. The filesystem
+	# decides: if it exists, it was a path.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	cd "$TEST_TMP" || return 1
+	echo '{"mcpServers":{}}' >"$TEST_TMP/bare-config.json"
+	run env HOME="$TEST_TMP/home" bash -c "cd '$TEST_TMP' && '$lib' bare-config.json"
+	[ "$status" -eq 0 ]
+	[ "$output" = "not-wired" ]
+	# ...and a bare word that is NOT a file is still refused rather than
+	# silently answered as "no-config".
+	run env HOME="$TEST_TMP/home" bash -c "cd '$TEST_TMP' && '$lib' instaled-version"
+	[ "$status" -eq 2 ]
+	case "$output" in
+	*"unknown subcommand"*) ;;
+	*)
+		echo "expected a refusal; got: $output"
+		return 1
+		;;
+	esac
+}
+
 @test "the resolver refuses an over-long symlink chain (p2r3)" {
 	# The 40-hop budget existed but nothing acted on exhausting it: `[ -e ]`
 	# accepts a >40-hop chain that still resolves, so the caller would have
