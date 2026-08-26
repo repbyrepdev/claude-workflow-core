@@ -98,11 +98,20 @@ bats_assertion_scan() {
 		# check matched `fail` inside `echo "guard should fail here"`, so a
 		# brace-group body that only PRINTED was accepted as a real guard.
 		# This repo writes exactly those messages, so it was a matter of time.
-		function strip_strings(line,   i, c, q, out) {
+		# A backslash escapes the NEXT character, inside a string or out of
+		# it. Without that, `echo "he said \"fail\""` mis-pairs the quotes and
+		# re-exposes the very word this blanking exists to hide.
+		function strip_strings(line,   i, c, q, out, n) {
 			q = ""
 			out = ""
-			for (i = 1; i <= length(line); i++) {
+			n = length(line)
+			for (i = 1; i <= n; i++) {
 				c = substr(line, i, 1)
+				if (c == "\\" && i < n) {
+					out = out "  "
+					i++
+					continue
+				}
 				if (q == "") {
 					if (c == "\"" || c == "'"'"'") {
 						q = c
@@ -116,13 +125,26 @@ bats_assertion_scan() {
 			}
 			return out
 		}
+		# A `#` starts a comment only at the start of a word — bash treats
+		# `*#tag*` as literal. Cutting at the FIRST `#` truncated such a
+		# pattern and lost the closing `]]` with it, turning a guarded
+		# assertion into a finding.
+		function cut_comment(code,   i, c, prev, n) {
+			n = length(code)
+			for (i = 1; i <= n; i++) {
+				c = substr(code, i, 1)
+				if (c != "#") continue
+				if (i == 1) return ""
+				prev = substr(code, i - 1, 1)
+				if (prev == " " || prev == "\t") return substr(code, 1, i - 1)
+			}
+			return code
+		}
 		# Code after the closing `]]`. Strings are blanked and any trailing
 		# comment cut BEFORE the search, so neither a `#` inside a pattern nor
 		# a literal `]]` inside a comment can move the anchor.
-		function guard_pos(line,   code, i, p, h) {
-			code = strip_strings(line)
-			h = index(code, "#")
-			if (h > 0) code = substr(code, 1, h - 1)
+		function guard_pos(line,   code, i, p) {
+			code = cut_comment(strip_strings(line))
 			p = 0
 			for (i = 1; i < length(code); i++)
 				if (substr(code, i, 2) == "]]") p = i
@@ -209,14 +231,16 @@ bats_assertion_scan() {
 				# printed the word — `echo "guard should fail here"` set this,
 				# and the guard was certified while nothing terminated. Strings
 				# are blanked and the comment cut before the test.
-				pline = strip_strings(line)
-				ph = index(pline, "#")
-				if (ph > 0) pline = substr(pline, 1, ph - 1)
+				pline = cut_comment(strip_strings(line))
 				if (pline ~ /(^|[ \t;])(return|exit|break|continue|skip|fail|false)([ \t;)]|$)/)
 					pending_ok = 1
-				d = line
+				# Braces counted on the SAME stripped text. Counting the raw
+				# line let `echo "}"` close the group early, resolving the
+				# deferred verdict before the terminator was reached and
+				# reporting a correctly guarded assertion.
+				d = pline
 				pending_depth += gsub(/\{/, "", d)
-				d = line
+				d = pline
 				pending_depth -= gsub(/\}/, "", d)
 				if (pending_depth <= 0) {
 					if (!pending_ok) {

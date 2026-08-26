@@ -52,6 +52,27 @@ _scan() { # $1 = file contents; echoes the detector's hit count
 	}
 }
 
+# The scanner reports `line:text` per finding, so a test can assert WHICH
+# line was named rather than only how many were. Used by the lexical
+# regressions below, where "1 finding" alone would not prove the right line
+# was blamed.
+_scan_raw() { # $1 = file contents; $output becomes the scanner's own output
+	printf '%s' "$1" >"$TEST_TMP/raw.bats"
+	run bash -c '
+		. "$1"
+		out=$(bats_assertion_scan "$2") || rc=$?
+		case "${rc:-0}" in
+		0 | 1) ;;
+		*) exit 9 ;;
+		esac
+		printf "%s\n" "$out"
+	' _ "$LIB" "$TEST_TMP/raw.bats"
+	[ "$status" -eq 0 ] || {
+		echo "scan errored (status $status): $output"
+		return 1
+	}
+}
+
 # A miniature repo with the gate and lib in place, one .bats file STAGED.
 _staged_repo() { # $1 = dir name, $2 = .bats contents
 	local work="$TEST_TMP/$1"
@@ -504,4 +525,54 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# terminator follows a `;` rather than starting the line.
 	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"; return 1\n\t}\n\ttrue\n}\n')"
 	[ "$output" -eq 0 ]
+}
+
+@test "an ESCAPED quote does not re-expose a terminator word" {
+	# `echo "he said \"fail\" loudly"` — without backslash handling the quote
+	# pairing breaks, the tail of the line reads as code, and `fail` sets
+	# pending_ok. That silently re-opened the exact hole the string-blanking
+	# was added to close.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "he said \\"fail\\" loudly"\n\t}\n\ttrue\n}\n')"
+	case "$output" in
+	*'[[ $output == *"nope"* ]] || {'*) ;;
+	*)
+		echo "expected the unguarded assertion to be named; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "an unquoted # inside a pattern does not truncate the line" {
+	# bash treats `*#tag*` as literal — `#` opens a comment only at the start
+	# of a word. Cutting at the first `#` regardless dropped the closing `]]`
+	# with it, so a correctly guarded assertion was reported.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *#tag* ]] || return 1\n\ttrue\n}\n')"
+	[ -z "$output" ] || {
+		echo "a guarded assertion with a # in its pattern was reported: $output"
+		return 1
+	}
+}
+
+@test "a brace inside a string does not close the guard group early" {
+	# Braces were counted on the raw line, so `echo "}"` in a guard body
+	# resolved the deferred verdict before the terminator was reached — and
+	# the assertion was reported despite being correctly guarded.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "}"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ -z "$output" ] || {
+		echo "a guarded assertion was reported because of a brace in a string: $output"
+		return 1
+	}
+}
+
+@test "the reported line NUMBER points at the offending assertion" {
+	# The output contract is `line:text`. Nothing asserted the number before,
+	# so an off-by-one in the recording would have gone unnoticed.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')"
+	case "$output" in
+	3:*) ;;
+	*)
+		echo "expected the finding on line 3; got: $output"
+		return 1
+		;;
+	esac
 }
