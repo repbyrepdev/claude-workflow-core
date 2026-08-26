@@ -66,14 +66,22 @@ fi
 # on 3.2 would only have moved the problem — GitHub's macOS runners ship 3.2,
 # so a refusal there stops CI rather than testing anything.
 #
-# Note the direction of the implication, which is easy to get backwards:
-# 3.2 is the more PERMISSIVE harness, because assertion forms that silently
-# pass there do fail on 4/5. So green on 5 implies green on 3.2, and green on
-# 3.2 implies nothing at all. `--shell` exists to check both in one sitting;
-# it builds a shim dir and VERIFIES the shell took effect, because `bats`
-# re-execs `#!/usr/bin/env bash` helpers and a naive `<shell> <bats>` reaches
-# only the front-end. A run that reported 3.2 and executed under 5 is exactly
-# what phase-1 review caught here.
+# NEITHER shell's green run implies the other's. They check different things:
+#
+#   bash 3.2  proves no bash-4-only syntax; proves nothing about enforcement,
+#             since the no-op assertion forms pass there
+#   bash 5    proves every assertion can actually fail; proves nothing about
+#             whether the suite even parses on 3.2 (`declare -A`, `${v^^}`)
+#
+# So run both. This started out claiming green on 3.2 implied green on 5 —
+# backwards for enforcement — and the correction then over-swung to claiming
+# the reverse, which is equally untrue. Two shells, two properties.
+#
+# `--shell` is what makes checking both possible: it builds a shim dir and
+# VERIFIES the shell took effect, because `bats` re-execs
+# `#!/usr/bin/env bash` helpers and a naive `<shell> <bats>` reaches only the
+# front-end. A run that reported 3.2 and executed under 5 is exactly what
+# phase-1 review caught here.
 
 LOG_FILE="${BATS_LOG:-$REPO_ROOT/.claude/logs/bats-run.jsonl}"
 mkdir -p "$(dirname "$LOG_FILE")"

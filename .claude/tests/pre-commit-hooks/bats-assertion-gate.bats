@@ -191,6 +191,26 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 		echo "$output"
 		return 1
 	}
+	# Status alone cannot confirm the sweep happened — a skip or an early
+	# bail also exits 0. `--all` reports how many files it scanned, so assert
+	# that summary: it is the difference between "found nothing" and "looked
+	# at nothing". (Silence is the right assertion for the STAGED mode, which
+	# prints nothing on success; that test asserts it separately.)
+	case "$output" in
+	*"file(s) clean"*) ;;
+	*)
+		echo "no sweep summary — the scan may not have run: $output"
+		return 1
+		;;
+	esac
+	# `: 0 file(s)`, not `0 file(s)` — the unanchored form matches the
+	# trailing zero of "140 file(s) clean" and fails on a healthy sweep.
+	case "$output" in
+	*": 0 file(s) clean"*)
+		echo "the sweep scanned zero files"
+		return 1
+		;;
+	esac
 }
 
 @test "an unreadable file is an ERROR (rc 2), never a clean bill of health" {

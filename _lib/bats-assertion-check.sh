@@ -99,10 +99,14 @@ bats_assertion_scan() {
 			delete tx
 			next
 		}
-		intest && /^}/ {
-			# A brace group still open when the block ends never found its
-			# terminator — the lookahead would otherwise drop the deferred
-			# verdict on the floor and the assertion would read as clean.
+		# `&& !pending`: while a brace group is open, a `}` at column 0 is
+		# THAT group closing, not the block. Ending the block here would strand
+		# the deferred verdict and stop scanning the rest of the test. The
+		# pending handler below sees it instead, resolves the group, and
+		# scanning continues.
+		intest && /^}/ && !pending {
+			# Belt and braces: a group somehow still open when the block does
+			# end never found its terminator, so report it rather than drop it.
 			if (pending > 0 && !pending_ok) {
 				ln[pending] = pending_ln
 				tx[pending] = pending_tx

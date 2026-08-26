@@ -307,6 +307,12 @@ _fixture() {
 		echo "--list should exit 0 with nothing to list; got $status: $output"
 		return 1
 	}
+	# EMPTY, not merely free of the advisory: unrelated output would
+	# otherwise satisfy the case below and the test would pass on it.
+	[ -z "$output" ] || {
+		echo "--list should print nothing when nothing routes; got: $output"
+		return 1
+	}
 	case "$output" in
 	*"no-op"* | *"consider:"*)
 		echo "--list emitted the no-coverage advisory instead of a list: $output"
