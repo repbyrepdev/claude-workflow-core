@@ -389,9 +389,25 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 	# `|| true` would have passed the suite.
 	local work
 	work=$(_staged_repo bypass1 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
-	# Without the bypass the staged file is refused.
+	# Without the bypass the staged file is refused — and the refusal must say
+	# WHY. Status alone would also be satisfied by a silent rejection path
+	# that never identified the offending file.
 	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
 	[ "$status" -eq 1 ]
+	case "$output" in
+	*"cannot fail"*) ;;
+	*)
+		echo "the refusal did not name the violation: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*new.bats*) ;;
+	*)
+		echo "the refusal did not name the offending file: $output"
+		return 1
+		;;
+	esac
 	# With it, the gate passes AND writes the row.
 	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='under test' ./pre-commit-hooks/bats-assertion-gate.sh"
 	[ "$status" -eq 0 ] || {

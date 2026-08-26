@@ -318,8 +318,14 @@ teardown() {
 	# marker is visible inside it; if bats re-execs some other `bash` from
 	# PATH — the original defect — it is not.
 	mkdir -p "$TEST_TMP/wrap" "$TEST_TMP/.claude/tests"
+	# NOT `|| skip`. bats itself runs under bash, so "no bash on PATH" is not
+	# a missing optional tool — it is a broken environment, and skipping would
+	# turn the one CI-observable check of this invariant into a silent pass.
 	local real
-	real=$(command -v bash) || skip "no bash on PATH"
+	real=$(command -v bash) || {
+		echo "no bash on PATH — bats cannot have run without one; environment is broken"
+		return 1
+	}
 	cat >"$TEST_TMP/wrap/bash" <<-WRAP
 		#!/bin/sh
 		SHELL_SHIM_MARKER=reached-the-body
