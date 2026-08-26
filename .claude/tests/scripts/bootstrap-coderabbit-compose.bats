@@ -52,7 +52,17 @@ EOF
 	# base labeling_instructions makes base_n empty->0 and the append->1 pass
 	# spuriously; an unchecked yq error masks the cause. Require a positive
 	# integer so a regressed/empty base fails LOUD here, not as a count mismatch.
-	[[ $base_n =~ ^[0-9]+$ ]] && [ "$base_n" -ge 1 ]
+	# Written as `[[ ]] && [ ]`, this asserted nothing on ANY bash: a failing
+	# non-last member of an AND-list fires neither the ERR trap nor `set -e`.
+	# A guard added to "fail LOUD" that was itself silent — found by the
+	# detector in _lib/bats-assertion-check.sh (#2631 follow-up).
+	case "$base_n" in
+	'' | *[!0-9]*)
+		echo "base labeling_instructions count is not an integer: '$base_n'" >&2
+		return 1
+		;;
+	esac
+	[ "$base_n" -ge 1 ]
 	[ "$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.yaml")" -eq "$((base_n + 1))" ]
 	[ "$(yq -r '.reviews.labeling_instructions[-1].label' "$TMP/target/.coderabbit.yaml")" = "area:coalesce" ]
 }
@@ -105,7 +115,7 @@ EOF
 	run bash "$SCRIPT" "$TMP/target"
 	[ "$status" -eq 0 ]
 	[[ $output == *"NOT composed"* ]] || return 1
-	[[ $output == *"fall back to"* ]] # the summary reminder fired || return 1
+	[[ $output == *"fall back to"* ]] || return 1 # the summary reminder fired
 	# base still written; .coderabbit.yaml not produced (compose failed).
 	[ -f "$TMP/target/.coderabbit.base.yaml" ]
 	[ ! -f "$TMP/target/.coderabbit.yaml" ]

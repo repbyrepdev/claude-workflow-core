@@ -478,7 +478,7 @@ _seed_coverage() {
 	export STUB_ROUNDS=2
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (2/2)"* ]] # per-branch=2; per-SHA would be 1/2 || return 1
+	[[ $output == *"round-cap reached (2/2)"* ]] || return 1 # per-branch=2; per-SHA would be 1/2
 	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(jq -r '.stage' "$STATE_DIR/$sha2.json")" = push ]
 }

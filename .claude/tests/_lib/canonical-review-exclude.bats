@@ -155,8 +155,8 @@ teardown() {
 	. "$LIB"
 	run canonical_review_noncanonical_changed main
 	[ "$status" -eq 0 ]
-	[[ $output == *".pre-commit-config.yaml"* ]] # consumer-authored present || return 1
-	[[ $output != *".claude/hooks/foo.sh"* ]]    # canonical mirror absent
+	[[ $output == *".pre-commit-config.yaml"* ]] || return 1 # consumer-authored present
+	[[ $output != *".claude/hooks/foo.sh"* ]]                # canonical mirror absent
 }
 
 @test "noncanonical_changed (plugin): returns ALL changed files (producer, nothing excluded)" {

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-# (#2631 follow-up) Refuse NEW bats assertions that cannot fail.
+# (#2631 follow-up) Refuse bats assertions that cannot fail.
 #
 # bats reports failure through an ERR trap. On bash 3.2 — what macOS ships
 # at /bin/bash, frozen since 2007 because bash 4.0 relicensed to GPLv3 — a
@@ -9,21 +9,29 @@ set -euo pipefail
 # the LAST command in the block. An assertion whose enforcement depends on
 # its position is not an assertion.
 #
-# GRANDFATHERED, deliberately. 749 such no-ops across 96 files existed when
-# this was found; refusing all of them at once would block every commit
-# touching a test file and convert a real finding into a reason to disable
-# the gate. This hook compares each STAGED .bats file against its recorded
-# baseline and refuses only an INCREASE. Files absent from the baseline get
-# 0 — so a new suite must be clean from the start.
+# The invariant is ABSOLUTE: zero, everywhere, always. It shipped as a
+# per-file baseline ratchet instead, to grandfather the 749 no-ops that
+# existed when this was found — but all of them are now fixed, and a ratchet
+# with nothing left to grandfather is worse than no ratchet: the baseline
+# lived at a gitignored path, so it read as empty on every machine but the
+# author's, which made the debt gate in scripts/test.sh inert exactly where
+# it mattered (CI, fresh clones) while looking active. Zero needs no file.
 #
-# Lower a baseline by fixing assertions and re-running:
-#   scripts/refresh-bats-assertion-baseline.sh
+# The scan reads the STAGED blob, not the worktree. Committing content that
+# differs from what was scanned is the whole failure mode a pre-commit gate
+# exists to prevent, and `pre-commit`'s stashing does not apply when the hook
+# is installed directly into .git/hooks (as consumers do).
+#
+# Usage:
+#   bats-assertion-gate.sh          # staged .bats files (pre-commit)
+#   bats-assertion-gate.sh --all    # every .bats in .claude/tests
 #
 # Exit: 0 clean · 2 refused.
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BASELINE="$REPO_ROOT/.claude/bats-assertion-baseline.tsv"
-
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+	echo "bats-assertion-gate: not in a git repo" >&2
+	exit 2
+}
 # shellcheck source=../_lib/bats-assertion-check.sh
 . "$REPO_ROOT/_lib/bats-assertion-check.sh"
 
@@ -36,51 +44,97 @@ if [ "${BATS_ASSERTION_GATE_SKIP:-0}" = "1" ]; then
 	exit 0
 fi
 
-staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.bats' 2>/dev/null || true)
-[ -n "$staged" ] || exit 0
+MODE="staged"
+[ "${1:-}" = "--all" ] && MODE="all"
 
-_baseline_for() { # $1 = repo-relative path
-	[ -r "$BASELINE" ] || {
-		echo 0
-		return
-	}
-	awk -F'\t' -v p="$1" '$1 == p { print $2; found = 1 } END { if (!found) print 0 }' \
-		"$BASELINE" | head -1
-}
+tmp=$(mktemp) || exit 2
+staged_list=$(mktemp) || exit 2
+trap 'rm -f "$tmp" "$staged_list"' EXIT
 
 violations=0
-while IFS= read -r rel; do
-	[ -n "$rel" ] || continue
-	[ -f "$REPO_ROOT/$rel" ] || continue
-	found=$(bats_assertion_scan "$REPO_ROOT/$rel")
-	count=0
-	[ -n "$found" ] && count=$(printf '%s\n' "$found" | wc -l | tr -d ' ')
-	base=$(_baseline_for "$rel")
-	if [ "$count" -gt "$base" ]; then
+scanned=0
+
+# rc 0 clean · 1 findings · 2 unreadable/unjudgeable. The third is NOT a pass:
+# a detector that reports "clean" when it could not read the file is worse
+# than no detector, because the commit proceeds with a green signal.
+_scan_one() { # $1 = path to scan, $2 = display path
+	local found rc=0
+	found=$(bats_assertion_scan "$1") || rc=$?
+	case "$rc" in
+	0) return 0 ;;
+	1) ;;
+	*)
 		echo "" >&2
-		echo "bats-assertion-gate: $rel has $count assertion(s) that cannot fail (baseline $base)" >&2
-		echo "" >&2
-		printf '%s\n' "$found" | while IFS= read -r hit; do
-			[ -n "$hit" ] && echo "  line ${hit}" >&2
-		done
+		echo "bats-assertion-gate: could not judge $2 — refusing rather than passing it" >&2
 		violations=$((violations + 1))
-	fi
-done <<EOF
-$staged
-EOF
+		return 0
+		;;
+	esac
+	echo "" >&2
+	echo "bats-assertion-gate: $2 — $(printf '%s\n' "$found" | grep -c .) assertion(s) that cannot fail" >&2
+	echo "" >&2
+	printf '%s\n' "$found" | sed 's/^/  line /' >&2
+	violations=$((violations + 1))
+}
+
+if [ "$MODE" = "all" ]; then
+	list=$(find "$REPO_ROOT/.claude/tests" -name '*.bats' -type f | sort) || {
+		echo "bats-assertion-gate: cannot enumerate .claude/tests" >&2
+		exit 2
+	}
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		scanned=$((scanned + 1))
+		_scan_one "$f" "${f#"$REPO_ROOT"/}"
+	done <<<"$list"
+else
+	# A git failure must not read as "nothing staged" — that is a gate which
+	# passes everything the moment git has a bad day. -z keeps a path git
+	# would otherwise quote (non-ASCII, or containing a space) reaching the
+	# scan; a silently skipped path is an ungated path. The list goes to a
+	# FILE, not `$(...)`: command substitution strips NUL bytes, which would
+	# splice every staged path into one unusable string.
+	git -c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMR -- '*.bats' >"$staged_list" || {
+		echo "bats-assertion-gate: 'git diff --cached' failed — refusing" >&2
+		exit 2
+	}
+	while IFS= read -r -d '' rel; do
+		[ -n "$rel" ] || continue
+		# The staged blob. A deleted-then-restaged path can be absent from
+		# the index; `git show` fails and there is nothing to gate.
+		git show ":$rel" >"$tmp" 2>/dev/null || continue
+		scanned=$((scanned + 1))
+		_scan_one "$tmp" "$rel"
+	done <"$staged_list"
+fi
 
 if [ "$violations" -gt 0 ]; then
-	echo "" >&2
-	echo '  A bare `[[ ]]` does not fail a bats test on bash 3.2 unless it is the' >&2
-	echo "  block's LAST command. Use a form that fails wherever it sits:" >&2
-	echo "" >&2
-	echo '      [ "$status" -eq 0 ]                      single-bracket builtin' >&2
-	echo '      [[ $output == *x* ]] || return 1          the `||` supplies it' >&2
-	echo '      case "$output" in *x*) ;; *) return 1 ;; esac' >&2
-	echo '      assert_output_contains "x"                helper returning non-zero' >&2
-	echo "" >&2
-	echo "  See _lib/bats-assertion-check.sh for the one-line demonstration." >&2
-	echo "  Bypass (audit-logged): BATS_ASSERTION_GATE_SKIP=1 git commit ..." >&2
+	cat >&2 <<-'EOF'
+
+		  A bare `[[ ]]` does not fail a bats test on bash 3.2 unless it is the
+		  block's LAST command. Use a form that fails wherever it sits:
+
+		      [ "$status" -eq 0 ]                      single-bracket builtin
+		      [[ $output == *x* ]] || return 1         the `||` supplies it
+		      case "$output" in *x*) ;; *) return 1 ;; esac
+		      assert_output_contains "x"               helper returning non-zero
+
+		  Put the guard in COMMAND position, BEFORE any trailing comment:
+
+		      [[ $o == *x* ]] || return 1   # why        guard runs
+		      [[ $o == *x* ]]   # why || return 1        guard is a COMMENT
+
+		  `&&` counts only for control flow (`&& return`, `&& break`). In
+		  `[[ a ]] && [ b ]` the failing `[[ ]]` is a non-last AND-list member,
+		  so it fires nothing on any bash — it reads as an assertion and is not.
+
+		  See _lib/bats-assertion-check.sh for the one-line demonstration.
+		  Bypass (audit-logged): BATS_ASSERTION_GATE_SKIP=1 git commit ...
+	EOF
 	exit 2
+fi
+
+if [ "$MODE" = "all" ]; then
+	echo "bats-assertion-gate: $scanned file(s) clean"
 fi
 exit 0

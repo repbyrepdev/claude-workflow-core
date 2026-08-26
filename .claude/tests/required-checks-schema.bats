@@ -65,7 +65,7 @@ _validate_section() {
 		# workflow_file: non-empty string ending .yml OR literal "null"
 		wf=$(yq -r ".${section}[$i].workflow_file" "$CHECKS_YML")
 		if [ "$wf" != "null" ]; then
-			[[ $wf =~ \.ya?ml$ ]]
+			[[ $wf =~ \.ya?ml$ ]] || return 1
 		fi
 		# event: enum {pull_request, push, schedule, workflow_dispatch}, OR a
 		# comma-separated LIST of them, OR literal "null".

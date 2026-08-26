@@ -35,30 +35,9 @@ teardown() {
 	fi
 }
 
-# Assertions that ACTUALLY FAIL wherever they appear. A bare `[[ ]]` only
-# fails a bats test when it is the LAST command: bats detects failure via an
-# ERR trap, and on bash 3.2 a failing conditional fires neither that trap nor
-# `set -e`. Named `assert_*` — the bats convention, and what pre-commit
-# bats-gate counts, so replacing a fragile check with a real one reads as the
-# strengthening it is.
-assert_output_contains() { # $1 = substring $output must contain
-	case "$output" in
-	*"$1"*) return 0 ;;
-	esac
-	echo "expected to find: $1"
-	echo "actual output   : $output"
-	return 1
-}
-assert_output_lacks() { # $1 = substring $output must NOT contain
-	case "$output" in
-	*"$1"*)
-		echo "expected NOT to find: $1"
-		echo "actual output       : $output"
-		return 1
-		;;
-	esac
-	return 0
-}
+# assert_output_contains / assert_output_lacks and WHY they exist:
+# .claude/tests/assert.bash (#2631 — a bare [[ ]] cannot fail on bash 3.2).
+load ../assert
 
 # Policy fixture. $1 = nudge_timeout_seconds, $2 = require value
 # (default true). Regenerated whole per test — no in-place sed (BSD/GNU

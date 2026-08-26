@@ -80,30 +80,9 @@ _stub_cli() {
 	chmod +x "$TEST_TMP/bin/openwiki"
 }
 
-# Assertions that ACTUALLY FAIL wherever they appear. A bare `[[ ]]` only
-# fails the test when it is the LAST command: bats runs under bash 3.2 on
-# macOS, where a failing conditional fires neither errexit nor the ERR trap.
-# Named `assert_*` because that is the bats convention AND what pre-commit
-# bats-gate counts, so replacing a fragile check with a real one reads as the
-# strengthening it is rather than as assertion removal.
-assert_output_contains() { # $1 = substring $output must contain
-	case "$output" in
-	*"$1"*) return 0 ;;
-	esac
-	echo "expected to find: $1"
-	echo "actual output   : $output"
-	return 1
-}
-assert_output_lacks() { # $1 = substring $output must NOT contain
-	case "$output" in
-	*"$1"*)
-		echo "expected NOT to find: $1"
-		echo "actual output       : $output"
-		return 1
-		;;
-	esac
-	return 0
-}
+# assert_output_contains / assert_output_lacks and WHY they exist:
+# .claude/tests/assert.bash (#2631 — a bare [[ ]] cannot fail on bash 3.2).
+load ../assert
 
 # $1 = json for .mcpServers.openwiki, or "" to omit the key entirely
 _write_claude_json() {

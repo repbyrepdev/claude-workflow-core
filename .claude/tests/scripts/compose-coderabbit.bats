@@ -108,8 +108,8 @@ EOF
 	# #2254: skip the hook-exclusion injection (see above) to isolate verbatim.
 	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
 	[ "$status" -eq 0 ]
-	[[ $output == *"# header comment"* ]]   # base verbatim || return 1
-	[[ $output == *"no mapping content"* ]] # NOTE on stderr (captured by run)
+	[[ $output == *"# header comment"* ]] || return 1 # base verbatim
+	[[ $output == *"no mapping content"* ]]           # NOTE on stderr (captured by run)
 }
 
 @test "missing --base → exit 2 (#234)" {

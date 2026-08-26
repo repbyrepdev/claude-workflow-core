@@ -296,10 +296,10 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	c2p=$(git rev-parse HEAD)
 	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2p' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
 	[ "$status" -eq 1 ]
-	[[ $output == *"is STALE"* ]]                   # ancestry check fired || return 1
-	[[ $output != *"graduated past Phase 0.5/1"* ]] # short-circuit NOT honored || return 1
-	[[ $output == *"no review log for"* ]]          # full log walk ran || return 1
-	[ ! -f "$marker" ]                              # stale marker invalidated
+	[[ $output == *"is STALE"* ]] || return 1                   # ancestry check fired
+	[[ $output != *"graduated past Phase 0.5/1"* ]] || return 1 # short-circuit NOT honored
+	[[ $output == *"no review log for"* ]] || return 1          # full log walk ran
+	[ ! -f "$marker" ]                                          # stale marker invalidated
 }
 
 @test "STALE marker on a FAST-FORWARD push (amend of a never-pushed tip) runs the full gate (#2483)" {
@@ -314,8 +314,8 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	c2p=$(git rev-parse HEAD)
 	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2p' '$cb' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
 	[ "$status" -eq 1 ]
-	[[ $output != *"force-push detected"* ]] # took the fast-forward path || return 1
-	[[ $output == *"is STALE"* ]]            # ...and ancestry still caught it || return 1
+	[[ $output != *"force-push detected"* ]] || return 1 # took the fast-forward path
+	[[ $output == *"is STALE"* ]] || return 1            # ...and ancestry still caught it
 	[[ $output != *"graduated past Phase 0.5/1"* ]] || return 1
 	[[ $output == *"no review log for"* ]]
 }
@@ -338,7 +338,7 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	printf '{"sha":"%s","findings":0,"complete":true}\n' "${c3:0:7}" >.claude/logs/cr-local-review.jsonl # Phase 2 clean seed
 	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
 	[ "$status" -eq 0 ]
-	[[ $output == *"graduated past Phase 0.5/1"* ]] # short-circuit survived the ancestry check || return 1
+	[[ $output == *"graduated past Phase 0.5/1"* ]] || return 1 # short-circuit survived the ancestry check
 	[[ $output != *"is STALE"* ]] || return 1
 	[[ $output == *"accepting"* ]] # Phase 2 clean verdict honored
 }
@@ -362,9 +362,9 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	[[ $output == *"force-push detected"* ]] || return 1
 	[[ $output == *"WARN"* ]] || return 1
 	[[ $output == *"graduation_invalidate failed"* ]] || return 1
-	[[ $output != *"graduated past Phase 0.5/1"* ]] # _grad_forced bypassed the short-circuit || return 1
-	[[ $output == *"no review log for"* ]]          # full walk ran || return 1
-	[ -f "$marker" ]                                # the stuck marker indeed survived
+	[[ $output != *"graduated past Phase 0.5/1"* ]] || return 1 # _grad_forced bypassed the short-circuit
+	[[ $output == *"no review log for"* ]] || return 1          # full walk ran
+	[ -f "$marker" ]                                            # the stuck marker indeed survived
 }
 
 @test "_grad_marker_stale: MISSING marker is fail-closed STALE (rc 0) (#2483 CR)" {
@@ -454,10 +454,10 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$c3" >.claude/audit/prove-yourself.jsonl
 	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
 	[ "$status" -eq 0 ]
-	[[ $output == *"graduated past Phase 0.5/1"* ]]    # phase-1 marker honored || return 1
-	[[ $output == *"GRADUATED via branch ancestor"* ]] # phase-2 graduation fired || return 1
-	[[ $output == *"defers to CR-in-CI"* ]]            # ...with the deferral notice || return 1
-	[[ $output == *"accepting"* ]]                     # gate verdict
+	[[ $output == *"graduated past Phase 0.5/1"* ]] || return 1    # phase-1 marker honored
+	[[ $output == *"GRADUATED via branch ancestor"* ]] || return 1 # phase-2 graduation fired
+	[[ $output == *"defers to CR-in-CI"* ]] || return 1            # ...with the deferral notice
+	[[ $output == *"accepting"* ]]                                 # gate verdict
 }
 
 @test "REFUSED push: ancestor review with UNCOVERED findings blocks origin (#2569)" {
@@ -477,7 +477,7 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	printf '{"source":"cr","covered_sha":"%s","covers_count":2}\n' "$cb" >.claude/audit/prove-yourself.jsonl
 	run bash -c "cd '$TMP' && printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c3' '$ZERO40' | PHASE1_MIN_ROUNDS= bash '$HOOK'"
 	[ "$status" -eq 1 ]
-	[[ $output == *"at-or-after coverage is only 0"* ]] # the refusal names the gap || return 1
+	[[ $output == *"at-or-after coverage is only 0"* ]] || return 1 # the refusal names the gap
 	[[ $output != *"accepting"* ]]
 }
 
@@ -543,7 +543,7 @@ _GRAD_LIB="${BATS_TEST_DIRNAME}/../../../_lib/phase-graduation.sh"
 	read -r c1 c2 _c2alt < <(_make_grad_fixture)
 	cd "$TMP"
 	run bash -c "printf 'refs/heads/feat/x %s refs/heads/feat/x %s\n' '$c2' '$c1' | PHASE1_MIN_ROUNDS=1 bash '$HOOK'"
-	[ "$status" -eq 1 ]                      # blocks the push: no review log for c2 ⇒ FAILED=1
-	[[ $output == *"no review log for"* ]]   # reached the log walk ⇒ survived the probe || return 1
-	[[ $output != *"force-push detected"* ]] # fast-forward is NOT a force-push
+	[ "$status" -eq 1 ]                                # blocks the push: no review log for c2 ⇒ FAILED=1
+	[[ $output == *"no review log for"* ]] || return 1 # reached the log walk ⇒ survived the probe
+	[[ $output != *"force-push detected"* ]]           # fast-forward is NOT a force-push
 }

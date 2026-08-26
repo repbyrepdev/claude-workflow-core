@@ -146,11 +146,15 @@ _fixture() {
 	run grep -c 'covers:' scripts/refresh-from-source.sh
 	[ "$status" -eq 0 ] || return 1
 	[ "$output" -gt 0 ] || return 1
-	run grep -cE '\^#\[\[:space:\]\]\*audits:' scripts/refresh-from-source.sh
-	# grep -c exits 1 with a count of 0 when nothing matches; either shape is
-	# fine as long as the count is zero.
+	# CODE lines only. It was written `grep -cE '\^#\[\[:space:\]\]\*audits:'`
+	# — every metacharacter escaped, so it searched for that literal text
+	# rather than for the header, and could only ever report 0, which is what
+	# it asserted. De-escaping it alone swings too far the other way: the
+	# script explains in comments why it deliberately ignores `audits:`, and
+	# an explanation is not a read. Strip comments, then look.
+	run bash -c "grep -v '^[[:space:]]*#' scripts/refresh-from-source.sh | grep -c 'audits:' || true"
 	[ "$output" = "0" ] || {
-		echo "the drift gate reads audits: — it must not"
+		echo "the drift gate reads audits: in code — it must not"
 		return 1
 	}
 }
@@ -189,9 +193,118 @@ _fixture() {
 	cd "$REPO_ROOT" || return 1
 	run grep -n 'audits:' AGENTS.md
 	[ "$status" -eq 0 ] || return 1
-	case "$output" in
-	*"NOT yet parsed"*)
+	# Search the WHOLE file for the stale phrase. Grepping for `audits:` first
+	# and then inspecting only those lines made this nearly vacuous: the
+	# disclaimer need only sit on a neighbouring line to survive.
+	run grep -c 'NOT yet parsed' AGENTS.md
+	[ "$output" = "0" ] || {
 		echo "AGENTS.md still says audits: is unparsed"
+		return 1
+	}
+}
+
+@test "LIST_ONLY is a FLAG, not ambient state" {
+	# It was read as `${LIST_ONLY:-0}` with no initialisation, so an exported
+	# LIST_ONLY=1 anywhere upstream turned the runner into a lister: it printed
+	# paths and exited 0 having run nothing, while callers that treat exit 0 as
+	# "scoped tests passed" (scripts/cr/autofix-cycle.sh's post-pull re-test
+	# gate, hooks/phase1-launcher.sh) stayed satisfied. LIST_ONLY is not
+	# matched by hooks/skip-env-approval-gate.sh's `*_SKIP` pattern either, so
+	# it silently disabled a gate with no operator approval.
+	local w
+	w=$(_fixture) || return 1
+	printf '#!/bin/bash\nexit 1\n' >"$w/hooks/some-hook.sh"
+	# With the env var set but the flag absent, the routing list must NOT be
+	# what comes back — the script must go on to actually run something.
+	run env LIST_ONLY=1 bash -c "cd '$w' && scripts/test-touched.sh --base HEAD"
+	case "$output" in
+	*audits-only.bats*)
+		# A bare path list is the --list output. Running for real prints
+		# "test-touched: running N bats file(s)" first.
+		case "$output" in
+		*"running "*) ;;
+		*)
+			echo "LIST_ONLY=1 from the environment suppressed the run: $output"
+			return 1
+			;;
+		esac
+		;;
+	esac
+}
+
+@test "covers: is matched EXACTLY, so it cannot route without earning credit" {
+	# Routing globbed both headers, but the three credit-granting readers
+	# (test.sh --coverage, bats-gate.sh, refresh-from-source.sh) match covers:
+	# literally. A covers: glob would therefore route while satisfying no gate
+	# — a partial behaviour nothing rejects and AGENTS.md contradicts.
+	local w
+	w=$(_fixture) || return 1
+	printf '#!/usr/bin/env bats\n# covers: _lib/*.sh\n@test "z" { true; }\n' \
+		>"$w/.claude/tests/covers-glob.bats"
+	(cd "$w" && git add -A && git commit -q -m glob) || return 1
+	printf '#!/bin/bash\nexit 1\n' >"$w/_lib/some-lib.sh"
+	run env -u LIST_ONLY bash -c "cd '$w' && scripts/test-touched.sh --list --base HEAD"
+	[ "$status" -eq 0 ] || return 1
+	case "$output" in
+	*covers-glob.bats*)
+		echo "a covers: glob routed; covers: must be an exact path: $output"
+		return 1
+		;;
+	esac
+	# The exact-path suite still routes, so this is not just "nothing matched".
+	case "$output" in
+	*covers-only.bats*) ;;
+	*)
+		echo "the exact covers: suite stopped routing: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "--help documents every flag the parser accepts" {
+	# --help printed a hardcoded `sed -n '4,30p'` range, which stopped covering
+	# the header the moment a flag was documented in it: --list shipped absent
+	# from its own help. Derived from the header now, so it cannot drift.
+	cd "$REPO_ROOT" || return 1
+	run scripts/test-touched.sh --help
+	[ "$status" -eq 0 ] || return 1
+	local flag
+	for flag in --base --list --help; do
+		case "$output" in
+		*"$flag"*) ;;
+		*)
+			echo "--help does not mention $flag"
+			return 1
+			;;
+		esac
+	done
+	# ...and it is help text, not the machine directives above it.
+	case "$output" in
+	*bats-required*)
+		echo "--help leaked the # bats-required: directive"
+		return 1
+		;;
+	esac
+}
+
+@test "--list answers with an empty list when nothing routes" {
+	# The no-coverage branch exited 0 first, so --list printed an advisory to
+	# stderr and nothing to stdout. "Nothing routes" is a valid answer to
+	# --list and has to come back on stdout as the empty list it is.
+	local w
+	w=$(_fixture) || return 1
+	# Touch a file no suite covers or audits.
+	printf 'x\n' >"$w/README.md"
+	(cd "$w" && git add -A && git commit -q -m readme) || return 1
+	printf 'y\n' >"$w/README.md"
+	run env -u LIST_ONLY bash -c "cd '$w' && scripts/test-touched.sh --list --base HEAD"
+	[ "$status" -eq 0 ] || {
+		echo "--list should exit 0 with nothing to list; got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*"no-op"* | *"consider:"*)
+		echo "--list emitted the no-coverage advisory instead of a list: $output"
 		return 1
 		;;
 	esac

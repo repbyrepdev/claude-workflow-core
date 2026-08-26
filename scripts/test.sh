@@ -43,7 +43,7 @@ if ! command -v bats >/dev/null 2>&1; then
 	exit 2
 fi
 
-# --- harness trust gate (#2631 follow-up) --------------------------------
+# --- harness trust (#2631 follow-up) -------------------------------------
 #
 # bats reports a failed test through an ERR trap. On bash 3.2 — the 2007
 # build macOS ships at /bin/bash and can never update, because bash 4.0
@@ -55,45 +55,25 @@ fi
 #   → REACHED        (with bash 5: TRAP, and the script stops)
 #
 # Consequence: every `[[ ]]` assertion that is not a test's LAST command is
-# a silent no-op. Measured at 749 across 96 files when this was found. A
-# green run under 3.2 therefore proves only that the single-bracket `[ ]`
-# assertions held — which is not what "green" is read to mean.
+# a silent no-op. Measured at 749 across 96 files when this was found — a
+# green run under 3.2 proved only that the `[ ]` assertions held, which is
+# not what "green" is read to mean.
 #
-# `bats` is `#!/usr/bin/env bash`, so it runs under the FIRST bash on PATH.
-# That is what we inspect — not this script's own interpreter, which may
-# differ. Installing Homebrew's bash is the entire fix; /opt/homebrew/bin
-# already precedes /bin, so nothing else has to change.
-# The suite is PORTABLE now: every assertion is written in a form that fails
-# on 3.2 as well as 4/5 (`[ ]`, `case`, `|| return 1`, `assert_*`), and
-# .claude/bats-assertion-baseline.tsv is the ratchet keeping it that way. So
-# there is nothing to refuse — any bash is supported, and `--shell` exists so
-# BOTH can be verified in one sitting.
+# The fix was to make the SUITE portable rather than to constrain the
+# environment: every assertion is now written in a form that fails on 3.2 as
+# well as 4/5 (`[ ]`, `case`, `|| return 1`, `assert_*`), and
+# pre-commit-hooks/bats-assertion-gate.sh keeps it that way. Refusing to run
+# on 3.2 would only have moved the problem — GitHub's macOS runners ship 3.2,
+# so a refusal there stops CI rather than testing anything.
 #
-# The gate fires only while portability DEBT remains: a non-empty baseline
-# means some assertion still cannot fail on 3.2, and a green run there would
-# overstate what was checked. It lifts itself when the debt hits zero.
-_harness_bash="${TEST_BASH:-$(command -v bash 2>/dev/null || echo /bin/bash)}"
-if [ ! -x "$_harness_bash" ]; then
-	echo "ERROR: --shell/TEST_BASH '$_harness_bash' is not executable" >&2
-	exit 2
-fi
-_harness_major=$("$_harness_bash" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)
-_baseline_file="$REPO_ROOT/.claude/bats-assertion-baseline.tsv"
-_debt=0
-if [ -s "$_baseline_file" ]; then
-	_debt=$(awk -F'\t' '{s += $2} END {print s + 0}' "$_baseline_file")
-fi
-if [ "${_harness_major:-0}" -lt 4 ] && [ "${_debt:-0}" -gt 0 ]; then
-	_harness_ver=$("$_harness_bash" -c 'echo "$BASH_VERSION"' 2>/dev/null || echo unknown)
-	echo "ERROR: bats would run under $_harness_bash ($_harness_ver), and" >&2
-	echo "  $_debt assertion(s) still cannot fail there." >&2
-	echo "" >&2
-	echo "  Fix them (append '|| return 1'), then re-run:" >&2
-	echo "      scripts/refresh-bats-assertion-baseline.sh" >&2
-	echo "  Or use a newer shell:" >&2
-	echo "      scripts/test.sh --shell /opt/homebrew/bin/bash ..." >&2
-	exit 2
-fi
+# Note the direction of the implication, which is easy to get backwards:
+# 3.2 is the more PERMISSIVE harness, because assertion forms that silently
+# pass there do fail on 4/5. So green on 5 implies green on 3.2, and green on
+# 3.2 implies nothing at all. `--shell` exists to check both in one sitting;
+# it builds a shim dir and VERIFIES the shell took effect, because `bats`
+# re-execs `#!/usr/bin/env bash` helpers and a naive `<shell> <bats>` reaches
+# only the front-end. A run that reported 3.2 and executed under 5 is exactly
+# what phase-1 review caught here.
 
 LOG_FILE="${BATS_LOG:-$REPO_ROOT/.claude/logs/bats-run.jsonl}"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -151,6 +131,56 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+# --- resolve and VERIFY the shell the tests will run under ----------------
+#
+# After the parse loop, so `--shell` is visible here — the gate that used to
+# sit above it exited before its own advertised remedy could be parsed.
+#
+# `bats` re-execs several `#!/usr/bin/env bash` helpers, so invoking it as
+# `<shell> <bats-path>` overrides only the front-end and the test bodies still
+# get whatever `bash` PATH resolves to. The fix is a shim dir on PATH; the
+# verification is what makes "this ran under 3.2" checkable rather than
+# asserted. Phase-1 review caught a run that reported 3.2 and executed under 5.
+#
+# TEST_BASH is honoured from the environment as well as from `--shell`, so it
+# is validated the same way either way: a non-bash there would otherwise sail
+# through as a green run of zero tests.
+SHELL_SHIM_DIR=""
+_cleanup_shell_shim() {
+	# `return 0` is load-bearing: an EXIT trap whose last command fails
+	# REPLACES the script's exit status with that failure. Written as
+	# `[ -n "$X" ] && rm -rf "$X"` it turned every clean run into exit 1 —
+	# including `--coverage` and the refusals below, which then reported the
+	# wrong code while printing the right message.
+	if [ -n "$SHELL_SHIM_DIR" ]; then
+		rm -rf "$SHELL_SHIM_DIR"
+	fi
+	return 0
+}
+trap _cleanup_shell_shim EXIT
+
+if [ -n "${TEST_BASH:-}" ]; then
+	if [ ! -x "$TEST_BASH" ]; then
+		echo "ERROR: --shell/TEST_BASH '$TEST_BASH' is not executable" >&2
+		exit 2
+	fi
+	_want_ver=$("$TEST_BASH" -c 'echo "${BASH_VERSION:-}"' 2>/dev/null || echo "")
+	if [ -z "$_want_ver" ]; then
+		echo "ERROR: --shell/TEST_BASH '$TEST_BASH' reports no \$BASH_VERSION." >&2
+		echo "  It is not a bash, so it cannot run the suite. Refusing rather" >&2
+		echo "  than logging a green run of zero tests." >&2
+		exit 2
+	fi
+	SHELL_SHIM_DIR=$(mktemp -d -t bats-shell.XXXXXX) || exit 2
+	ln -s "$TEST_BASH" "$SHELL_SHIM_DIR/bash" || exit 2
+	_got_ver=$(PATH="$SHELL_SHIM_DIR:$PATH" /usr/bin/env bash -c 'echo "${BASH_VERSION:-}"' 2>/dev/null || echo "")
+	if [ "$_want_ver" != "$_got_ver" ]; then
+		echo "ERROR: --shell '$TEST_BASH' ($_want_ver) did not take effect;" >&2
+		echo "  \`env bash\` still resolves to '${_got_ver:-nothing}'." >&2
+		exit 2
+	fi
+fi
+
 cd "$REPO_ROOT" || exit 2
 
 # --coverage: inventory mode, doesn't run tests.
@@ -181,7 +211,13 @@ if [ "$MODE" = "coverage" ]; then
 		# remains in case a future refactor swaps to `find -exec ... +`
 		# (aggregated grep) or `find | xargs grep` / `find | grep`, where
 		# grep's rc=1 on no-match WOULD propagate under set -o pipefail.
-		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u || true)
+		# -m1: FIRST covers: line per file, matching every other consumer
+		# (test-touched.sh routing, bats-gate.sh, the mirror-drift gate — all
+		# `grep -m1`). Without it a second covers: line earned coverage credit
+		# here while being silently ignored everywhere else, so a path could
+		# read as covered and still not route or satisfy the commit gate.
+		# `-exec ... \;` already runs one grep per file, so -m1 is per-file.
+		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -m1 -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u || true)
 	else
 		bats_count=0
 		COVERED_PATHS=""
@@ -330,8 +366,16 @@ _tested_files_json() {
 
 log_one() {
 	local file=$1 rc=$2 passed=$3 failed=$4 status
-	if [ "$rc" -eq 0 ]; then
+	if [ "$rc" -eq 0 ] && [ "$passed" -gt 0 ]; then
 		status="pass"
+	elif [ "$rc" -eq 0 ]; then
+		# rc=0 with nothing executed. Every consumer of this log — bats-gate,
+		# the pre-push pipeline gate, the content-hash cache — reads `pass` as
+		# "this file's tests ran and held". A run that executed zero tests
+		# proves nothing, so it must never be able to say `pass`. This is the
+		# shape a non-bash TEST_BASH produced before the gate above rejected
+		# it (`✓ file (0 passed)`, exit 0, logged pass); belt and braces.
+		status="error"
 	elif [ "$rc" -eq 1 ]; then
 		status="fail"
 	else
@@ -398,12 +442,13 @@ FAIL_FILES=0
 for f in "${FILES[@]}"; do
 	TOTAL_FILES=$((TOTAL_FILES + 1))
 	rc=0
-	# (#2572) --shell/TEST_BASH: run bats UNDER a chosen bash. `bats` is
-	# `#!/usr/bin/env bash`, so invoking it as `<shell> <bats-path>` overrides
-	# the shebang and is what makes "same verdict on 3.2 and 5" checkable.
-	# Unset (the normal case) keeps the plain invocation.
-	if [ -n "${TEST_BASH:-}" ]; then
-		out=$("$TEST_BASH" "$(command -v bats)" --tap "$f" 2>&1) || rc=$?
+	# (#2572) --shell/TEST_BASH: run bats UNDER a chosen bash, via the shim
+	# dir built and VERIFIED above. PATH — not `<shell> <bats-path>` — is what
+	# reaches the test bodies: bats re-execs `bats-exec-test` and friends,
+	# each `#!/usr/bin/env bash`, so only PATH decides what interprets an
+	# assertion. Unset (the normal case) keeps the plain invocation.
+	if [ -n "$SHELL_SHIM_DIR" ]; then
+		out=$(PATH="$SHELL_SHIM_DIR:$PATH" bats --tap "$f" 2>&1) || rc=$?
 	else
 		out=$(bats --tap "$f" 2>&1) || rc=$?
 	fi
@@ -411,6 +456,15 @@ for f in "${FILES[@]}"; do
 	failed=$(printf '%s\n' "$out" | grep -cE '^not ok ' || true)
 	TOTAL_PASS=$((TOTAL_PASS + passed))
 	TOTAL_FAIL=$((TOTAL_FAIL + failed))
+	# rc=0 with nothing executed is a failure, not a pass. Reassigning rc here
+	# keeps ONE verdict feeding the console line, the exit code and the JSONL
+	# entry, so they cannot disagree. (No suite in .claude/tests has zero
+	# @test, so this only ever fires on a broken harness.)
+	if [ "$rc" -eq 0 ] && [ "$passed" -eq 0 ]; then
+		rc=66
+		out="${out}
+# no tests executed — refusing to report this file as passing"
+	fi
 	[ "$rc" -ne 0 ] && FAIL_FILES=$((FAIL_FILES + 1))
 	log_one "$f" "$rc" "$passed" "$failed"
 	if [ "$rc" -eq 0 ]; then

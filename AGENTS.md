@@ -98,14 +98,18 @@ subagents.
 A bats file that POLICY-AUDITS many files (a repo-wide meta-lint) must not
 claim `# covers:` on them — that hands out false behavioral-test credit in
 `test-touched` and the mirror-drift gate. Declare `# audits: <paths…>`
-instead. Both headers are per-file, read with `grep -m1`, space-separated.
+instead. Both headers are per-file and space-separated, and all four consumers
+read only the FIRST line of each (`grep -m1`) — a second `covers:` line is
+ignored, not merged. `test.sh --coverage` used to read every line, so a path
+on a second line earned coverage credit while never routing or satisfying the
+commit gate; it now reads the first, like everything else.
 
 ```bash
 # covers: _lib/event-frontmatter.sh    ← what this file EXECUTES
 # audits: hooks/*.sh                   ← what it SWEEPS but never runs
 ```
 
-The two headers answer different questions, and the three consumers read
+The two headers answer different questions, and the four consumers read
 them differently:
 
 | consumer | `covers:` | `audits:` |
@@ -113,15 +117,23 @@ them differently:
 | `test-touched.sh` (routing) | re-run | **re-run** |
 | `test.sh --coverage` (credit) | counts | ignored |
 | `refresh-from-source.sh` drift gate (credit) | accepts as the verifying test | ignored |
+| `pre-commit-hooks/bats-gate.sh` (commit gate) | satisfies it | ignored |
 
 Routing on both is the point: an audit must re-run when something it
 polices changes. Crediting only `covers:` is equally the point: an audit
 that swept 40 mirror hooks without executing one of them would otherwise
 tell the drift gate they were all verified.
 
-`audits:` entries may be globs (`hooks/*.sh`); `covers:` entries are exact
-paths. A file may carry both, one, or neither — a suite with only `audits:`
-routes correctly and simply contributes no coverage, which is accurate.
+**Before migrating a suite off `covers:`**, note the fourth row: `bats-gate.sh`
+refuses to commit a touched `.sh` that no suite *covers*. Moving 40 hook
+paths from `covers:` to `audits:` strips them of their only claim and blocks
+every commit that touches them. Migrate only paths that another suite
+already covers, or that carry `# bats-required: 0`.
+
+`audits:` entries are globs (`hooks/*.sh`). `covers:` entries are exact
+paths, matched literally by all four consumers. A file may carry both, one,
+or neither — a suite with only `audits:` routes correctly and simply
+contributes no coverage, which is accurate.
 
 First user: `.claude/tests/_lib/event-frontmatter-audit.bats`.
 
@@ -151,21 +163,41 @@ case "$output" in *x*) ;; *) return 1 ;; esac
 assert_output_contains "x"                # helper returning non-zero
 ```
 
+`&&` is **not** one of them. In `[[ a == b ]] && cmd` the failing `[[ ]]` is
+a non-last member of an AND-list, so it fires neither the trap nor `set -e`
+— on *any* bash, 3.2 through 5. It reads like a guard and is not one.
+
+Put the guard in **command position**, before any trailing comment:
+
+```bash
+[[ $output == *x* ]] || return 1   # what this checks     ← guard runs
+[[ $output == *x* ]]   # what this checks || return 1     ← guard is a COMMENT
+```
+
+31 assertions shipped in the second shape. It is self-concealing: the `||`
+inside the comment also satisfied a detector that scanned the whole line, so
+the audit reported them clean.
+
 Enforced mechanically, in layers:
 
-1. **`pre-commit-hooks/bats-assertion-gate.sh`** refuses any *increase* in
-   non-portable assertions, per file, against
-   `.claude/bats-assertion-baseline.tsv`.
-2. **The baseline is 0 and a test pins it there**, so the refresh script
-   cannot be used to launder new debt into the baseline.
-3. **`scripts/test.sh --shell <bash>`** runs the suite under a chosen shell.
-   The acceptance test for portability is the same verdict on the oldest and
-   newest supported bash:
+1. **`pre-commit-hooks/bats-assertion-gate.sh`** refuses *any* such
+   assertion in a staged `.bats` file. The invariant is absolute — zero,
+   everywhere — so there is no baseline file and nothing to launder. It
+   scans the staged blob, not the worktree.
+2. **`bats-assertion-gate.sh --all`** sweeps the whole suite; a test asserts
+   the repo-wide count is 0.
+3. **`scripts/test.sh --shell <bash>`** runs the suite under a chosen shell,
+   after verifying that shell actually took effect (bats re-execs
+   `#!/usr/bin/env bash` helpers, so PATH — not the invocation — decides what
+   interprets an assertion):
 
    ```bash
    TEST_SH_FULL_OK=1 scripts/test.sh --shell /bin/bash              # 3.2
    TEST_SH_FULL_OK=1 scripts/test.sh --shell "$(brew --prefix)/bin/bash"
    ```
 
-   Green on 3.2 implies green on 4, 5, Linux and GitHub runners — 3.2 is the
-   weakest link, which is why it is the one worth checking.
+   Mind the direction: **3.2 is the more permissive harness**, since the
+   forms that silently pass there do fail on 4/5. So green on 5 implies green
+   on 3.2, and green on 3.2 implies *nothing*. Both runs are worth doing —
+   3.2 catches bash-4-only syntax, 5 catches assertions that cannot fail —
+   but only the newer one can certify that the assertions bite.

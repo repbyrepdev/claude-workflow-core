@@ -192,3 +192,98 @@ teardown() {
 	[[ $output == *"✗ "*"fail.bats"* ]] || return 1
 	[[ $output == *"FAILURE DETAILS"* ]]
 }
+
+# --- #2631 follow-up: harness trust -------------------------------------
+#
+# Three defects found by the phase-1 panel on the branch that added --shell.
+# Each is locked in below, because each made the runner REPORT something it
+# had not done — the one failure mode a test runner must never have.
+
+@test "a non-bash TEST_BASH is REFUSED, not run as a green suite of zero tests" {
+	# `TEST_BASH=/usr/bin/true scripts/test.sh <file>` printed
+	# '✓ file (0 passed)', exited 0, and appended {"status":"pass"} to
+	# bats-run.jsonl — which pre-commit bats-gate.sh and the pre-push
+	# pipeline gate both read as "this file's tests ran and held". Zero tests
+	# executed. TEST_BASH is not matched by the skip-approval hook's `*_SKIP`
+	# pattern, so it needed no operator approval either.
+	mkdir -p "$TEST_TMP/.claude/tests"
+	printf '#!/usr/bin/env bats\n@test "t" { true; }\n' >"$TEST_TMP/.claude/tests/ok.bats"
+	TEST_BASH=/usr/bin/true run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/ok.bats"
+	[ "$status" -eq 2 ] || {
+		echo "expected refusal (2), got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*BASH_VERSION*) ;;
+	*)
+		echo "expected the refusal to name why; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a run that executes ZERO tests cannot report pass" {
+	# Belt and braces behind the check above: whatever the cause, rc=0 with
+	# nothing executed must not reach the log as 'pass'. One verdict feeds the
+	# console line, the exit code and the JSONL entry, so they cannot diverge.
+	mkdir -p "$TEST_TMP/.claude/tests"
+	printf '#!/usr/bin/env bats\n# no tests here\n' >"$TEST_TMP/.claude/tests/empty.bats"
+	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/empty.bats"
+	[ "$status" -ne 0 ] || {
+		echo "a zero-test file reported success: $output"
+		return 1
+	}
+	case "$output" in
+	*"no tests executed"*) ;;
+	*)
+		echo "expected the reason in the output; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "--shell selects the shell the TEST BODY runs under, not just the front-end" {
+	# `bats` re-execs bats-exec-test and friends, each `#!/usr/bin/env bash`,
+	# so `<shell> $(command -v bats)` overrode only the front-end and the
+	# assertions still ran under whatever PATH resolved. An acceptance run
+	# reported 'bash 3.2' and executed under 5. The fixture below asserts the
+	# major version it actually sees, so it can only pass if --shell reached
+	# the test body.
+	[ -x /bin/bash ] || skip "no /bin/bash"
+	mkdir -p "$TEST_TMP/.claude/tests"
+	cat >"$TEST_TMP/.claude/tests/probe.bats" <<-'PROBE'
+		#!/usr/bin/env bats
+		@test "the body sees the requested bash" {
+			[ "${BASH_VERSINFO[0]}" = "$WANT_MAJOR" ]
+		}
+	PROBE
+	WANT_MAJOR=3 run "$SCRIPT" --no-log --shell /bin/bash "$TEST_TMP/.claude/tests/probe.bats"
+	[ "$status" -eq 0 ] || {
+		echo "--shell /bin/bash did not reach the test body: $output"
+		return 1
+	}
+	# ...and the negative control: asking for 3 while running 5 must FAIL,
+	# which is what proves the assertion above is load-bearing.
+	local newer="/opt/homebrew/bin/bash"
+	[ -x "$newer" ] || skip "no second bash to compare against"
+	WANT_MAJOR=3 run "$SCRIPT" --no-log --shell "$newer" "$TEST_TMP/.claude/tests/probe.bats"
+	[ "$status" -ne 0 ] || {
+		echo "--shell $newer still reported bash 3 — the shim is not selecting"
+		return 1
+	}
+}
+
+@test "--shell is parsed BEFORE the gate that advertises it as the remedy" {
+	# The gate exited before the option loop that sets TEST_BASH, so the flag
+	# printed in its own error message could not lift it. --help was likewise
+	# unreachable. Ordering, not logic — and nothing exercised --shell at all.
+	run "$SCRIPT" --shell /nonexistent/bash --no-log
+	[ "$status" -eq 2 ]
+	case "$output" in
+	*"not executable"*) ;;
+	*)
+		echo "expected a validated --shell path; got: $output"
+		return 1
+		;;
+	esac
+}

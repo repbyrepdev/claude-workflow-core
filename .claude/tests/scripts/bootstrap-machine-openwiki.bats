@@ -87,35 +87,9 @@ _write_claude_json() { # $1 = json for .mcpServers.openwiki, "" = key absent
 	fi
 }
 
-# Assertions that ACTUALLY FAIL. bats runs under bash 3.2 on macOS, where a
-# failing `[[ ]]` fires neither errexit nor the ERR trap unless it is the
-# test's last command — so every mid-test `[[ ]]` was a silent no-op, which is
-# how three broken assertions in this file survived a full review round. These
-# two return non-zero and print the real output, so a failure names itself.
-#
-# Named `assert_*` on purpose: that is the bats convention, AND it is what
-# pre-commit bats-gate counts as an assertion — so converting a no-op `[[ ]]`
-# into a real check reads as strengthening rather than tripping the
-# assertion-weakening refusal, which would otherwise need an audited
-# override for a change that makes the suite stricter.
-assert_output_contains() { # $1 = substring $output must contain
-	case "$output" in
-	*"$1"*) return 0 ;;
-	esac
-	echo "expected to find: $1"
-	echo "actual output   : $output"
-	return 1
-}
-assert_output_lacks() { # $1 = substring $output must NOT contain
-	case "$output" in
-	*"$1"*)
-		echo "expected NOT to find: $1"
-		echo "actual output       : $output"
-		return 1
-		;;
-	esac
-	return 0
-}
+# assert_output_contains / assert_output_lacks and WHY they exist:
+# .claude/tests/assert.bash (#2631 — a bare [[ ]] cannot fail on bash 3.2).
+load ../assert
 
 # $1 = the semver its package.json declares. "" installs the CLI with NO
 # package above it (the `not-found` token). Default 0.4.0 = the pin.

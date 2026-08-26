@@ -55,8 +55,8 @@ teardown() {
 	export SHIP_PR_IN_RESUME=1
 	run _emit_stage_directive two-step-phase1
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]] # stdout still emitted during resume || return 1
-	[ ! -s "$CALLS" ]                # hook_ack_append NOT called
+	[[ $output == *"do NOT skip"* ]] || return 1 # stdout still emitted during resume
+	[ ! -s "$CALLS" ]                            # hook_ack_append NOT called
 }
 
 @test "SHIP_PR_IN_RESUME via DYNAMIC SCOPE (local in caller) suppresses ack" {
@@ -69,8 +69,8 @@ teardown() {
 	}
 	run _outer
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]] # stdout still prints || return 1
-	[ ! -s "$CALLS" ]                # append suppressed via dynamic scope
+	[[ $output == *"do NOT skip"* ]] || return 1 # stdout still prints
+	[ ! -s "$CALLS" ]                            # append suppressed via dynamic scope
 }
 
 @test "unknown label → warns, status 0, no ack-pending" {
@@ -92,7 +92,7 @@ teardown() {
 	run _emit_stage_directive push-to-pr
 	[ "$status" -eq 0 ]
 	[[ $output == *"SERVER-SIDE"* ]] || return 1
-	[[ $output == *"@coderabbitai review"* ]] # the NEVER reminder || return 1
+	[[ $output == *"@coderabbitai review"* ]] || return 1 # the NEVER reminder
 	grep -q 'push-to-pr' "$CALLS"
 }
 
@@ -184,8 +184,8 @@ teardown() {
 	unset -f hook_ack_append
 	run _emit_stage_directive pr-create-preread
 	[ "$status" -eq 0 ]
-	[[ $output == *"PREREAD GATE"* ]] # directive still printed || return 1
-	[ ! -s "$CALLS" ]                 # no append, no crash
+	[[ $output == *"PREREAD GATE"* ]] || return 1 # directive still printed
+	[ ! -s "$CALLS" ]                             # no append, no crash
 }
 
 @test "hook-ack primitives absent → stdout-only degradation (status 0, no append)" {
@@ -195,8 +195,8 @@ teardown() {
 	unset -f hook_ack_diagnostic_write hook_ack_append
 	run _emit_stage_directive push-to-pr
 	[ "$status" -eq 0 ]
-	[[ $output == *"SERVER-SIDE"* ]] # directive still printed || return 1
-	[ ! -s "$CALLS" ]                # no append, no crash
+	[[ $output == *"SERVER-SIDE"* ]] || return 1 # directive still printed
+	[ ! -s "$CALLS" ]                            # no append, no crash
 }
 
 @test "diagnostic-write failure → stdout-only degradation (status 0, no append)" {

@@ -403,10 +403,10 @@ _make_consumer_gh() {
 	printf 'schema:\n  subject:\n    max_length: 50\n' >"$CONSUMER/.github/commit-template.yml"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 1 ]
-	[[ $output == *".claude/hooks/foo.sh"* ]]        # hooks arm → under .claude/ || return 1
-	[[ $output == *".github/commit-template.yml"* ]] # .github arm → repo root || return 1
-	[[ $output != *".claude/.github"* ]]             # never the mis-mapped form || return 1
-	[[ $output == *"2 file(s) drifted"* ]]           # both counted, mapping intact
+	[[ $output == *".claude/hooks/foo.sh"* ]] || return 1        # hooks arm → under .claude/
+	[[ $output == *".github/commit-template.yml"* ]] || return 1 # .github arm → repo root
+	[[ $output != *".claude/.github"* ]] || return 1             # never the mis-mapped form
+	[[ $output == *"2 file(s) drifted"* ]]                       # both counted, mapping intact
 }
 
 @test "--generate FAILS CLOSED when yq missing but manifest present (#232 r2)" {

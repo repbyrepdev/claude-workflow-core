@@ -140,7 +140,7 @@ _seed() {
 	[ "$status" -eq 0 ]
 	run yq -r '.[].name' .github/labels.yml
 	[[ $output == *"area:infrastructure"* ]] || return 1
-	[[ $output == *"type:bug"* ]] # sibling entry untouched || return 1
+	[[ $output == *"type:bug"* ]] || return 1 # sibling entry untouched
 	# Key assertion last: area:infra must be fully gone (exact-match).
 	run yq -e '.[] | select(.name == "area:infra")' .github/labels.yml
 	[ "$status" -ne 0 ]
@@ -269,7 +269,7 @@ _seed() {
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.labeling_instructions[].label' .coderabbit.overlay.yaml
 	[[ $output == *"area:infrastructure"* ]] || return 1
-	[[ $output == *"type:bug"* ]] # non-matching entry untouched || return 1
+	[[ $output == *"type:bug"* ]] || return 1 # non-matching entry untouched
 	# Key assertion last: the matched label is renamed, no stale area:infra left.
 	run yq -e '.reviews.labeling_instructions[] | select(.label == "area:infra")' .coderabbit.overlay.yaml
 	[ "$status" -ne 0 ]

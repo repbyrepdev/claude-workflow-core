@@ -115,7 +115,7 @@ teardown() {
 	# No .claude/ created — REPO_ROOT marker check refuses.
 	run "$BARE/hooks/session-start-chmod-self-heal.sh"
 	[ "$status" -eq 0 ]
-	[[ $output == *"missing .claude/ marker"* ]] || [[ $output == *"refusing self-heal"* ]]
+	[[ $output == *"missing .claude/ marker"* ]] || [[ $output == *"refusing self-heal"* ]] || return 1
 	rm -rf "$BARE"
 }
 
@@ -141,7 +141,7 @@ teardown() {
 	chmod 644 "$BARE/hooks/lost.sh"
 	run "$BARE/hooks/session-start-chmod-self-heal.sh"
 	[ "$status" -eq 0 ]
-	[[ $output == *"missing .claude/ marker"* ]] || [[ $output == *"refusing self-heal"* ]]
+	[[ $output == *"missing .claude/ marker"* ]] || [[ $output == *"refusing self-heal"* ]] || return 1
 	# THE LOAD-BEARING ASSERTION — chmod must NOT have run.
 	[ ! -x "$BARE/hooks/lost.sh" ]
 	rm -rf "$BARE"

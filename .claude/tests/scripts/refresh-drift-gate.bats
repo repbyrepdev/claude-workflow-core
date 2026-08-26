@@ -131,7 +131,7 @@ _refresh() { run bash "$PLUGIN/scripts/refresh-from-source.sh" "$@"; }
 	_write_test testhook new 'skip "dependency absent"'
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
-	[[ $output == *"UNVERIFIED"* ]] || [[ $output == *"NOT verified"* ]]
+	[[ $output == *"UNVERIFIED"* ]] || [[ $output == *"NOT verified"* ]] || return 1
 	# Must NOT claim a clean pass when the covering test only skipped.
 	[[ $output != *"covering consumer tests passed against the refreshed hooks ✓"* ]]
 }
