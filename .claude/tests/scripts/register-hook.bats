@@ -30,6 +30,41 @@ teardown() {
 	fi
 }
 
+# Assertions that ACTUALLY FAIL wherever they appear. A bare `[[ ]]` only
+# fails a bats test when it is the LAST command: bats detects failure via an
+# ERR trap, and on bash 3.2 a failing conditional fires neither that trap nor
+# `set -e`. Named `assert_*` — the bats convention, and what pre-commit
+# bats-gate counts, so replacing a fragile check with a real one reads as the
+# strengthening it is.
+assert_output_contains() { # $1 = substring $output must contain
+	case "$output" in
+	*"$1"*) return 0 ;;
+	esac
+	echo "expected to find: $1"
+	echo "actual output   : $output"
+	return 1
+}
+assert_output_lacks() { # $1 = substring $output must NOT contain
+	case "$output" in
+	*"$1"*)
+		echo "expected NOT to find: $1"
+		echo "actual output       : $output"
+		return 1
+		;;
+	esac
+	return 0
+}
+assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
+	case "$1" in
+	*"$2"*)
+		echo "expected NOT to find: $2"
+		echo "actual              : $1"
+		return 1
+		;;
+	esac
+	return 0
+}
+
 # --- arg parsing ------------------------------------------------------
 
 @test "register-hook.sh exists and is executable" {
@@ -301,10 +336,18 @@ teardown() {
 	# expansion replaces the old hardcoded 3-element set). Test now
 	# enforces the full SSOT set rather than just asserting one.
 	[[ $commands == *"cr-auto-parse-poll.sh"* ]]
-	[[ $commands == *"phase1-directive-pending-guard.sh"* ]]
 	[[ $commands == *"monitor-misuse-block.sh"* ]]
 	[[ $commands == *"session-start-stale-pin.sh"* ]]
 	[[ $commands == *"ship-cycle-guard.sh"* ]]
+	# phase1-directive-pending-guard.sh was DELIBERATELY de-registered on
+	# 2026-08-24 (#2544/#2564) — it assumed synchronous Agent returns, which
+	# the async harness broke, and its header now says `auto-register: false`
+	# precisely so the installer cannot re-wire it. This test still demanded
+	# it, and stayed green because a mid-test `[[ ]]` is a no-op on bash 3.2.
+	# Asserting its ABSENCE turns a stale expectation into a guard for the
+	# decision: if someone flips the sentinel back on, this fails and they
+	# have to mean it.
+	assert_not_in "$commands" "phase1-directive-pending-guard.sh"
 }
 
 # --- --dry-run --------------------------------------------------------

@@ -58,6 +58,31 @@ teardown() {
 	fi
 }
 
+# Assertions that ACTUALLY FAIL wherever they appear. A bare `[[ ]]` only
+# fails a bats test when it is the LAST command: bats detects failure via an
+# ERR trap, and on bash 3.2 a failing conditional fires neither that trap nor
+# `set -e`. Named `assert_*` — the bats convention, and what pre-commit
+# bats-gate counts, so replacing a fragile check with a real one reads as the
+# strengthening it is.
+assert_output_contains() { # $1 = substring $output must contain
+	case "$output" in
+	*"$1"*) return 0 ;;
+	esac
+	echo "expected to find: $1"
+	echo "actual output   : $output"
+	return 1
+}
+assert_output_lacks() { # $1 = substring $output must NOT contain
+	case "$output" in
+	*"$1"*)
+		echo "expected NOT to find: $1"
+		echo "actual output       : $output"
+		return 1
+		;;
+	esac
+	return 0
+}
+
 @test "--dry-run reports all version transitions + does not tag" {
 	cd "$TEST_TMP" || return 1
 	run scripts/backfill-tags.sh --dry-run
@@ -146,9 +171,14 @@ teardown() {
 	# assertions per comment-analyzer #139 r1 MED (CR-007 — prior version
 	# had only the positive assertions; a future change that includes
 	# v0.1.0 in the walk would pass silently).
-	[[ $output != *"v0.1.0"* ]]
-	[[ $output == *"v0.2.0"* ]]
-	[[ $output == *"v0.3.0"* ]]
+	# Match the PER-TAG dry-run marker ("  + <tag> at <sha> (dry-run)"), not
+	# the bare version string. The script's own status line says "found N
+	# version transition(s) since v0.1.0", so `$output != *v0.1.0*` was false
+	# by construction — it asserted "the baseline is never mentioned" when it
+	# meant "the baseline is never TAGGED". Green until bash 5 made it fire.
+	assert_output_lacks "+ v0.1.0 at"
+	assert_output_contains "+ v0.2.0 at"
+	assert_output_contains "+ v0.3.0 at"
 }
 
 @test "tags point at the FIRST commit where each version first appeared" {
@@ -202,11 +232,16 @@ teardown() {
 	git commit -aq -m "v0.4.0"
 	run scripts/backfill-tags.sh --skip-push --skip-release
 	[ "$status" -eq 0 ]
-	# Should NOT create vnull
+	# Assert the WARN FIRST, while $output still holds the SCRIPT's output.
+	# The original asserted it AFTER a `run git rev-parse`, which overwrites
+	# $output — so it was checking rev-parse's output and could never have
+	# matched. A mid-test `[[ ]]` is a no-op on bash 3.2, so it never said so.
+	assert_output_contains "missing/null/non-string"
+	# Only then use `run` again — it overwrites $output, which is precisely
+	# how the original assertion ended up checking git rev-parse's output
+	# instead of the script's.
 	run git rev-parse -q --verify refs/tags/vnull
 	[ "$status" -ne 0 ]
-	# But SHOULD have skipped with a WARN to stderr
-	[[ $output == *"missing/null/non-string"* ]]
 	# And v0.4.0 still gets tagged (the null commit doesn't poison the walk)
 	git rev-parse -q --verify refs/tags/v0.4.0 >/dev/null
 }

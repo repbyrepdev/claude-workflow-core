@@ -34,12 +34,22 @@ area:infrastructure:
           - agents/**
           - .gitignore
           - .memory-aliases
+          # Same #2314 class: a top-level config file matching no glob means a
+          # PR touching only it gets no area label, so pr-lint stays pending
+          # and merge blocks. Caught by labeler-yml.bats once its assertions
+          # could actually fail.
+          - .markdownlint-cli2.jsonc
 area:docs:
   - changed-files:
       - any-glob-to-any-file:
           - "*.md"
           - "**/*.md"
           - LICENSE
+          # (#2629) The generated evidence index. Its pages are .md and would
+          # match above, but openwiki/ also carries non-.md artifacts (the
+          # .last-update.json watermark), and a PR touching only those would
+          # otherwise get no area label at all.
+          - openwiki/**
 area:plugin-manifest:
   - changed-files:
       - any-glob-to-any-file:

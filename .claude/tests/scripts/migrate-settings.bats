@@ -175,8 +175,13 @@ _write_legacy_settings() {
 # tmpdir so tests can exercise the sibling-script delegation path with
 # controlled behavior (missing/failing register-hook.sh).
 _install_fake_layout() {
-	local register_behavior=$1    # 'success' | 'fail' | 'missing'
-	local hooks_present=${2:-yes} # 'yes' | 'no' (../hooks/<name>.sh existence)
+	local register_behavior=$1 # 'success' | 'fail' | 'missing'
+	# 'yes'   → hooks dir with three `# auto-register: true` hooks
+	# 'no'    → NO hooks dir at all      → "plugin hooks dir not found"
+	# 'empty' → hooks dir, zero qualifying hooks → "no '# auto-register:
+	#           true' hooks found". These are DIFFERENT branches; test 19
+	#           asserted the second message while driving the first.
+	local hooks_present=${2:-yes}
 	local fakedir="$TEST_TMP/fakerepo/scripts"
 	mkdir -p "$fakedir"
 	cp "$SCRIPT" "$fakedir/migrate-settings.sh"
@@ -210,6 +215,18 @@ echo "stub-hook"
 EOF
 			chmod +x "$TEST_TMP/fakerepo/hooks/$h.sh"
 		done
+	elif [ "$hooks_present" = "empty" ]; then
+		# Dir EXISTS but nothing in it declares `# auto-register: true`, so
+		# discovery finds zero and the script takes its own distinct branch.
+		mkdir -p "$TEST_TMP/fakerepo/hooks"
+		cat >"$TEST_TMP/fakerepo/hooks/not-auto.sh" <<'EOF'
+#!/bin/bash
+# event: PreToolUse
+# matcher: Bash
+# auto-register: false
+echo "stub-hook"
+EOF
+		chmod +x "$TEST_TMP/fakerepo/hooks/not-auto.sh"
 	fi
 	echo "$fakedir/migrate-settings.sh"
 }
@@ -269,9 +286,42 @@ EOF
 	# r2 silent-failure-hunter CRITICAL: post-data-driven warning text
 	# changed from "none of the N expected hook files exist" to
 	# "no '# auto-register: true' hooks found".
-	[[ $output == *"no '# auto-register: true' hooks found"* ]]
-	[[ $output == *"plugin layout has changed"* ]]
+	# This fixture omits the hooks DIR entirely, so the script takes its
+	# dir-not-found branch. The two strings previously asserted here —
+	# "no '# auto-register: true' hooks found" and "plugin layout has
+	# changed" — belong to a DIFFERENT branch and could never appear in this
+	# run. Both were mid-test `[[ ]]`, so they never said so. The message
+	# they were guarding is now covered by the sibling test below.
+	case "$output" in *"plugin hooks dir not found"*) ;; *)
+		echo "expected the dir-not-found warning; got: $output"
+		return 1
+		;;
+	esac
+	case "$output" in *"Step 2 skipped"*) ;; *)
+		echo "expected Step 2 to be skipped; got: $output"
+		return 1
+		;;
+	esac
 	# register-hook stub was NOT invoked (no log file)
+	[ ! -f "$TEST_TMP/register-hook.log" ]
+}
+
+@test "hooks dir EXISTS but nothing declares auto-register → its own warning" {
+	# The branch test 19 above was asserting against while driving a
+	# different one. r2 silent-failure-hunter flagged this message as
+	# CRITICAL when it was renamed from "none of the N expected hook files
+	# exist"; nothing has actually covered it since, because the assertion
+	# sat in a test whose fixture could not reach it.
+	_write_legacy_settings
+	fake=$(_install_fake_layout success empty)
+	run "$fake" --from 0.8.5 --to 0.8.8
+	[ "$status" -eq 0 ]
+	case "$output" in *"no '# auto-register: true' hooks found"*) ;; *)
+		echo "expected the zero-qualifying-hooks warning; got: $output"
+		return 1
+		;;
+	esac
+	# Discovery found none, so Step 2 must not have called register-hook.
 	[ ! -f "$TEST_TMP/register-hook.log" ]
 }
 
