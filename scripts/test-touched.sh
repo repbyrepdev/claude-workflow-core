@@ -131,6 +131,14 @@ if [ -n "$TOUCHED_SH" ]; then
 		# first matching `covers:` line contains $sh — works because covers
 		# paths are space-separated on one line.
 		while IFS= read -r -d '' b; do
+			# `|| true` on these greps conflated "no header" (rc 1, the normal
+			# case) with "could not read the file" (rc>1) — and an unreadable
+			# suite silently stops routing, which is the same silent drop the
+			# audits: header exists to prevent. Read the file once and check.
+			if [ ! -r "$b" ]; then
+				echo "test-touched: WARNING: cannot read $b — it will not route" >&2
+				continue
+			fi
 			hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$b" 2>/dev/null | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' || true)
 			# (#2572) `# audits:` — a repo-wide meta-lint's SUBJECTS. It
 			# routes exactly like covers: here (the audit must re-run when
