@@ -83,25 +83,25 @@ fi
 
 # ---- state probes (each prints ONE line; none exit non-zero on absence) ----
 
+# Shared with bootstrap-machine's pin check — see the lib header. This used to
+# ask `openwiki --version`, which is not a supported flag (the real binary
+# answers "Unknown option: --version"), so a healthy machine reported the
+# version as unreadable forever and the pin check reinstalled on every run.
+#
+# Each token gets its OWN sentence. The previous message named one cause
+# ("not under $(npm root -g)") for an emptiness that had four possible
+# causes — asserting as fact something the probe never established.
 _cli_version() {
-	command -v openwiki >/dev/null 2>&1 || {
-		echo "absent"
-		return
-	}
-	# Read the INSTALLED PACKAGE, shared with bootstrap-machine's pin check.
-	# This used to ask `openwiki --version`, which is not a supported flag —
-	# the real binary answers "Unknown option: --version" — so a healthy
-	# machine reported "version unreadable" forever. Same wrong assumption
-	# made the pin check reinstall on every run; one probe now, one place.
-	local v
-	v=$(openwiki_installed_version)
-	if [ -n "$v" ]; then
-		echo "$v"
-	else
-		# Present but unlocatable: installed outside the npm global root, or
-		# jq/npm missing. Say which half is known rather than inventing one.
-		echo 'present (version unreadable — not under $(npm root -g))'
-	fi
+	local st
+	st=$(openwiki_installed_version)
+	case "$st" in
+	no-cli) echo "absent" ;;
+	no-jq) echo "present (version unknown — jq missing, cannot read its package.json)" ;;
+	unresolvable) echo "present (version unknown — the openwiki on PATH does not resolve to a real file)" ;;
+	not-found) echo "present (version unknown — no openwiki package.json above the resolved binary)" ;;
+	bad-version) echo "present (version unknown — its package.json .version is missing or not a semver)" ;;
+	*) echo "$st" ;;
+	esac
 }
 
 # The MCP entry lives in the user's ~/.claude.json. Absence is a STATE; a

@@ -196,17 +196,38 @@ if ! command -v openwiki >/dev/null 2>&1; then
 		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
 	fi
 else
-	OW_HAVE=$(openwiki_installed_version) || OW_HAVE=""
-	if [ "$OW_HAVE" = "$OPENWIKI_PIN" ]; then
+	# The probe returns a TOKEN (see the lib header). Each one gets its own
+	# policy: `no-jq` is the only state a reinstall cannot fix, so it is named
+	# rather than folded into the drift branch — otherwise a jq-less machine
+	# would npm-install openwiki on every single run and never say why.
+	OW_HAVE=$(openwiki_installed_version)
+	case "$OW_HAVE" in
+	"$OPENWIKI_PIN")
 		_log "  ✓ openwiki CLI already installed at the pin ($OPENWIKI_PIN)"
-	elif ! command -v npm >/dev/null 2>&1; then
-		_log "  ⚠ openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN,"
-		_log "    and npm is not available to correct it. Install Node.js, then:"
-		_log "    npm install -g openwiki@$OPENWIKI_PIN"
-	else
-		_log "openwiki is ${OW_HAVE:-an unreadable version}, pin is $OPENWIKI_PIN — reinstalling..."
-		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
-	fi
+		;;
+	no-jq)
+		_log "  ⚠ cannot verify the openwiki pin — jq is not installed, so its"
+		_log "    package.json cannot be read. Install jq, then re-run."
+		OPENWIKI_WIRING_SKIPPED=1
+		;;
+	*)
+		# Everything else — a different semver, no-cli, unresolvable,
+		# not-found, bad-version — means the pin is NOT confirmed, and
+		# reinstalling is what makes it true.
+		case "$OW_HAVE" in
+		[0-9]*) OW_DESC="openwiki is $OW_HAVE" ;;
+		*) OW_DESC="the openwiki on PATH could not be identified ($OW_HAVE)" ;;
+		esac
+		if ! command -v npm >/dev/null 2>&1; then
+			_log "  ⚠ $OW_DESC, pin is $OPENWIKI_PIN,"
+			_log "    and npm is not available to correct it. Install Node.js, then:"
+			_log "    npm install -g openwiki@$OPENWIKI_PIN"
+		else
+			_log "$OW_DESC, pin is $OPENWIKI_PIN — reinstalling..."
+			_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
+		fi
+		;;
+	esac
 fi
 
 # Wire the MCP server. Idempotent: the installer rewrites its own entry, and
