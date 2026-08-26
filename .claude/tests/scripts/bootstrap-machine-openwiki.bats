@@ -80,10 +80,27 @@ _write_claude_json() { # $1 = json for .mcpServers.openwiki, "" = key absent
 	fi
 }
 
-_stub_openwiki() { # $1 = --version output (default: the pinned version)
-	printf '#!/usr/bin/env bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' \
-		"${1-openwiki/0.4.0}" >"$TEST_TMP/bin/openwiki"
+_stub_openwiki() { # $1 = version the INSTALLED PACKAGE reports ("" = unreadable)
+	# The CLI itself is a bare stub: the version probe deliberately does NOT
+	# ask it anything. `openwiki --version` is not a supported flag, and a
+	# fixture that implements one is a fixture proving the stub honours a
+	# contract the real CLI never had — which is exactly how the every-run
+	# reinstall bug shipped.
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/bin/openwiki"
 	chmod +x "$TEST_TMP/bin/openwiki"
+	# The probe reads $(npm root -g)/openwiki/package.json, so drive it there.
+	mkdir -p "$TEST_TMP/npmroot"
+	rm -rf "$TEST_TMP/npmroot/openwiki"
+	if [ -n "${1-0.4.0}" ]; then
+		mkdir -p "$TEST_TMP/npmroot/openwiki"
+		printf '{"version":"%s"}' "${1-0.4.0}" >"$TEST_TMP/npmroot/openwiki/package.json"
+	fi
+	# npm stub: answers `root -g` with the fixture root, no-ops otherwise so
+	# the install paths stay drivable.
+	rm -f "$TEST_TMP/bin/npm"
+	printf '#!/usr/bin/env bash\nif [ "$1" = "root" ]; then echo "%s"; exit 0; fi\nexit 0\n' \
+		"$TEST_TMP/npmroot" >"$TEST_TMP/bin/npm"
+	chmod +x "$TEST_TMP/bin/npm"
 }
 
 # --tag pins the plugin version so the script never reaches the network
@@ -139,10 +156,16 @@ _dry_run() {
 	[[ $output != *"already installed at the pin"* ]]
 }
 
-@test "a bare-semver --version is matched too (format is not a contract) (p2r1)" {
-	# The CLI prints "0.4.0" in some builds and "openwiki/0.4.0" in others, so
-	# the comparison extracts a semver rather than testing equality. Matching
-	# on the whole string would reinstall on every run of a healthy machine.
+@test "the version comes from the INSTALLED PACKAGE, not a CLI flag (ci-followup)" {
+	# The probe used to run `openwiki --version`, which the real CLI answers
+	# with "Unknown option: --version" — so a correctly pinned machine read as
+	# unreadable and reinstalled on every run. It reads
+	# $(npm root -g)/openwiki/package.json now: offline, authoritative, and
+	# independent of whichever flags the CLI exposes this release.
+	#
+	# No `openwiki` invocation is stubbed for versioning at all, which is the
+	# point — a fixture that answers --version proves the STUB honours a
+	# contract, not the CLI.
 	_stub_openwiki "0.4.0"
 	_write_claude_json ""
 	_dry_run

@@ -204,30 +204,67 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	[[ $output == *"INSTRUCTIONS.md"* ]]
 }
 
-@test "version probe: multi-line --version does NOT double-emit (p1r1)" {
-	# `cmd | head -1 || echo fallback` fires the fallback on the PIPELINE
-	# status: head closes the pipe, SIGPIPE + pipefail mark it failed, and the
-	# status table gets TWO lines in a one-line field.
+@test "version probe: reads the PACKAGE, never asks the CLI (ci-followup)" {
+	# The probe used to run `openwiki --version`, which the real CLI answers
+	# with "Unknown option: --version" — so a healthy machine reported
+	# "version unreadable" forever, and the same wrong assumption made
+	# bootstrap-machine reinstall on every run.
+	#
+	# The stub below SCREAMS a version on every invocation. If the probe ever
+	# goes back to asking the CLI, that string shows up in the table and this
+	# test fails — which is the assertion that matters here.
+	#
+	# NOTE the single-bracket assertions: on bash 3.2 (what bats runs under on
+	# macOS) a failing `[[ ]]` fires neither errexit nor the ERR trap unless it
+	# is the test's LAST command, so `[[ ]]` assertions mid-test are no-ops.
+	# `case`/`[ ]` forms below actually fail.
 	cd "$REPO" || return 1
-	printf '#!/usr/bin/env bash\necho "openwiki/0.4.0"\necho "extra banner line"\necho "third"\nexit 0\n' >"$TEST_TMP/bin/openwiki"
+	printf '#!/usr/bin/env bash\necho "openwiki/9.9.9-FROM-CLI"\nexit 0\n' >"$TEST_TMP/bin/openwiki"
 	chmod +x "$TEST_TMP/bin/openwiki"
 	_write_claude_json ""
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"0.4.0"* ]]
-	[[ $output != *"version unreadable"* ]]
-	# exactly one CLI line
+	case "$output" in
+	*9.9.9-FROM-CLI*)
+		echo "the probe asked the CLI for its version: $output"
+		return 1
+		;;
+	esac
+	# No npm on the fixture PATH, so the package cannot be located — the
+	# honest answer is the unreadable one, naming where it looked.
+	case "$output" in
+	*"version unreadable"*"npm root -g"*) ;;
+	*)
+		echo "expected an unreadable-version line naming npm root -g; got: $output"
+		return 1
+		;;
+	esac
+	# Exactly one CLI line — a multi-line probe would break the table.
 	[ "$(printf '%s\n' "$output" | grep -c 'CLI:')" -eq 1 ]
 }
 
-@test "version probe: empty --version output reports unreadable, not blank (p1r1)" {
+@test "version probe: reports the real version when the package IS findable (ci-followup)" {
+	# The positive half. A fake npm answering `root -g` plus a package.json is
+	# all the probe consults.
 	cd "$REPO" || return 1
 	printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP/bin/openwiki"
 	chmod +x "$TEST_TMP/bin/openwiki"
+	mkdir -p "$TEST_TMP/npmroot/openwiki"
+	printf '{"version":"0.4.0"}' >"$TEST_TMP/npmroot/openwiki/package.json"
+	printf '#!/usr/bin/env bash\nif [ "$1" = "root" ]; then echo "%s"; exit 0; fi\nexit 0\n' \
+		"$TEST_TMP/npmroot" >"$TEST_TMP/bin/npm"
+	chmod +x "$TEST_TMP/bin/npm"
 	_write_claude_json ""
 	_run_skill status
 	[ "$status" -eq 0 ]
-	[[ $output == *"version unreadable"* ]]
+	case "$output" in
+	*"CLI:       0.4.0"*) ;;
+	*)
+		echo "expected the package version in the table; got: $output"
+		return 1
+		;;
+	esac
+	[ "$(printf '%s\n' "$output" | grep -c 'CLI:')" -eq 1 ]
 }
 
 @test "MCP probe: corrupt ~/.claude.json is an ERROR state, not 'not wired' (p1r1)" {

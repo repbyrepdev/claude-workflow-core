@@ -158,13 +158,22 @@ OPENWIKI_PIN="${OPENWIKI_PIN:-0.4.0}"
 # two-lanes-disagree failure the lockstep test exists to prevent. Compare, and
 # reinstall on any answer that is not the pin.
 #
-# Version output is matched by extracting the first semver rather than by
-# equality, because the CLI's format is not part of its contract ("0.4.0" and
-# "openwiki/0.4.0" both occur in the wild). An UNREADABLE version counts as a
-# mismatch: "cannot confirm the pin holds" must not report as "the pin holds".
-_ow_installed_version() {
-	openwiki --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
-}
+# An UNREADABLE version counts as a MISMATCH: "cannot confirm the pin holds"
+# must not report as "the pin holds". That choice is only safe if the probe
+# actually works — the first cut asked `openwiki --version`, which is NOT a
+# supported flag (the CLI answers "Unknown option: --version"), so a correctly
+# pinned machine read as unreadable and reinstalled on EVERY run. Caught by
+# running the real thing after merging it, not by any test: the fixture stub
+# implemented --version, so the suite proved the stub honoured a contract the
+# real CLI never had.
+#
+# Read the INSTALLED PACKAGE instead. It is offline, authoritative, and
+# independent of whichever flags the CLI happens to expose this release —
+# `openwiki --help` does print the version, but it boots the whole agent
+# banner to do it.
+# shellcheck source=../_lib/openwiki-mcp-state.sh
+. "$BM_SCRIPT_DIR/../_lib/openwiki-mcp-state.sh"
+_ow_installed_version() { openwiki_installed_version; }
 # CI r1: `_run` under `set -e` makes every OpenWiki command load-bearing for
 # the WHOLE bootstrap — a registry blip during `npm install -g openwiki` would
 # abort before the plugin cache install, the Keychain report and the summary.
@@ -219,9 +228,8 @@ fi
 # the obsolete ~/.openwiki-main source build, which the installer supersedes.
 #
 # `no-jq` is the one state that is NOT repairable by re-running the installer,
-# so it is called out rather than folded in silently.
-# shellcheck source=../_lib/openwiki-mcp-state.sh
-. "$BM_SCRIPT_DIR/../_lib/openwiki-mcp-state.sh"
+# so it is called out rather than folded in silently. (The lib is sourced once,
+# above, next to the version probe that shares it.)
 if command -v openwiki >/dev/null 2>&1 || [ "$DRY_RUN" = "1" ]; then
 	OW_MCP_STATE=$(openwiki_mcp_state "$HOME/.claude.json")
 	if [ "$OW_MCP_STATE" = "no-jq" ]; then

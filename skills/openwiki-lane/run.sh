@@ -88,17 +88,19 @@ _cli_version() {
 		echo "absent"
 		return
 	}
-	# Capture FIRST, then branch on emptiness. A piped `|| echo` fires on the
-	# PIPELINE status, so under `set -o pipefail` it can print a fallback IN
-	# ADDITION to real output — e.g. multi-line --version output makes head
-	# close the pipe, SIGPIPE fails the pipeline, and the status table gets a
-	# two-line field. stderr is folded in so a broken CLI explains itself.
+	# Read the INSTALLED PACKAGE, shared with bootstrap-machine's pin check.
+	# This used to ask `openwiki --version`, which is not a supported flag —
+	# the real binary answers "Unknown option: --version" — so a healthy
+	# machine reported "version unreadable" forever. Same wrong assumption
+	# made the pin check reinstall on every run; one probe now, one place.
 	local v
-	v=$(openwiki --version 2>&1 | head -1) || v=""
+	v=$(openwiki_installed_version)
 	if [ -n "$v" ]; then
 		echo "$v"
 	else
-		echo "present (version unreadable)"
+		# Present but unlocatable: installed outside the npm global root, or
+		# jq/npm missing. Say which half is known rather than inventing one.
+		echo 'present (version unreadable — not under $(npm root -g))'
 	fi
 }
 

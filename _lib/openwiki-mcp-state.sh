@@ -5,7 +5,12 @@ set -u
 # inheriting `set -e` + pipefail aborts callers that use fail-soft idioms.
 #
 # auto-register: false
-# (#2629) SSOT for one question: what state is the openwiki MCP entry in?
+# (#2629) SSOT for the openwiki state probes. The filename says mcp-state
+# because that was the first one; it now also owns the installed-version
+# probe, for the same reason — two callers, one question, and duplicating the
+# MCP parse is precisely what grew the same fail-open bug in both copies.
+#
+# Question 1: what state is the openwiki MCP entry in?
 #
 # Two callers ask it — scripts/bootstrap-machine.sh (which REPAIRS) and
 # skills/openwiki-lane/run.sh (which REPORTS) — and their policies genuinely
@@ -89,6 +94,25 @@ openwiki_mcp_state() {
 	*) echo "wired" ;;
 	esac
 	return 0
+}
+
+# Question 2: which openwiki version is actually installed?
+#
+# Echoes a bare semver, or NOTHING when it cannot be determined — callers
+# decide what absence means (bootstrap-machine treats it as pin drift and
+# reinstalls; the skill reports it as unreadable).
+#
+# Do NOT ask the CLI. `openwiki --version` is not a supported flag — the real
+# binary answers "Unknown option: --version" — and the first version of this
+# check believed otherwise, so a correctly pinned machine reinstalled on every
+# run. `openwiki --help` does print the version, but boots the whole agent
+# banner to do it. The installed package is offline, authoritative, and
+# independent of whichever flags the CLI exposes this release.
+openwiki_installed_version() {
+	local root
+	root=$(npm root -g 2>/dev/null) || return 0
+	[ -n "$root" ] && [ -r "$root/openwiki/package.json" ] || return 0
+	jq -r '.version // empty' "$root/openwiki/package.json" 2>/dev/null
 }
 
 # EXECUTED directly (not sourced): behave as a one-shot CLI over the same
