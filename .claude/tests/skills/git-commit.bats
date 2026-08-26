@@ -50,8 +50,8 @@ Co-Authored-By: Tester <t@example.com>
 EOF
 	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
 	[ "$status" -ne 0 ]
-	[[ $output == *"blocked by (failing hook lines)"* ]]
-	[[ $output == *"fakehook"* ]]
+	[[ $output == *"blocked by (failing hook lines)"* ]] || return 1
+	[[ $output == *"fakehook"* ]] || return 1
 	# No commit object was created (HEAD never advanced).
 	run git -C "$SANDBOX" rev-parse --verify HEAD
 	[ "$status" -ne 0 ]
@@ -92,7 +92,7 @@ EOF
 	[ "$status" -eq 0 ]
 	# The committed tree contains staged.txt but NOT the untracked file.
 	run git -C "$SANDBOX" ls-tree --name-only HEAD
-	[[ $output == *staged.txt* ]]
+	[[ $output == *staged.txt* ]] || return 1
 	[[ $output != *unstaged.txt* ]]
 }
 
@@ -101,7 +101,7 @@ EOF
 	git -C "$SANDBOX" add file.txt
 	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot"
 	[ "$status" -eq 2 ]
-	[[ $output == *"no commit message provided"* ]]
+	[[ $output == *"no commit message provided"* ]] || return 1
 	# HEAD never came into existence.
 	run git -C "$SANDBOX" rev-parse --verify HEAD
 	[ "$status" -ne 0 ]
@@ -117,7 +117,7 @@ Co-Authored-By: Tester <t@example.com>
 EOF
 	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt --dry-run"
 	[ "$status" -eq 0 ]
-	[[ $output == *"would commit"* ]]
+	[[ $output == *"would commit"* ]] || return 1
 	# Dry-run is side-effect-free: no commit object exists.
 	run git -C "$SANDBOX" rev-parse --verify HEAD
 	[ "$status" -ne 0 ]

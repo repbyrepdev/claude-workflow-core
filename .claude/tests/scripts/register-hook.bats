@@ -74,8 +74,8 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 @test "--help shows usage" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"register/unregister"* ]]
-	[[ $output == *"# event:"* ]]
+	[[ $output == *"register/unregister"* ]] || return 1
+	[[ $output == *"# event:"* ]] || return 1
 	[[ $output == *"Exit codes"* ]]
 }
 
@@ -108,7 +108,7 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 @test "register hook with event-only frontmatter" {
 	run "$SCRIPT" hooks/cr-auto-parse-poll.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"event=SessionStart"* ]]
+	[[ $output == *"event=SessionStart"* ]] || return 1
 	# Verify settings.json has the entry.
 	# (#2536) Assert the BASENAME, not a `hooks/<name>.sh` substring: the command
 	# is now a version-agnostic launcher (`<launcher-dir>/<name>.sh`) whenever one
@@ -125,7 +125,7 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 @test "register hook with event + matcher frontmatter" {
 	run "$SCRIPT" hooks/phase1-directive-pending-guard.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"matcher=Bash|Edit|Write|MultiEdit|NotebookEdit"* ]]
+	[[ $output == *"matcher=Bash|Edit|Write|MultiEdit|NotebookEdit"* ]] || return 1
 	matcher=$(jq -r '.hooks.PreToolUse[0].matcher' "$CLAUDE_SETTINGS_FILE")
 	[ "$matcher" = "Bash|Edit|Write|MultiEdit|NotebookEdit" ]
 }
@@ -133,7 +133,7 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 @test "register hook with packed 'PreToolUse Bash' event splits to event + matcher" {
 	run "$SCRIPT" hooks/ship-cycle-director-gate.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"event=PreToolUse"* ]]
+	[[ $output == *"event=PreToolUse"* ]] || return 1
 	[[ $output == *"matcher=Bash"* ]]
 }
 
@@ -329,16 +329,16 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 	[ "$status" -eq 0 ]
 	# At least ship-cycle-director-gate must register (longest-tenured
 	# sentinel hook).
-	[[ $output == *"ship-cycle-director-gate.sh"* ]]
+	[[ $output == *"ship-cycle-director-gate.sh"* ]] || return 1
 	commands=$(jq -r '[.hooks // {} | to_entries[] | .value[] | (.hooks // [])[] | .command] | join(" ")' "$CLAUDE_SETTINGS_FILE")
-	[[ $commands == *"ship-cycle-director-gate.sh"* ]]
+	[[ $commands == *"ship-cycle-director-gate.sh"* ]] || return 1
 	# v0.24.0: assert ALL 6 expected sentinel hooks land (data-driven
 	# expansion replaces the old hardcoded 3-element set). Test now
 	# enforces the full SSOT set rather than just asserting one.
-	[[ $commands == *"cr-auto-parse-poll.sh"* ]]
-	[[ $commands == *"monitor-misuse-block.sh"* ]]
-	[[ $commands == *"session-start-stale-pin.sh"* ]]
-	[[ $commands == *"ship-cycle-guard.sh"* ]]
+	[[ $commands == *"cr-auto-parse-poll.sh"* ]] || return 1
+	[[ $commands == *"monitor-misuse-block.sh"* ]] || return 1
+	[[ $commands == *"session-start-stale-pin.sh"* ]] || return 1
+	[[ $commands == *"ship-cycle-guard.sh"* ]] || return 1
 	# phase1-directive-pending-guard.sh was DELIBERATELY de-registered on
 	# 2026-08-24 (#2544/#2564) — it assumed synchronous Agent returns, which
 	# the async harness broke, and its header now says `auto-register: false`
@@ -356,7 +356,7 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 	checksum_before=$(shasum -a 256 "$CLAUDE_SETTINGS_FILE" | awk '{print $1}')
 	run "$SCRIPT" --dry-run hooks/cr-auto-parse-poll.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"[dry-run]"* ]]
+	[[ $output == *"[dry-run]"* ]] || return 1
 	checksum_after=$(shasum -a 256 "$CLAUDE_SETTINGS_FILE" | awk '{print $1}')
 	[ "$checksum_before" = "$checksum_after" ]
 }
@@ -378,7 +378,7 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 	mv "$CLAUDE_SETTINGS_FILE.tmp" "$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --check
 	[ "$status" -eq 1 ]
-	[[ $output == *"ghost.sh"* ]]
+	[[ $output == *"ghost.sh"* ]] || return 1
 	[[ $output == *"does not exist"* ]]
 }
 
@@ -408,7 +408,7 @@ assert_not_in() { # $1 = haystack, $2 = substring it must NOT contain
 	echo '{}' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT" --check
 	[ "$status" -eq 1 ]
-	[[ $output == *"ship-cycle-director-gate.sh"* ]]
+	[[ $output == *"ship-cycle-director-gate.sh"* ]] || return 1
 	[[ $output == *"not in settings.json"* ]]
 }
 

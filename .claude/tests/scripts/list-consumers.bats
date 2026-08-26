@@ -60,7 +60,7 @@ teardown() {
 @test "--help does not leak loader frontmatter directives" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output != *"event: none"* ]]
+	[[ $output != *"event: none"* ]] || return 1
 	[[ $output != *"auto-register: false"* ]]
 }
 
@@ -68,8 +68,8 @@ teardown() {
 	cd "$TEST_TMP" || return 1
 	run scripts/list-consumers.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"alpha"* ]]
-	[[ $output == *"beta"* ]]
+	[[ $output == *"alpha"* ]] || return 1
+	[[ $output == *"beta"* ]] || return 1
 	[[ $output == *"org/alpha"* ]]
 }
 
@@ -88,8 +88,8 @@ teardown() {
 	cd "$TEST_TMP" || return 1
 	run scripts/list-consumers.sh --behind 1.0.0
 	[ "$status" -eq 0 ]
-	[[ $output == *"behind v1.0.0"* ]]
-	[[ $output == *"alpha"* ]]
+	[[ $output == *"behind v1.0.0"* ]] || return 1
+	[[ $output == *"alpha"* ]] || return 1
 	[[ $output == *"beta"* ]]
 }
 
@@ -97,7 +97,7 @@ teardown() {
 	cd "$TEST_TMP" || return 1
 	run scripts/list-consumers.sh --behind 0.10.0
 	[ "$status" -eq 0 ]
-	[[ $output == *"alpha"* ]]
+	[[ $output == *"alpha"* ]] || return 1
 	[[ $output != *"beta"* ]]
 }
 

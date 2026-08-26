@@ -287,7 +287,7 @@ YAML
 	rm -f "$blob_path"
 	run pre-commit-hooks/consumers-schema-check.sh
 	[ "$status" -eq 2 ]
-	[[ $output == *"could not read staged"* ]]
+	[[ $output == *"could not read staged"* ]] || return 1
 	# Stderr should now contain git's actual error (the blob ref or
 	# "fatal: bad object" / "Not a valid object name") — proving
 	# 2>/dev/null no longer masks. Match the blob sha as the most

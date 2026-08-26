@@ -73,10 +73,10 @@ EOF
 	mkdir -p "$TMP/target"
 	run bash "$SCRIPT" "$TMP/target" --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"would compose .coderabbit.yaml"* ]]
+	[[ $output == *"would compose .coderabbit.yaml"* ]] || return 1
 	# Regression guard for the pre-r1 ordering bug (base-check before dry-run
 	# guard) that emitted "absent — skipping" on a fresh dry-run.
-	[[ $output != *"absent in target — skipping"* ]]
+	[[ $output != *"absent in target — skipping"* ]] || return 1
 	# Dry-run mutates nothing.
 	[ ! -f "$TMP/target/.coderabbit.base.yaml" ]
 	[ ! -f "$TMP/target/.coderabbit.yaml" ]
@@ -89,7 +89,7 @@ EOF
 	before=$(shasum -a 256 "$TMP/target/.coderabbit.yaml" | awk '{print $1}')
 	run bash "$SCRIPT" "$TMP/target"
 	[ "$status" -eq 0 ]
-	[[ $output == *".coderabbit.yaml exists — skipping compose"* ]]
+	[[ $output == *".coderabbit.yaml exists — skipping compose"* ]] || return 1
 	after=$(shasum -a 256 "$TMP/target/.coderabbit.yaml" | awk '{print $1}')
 	[ "$before" = "$after" ]
 }
@@ -104,8 +104,8 @@ reviews: "gut-the-map"
 EOF
 	run bash "$SCRIPT" "$TMP/target"
 	[ "$status" -eq 0 ]
-	[[ $output == *"NOT composed"* ]]
-	[[ $output == *"fall back to"* ]] # the summary reminder fired
+	[[ $output == *"NOT composed"* ]] || return 1
+	[[ $output == *"fall back to"* ]] # the summary reminder fired || return 1
 	# base still written; .coderabbit.yaml not produced (compose failed).
 	[ -f "$TMP/target/.coderabbit.base.yaml" ]
 	[ ! -f "$TMP/target/.coderabbit.yaml" ]
@@ -140,7 +140,7 @@ _run_compose_fixture() {
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output == *'!.claude/hooks/beta.sh'* ]]
 }
 
@@ -151,7 +151,7 @@ _run_compose_fixture() {
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output != *'!.claude/hooks/beta.sh'* ]]
 }
 
@@ -161,7 +161,7 @@ _run_compose_fixture() {
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output == *'!.claude/hooks/beta.sh'* ]]
 }
 
@@ -178,11 +178,11 @@ _run_compose_fixture() {
 	fi
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
-	[[ $output == *"WARNING: cmp failed"* ]]
-	[[ $output == *"beta.sh"* ]]
+	[[ $output == *"WARNING: cmp failed"* ]] || return 1
+	[[ $output == *"beta.sh"* ]] || return 1
 	chmod 644 "$TMP/consumer/beta.sh"
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output != *'!.claude/hooks/beta.sh'* ]]
 }
 

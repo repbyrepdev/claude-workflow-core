@@ -115,8 +115,8 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"GRADUATED to phase2"* ]]
-	[[ $output != *"DIRECTIVE FOR OPERATOR"* ]]
+	[[ $output == *"GRADUATED to phase2"* ]] || return 1
+	[[ $output != *"DIRECTIVE FOR OPERATOR"* ]] || return 1
 	[ "$(_cur_stage)" = "phase2" ]
 }
 
@@ -132,10 +132,10 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	touch "$STATE_DIR/$SHA.phase1-directive.txt"
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"phase1 round-cap ENFORCED (3/3)"* ]]
-	[[ $output == *"uncovered:"* ]]
-	[[ $output == *"PIPELINE_GATE_SKIP=1"* ]]
-	[[ $output != *"DIRECTIVE FOR OPERATOR"* ]]
+	[[ $output == *"phase1 round-cap ENFORCED (3/3)"* ]] || return 1
+	[[ $output == *"uncovered:"* ]] || return 1
+	[[ $output == *"PIPELINE_GATE_SKIP=1"* ]] || return 1
+	[[ $output != *"DIRECTIVE FOR OPERATOR"* ]] || return 1
 	[ "$(_cur_stage)" = "phase1" ]
 	# The refusal is hook-ack routed (cannot scroll past) — the diagnostic
 	# file must exist under the SANDBOX repo's session-state.
@@ -152,8 +152,8 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
-	[[ $output != *"round-cap ENFORCED"* ]]
+	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]] || return 1
+	[[ $output != *"round-cap ENFORCED"* ]] || return 1
 	[ "$(_cur_stage)" = "phase1" ]
 }
 
@@ -164,7 +164,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=5
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
+	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]] || return 1
 	[[ $output != *"round-cap ENFORCED"* ]]
 }
 
@@ -192,8 +192,8 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"round-cap ENFORCED"* ]]
-	[[ $output == *"uncovered: ${SHA_PREV:0:7}=0/4"* ]]
+	[[ $output == *"round-cap ENFORCED"* ]] || return 1
+	[[ $output == *"uncovered: ${SHA_PREV:0:7}=0/4"* ]] || return 1
 	[ "$(_cur_stage)" = "phase1" ]
 }
 
@@ -207,7 +207,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"NO findings-bearing completed round"* ]]
+	[[ $output == *"NO findings-bearing completed round"* ]] || return 1
 	[ "$(_cur_stage)" = "phase1" ]
 }
 
@@ -219,7 +219,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"GRADUATED to phase2"* ]]
+	[[ $output == *"GRADUATED to phase2"* ]] || return 1
 	[ "$(_cur_stage)" = "phase2" ]
 }
 
@@ -231,7 +231,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"UNDETERMINABLE"* ]]
+	[[ $output == *"UNDETERMINABLE"* ]] || return 1
 	[[ $output != *"GRADUATED"* ]]
 }
 
@@ -243,8 +243,8 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	mkdir -p "$ROOT/.claude/logs"
 	PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON="bats override fixture" run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"OVERRIDDEN via PIPELINE_GATE_SKIP=1"* ]]
-	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
+	[[ $output == *"OVERRIDDEN via PIPELINE_GATE_SKIP=1"* ]] || return 1
+	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]] || return 1
 	grep -q "phase1-round-cap" "$SKIP_LOG"
 }
 
@@ -255,7 +255,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3 SKIP_LOG="$ROOT/.claude" # a directory — append fails
 	PIPELINE_GATE_SKIP=1 run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"audit append FAILED"* ]]
+	[[ $output == *"audit append FAILED"* ]] || return 1
 	[[ $output != *"DIRECTIVE FOR OPERATOR"* ]]
 }
 
@@ -278,7 +278,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3 BASE_BRANCH=no-such-base
 	run bash "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"is no-such-base a local ref?"* ]]
+	[[ $output == *"is no-such-base a local ref?"* ]] || return 1
 	[[ $output != *"DIRECTIVE FOR OPERATOR"* ]]
 }
 
@@ -289,7 +289,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" status
 	[ "$status" -eq 0 ]
-	[[ $output == *"P1 cap:      2/3"* ]]
+	[[ $output == *"P1 cap:      2/3"* ]] || return 1
 	printf 'not json at all\n' >"$ROOT/.claude/review-log/$SHA.jsonl"
 	run bash "$SCRIPT" status
 	[ "$status" -eq 0 ]
@@ -333,7 +333,7 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	cd "$TEST_TMP" || return 1
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"defaulting cap to 2"* ]]
+	[[ $output == *"defaulting cap to 2"* ]] || return 1
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }
 
@@ -345,6 +345,6 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	cd "$TEST_TMP" || return 1
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"no parseable ROUNDS=N line"* ]]
+	[[ $output == *"no parseable ROUNDS=N line"* ]] || return 1
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }

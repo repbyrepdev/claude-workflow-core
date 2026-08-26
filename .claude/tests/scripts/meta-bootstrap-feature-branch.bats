@@ -127,8 +127,8 @@ _minimal_repo() {
 	# gh stripped from PATH: Rules 2+3 skipped, but verdict downgrades to PARTIAL.
 	run env PATH="/usr/bin:/bin" "$SCRIPT" --target feature-branch
 	[ "$status" -eq 0 ]
-	[[ $output == *"PARTIAL"* ]]
-	[[ $output == *"rule(s) skipped"* ]]
+	[[ $output == *"PARTIAL"* ]] || return 1
+	[[ $output == *"rule(s) skipped"* ]] || return 1
 	# Critically NOT a silent ✓.
 	[[ $output != *"✓ feature-branch prereqs satisfied"* ]]
 }
@@ -165,7 +165,7 @@ _minimal_repo() {
 	_install_gh_stub labels-empty
 	run env PATH="$TEST_TMP/bin:/usr/bin:/bin" "$SCRIPT" --target feature-branch
 	[ "$status" -eq 1 ]
-	[[ $output == *"missing a priority:* label"* ]]
+	[[ $output == *"missing a priority:* label"* ]] || return 1
 	[[ $output == *"missing an area:* label"* ]]
 }
 
@@ -190,7 +190,7 @@ _minimal_repo() {
 		run env PATH="/usr/bin:/bin" "$SCRIPT" --target feature-branch
 		# rc=0 (PARTIAL since gh stripped) is acceptable; no "not per convention" error.
 		[ "$status" -eq 0 ]
-		[[ $output != *"branch name not per convention"* ]]
+		[[ $output != *"branch name not per convention"* ]] || return 1
 	done
 }
 

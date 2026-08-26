@@ -280,7 +280,7 @@ _run_gate() {
 	rm -f "$APPROVAL_GATE_POLICY"
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"does not exist"* ]]
+	[[ $output == *"does not exist"* ]] || return 1
 	[ ! -f "$GH_ARGS_LOG" ]
 }
 
@@ -291,7 +291,7 @@ _run_gate() {
 	export FAKE_REMOTE_POLICY_FILE="$TEST_TMP/approval-policy.yml" FAKE_CONTENTS_MODE=ok
 	_run_gate
 	[ "$status" -eq 0 ]
-	[[ $output == *"gate disabled"* ]]
+	[[ $output == *"gate disabled"* ]] || return 1
 	grep -q "contents-query" "$GH_ARGS_LOG"
 }
 
@@ -393,7 +393,7 @@ EOF
 	_reviews_approved_at_head
 	_run_gate
 	[ "$status" -eq 0 ]
-	[[ $output == *"APPROVED bot review at final head"* ]]
+	[[ $output == *"APPROVED bot review at final head"* ]] || return 1
 	run ! grep -q "pr comment" "$GH_ARGS_LOG"
 }
 
@@ -427,7 +427,7 @@ EOF
 	_write_findings 1
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT verified clean"* ]]
+	[[ $output == *"NOT verified clean"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -473,7 +473,7 @@ EOF
 	_write_findings 1
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT verified clean"* ]]
+	[[ $output == *"NOT verified clean"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -484,7 +484,7 @@ EOF
 	_write_findings 0
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"not verifiably reviewed"* ]]
+	[[ $output == *"not verifiably reviewed"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -496,7 +496,7 @@ EOF
 	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"not verifiably reviewed"* ]]
+	[[ $output == *"not verifiably reviewed"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -577,7 +577,7 @@ EOF
 	export SKIP_LOG="$TEST_TMP/skips.jsonl" PIPELINE_GATE_SKIP_REASON="bats skip-success fixture"
 	APPROVAL_GATE_SKIP=1 _run_gate
 	[ "$status" -eq 0 ]
-	[[ $output == *"SKIPPED via APPROVAL_GATE_SKIP=1"* ]]
+	[[ $output == *"SKIPPED via APPROVAL_GATE_SKIP=1"* ]] || return 1
 	grep -q "approval-gate" "$TEST_TMP/skips.jsonl"
 	[ ! -f "$GH_ARGS_LOG" ]
 }
@@ -599,8 +599,8 @@ EOF
 	_write_findings 1
 	run "$RUNSH" --pr 99 --yes
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT verified clean"* ]]
-	[[ $output == *"approval gate refused"* ]]
+	[[ $output == *"NOT verified clean"* ]] || return 1
+	[[ $output == *"approval gate refused"* ]] || return 1
 	grep -q "/pulls/99/reviews" "$GH_ARGS_LOG"
 	run ! grep -q "pr merge" "$GH_ARGS_LOG"
 }
@@ -611,8 +611,8 @@ EOF
 	_write_findings 1
 	run "$RUNSH" --pr 99 --auto --yes
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT verified clean"* ]]
-	[[ $output == *"not arming auto-merge"* ]]
+	[[ $output == *"NOT verified clean"* ]] || return 1
+	[[ $output == *"not arming auto-merge"* ]] || return 1
 	run ! grep -q "pr merge" "$GH_ARGS_LOG"
 }
 
@@ -629,7 +629,7 @@ EOF
 	git branch -q --set-upstream-to=origin/main main
 	run "$RUNSH" --pr 99 --yes
 	[ "$status" -eq 0 ]
-	[[ $output == *"MERGE-FIRED"* ]]
+	[[ $output == *"MERGE-FIRED"* ]] || return 1
 	grep -q "pr merge 99 --squash --match-head-commit $HEAD_SHA --delete-branch" "$GH_ARGS_LOG"
 }
 
@@ -638,7 +638,7 @@ EOF
 	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":null,"checks":[]}'
 	run "$RUNSH" --pr 99 --yes
 	[ "$status" -eq 2 ]
-	[[ $output == *"gh payload drift"* ]]
+	[[ $output == *"gh payload drift"* ]] || return 1
 	[[ $output != *"approval gate refused"* ]]
 }
 
@@ -650,7 +650,7 @@ EOF
 	export FAKE_CONTENTS_MODE=proxy404
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"policy fetch"*"failed"* ]]
+	[[ $output == *"policy fetch"*"failed"* ]] || return 1
 	[[ $output != *"DISABLED"* ]]
 }
 
@@ -661,7 +661,7 @@ EOF
 	_write_findings 0
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"not verifiably reviewed"* ]]
+	[[ $output == *"not verifiably reviewed"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -727,9 +727,9 @@ EOF
 	export FAKE_COMMENTS_FILE="$TEST_TMP/nonexistent-comments.json"
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"witness query failed"* ]]
-	[[ $output == *"No nudge was posted"* ]]
-	[[ $output != *"not verifiably reviewed"* ]]
+	[[ $output == *"witness query failed"* ]] || return 1
+	[[ $output == *"No nudge was posted"* ]] || return 1
+	[[ $output != *"not verifiably reviewed"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -747,7 +747,7 @@ EOF
 	export FAKE_MERGE_FAIL=1
 	run "$RUNSH" --pr 99 --yes
 	[ "$status" -eq 2 ]
-	[[ $output == *"re-run this skill to re-gate"* ]]
+	[[ $output == *"re-run this skill to re-gate"* ]] || return 1
 	[[ $output != *"✓ Merged"* ]]
 }
 
@@ -765,7 +765,7 @@ EOF
 	touch ".claude/.session-state/ship-cycle/beadbead000011112222333344445555666bead0.phase1-directive.txt"
 	run "$RUNSH" --pr 99 --yes
 	[ "$status" -eq 0 ]
-	[[ $output == *"cleaned phase1-directive marker for $HEAD_SHA"* ]]
+	[[ $output == *"cleaned phase1-directive marker for $HEAD_SHA"* ]] || return 1
 	[ ! -f ".claude/.session-state/ship-cycle/$HEAD_SHA.phase1-directive.txt" ]
 	[ -f ".claude/.session-state/ship-cycle/beadbead000011112222333344445555666bead0.phase1-directive.txt" ]
 }
@@ -780,7 +780,7 @@ EOF
 	export CR_TEST_MODE=1 CR_TEST_HEAD="$HEAD_SHA"
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output != *"not executable"* ]]
+	[[ $output != *"not executable"* ]] || return 1
 	[[ $output == *"not verifiably reviewed"* ]]
 }
 
@@ -811,7 +811,7 @@ EOF
 	_write_findings 1
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT verified clean"* ]]
+	[[ $output == *"NOT verified clean"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 
@@ -841,7 +841,7 @@ EOF
 	export FAKE_COMMENTS_FILE="$TEST_TMP/comments.json"
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"not verifiably reviewed"* ]]
+	[[ $output == *"not verifiably reviewed"* ]] || return 1
 	[ ! -f "$NUDGE_MARKER" ]
 }
 

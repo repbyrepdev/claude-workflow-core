@@ -89,7 +89,7 @@ EOF
 @test "--help shows usage" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"operator-time machine setup"* ]]
+	[[ $output == *"operator-time machine setup"* ]] || return 1
 	[[ $output == *"Acceptance criteria"* ]]
 }
 
@@ -105,8 +105,8 @@ EOF
 	fake=$(_install_fake_layout 1)
 	run "$fake"
 	[ "$status" -eq 2 ]
-	[[ $output == *"Allowlist patterns missing"* ]]
-	[[ $output == *"ONE-TIME setup required"* ]]
+	[[ $output == *"Allowlist patterns missing"* ]] || return 1
+	[[ $output == *"ONE-TIME setup required"* ]] || return 1
 	[[ $output == *"--json"* ]]
 }
 
@@ -123,7 +123,7 @@ EOF
 	fake=$(_install_fake_layout 0 0 0)
 	run "$fake" --no-migrate
 	[ "$status" -eq 0 ]
-	[[ $output == *"Step 2: register plugin hooks"* ]]
+	[[ $output == *"Step 2: register plugin hooks"* ]] || return 1
 	# Stub installer was invoked
 	[ -f "$TEST_TMP/calls.log" ]
 	got=$(grep -c "stub-installer called" "$TEST_TMP/calls.log")
@@ -143,7 +143,7 @@ EOF
 	fake=$(_install_fake_layout 0 0 0)
 	run "$fake" --no-migrate
 	[ "$status" -eq 0 ]
-	[[ $output == *"SKIPPED via --no-migrate"* ]]
+	[[ $output == *"SKIPPED via --no-migrate"* ]] || return 1
 	# Stub migrate NOT invoked
 	run ! grep -q "stub-migrate called" "$TEST_TMP/calls.log"
 }
@@ -152,7 +152,7 @@ EOF
 	fake=$(_install_fake_layout 0 0 0)
 	run "$fake"
 	[ "$status" -eq 0 ]
-	[[ $output == *"Step 3: bump stale path versions"* ]]
+	[[ $output == *"Step 3: bump stale path versions"* ]] || return 1
 	got=$(grep -c "stub-migrate called" "$TEST_TMP/calls.log")
 	[ "$got" -eq 1 ]
 }
@@ -186,7 +186,7 @@ EOF
 	rm -f "$TEST_TMP/fakerepo/scripts/migrate-settings.sh"
 	run "$fake"
 	[ "$status" -eq 2 ]
-	[[ $output == *"migrate-settings.sh not found"* ]]
+	[[ $output == *"migrate-settings.sh not found"* ]] || return 1
 	[[ $output == *"--no-migrate"* ]]
 }
 
@@ -197,8 +197,8 @@ EOF
 	fake=$(_install_fake_layout 0 0 0)
 	run "$fake" --check
 	[ "$status" -eq 0 ]
-	[[ $output == *"register-hook --check clean"* ]]
-	[[ $output == *"Step 3:"* ]]
+	[[ $output == *"register-hook --check clean"* ]] || return 1
+	[[ $output == *"Step 3:"* ]] || return 1
 	# Verify migrate called with --dry-run (NOT a writing variant)
 	grep -q "stub-migrate called: --dry-run" "$TEST_TMP/calls.log"
 }

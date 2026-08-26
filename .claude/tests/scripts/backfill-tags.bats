@@ -87,9 +87,9 @@ assert_output_lacks() { # $1 = substring $output must NOT contain
 	cd "$TEST_TMP" || return 1
 	run scripts/backfill-tags.sh --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"v0.1.0"* ]]
-	[[ $output == *"v0.2.0"* ]]
-	[[ $output == *"v0.3.0"* ]]
+	[[ $output == *"v0.1.0"* ]] || return 1
+	[[ $output == *"v0.2.0"* ]] || return 1
+	[[ $output == *"v0.3.0"* ]] || return 1
 	# No tags should exist
 	[ -z "$(git tag --list 'v*')" ]
 }
@@ -103,8 +103,8 @@ assert_output_lacks() { # $1 = substring $output must NOT contain
 	[ "$status" -eq 0 ]
 	# All 3 versions tagged
 	tags=$(git tag --list 'v*' | sort -V | tr '\n' ' ')
-	[[ $tags == *"v0.1.0"* ]]
-	[[ $tags == *"v0.2.0"* ]]
+	[[ $tags == *"v0.1.0"* ]] || return 1
+	[[ $tags == *"v0.2.0"* ]] || return 1
 	[[ $tags == *"v0.3.0"* ]]
 }
 
@@ -120,7 +120,7 @@ assert_output_lacks() { # $1 = substring $output must NOT contain
 	if [[ $output == *"nothing to do"* ]]; then
 		:
 	else
-		[[ $output == *"created=0"* ]]
+		[[ $output == *"created=0"* ]] || return 1
 	fi
 }
 
@@ -155,7 +155,7 @@ assert_output_lacks() { # $1 = substring $output must NOT contain
 	cd "$OTHER"
 	run scripts/backfill-tags.sh --dry-run
 	[ "$status" -eq 2 ]
-	[[ $output == *"not in a plugin repo"* ]]
+	[[ $output == *"not in a plugin repo"* ]] || return 1
 	cd /tmp
 	rm -rf "$OTHER"
 }

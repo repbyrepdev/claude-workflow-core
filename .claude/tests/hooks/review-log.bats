@@ -222,7 +222,7 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	# T12: the round-complete path removed the directive marker.
 	[ ! -f "$marker" ]
 	# clean round → graduation directive emitted.
-	[[ $output == *"GRADUATED"* ]]
+	[[ $output == *"GRADUATED"* ]] || return 1
 	# state-transition is persisted, not just printed: the per-sha review-log
 	# actually recorded this round's agent entries (phase1/round1).
 	local logf
@@ -259,7 +259,7 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	# round-complete still clears the marker (it fires regardless of findings)…
 	[ ! -f "$marker" ]
 	# …but a dirty round emits NEXT STEPS and does NOT graduate.
-	[[ $output == *"NEXT STEPS"* ]]
+	[[ $output == *"NEXT STEPS"* ]] || return 1
 	[[ $output != *"GRADUATED"* ]]
 }
 
@@ -300,7 +300,7 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 	# The round-complete branch was NOT entered → marker MUST survive.
 	[ -f "$marker" ]
 	# Sanity: no round-complete directive was emitted (the round isn't done).
-	[[ $output != *"COMPLETE — all expected agents logged"* ]]
+	[[ $output != *"COMPLETE — all expected agents logged"* ]] || return 1
 	# Now log the final agent → round completes → marker IS cleared (the positive
 	# edge, mirroring T12 but proving the transition happens on the LAST agent).
 	_log phase1 1 "$last" 0 ok
@@ -331,7 +331,7 @@ _log() { run bash -c "cd '$TEST_TMP' && bash '$HOOK' $*"; }
 		[ "$status" -eq 0 ]
 	done <<<"$expected"
 	# 0 findings everywhere but one errored → not clean.
-	[[ $output == *"NEXT STEPS"* ]]
+	[[ $output == *"NEXT STEPS"* ]] || return 1
 	[[ $output != *"GRADUATED"* ]]
 }
 

@@ -138,6 +138,6 @@ teardown() {
 		[ "$status" -eq 1 ]
 		[ "$output" = fail ]
 		# shellcheck disable=SC2154  # $stderr is set by bats `run --separate-stderr`
-		[[ $stderr == *"SC1000 example"* ]]
+		[[ $stderr == *"SC1000 example"* ]] || return 1
 	)
 }

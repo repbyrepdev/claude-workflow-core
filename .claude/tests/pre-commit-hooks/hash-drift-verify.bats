@@ -62,7 +62,7 @@ EOF
 @test "missing scripts/hash-drift.sh sibling → exit 2 with MISSING-specific diagnostic" {
 	run "$TEST_TMP/pre-commit-hooks/hash-drift-verify.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"sibling scripts/hash-drift.sh MISSING"* ]]
+	[[ $output == *"sibling scripts/hash-drift.sh MISSING"* ]] || return 1
 	[[ $output == *"Reinstall the plugin"* ]]
 }
 
@@ -74,7 +74,7 @@ EOF
 	# Intentionally NOT chmod +x
 	run "$TEST_TMP/pre-commit-hooks/hash-drift-verify.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT EXECUTABLE"* ]]
+	[[ $output == *"NOT EXECUTABLE"* ]] || return 1
 	[[ $output == *"chmod +x"* ]]
 }
 
@@ -89,8 +89,8 @@ EOF
 	_write_stub_hash_drift 1
 	HASH_DRIFT_VERIFY_SKIP=1 HOME="$TEST_TMP/home" run "$TEST_TMP/pre-commit-hooks/hash-drift-verify.sh"
 	[ "$status" -eq 0 ]
-	[[ $output == *"HASH_DRIFT_VERIFY_SKIP=1"* ]]
-	[[ $output == *"BYPASS"* ]]
+	[[ $output == *"HASH_DRIFT_VERIFY_SKIP=1"* ]] || return 1
+	[[ $output == *"BYPASS"* ]] || return 1
 	# CR Phase 2 MAJOR: log path is hash-drift-skip.jsonl per #148 spec.
 	[ -f "$TEST_TMP/home/.claude/logs/hash-drift-skip.jsonl" ]
 	jq -e . "$TEST_TMP/home/.claude/logs/hash-drift-skip.jsonl"
@@ -110,7 +110,7 @@ EOF
 	chmod 0755 "$TEST_TMP/home"
 	# Per CR Phase 2: bypass must fail-closed when audit-logging fails.
 	[ "$status" -eq 2 ]
-	[[ $output == *"audit log write FAILED"* ]]
+	[[ $output == *"audit log write FAILED"* ]] || return 1
 	[[ $output == *"#148"* ]]
 }
 
@@ -118,8 +118,8 @@ EOF
 	_write_stub_hash_drift 0
 	run "$TEST_TMP/pre-commit-hooks/hash-drift-verify.sh" --json --plugin-cache /tmp/x
 	[ "$status" -eq 2 ]
-	[[ $output == *"this shim hardcodes --verify"* ]]
-	[[ $output == *"extra args rejected"* ]]
+	[[ $output == *"this shim hardcodes --verify"* ]] || return 1
+	[[ $output == *"extra args rejected"* ]] || return 1
 	# Stub should NOT have been invoked.
 	[ ! -f "$TEST_TMP/stub-args.txt" ]
 }

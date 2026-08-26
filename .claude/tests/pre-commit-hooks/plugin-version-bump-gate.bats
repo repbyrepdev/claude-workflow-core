@@ -64,7 +64,7 @@ _run_gate() {
 	)
 	run _run_gate
 	[ "$status" -eq 1 ]
-	[[ $output == *"staged hook(s) without plugin.json bump"* ]]
+	[[ $output == *"staged hook(s) without plugin.json bump"* ]] || return 1
 	[[ $output == *"new-hook.sh"* ]]
 }
 
@@ -151,7 +151,7 @@ _run_gate() {
 	)
 	run bash -c "cd '$TEST_TMP' && export PLUGIN_VERSION_BUMP_SKIP=1 && bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"PLUGIN_VERSION_BUMP_SKIP=1"* ]]
+	[[ $output == *"PLUGIN_VERSION_BUMP_SKIP=1"* ]] || return 1
 	[[ $output == *"audit logged"* ]]
 }
 

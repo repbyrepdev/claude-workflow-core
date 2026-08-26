@@ -90,7 +90,7 @@ _write_overlay() {
 	_write_overlay "area:hooks" "type:test"
 	run "$HOOK"
 	[ "$status" -eq 1 ]
-	[[ $output == *"MISSING from overlay"* ]]
+	[[ $output == *"MISSING from overlay"* ]] || return 1
 	[[ $output == *"area:coalesce"* ]]
 }
 
@@ -100,7 +100,7 @@ _write_overlay() {
 	_write_overlay "area:hooks" "area:ghost"
 	run "$HOOK"
 	[ "$status" -eq 1 ]
-	[[ $output == *"EXTRA in overlay"* ]]
+	[[ $output == *"EXTRA in overlay"* ]] || return 1
 	[[ $output == *"area:ghost"* ]]
 }
 
@@ -148,7 +148,7 @@ _write_overlay() {
 	git -C "$TEST_TMP" add .coderabbit.overlay.yaml
 	run "$HOOK"
 	[ "$status" -eq 1 ]
-	[[ $output == *"MISSING from overlay"* ]]
+	[[ $output == *"MISSING from overlay"* ]] || return 1
 	[[ $output == *"area:hooks"* ]]
 }
 

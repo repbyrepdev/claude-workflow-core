@@ -70,7 +70,7 @@ teardown() {
 	# Coverage: N/A and exit 0.
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 0"* ]]
+	[[ $output == *"Shell scripts in scope: 0"* ]] || return 1
 	[[ $output == *"Coverage: N/A"* ]]
 }
 
@@ -93,9 +93,9 @@ teardown() {
 	EOF
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"TEST_REPO_ROOT override active"* ]]
-	[[ $output == *"Shell scripts in scope: 1"* ]]
-	[[ $output == *"Bats test files:"*"1"* ]]
+	[[ $output == *"TEST_REPO_ROOT override active"* ]] || return 1
+	[[ $output == *"Shell scripts in scope: 1"* ]] || return 1
+	[[ $output == *"Bats test files:"*"1"* ]] || return 1
 	[[ $output == *"Coverage: 100%"* ]]
 }
 
@@ -114,7 +114,7 @@ teardown() {
 	EOF
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 2"* ]]
+	[[ $output == *"Shell scripts in scope: 2"* ]] || return 1
 	[[ $output == *"Coverage: 50%"* ]]
 }
 
@@ -124,9 +124,9 @@ teardown() {
 	mkdir -p "$TEST_TMP/scripts"
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 0"* ]]
-	[[ $output == *"Covered"*"0"* ]]
-	[[ $output == *"Uncovered:"*"0"* ]]
+	[[ $output == *"Shell scripts in scope: 0"* ]] || return 1
+	[[ $output == *"Covered"*"0"* ]] || return 1
+	[[ $output == *"Uncovered:"*"0"* ]] || return 1
 	[[ $output == *"Coverage: N/A"* ]]
 }
 
@@ -137,7 +137,7 @@ teardown() {
 	chmod +x "$TEST_TMP/scripts/foo.sh"
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Bats test files:"*"0"* ]]
+	[[ $output == *"Bats test files:"*"0"* ]] || return 1
 	[[ $output == *"Coverage: 0%"* ]]
 }
 
@@ -155,7 +155,7 @@ teardown() {
 	echo '@test "x" { true; }' >"$TEST_TMP/.claude/tests/sample.bats"
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 5"* ]]
+	[[ $output == *"Shell scripts in scope: 5"* ]] || return 1
 	# Locks in that the script reached the end of the coverage block
 	# without aborting (the COVERED_PATHS pipeline runs successfully here
 	# because no .bats has a `# covers:` header).
@@ -188,7 +188,7 @@ teardown() {
 	EOF
 	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/fail.bats"
 	[ "$status" -eq 1 ]
-	[[ $output == *"=== Summary ==="* ]]
-	[[ $output == *"✗ "*"fail.bats"* ]]
+	[[ $output == *"=== Summary ==="* ]] || return 1
+	[[ $output == *"✗ "*"fail.bats"* ]] || return 1
 	[[ $output == *"FAILURE DETAILS"* ]]
 }

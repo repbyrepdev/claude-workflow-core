@@ -301,6 +301,12 @@ _mirror_test_drift_gate() {
 			relpath=${hook#.claude/}
 			esc=${relpath//./\\.}
 			grc=0
+			# (#2572) `covers:` ONLY — deliberately not `audits:`. A
+			# repo-wide meta-lint sweeps many files without behaviourally
+			# exercising any of them, so accepting one here would report a
+			# replaced mirror hook as "verified" on the strength of a policy
+			# scan that never ran it. audits: routes in test-touched (the
+			# audit re-runs when its subjects change); it grants no credit.
 			grep -rlE --include='*.bats' \
 				"^#[[:space:]]*covers:.*(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" \
 				"$tests_dir" 2>/dev/null || grc=$?

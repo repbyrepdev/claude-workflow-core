@@ -67,7 +67,7 @@ _run() {
 	_write_transcript "You need to run npm install before the build will work."
 	run _run "$TRANSCRIPT"
 	[ "$status" -eq 0 ]
-	[[ $output == *additionalContext* ]]
+	[[ $output == *additionalContext* ]] || return 1
 	[[ $output == *"hand-off detected"* ]]
 }
 

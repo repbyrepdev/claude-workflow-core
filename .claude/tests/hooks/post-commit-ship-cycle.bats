@@ -125,8 +125,8 @@ _run() {
 	_marker "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"WARN for-each-ref"* ]]
-	[[ $output == *"keeping marker"* ]]
+	[[ $output == *"WARN for-each-ref"* ]] || return 1
+	[[ $output == *"keeping marker"* ]] || return 1
 	_has "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 }
 
@@ -142,8 +142,8 @@ _run() {
 	_marker "$blob"
 	_run
 	[ "$status" -eq 0 ]
-	[[ $output == *"WARN for-each-ref"* ]]
-	[[ $output == *"keeping marker"* ]]
+	[[ $output == *"WARN for-each-ref"* ]] || return 1
+	[[ $output == *"keeping marker"* ]] || return 1
 	_has "$blob"
 }
 

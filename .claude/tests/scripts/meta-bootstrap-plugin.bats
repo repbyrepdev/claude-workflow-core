@@ -72,7 +72,7 @@ teardown() {
 	cd "$TEST_TMP" || return 1
 	run "$SCRIPT" --target plugin --verify-only
 	[ "$status" -eq 1 ]
-	[[ $output == *"must run inside a git working tree"* ]]
+	[[ $output == *"must run inside a git working tree"* ]] || return 1
 	# No leaked git stderr.
 	[[ $output != *"fatal: not a git"* ]]
 }

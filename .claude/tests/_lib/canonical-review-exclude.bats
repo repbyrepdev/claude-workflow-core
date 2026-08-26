@@ -155,7 +155,7 @@ teardown() {
 	. "$LIB"
 	run canonical_review_noncanonical_changed main
 	[ "$status" -eq 0 ]
-	[[ $output == *".pre-commit-config.yaml"* ]] # consumer-authored present
+	[[ $output == *".pre-commit-config.yaml"* ]] # consumer-authored present || return 1
 	[[ $output != *".claude/hooks/foo.sh"* ]]    # canonical mirror absent
 }
 
@@ -224,8 +224,8 @@ teardown() {
 	. "$LIB"
 	run canonical_review_noncanonical_changed main
 	[ "$status" -eq 0 ]
-	[[ $output == *"alpha.txt"* ]]
-	[[ $output == *"beta.txt"* ]]
+	[[ $output == *"alpha.txt"* ]] || return 1
+	[[ $output == *"beta.txt"* ]] || return 1
 	[[ $output != *".claude/hooks/foo.sh"* ]]
 }
 

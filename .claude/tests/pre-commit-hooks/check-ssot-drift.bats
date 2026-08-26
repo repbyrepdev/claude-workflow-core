@@ -80,7 +80,7 @@ EOF
 	write_config
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
 	[ "$status" -eq 0 ]
-	[[ $output != *skipping* ]]
+	[[ $output != *skipping* ]] || return 1
 	[[ $output != *drift* ]]
 }
 
@@ -102,7 +102,7 @@ EOF
 	write_config
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
 	[ "$status" -ne 0 ]
-	[[ $output == *drift* ]]
+	[[ $output == *drift* ]] || return 1
 	[[ $output == *10* ]]
 }
 
@@ -156,7 +156,7 @@ EOF
 	write_list_config
 	run bash -c "cd '$TEST_TMP' && SSOT_CHECKS_CONFIG='$TEST_TMP/ssot-checks.yml' '$SCRIPT'"
 	[ "$status" -ne 0 ]
-	[[ $output == *drift* ]]
+	[[ $output == *drift* ]] || return 1
 	# The BLOCK must NAME the diverging item — a regression in the item
 	# formatting loop that prints an empty/mangled list would otherwise
 	# pass on exit code alone.

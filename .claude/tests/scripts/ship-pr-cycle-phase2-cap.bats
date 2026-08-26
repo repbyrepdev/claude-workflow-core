@@ -153,8 +153,8 @@ _seed_coverage() {
 	# Stage untouched — resume did not advance past the preread gate...
 	[ "$(_cur_stage)" = phase2 ]
 	# ...and none of the phase2 advance output appears (no CR-CLI walk).
-	[[ $output != *"advanced to push"* ]]
-	[[ $output != *"round-cap reached"* ]]
+	[[ $output != *"advanced to push"* ]] || return 1
+	[[ $output != *"round-cap reached"* ]] || return 1
 	# Strongest assertion (CR): the stub drops .claude/.local-review-ran when it
 	# executes, so its ABSENCE proves the CR-CLI was never invoked — the whole
 	# point of stopping at the preread gate, and something output-matching alone
@@ -182,9 +182,9 @@ _seed_coverage() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (3/3)"* ]]
-	[[ $output == *"addressed"* ]]
-	[[ $output == *"advanced to push"* ]]
+	[[ $output == *"round-cap reached (3/3)"* ]] || return 1
+	[[ $output == *"addressed"* ]] || return 1
+	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(_cur_stage)" = push ]
 	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] # graduation must not spend a review
 }
@@ -341,8 +341,8 @@ _seed_coverage() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase2 round 1/3"* ]]
-	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
+	[[ $output == *"phase2 round 1/3"* ]] || return 1
+	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]] || return 1
 	[ "$(_cur_stage)" = phase2 ]
 }
 
@@ -357,8 +357,8 @@ _seed_coverage() {
 	export STUB_ROUNDS=2
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (2/2)"* ]]
-	[[ $output == *"advanced to push"* ]]
+	[[ $output == *"round-cap reached (2/2)"* ]] || return 1
+	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(_cur_stage)" = push ]
 	[ ! -e "$TEST_TMP/.claude/.local-review-ran" ] # #2545: graduation spends no review
 }
@@ -374,7 +374,7 @@ _seed_coverage() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase2 round 0/3"* ]]
+	[[ $output == *"phase2 round 0/3"* ]] || return 1
 	[ "$(_cur_stage)" = phase2 ]
 }
 
@@ -389,7 +389,7 @@ _seed_coverage() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"phase2 round-cap — jq failed"* ]]
+	[[ $output == *"phase2 round-cap — jq failed"* ]] || return 1
 	[ "$(_cur_stage)" = phase2 ]
 }
 
@@ -418,7 +418,7 @@ _seed_coverage() {
 	PATH="$TEST_TMP/gitstub:$PATH"
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"git rev-parse --short HEAD failed"* ]]
+	[[ $output == *"git rev-parse --short HEAD failed"* ]] || return 1
 	[ "$(_cur_stage)" = phase2 ]
 }
 
@@ -446,8 +446,8 @@ _seed_coverage() {
 	PATH="$TEST_TMP/gitstub:$PATH"
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"git rev-list"*"failed"* ]]
-	[[ $output == *"cannot count this-branch CR-CLI runs"* ]]
+	[[ $output == *"git rev-list"*"failed"* ]] || return 1
+	[[ $output == *"cannot count this-branch CR-CLI runs"* ]] || return 1
 	[ "$(_cur_stage)" = phase2 ]
 }
 
@@ -478,8 +478,8 @@ _seed_coverage() {
 	export STUB_ROUNDS=2
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"round-cap reached (2/2)"* ]] # per-branch=2; per-SHA would be 1/2
-	[[ $output == *"advanced to push"* ]]
+	[[ $output == *"round-cap reached (2/2)"* ]] # per-branch=2; per-SHA would be 1/2 || return 1
+	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(jq -r '.stage' "$STATE_DIR/$sha2.json")" = push ]
 }
 
@@ -503,8 +503,8 @@ STUB
 	chmod +x "$ROOT/.claude/scripts/cr/local-review.sh"
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"timed out unrecoverably"* ]]
-	[[ $output == *"advanced to push"* ]]
+	[[ $output == *"timed out unrecoverably"* ]] || return 1
+	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(_cur_stage)" = push ]
 }
 
@@ -553,9 +553,9 @@ _seed_cache() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"cache HIT"* ]]
-	[[ $output == *"reusing 0 finding"* ]]
-	[[ $output == *"advanced to push"* ]]
+	[[ $output == *"cache HIT"* ]] || return 1
+	[[ $output == *"reusing 0 finding"* ]] || return 1
+	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(_cur_stage)" = push ]
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }
@@ -572,9 +572,9 @@ _seed_cache() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"cache HIT"* ]]
-	[[ $output == *"addressed"* ]]
-	[[ $output == *"advanced to push"* ]]
+	[[ $output == *"cache HIT"* ]] || return 1
+	[[ $output == *"addressed"* ]] || return 1
+	[[ $output == *"advanced to push"* ]] || return 1
 	[ "$(_cur_stage)" = push ]
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }
@@ -590,8 +590,8 @@ _seed_cache() {
 	export STUB_ROUNDS=3
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"cache HIT"* ]]
-	[[ $output == *"NOT all addressed"* ]]
+	[[ $output == *"cache HIT"* ]] || return 1
+	[[ $output == *"NOT all addressed"* ]] || return 1
 	[ "$(_cur_stage)" = phase2 ]
 	[ ! -f "$ROOT/.claude/.local-review-ran" ] # cache HIT must NOT invoke local-review.sh
 }

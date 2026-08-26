@@ -93,15 +93,79 @@ panel is ever rebuilt: key pending-state on agent **completion**, never let a
 guard block the command that clears it, and keep `Read` available to
 subagents.
 
-### `# audits:` header for repo-wide meta-lint suites (#2572, convention only — NOT yet parsed)
+### `# audits:` header for repo-wide meta-lint suites (#2572 — LIVE)
 
 A bats file that POLICY-AUDITS many files (a repo-wide meta-lint) must not
 claim `# covers:` on them — that hands out false behavioral-test credit in
-`test-touched` and the mirror-drift gate. The convention: declare
-`# audits: <paths…>` instead. **No consumer parses `audits:` yet** —
-test.sh coverage, test-touched, and refresh-from-source WILL treat it as
-routing-only (run-on-subject-change, no behavioral credit) when epic #2581
-lands the parsers. Until then an `audits:`-only suite drops out of
-change-triggered routing entirely, so do NOT migrate a suite off `covers:`
-before #2581 ships; this section exists so the header's meaning is settled
-before the parsers are written.
+`test-touched` and the mirror-drift gate. Declare `# audits: <paths…>`
+instead. Both headers are per-file, read with `grep -m1`, space-separated.
+
+```bash
+# covers: _lib/event-frontmatter.sh    ← what this file EXECUTES
+# audits: hooks/*.sh                   ← what it SWEEPS but never runs
+```
+
+The two headers answer different questions, and the three consumers read
+them differently:
+
+| consumer | `covers:` | `audits:` |
+|---|---|---|
+| `test-touched.sh` (routing) | re-run | **re-run** |
+| `test.sh --coverage` (credit) | counts | ignored |
+| `refresh-from-source.sh` drift gate (credit) | accepts as the verifying test | ignored |
+
+Routing on both is the point: an audit must re-run when something it
+polices changes. Crediting only `covers:` is equally the point: an audit
+that swept 40 mirror hooks without executing one of them would otherwise
+tell the drift gate they were all verified.
+
+`audits:` entries may be globs (`hooks/*.sh`); `covers:` entries are exact
+paths. A file may carry both, one, or neither — a suite with only `audits:`
+routes correctly and simply contributes no coverage, which is accurate.
+
+First user: `.claude/tests/_lib/event-frontmatter-audit.bats`.
+
+### Assertions must fail on every bash (#2631)
+
+bats reports a failed test through an `ERR` trap. On **bash 3.2** — the 2007
+build macOS ships at `/bin/bash`, frozen because bash 4.0 relicensed to
+GPLv3 — a failing bare `[[ ]]` fires neither that trap nor `set -e`, so the
+test PASSES anyway:
+
+```bash
+/bin/bash -c 'set -eET; trap "echo TRAP" ERR; [[ a == b ]]; echo REACHED'
+# → REACHED          (bash 5 prints TRAP and stops)
+```
+
+A bare `[[ ]]` therefore only fails a test when it happens to be the block's
+**last command**. An assertion whose enforcement depends on its position is
+not an assertion — 749 such no-ops existed across 96 files when this was
+found, and 8 of them were hiding something false.
+
+Write assertions in a form that fails everywhere:
+
+```bash
+[ "$status" -eq 0 ]                       # single-bracket builtin
+[[ $output == *x* ]] || return 1          # the `||` supplies the failure
+case "$output" in *x*) ;; *) return 1 ;; esac
+assert_output_contains "x"                # helper returning non-zero
+```
+
+Enforced mechanically, in layers:
+
+1. **`pre-commit-hooks/bats-assertion-gate.sh`** refuses any *increase* in
+   non-portable assertions, per file, against
+   `.claude/bats-assertion-baseline.tsv`.
+2. **The baseline is 0 and a test pins it there**, so the refresh script
+   cannot be used to launder new debt into the baseline.
+3. **`scripts/test.sh --shell <bash>`** runs the suite under a chosen shell.
+   The acceptance test for portability is the same verdict on the oldest and
+   newest supported bash:
+
+   ```bash
+   TEST_SH_FULL_OK=1 scripts/test.sh --shell /bin/bash              # 3.2
+   TEST_SH_FULL_OK=1 scripts/test.sh --shell "$(brew --prefix)/bin/bash"
+   ```
+
+   Green on 3.2 implies green on 4, 5, Linux and GitHub runners — 3.2 is the
+   weakest link, which is why it is the one worth checking.

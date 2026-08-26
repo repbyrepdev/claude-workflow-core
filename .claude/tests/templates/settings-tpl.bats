@@ -27,7 +27,7 @@ setup() {
 @test "template names register-hook.sh --all-auto-register as the renderer (SSOT)" {
 	run jq -r '._template.renderer' "$TPL"
 	[ "$status" -eq 0 ]
-	[[ $output == *"register-hook.sh"* ]]
+	[[ $output == *"register-hook.sh"* ]] || return 1
 	[[ $output == *"all-auto-register"* ]]
 }
 
@@ -43,7 +43,7 @@ setup() {
 	[ "$cmd_count" -ge 6 ]
 	while IFS= read -r cmd; do
 		[ -n "$cmd" ] || continue
-		[[ $cmd == *"<VERSION>"* ]]
+		[[ $cmd == *"<VERSION>"* ]] || return 1
 	done <<<"$output"
 }
 

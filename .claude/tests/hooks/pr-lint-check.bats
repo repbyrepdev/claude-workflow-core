@@ -90,7 +90,7 @@ BODY
 	_write_good_body
 	run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '["enhancement"]'
 	[ "$status" -eq 1 ]
-	[[ $output == *"area:*"* ]]
+	[[ $output == *"area:*"* ]] || return 1
 	[[ $output == *"area:infrastructure"* ]]
 }
 
@@ -106,9 +106,9 @@ No headings, no issue link.
 BODY
 	run "$SCRIPT" --body "$TEST_TMP/body.md" --labels '[]'
 	[ "$status" -eq 1 ]
-	[[ $output == *"must reference an issue"* ]]
-	[[ $output == *"## Summary"* ]]
-	[[ $output == *"## Test plan"* ]]
+	[[ $output == *"must reference an issue"* ]] || return 1
+	[[ $output == *"## Summary"* ]] || return 1
+	[[ $output == *"## Test plan"* ]] || return 1
 	[[ $output == *"area:*"* ]]
 }
 

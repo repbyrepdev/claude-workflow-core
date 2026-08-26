@@ -108,6 +108,24 @@ _scan() { # $1 = file contents; echoes the detector's hit count
 	[ "$status" -eq 0 ]
 }
 
+@test "the portability debt is ZERO — the baseline cannot launder new debt" {
+	# The gate compares against the baseline, and the refresh script rewrites
+	# the baseline from disk. Those two together would let someone add a
+	# non-portable assertion and then legitimise it with a refresh. Pinning
+	# the total at 0 closes that loop: new debt fails HERE even if the
+	# baseline was refreshed to accept it.
+	cd "$REPO_ROOT" || return 1
+	local f=".claude/bats-assertion-baseline.tsv"
+	[ -f "$f" ] || return 1
+	local debt
+	debt=$(awk -F'\t' '{s += $2} END {print s + 0}' "$f")
+	[ "$debt" = "0" ] || {
+		echo "portability debt is $debt, expected 0 — see $f"
+		echo "assertions that cannot fail on bash 3.2 have been added back"
+		return 1
+	}
+}
+
 @test "the recorded baseline is current (ratchet, never rises)" {
 	# If this fails, someone fixed or added assertions without re-running
 	# scripts/refresh-bats-assertion-baseline.sh.

@@ -80,8 +80,8 @@ teardown() {
 	run "$SCRIPT" report
 	[ "$status" -eq 0 ]
 	# pr-lint: 3 fires, 1 fail
-	[[ $output == *"pr-lint.yml"* ]]
-	[[ $output == *"gitleaks.yml"* ]]
+	[[ $output == *"pr-lint.yml"* ]] || return 1
+	[[ $output == *"gitleaks.yml"* ]] || return 1
 	# Spot-check the per-mirror line shape
 	[[ $output =~ pr-lint.yml[[:space:]]+3[[:space:]]+1 ]]
 }
@@ -103,7 +103,7 @@ teardown() {
 	"$SCRIPT" log --mirror pr-lint.yml --phase push --rc 0 >/dev/null
 	run "$SCRIPT" report
 	[ "$status" -eq 0 ]
-	[[ $output == *"Declared but never fired"* ]]
+	[[ $output == *"Declared but never fired"* ]] || return 1
 	[[ $output == *"gitleaks.yml"* ]]
 }
 
@@ -112,7 +112,7 @@ teardown() {
 	rm -f .claude/logs/ship-pr-mirror-coverage.jsonl
 	run "$SCRIPT" log --phase push --rc 0
 	[ "$status" -eq 0 ]
-	[[ $output == *"requires"* ]]
+	[[ $output == *"requires"* ]] || return 1
 	# No entry should be written
 	[ ! -f .claude/logs/ship-pr-mirror-coverage.jsonl ]
 }
@@ -122,7 +122,7 @@ teardown() {
 	rm -f .claude/logs/ship-pr-mirror-coverage.jsonl
 	run "$SCRIPT" log --mirror
 	[ "$status" -eq 0 ]
-	[[ $output == *"--mirror requires a value"* ]]
+	[[ $output == *"--mirror requires a value"* ]] || return 1
 	[ ! -f .claude/logs/ship-pr-mirror-coverage.jsonl ]
 }
 
@@ -131,7 +131,7 @@ teardown() {
 	rm -f .claude/logs/ship-pr-mirror-coverage.jsonl
 	run "$SCRIPT" log --mirror pr-lint.yml --phase push --rc
 	[ "$status" -eq 0 ]
-	[[ $output == *"--rc requires a value"* ]]
+	[[ $output == *"--rc requires a value"* ]] || return 1
 	[ ! -f .claude/logs/ship-pr-mirror-coverage.jsonl ]
 }
 
@@ -145,7 +145,7 @@ teardown() {
 JSONL
 	run "$SCRIPT" report
 	[ "$status" -eq 0 ]
-	[[ $output == *"malformed JSONL row(s)"* ]]
+	[[ $output == *"malformed JSONL row(s)"* ]] || return 1
 	# Should count 2 fires for pr-lint (1 fail) — the broken line MUST NOT abort jq mid-file.
 	[[ $output =~ pr-lint.yml[[:space:]]+2[[:space:]]+1 ]]
 }

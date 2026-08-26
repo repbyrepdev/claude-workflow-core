@@ -72,9 +72,9 @@ teardown() {
 @test "--help emits usage" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"Usage"* ]]
-	[[ $output == *"--consumer"* ]]
-	[[ $output == *"--all-consumers"* ]]
+	[[ $output == *"Usage"* ]] || return 1
+	[[ $output == *"--consumer"* ]] || return 1
+	[[ $output == *"--all-consumers"* ]] || return 1
 	[[ $output == *"--dry-run"* ]]
 }
 
@@ -101,10 +101,10 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/refresh-from-source.sh --consumer alpha --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"DIFF"* ]]
-	[[ $output == *"file-a.sh"* ]]
-	[[ $output == *"file-b.sh"* ]]
-	[[ $output == *"replaced=2"* ]]
+	[[ $output == *"DIFF"* ]] || return 1
+	[[ $output == *"file-a.sh"* ]] || return 1
+	[[ $output == *"file-b.sh"* ]] || return 1
+	[[ $output == *"replaced=2"* ]] || return 1
 	# No files actually copied — dry-run.
 	[ ! -f "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
 }
@@ -113,7 +113,7 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/refresh-from-source.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"REPLACED"* ]]
+	[[ $output == *"REPLACED"* ]] || return 1
 	[ -f "$TEST_TMP/consumer/.claude/_lib/file-a.sh" ]
 	[ -f "$TEST_TMP/consumer/.claude/_lib/file-b.sh" ]
 	# Content matches source.
@@ -125,7 +125,7 @@ teardown() {
 	scripts/refresh-from-source.sh --consumer alpha >/dev/null 2>&1
 	run scripts/refresh-from-source.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean=2"* ]]
+	[[ $output == *"clean=2"* ]] || return 1
 	[[ $output == *"replaced=0"* ]]
 }
 
@@ -142,11 +142,11 @@ overrides:
 YAML
 	run scripts/refresh-from-source.sh --consumer alpha --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"OVERRIDE"* ]]
-	[[ $output == *"file-a.sh"* ]]
-	[[ $output == *"overridden=1"* ]]
+	[[ $output == *"OVERRIDE"* ]] || return 1
+	[[ $output == *"file-a.sh"* ]] || return 1
+	[[ $output == *"overridden=1"* ]] || return 1
 	# file-b not overridden — still appears in DIFF.
-	[[ $output == *"DIFF"* ]]
+	[[ $output == *"DIFF"* ]] || return 1
 	[[ $output == *"file-b.sh"* ]]
 }
 
@@ -192,7 +192,7 @@ JSON
 	run scripts/refresh-from-source.sh --consumer alpha --files _lib/file-a.sh --dry-run
 	[ "$status" -eq 0 ]
 	# file-a in subset → DIFF; file-b filtered out (no DIFF for it).
-	[[ $output == *"file-a.sh"* ]]
+	[[ $output == *"file-a.sh"* ]] || return 1
 	[[ $output == *"replaced=1"* ]]
 }
 
@@ -266,7 +266,7 @@ JSON
 	# mapping + hash-compare are stable across runs).
 	run scripts/refresh-from-source.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean=3"* ]]
+	[[ $output == *"clean=3"* ]] || return 1
 	[[ $output == *"replaced=0"* ]]
 }
 
@@ -283,9 +283,9 @@ overrides:
 YAML
 	run scripts/refresh-from-source.sh --consumer alpha --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"OVERRIDE"* ]]
-	[[ $output == *"pull_request_template.md"* ]]
-	[[ $output == *"overridden=1"* ]]
+	[[ $output == *"OVERRIDE"* ]] || return 1
+	[[ $output == *"pull_request_template.md"* ]] || return 1
+	[[ $output == *"overridden=1"* ]] || return 1
 	# file-a/file-b not overridden — still appear as DIFF.
 	[[ $output == *"file-a.sh"* ]]
 }

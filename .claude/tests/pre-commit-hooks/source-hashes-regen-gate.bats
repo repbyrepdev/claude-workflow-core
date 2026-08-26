@@ -86,7 +86,7 @@ teardown() {
 	git add hooks/sample-hook.sh
 	run pre-commit-hooks/source-hashes-regen-gate.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *".source-hashes.json"* ]]
+	[[ $output == *".source-hashes.json"* ]] || return 1
 	[[ $output == *"is NOT"* ]] || [[ $output == *"missing"* ]] || [[ $output == *"refresh"* ]]
 }
 

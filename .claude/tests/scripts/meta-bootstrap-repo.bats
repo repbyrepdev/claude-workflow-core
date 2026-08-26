@@ -35,7 +35,7 @@ teardown() {
 	mkdir -p "$TEST_TMP/target"
 	run "$SCRIPT" --target repo -- "$TEST_TMP/target"
 	[ "$status" -eq 0 ]
-	[[ $output == *"bootstrapped + verified"* ]]
+	[[ $output == *"bootstrapped + verified"* ]] || return 1
 	# Assert files from BOTH scopes landed — pre-commit-config.yaml is
 	# plugin-scope, consumer-only files prove the orchestrator's
 	# --scope both verify actually catches consumer drift.
@@ -77,7 +77,7 @@ teardown() {
 	# passing the negative match.
 	_warn="every canonical hook will be excluded"
 	grep -qF "$_warn" "$REPO_ROOT/scripts/compose-coderabbit.sh"
-	[[ $output != *"$_warn"* ]]
+	[[ $output != *"$_warn"* ]] || return 1
 	diff "$TEST_TMP/target/.coderabbit.recompose.yaml" "$TEST_TMP/target/.coderabbit.yaml"
 	# Completeness, not mere presence: in a fresh bootstrap EVERY canonical hook
 	# (hooks/*.sh) is excluded as a byte-identical mirror (#2254/#2257), so the

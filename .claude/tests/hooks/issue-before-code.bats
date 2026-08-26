@@ -181,7 +181,7 @@ _run_hook() {
 	_stub_gh notfound
 	_run_hook "git checkout -b feat/v0.34.73/12345-phantom"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	# proves branch_convention_extract_issue fed the right number through
 	[[ $output == *'12345'* ]]
 }
@@ -280,7 +280,7 @@ _hook_without_convention_lib() {
 	payload=$(jq -nc --arg c "git checkout -b wip" '{tool_input: {command: $c}}')
 	run bash -c 'printf "%s" "$1" | "$2" 2>&1' _ "$payload" "$hook"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	[[ $output == *'missing required SSOT library'* ]]
 }
 

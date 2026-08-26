@@ -324,7 +324,7 @@ YAML
 	git rm -q .github/ISSUE_TEMPLATE/_spec.yml
 	run pre-commit-hooks/issue-template-schema-check.sh
 	[ "$status" -eq 2 ]
-	[[ $output == *"staged for deletion"* ]]
+	[[ $output == *"staged for deletion"* ]] || return 1
 	[[ $output == *"git reset HEAD"* ]]
 }
 

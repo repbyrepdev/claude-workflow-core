@@ -43,6 +43,12 @@ while [ "$#" -gt 0 ]; do
 		BASE="$2"
 		shift 2
 		;;
+	--list)
+		# Print the files this change routes to, then stop. Makes the
+		# covers:/audits: routing rules observable — and therefore testable.
+		LIST_ONLY=1
+		shift
+		;;
 	--help | -h)
 		# Range 4-30 ends at the last header comment; lines 31+ are
 		# non-comment code (REPO_ROOT assignment, etc.) and shouldn't
@@ -106,11 +112,22 @@ if [ -n "$TOUCHED_SH" ]; then
 		# paths are space-separated on one line.
 		while IFS= read -r -d '' b; do
 			hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$b" 2>/dev/null | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' || true)
-			for p in $hdr; do
-				if [ "$p" = "$sh" ]; then
+			# (#2572) `# audits:` — a repo-wide meta-lint's SUBJECTS. It
+			# routes exactly like covers: here (the audit must re-run when
+			# something it polices changes) but grants NO behavioural
+			# coverage credit, which is the whole point: an audit that
+			# claims covers: on 40 hooks it never executes makes the
+			# coverage report and the mirror-drift gate both lie.
+			aud=$(grep -m1 -E '^#[[:space:]]*audits:' "$b" 2>/dev/null | sed -E 's/^#[[:space:]]*audits:[[:space:]]*//' || true)
+			for p in $hdr $aud; do
+				# Exact path, or a glob the audit declared (hooks/*.sh).
+				# shellcheck disable=SC2254 # $p is an intentional pattern
+				case "$sh" in
+				$p)
 					MATCHED_BATS="${MATCHED_BATS}${b}"$'\n'
 					break
-				fi
+					;;
+				esac
 			done
 		done < <(find .claude/tests -name '*.bats' -print0 2>/dev/null)
 	done <<<"$TOUCHED_SH"
@@ -137,6 +154,16 @@ if [ -z "$TEST_TARGETS" ]; then
 fi
 
 count=$(printf '%s\n' "$TEST_TARGETS" | wc -l | tr -d ' ')
+
+# (#2572) --list: print the routing decision and stop. Without it the only
+# way to observe which files a change routes to is to RUN them, which makes
+# the `covers:`/`audits:` routing rules untestable — and untestable routing
+# is how an audit silently drops out of change-triggered runs.
+if [ "${LIST_ONLY:-0}" = "1" ]; then
+	printf '%s\n' "$TEST_TARGETS"
+	exit 0
+fi
+
 echo "test-touched: running $count bats file(s) covering touched files (vs $BASE)" >&2
 # Pass each target to scripts/test.sh. scripts/test.sh takes ONE path per
 # invocation, so loop. Accumulate failures.

@@ -98,7 +98,7 @@ jobs:
 	git add .github/
 	run pre-commit-hooks/workflow-source-pin.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"drift"* ]]
+	[[ $output == *"drift"* ]] || return 1
 	[[ $output == *"pr-lint.yml"* ]]
 }
 
@@ -119,7 +119,7 @@ jobs:
 	git add .github/
 	run pre-commit-hooks/workflow-source-pin.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"missing on disk"* ]]
+	[[ $output == *"missing on disk"* ]] || return 1
 	[[ $output == *"pr-lint.yml"* ]]
 }
 
@@ -196,7 +196,7 @@ YAML
 	git add .github/
 	run pre-commit-hooks/workflow-source-pin.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"orphan"* ]]
+	[[ $output == *"orphan"* ]] || return 1
 	[[ $output == *"orphan.yml"* ]]
 }
 

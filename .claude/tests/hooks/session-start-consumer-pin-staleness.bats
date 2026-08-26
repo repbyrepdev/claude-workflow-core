@@ -48,7 +48,7 @@ _make_cache() {
 	_make_cache 0.34.40 0.34.49 0.34.7
 	run bash "$SCRIPT"
 	[ "$status" -eq 0 ]
-	[[ $output == *"pins claude-workflow-core v0.34.40 but v0.34.49 is installed"* ]]
+	[[ $output == *"pins claude-workflow-core v0.34.40 but v0.34.49 is installed"* ]] || return 1
 	[[ $output == *"Refresh"* ]]
 }
 
@@ -65,7 +65,7 @@ _make_cache() {
 	_make_cache 0.34.49
 	run bash "$SCRIPT"
 	[ "$status" -eq 0 ]
-	[[ $output == *"newest installed release is v0.34.49"* ]]
+	[[ $output == *"newest installed release is v0.34.49"* ]] || return 1
 	[[ $output == *"plugin cache may be behind"* ]]
 }
 

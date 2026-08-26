@@ -75,8 +75,8 @@ _seed_rejection() {
 	_seed_record
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
 	[ "$status" -eq 0 ]
-	[[ $output == *"Agent subagent_type=pr-review-toolkit:code-reviewer"* ]]
-	[[ $output != *"[RESUME]"* ]]
+	[[ $output == *"Agent subagent_type=pr-review-toolkit:code-reviewer"* ]] || return 1
+	[[ $output != *"[RESUME]"* ]] || return 1
 	[[ $output != *"SendMessage to="* ]]
 }
 
@@ -84,10 +84,10 @@ _seed_rejection() {
 	_seed_record
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 run bash "$LAUNCHER" 2
 	[ "$status" -eq 0 ]
-	[[ $output == *"[RESUME]"* ]]
-	[[ $output == *"SendMessage to=$AGENTID"* ]]
+	[[ $output == *"[RESUME]"* ]] || return 1
+	[[ $output == *"SendMessage to=$AGENTID"* ]] || return 1
 	# the peer-review message body markers
-	[[ $output == *"DELTA REVIEW"* ]]
+	[[ $output == *"DELTA REVIEW"* ]] || return 1
 	[[ $output == *"new_findings"* ]]
 }
 
@@ -98,7 +98,7 @@ _seed_rejection() {
 	# prose ("After a SUCCESSFUL [RESUME]…") and would false-positive.
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 run bash "$LAUNCHER" 2
 	[ "$status" -eq 0 ]
-	[[ $output == *"Agent subagent_type=pr-review-toolkit:code-reviewer"* ]]
+	[[ $output == *"Agent subagent_type=pr-review-toolkit:code-reviewer"* ]] || return 1
 	[[ $output != *"SendMessage to="* ]]
 }
 
@@ -106,14 +106,14 @@ _seed_rejection() {
 	_seed_record
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 run bash "$LAUNCHER" 1
 	[ "$status" -eq 0 ]
-	[[ $output == *"Agent subagent_type=pr-review-toolkit:code-reviewer"* ]]
+	[[ $output == *"Agent subagent_type=pr-review-toolkit:code-reviewer"* ]] || return 1
 	[[ $output != *"SendMessage to="* ]]
 }
 
 @test "resume bookkeeping footer is flag-gated (present ON, absent OFF)" {
 	_seed_record
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 run bash "$LAUNCHER" 2
-	[[ $output == *"resume bookkeeping"* ]]
+	[[ $output == *"resume bookkeeping"* ]] || return 1
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
 	[[ $output != *"resume bookkeeping"* ]]
 }
@@ -155,8 +155,8 @@ _seed_rejection() {
 	_seed_rejection oth "other-cycle finding XYZ789" "some-other-pr-branch"
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
 	[ "$status" -eq 0 ]
-	[[ $output == *"DO NOT RE-FLAG"* ]]
-	[[ $output == *"current-cycle finding ABC123"* ]]
+	[[ $output == *"DO NOT RE-FLAG"* ]] || return 1
+	[[ $output == *"current-cycle finding ABC123"* ]] || return 1
 	[[ $output != *"other-cycle finding XYZ789"* ]]
 }
 
@@ -168,6 +168,6 @@ _seed_rejection() {
 	git -C "$TMP" checkout -q --detach
 	CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run bash "$LAUNCHER" 2
 	[ "$status" -eq 0 ]
-	[[ $output == *"DO NOT RE-FLAG"* ]]
+	[[ $output == *"DO NOT RE-FLAG"* ]] || return 1
 	[[ $output == *"other-cycle finding XYZ789"* ]]
 }

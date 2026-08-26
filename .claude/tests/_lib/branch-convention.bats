@@ -220,8 +220,8 @@ setup() {
 @test "branch_convention_re: emits one regex with all types + dotted version" {
 	run bash -c '. "$1"; branch_convention_re' _ "$LIB"
 	[ "$status" -eq 0 ]
-	[[ $output == *'feat|fix|chore'* ]]
-	[[ $output == *'revert'* ]]
+	[[ $output == *'feat|fix|chore'* ]] || return 1
+	[[ $output == *'revert'* ]] || return 1
 	[[ $output == *'v[0-9]+\.[0-9]+\.[0-9]+'* ]]
 }
 

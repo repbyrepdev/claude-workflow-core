@@ -72,8 +72,8 @@ teardown() {
 	git add .coderabbit.overlay.yaml
 	run bash "$GATE"
 	[ "$status" -eq 1 ]
-	[[ $output == *"drifts from compose"* ]]
-	[[ $output == *"Fix: scripts/compose-coderabbit.sh"* ]]
+	[[ $output == *"drifts from compose"* ]] || return 1
+	[[ $output == *"Fix: scripts/compose-coderabbit.sh"* ]] || return 1
 	[[ $output == *"COMPOSE_CR_REGEN_SKIP=1"* ]]
 }
 

@@ -169,7 +169,7 @@ teardown() {
 	# the stdout payload carries NO deny decision (not just the reduced string).
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output != *'"permissionDecision":"deny"'* ]]
+	[[ $output != *'"permissionDecision":"deny"'* ]] || return 1
 	# Self-healed: the aged abandoned marker is gone (Layer 0 rm'd it).
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/
 	[ "$status" -eq 0 ]
@@ -187,7 +187,7 @@ teardown() {
 	# non-zero rc) AND the raw stdout carries the deny payload.
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	# Boundary: Layer 0 must NOT nuke a fresh marker (mtime ~now).
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
 	[ "$status" -eq 0 ]
@@ -205,11 +205,11 @@ teardown() {
 		-exec touch -t 202001010000 {} +
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	# The HEAD marker must still be present — NOT age-pruned.
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
 	[ "$status" -eq 0 ]
-	[[ $output == *.phase1-directive.txt* ]]
+	[[ $output == *.phase1-directive.txt* ]] || return 1
 	# And the KEPT marker is specifically the HEAD one (_setup_pending_repo
 	# seeds sha == HEAD), proving the HEAD-guard — not some unrelated retention.
 	head_sha=$(git -C "$TDIR" rev-parse HEAD)
@@ -463,7 +463,7 @@ teardown() {
 	# (no JSON) from deny (permissionDecision:deny). One canonical case each.
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"scripts/ship-pr-cycle.sh next"}}'
 	[ "$status" -eq 0 ]
-	[[ $output != *'"permissionDecision":"deny"'* ]]
+	[[ $output != *'"permissionDecision":"deny"'* ]] || return 1
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"/tmp/ship-pr-cycle.sh next"}}'
 	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
@@ -632,7 +632,7 @@ teardown() {
 	touch -t 202001010000 "$TDIR/.claude/.session-state/ship-cycle/${sha}.phase1-directive.txt"
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output != *'"permissionDecision":"deny"'* ]]
+	[[ $output != *'"permissionDecision":"deny"'* ]] || return 1
 	# Self-healed: the stamp-less marker (the HEAD marker the other layers keep) is gone.
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/
 	[ "$status" -eq 0 ]
@@ -647,7 +647,7 @@ teardown() {
 	touch -t 202001010000 "$TDIR/.claude/.session-state/ship-cycle/${sha}.phase1-directive.txt"
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
 	[ "$status" -eq 0 ]
 	[[ $output == *.phase1-directive.txt* ]]
@@ -661,7 +661,7 @@ teardown() {
 	# sub-minute unstamped marker may be a correct driver mid-write.
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
 	[ "$status" -eq 0 ]
 	[[ $output == *.phase1-directive.txt* ]]
@@ -676,7 +676,7 @@ teardown() {
 	touch -t 202001010000 "$TDIR/.claude/.session-state/ship-cycle/${sha}.phase1-directive.txt"
 	_run_guard_raw '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}'
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	run ls "$TDIR"/.claude/.session-state/ship-cycle/*.phase1-directive.txt
 	[ "$status" -eq 0 ]
 	[[ $output == *.phase1-directive.txt* ]]
@@ -849,13 +849,13 @@ HASH64="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	# than documented and the operator saw an inexplicable deny.
 	_setup_pending_repo
 	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' >/dev/null
-	[[ $NOLIB_STDERR == *"cmd-anchor.sh not found"* ]]
+	[[ $NOLIB_STDERR == *"cmd-anchor.sh not found"* ]] || return 1
 	[[ $NOLIB_STDERR == *"read-only inspection allowlist is DISABLED"* ]]
 }
 
 @test "#2531: absent inline-sentinel lib warns the advertised bypass is unavailable" {
 	_setup_pending_repo
 	_run_guard_no_lib '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' >/dev/null
-	[[ $NOLIB_STDERR == *"hook-inline-sentinel.sh not found"* ]]
+	[[ $NOLIB_STDERR == *"hook-inline-sentinel.sh not found"* ]] || return 1
 	[[ $NOLIB_STDERR == *"PHASE1_DIRECTIVE_GUARD_SKIP bypass is UNAVAILABLE"* ]]
 }

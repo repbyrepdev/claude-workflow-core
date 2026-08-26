@@ -107,8 +107,8 @@ _refresh() { run bash "$PLUGIN/scripts/refresh-from-source.sh" "$@"; }
 	_write_test testhook new
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[REPLACED] hooks/testhook.sh"* ]]
-	[[ $output == *"covering consumer tests passed"* ]]
+	[[ $output == *"[REPLACED] hooks/testhook.sh"* ]] || return 1
+	[[ $output == *"covering consumer tests passed"* ]] || return 1
 	[ "$(bash "$CONSUMER/.claude/hooks/testhook.sh")" = "new" ]
 }
 
@@ -116,8 +116,8 @@ _refresh() { run bash "$PLUGIN/scripts/refresh-from-source.sh" "$@"; }
 	_write_test testhook old
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 4 ]
-	[[ $output == *"BLOCKED"* ]]
-	[[ $output == *"testhook.bats"* ]]
+	[[ $output == *"BLOCKED"* ]] || return 1
+	[[ $output == *"testhook.bats"* ]] || return 1
 	# Replaced-but-blocked: the gate runs AFTER replacement + audit, so the
 	# operator must recover from a live-but-flagged change.
 	[ "$(bash "$CONSUMER/.claude/hooks/testhook.sh")" = "new" ]
@@ -184,7 +184,7 @@ EOF
 	_write_test testhook old
 	_refresh --dry-run --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
-	[[ $output != *"drift-gate"* ]]
+	[[ $output != *"drift-gate"* ]] || return 1
 	[[ $output != *"BLOCKED"* ]]
 }
 
@@ -209,7 +209,7 @@ EOF
 	_write_test testhook new
 	_refresh --consumer-path "$CONSUMER"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[REPLACED] .github/thing.yml"* ]]
+	[[ $output == *"[REPLACED] .github/thing.yml"* ]] || return 1
 	[[ $output != *"drift-gate] verifying"* ]]
 }
 

@@ -35,12 +35,12 @@ teardown() {
 @test "two-step-phase1 directive prints to stdout (status 0)" {
 	run _emit_stage_directive two-step-phase1
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]]
-	[[ $output == *"AGAIN"* ]]
-	[[ $output == *"two-step"* ]]
+	[[ $output == *"do NOT skip"* ]] || return 1
+	[[ $output == *"AGAIN"* ]] || return 1
+	[[ $output == *"two-step"* ]] || return 1
 	# F3 (#253 r1 pr-test-analyzer): lock the load-bearing trap instruction, not
 	# just the word "two-step" — a body rewrite that drops the warning must fail.
-	[[ $output == *"Do NOT fire phase1 agents"* ]]
+	[[ $output == *"Do NOT fire phase1 agents"* ]] || return 1
 	[[ $output == *"2nd next"* ]]
 }
 
@@ -55,7 +55,7 @@ teardown() {
 	export SHIP_PR_IN_RESUME=1
 	run _emit_stage_directive two-step-phase1
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]] # stdout still emitted during resume
+	[[ $output == *"do NOT skip"* ]] # stdout still emitted during resume || return 1
 	[ ! -s "$CALLS" ]                # hook_ack_append NOT called
 }
 
@@ -69,14 +69,14 @@ teardown() {
 	}
 	run _outer
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]] # stdout still prints
+	[[ $output == *"do NOT skip"* ]] # stdout still prints || return 1
 	[ ! -s "$CALLS" ]                # append suppressed via dynamic scope
 }
 
 @test "unknown label → warns, status 0, no ack-pending" {
 	run _emit_stage_directive bogus-label
 	[ "$status" -eq 0 ]
-	[[ $output == *"unknown label"* ]]
+	[[ $output == *"unknown label"* ]] || return 1
 	[ ! -s "$CALLS" ]
 }
 
@@ -84,30 +84,30 @@ teardown() {
 	# F4 (#253 r1): the `${1:-}` default routes a no-arg call to the `*)` arm.
 	run _emit_stage_directive
 	[ "$status" -eq 0 ]
-	[[ $output == *"unknown label"* ]]
+	[[ $output == *"unknown label"* ]] || return 1
 	[ ! -s "$CALLS" ]
 }
 
 @test "push-to-pr directive prints + appends (server-side CR-in-CI reminder)" {
 	run _emit_stage_directive push-to-pr
 	[ "$status" -eq 0 ]
-	[[ $output == *"SERVER-SIDE"* ]]
-	[[ $output == *"@coderabbitai review"* ]] # the NEVER reminder
+	[[ $output == *"SERVER-SIDE"* ]] || return 1
+	[[ $output == *"@coderabbitai review"* ]] # the NEVER reminder || return 1
 	grep -q 'push-to-pr' "$CALLS"
 }
 
 @test "merge-conflict directive prints + appends (cr-resolve-conflict skill)" {
 	run _emit_stage_directive merge-conflict
 	[ "$status" -eq 0 ]
-	[[ $output == *"cr-resolve-conflict"* ]]
+	[[ $output == *"cr-resolve-conflict"* ]] || return 1
 	grep -q 'merge-conflict' "$CALLS"
 }
 
 @test "merge-gate directive prints + appends (APPROVE=1 only + merge!=deploy)" {
 	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
-	[[ $output == *"APPROVE=1"* ]]
-	[[ $output == *"merge != deploy"* ]]
+	[[ $output == *"APPROVE=1"* ]] || return 1
+	[[ $output == *"merge != deploy"* ]] || return 1
 	grep -q 'merge-gate' "$CALLS"
 }
 
@@ -116,9 +116,9 @@ teardown() {
 	# the operator has to Read before drafting the PR body.
 	run _emit_stage_directive pr-create-preread
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]]
-	[[ $output == *"PREREAD GATE"* ]]
-	[[ $output == *".github/pull_request_template.md"* ]]
+	[[ $output == *"do NOT skip"* ]] || return 1
+	[[ $output == *"PREREAD GATE"* ]] || return 1
+	[[ $output == *".github/pull_request_template.md"* ]] || return 1
 	# Load-bearing: names the creation-skill SSOT too.
 	[[ $output == *"github-pr-creation"* ]]
 }
@@ -143,7 +143,7 @@ teardown() {
 	export SHIP_PR_IN_RESUME=1
 	run _emit_stage_directive pr-create-preread
 	[ "$status" -eq 0 ]
-	[[ $output == *"PREREAD GATE"* ]]
+	[[ $output == *"PREREAD GATE"* ]] || return 1
 	[ ! -s "$CALLS" ]
 }
 
@@ -162,9 +162,9 @@ teardown() {
 @test "phase2-preread prints directive + keys ack at ship-pr-cycle SKILL.md" {
 	run _emit_stage_directive phase2-preread
 	[ "$status" -eq 0 ]
-	[[ $output == *"PREREAD GATE"* ]]
-	[[ $output == *"phase2"* ]]
-	[[ $output == *"skills/ship-pr-cycle/SKILL.md"* ]]
+	[[ $output == *"PREREAD GATE"* ]] || return 1
+	[[ $output == *"phase2"* ]] || return 1
+	[[ $output == *"skills/ship-pr-cycle/SKILL.md"* ]] || return 1
 	grep -q 'ship-pr-cycle-preread' "$CALLS"
 	grep -q 'phase2-preread' "$CALLS"
 	grep -qE $'\t''skills/ship-pr-cycle/SKILL\.md$' "$CALLS"
@@ -174,7 +174,7 @@ teardown() {
 	export SHIP_PR_IN_RESUME=1
 	run _emit_stage_directive phase2-preread
 	[ "$status" -eq 0 ]
-	[[ $output == *"PREREAD GATE"* ]]
+	[[ $output == *"PREREAD GATE"* ]] || return 1
 	[ ! -s "$CALLS" ]
 }
 
@@ -184,7 +184,7 @@ teardown() {
 	unset -f hook_ack_append
 	run _emit_stage_directive pr-create-preread
 	[ "$status" -eq 0 ]
-	[[ $output == *"PREREAD GATE"* ]] # directive still printed
+	[[ $output == *"PREREAD GATE"* ]] # directive still printed || return 1
 	[ ! -s "$CALLS" ]                 # no append, no crash
 }
 
@@ -195,7 +195,7 @@ teardown() {
 	unset -f hook_ack_diagnostic_write hook_ack_append
 	run _emit_stage_directive push-to-pr
 	[ "$status" -eq 0 ]
-	[[ $output == *"SERVER-SIDE"* ]] # directive still printed
+	[[ $output == *"SERVER-SIDE"* ]] # directive still printed || return 1
 	[ ! -s "$CALLS" ]                # no append, no crash
 }
 
@@ -205,6 +205,6 @@ teardown() {
 	hook_ack_diagnostic_write() { return 1; }
 	run _emit_stage_directive push-to-pr
 	[ "$status" -eq 0 ]
-	[[ $output == *"SERVER-SIDE"* ]]
+	[[ $output == *"SERVER-SIDE"* ]] || return 1
 	[ ! -s "$CALLS" ]
 }

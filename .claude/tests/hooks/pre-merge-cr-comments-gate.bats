@@ -113,8 +113,8 @@ _gh_returns() {
 	# Real hook_deny: deny-JSON + exit 0. Assert the decision, the findings
 	# reason, AND that the extracted PR number surfaced.
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
-	[[ $output == *"unresolved CodeRabbit findings"* ]]
+	[[ $output == *deny* ]] || return 1
+	[[ $output == *"unresolved CodeRabbit findings"* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -122,7 +122,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "gh pr merge --pr 42 --squash"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -130,8 +130,8 @@ _gh_returns() {
 	_install_helper 1 # would deny — the bypass must short-circuit first
 	run _run_gate "PRE_MERGE_CR_GATE_SKIP=1 gh pr merge 42"
 	[ "$status" -eq 0 ]
-	[[ $output == *bypassing* ]]
-	[[ $output != *deny* ]]
+	[[ $output == *bypassing* ]] || return 1
+	[[ $output != *deny* ]] || return 1
 	# The "audit-logged" guarantee is real: the sentinel helper writes a JSONL
 	# record (path derived from the prefix by hook-inline-sentinel.sh).
 	[ -f "$TEST_TMP/.claude/logs/pre-merge-cr-gate-skip.jsonl" ]
@@ -141,7 +141,7 @@ _gh_returns() {
 	_install_helper 0
 	run _run_gate "gh pr merge --squash"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"could not extract PR number"* ]]
 }
 
@@ -149,7 +149,7 @@ _gh_returns() {
 	# No _install_helper: neither candidate path exists.
 	run _run_gate "gh pr merge 42"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"helper not found"* ]]
 }
 
@@ -161,7 +161,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "echo prepping && gh pr merge 42 --squash"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -170,7 +170,7 @@ _gh_returns() {
 	# the command via jq and denies when that fails.
 	run _run_gate_raw 'this is not json {'
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"failing closed"* ]]
 }
 
@@ -181,7 +181,7 @@ _gh_returns() {
 	_gh_returns 99
 	run _run_gate "gh pr merge --squash"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#99"* ]]
 }
 
@@ -210,7 +210,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "APPROVE=1 gh pr merge 42"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -221,7 +221,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "gh pr merge 42 --auto=true"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -235,7 +235,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate 'GIT_AUTHOR_NAME="a b" gh pr merge 42'
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -244,7 +244,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "bash -c 'gh pr merge 42'"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -255,7 +255,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate 'bash -c "gh pr merge 42"'
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -263,7 +263,7 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "gh  pr  merge 42"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"#42"* ]]
 }
 
@@ -273,14 +273,14 @@ _gh_returns() {
 	_install_helper 1
 	run _run_gate "{ gh pr merge 42; }"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
-	[[ $output == *"#42"* ]]
+	[[ $output == *deny* ]] || return 1
+	[[ $output == *"#42"* ]] || return 1
 	run _run_gate "(gh pr merge 42)"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	run _run_gate "sudo -E gh pr merge 42"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	run _run_gate "env APPROVE=1 gh pr merge 42"
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]]
@@ -307,8 +307,8 @@ EOF
 	_install_helper 1
 	run _run_gate "gh pr merge 42 --squash"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
-	[[ $output == *"#42"* ]]
+	[[ $output == *deny* ]] || return 1
+	[[ $output == *"#42"* ]] || return 1
 	# Env-prefixed form still covered by the fallback ENV_PREFIX too.
 	run _run_gate "APPROVE=1 gh pr merge 42"
 	[ "$status" -eq 0 ]

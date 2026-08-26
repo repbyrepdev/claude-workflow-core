@@ -70,7 +70,7 @@ _run_gate() {
 @test "no sentinel file → passes through (exit 0, no deny)" {
 	run _run_gate "$(_payload Bash 'echo hi')"
 	[ "$status" -eq 0 ]
-	[[ $output != *deny* ]]
+	[[ $output != *deny* ]] || return 1
 	[[ $output != *BLOCKED* ]]
 }
 
@@ -98,8 +98,8 @@ _run_gate() {
 	# The deny decision goes to stdout as JSON (exit 0) and the human-readable
 	# REASON to stderr; assert BOTH the decision and that the entry surfaced.
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
-	[[ $output == *BLOCKED* ]]
+	[[ $output == *deny* ]] || return 1
+	[[ $output == *BLOCKED* ]] || return 1
 	[[ $output == *lint-shell* ]]
 }
 
@@ -118,7 +118,7 @@ _run_gate() {
 	_seed_entry "lint-yaml" "yamllint-warn" "/tmp/diag-43.txt"
 	run _run_gate "$(_payload Bash 'echo hi')" HOOK_ACK_CLEAR=1
 	[ "$status" -eq 0 ]
-	[[ $output == *wholesale-clearing* ]]
+	[[ $output == *wholesale-clearing* ]] || return 1
 	# Side effects: the sentinel is emptied AND the bypass is audit-logged.
 	[ ! -s "$SENTINEL" ]
 	[ -f "$TEST_TMP/.claude/logs/hook-ack-skip.jsonl" ]
@@ -128,7 +128,7 @@ _run_gate() {
 	_seed_entry "lint-shell" "shellcheck-warn" "/tmp/diag-42.txt"
 	run _run_gate "$(_payload Bash 'HOOK_ACK_CLEAR=1 git commit')"
 	[ "$status" -eq 0 ]
-	[[ $output == *wholesale-clearing* ]]
+	[[ $output == *wholesale-clearing* ]] || return 1
 	[ ! -s "$SENTINEL" ]
 }
 
@@ -141,7 +141,7 @@ _run_gate() {
 	# Key assertions last: the bypass is REFUSED (exit 2) so an unrecordable
 	# clear cannot silently destroy the pending acks, AND the sentinel survived.
 	[ "$status" -eq 2 ]
-	[[ $output == *"audit FAILED"* ]]
+	[[ $output == *"audit FAILED"* ]] || return 1
 	[ -s "$SENTINEL" ]
 }
 

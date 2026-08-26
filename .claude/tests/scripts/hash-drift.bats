@@ -78,7 +78,7 @@ _make_consumer() {
 	_make_consumer "$CONSUMER" "$PRODUCER"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean"* ]]
+	[[ $output == *"clean"* ]] || return 1
 	[[ $output == *"3 files match"* ]]
 }
 
@@ -100,7 +100,7 @@ _make_consumer() {
 	cp "$PRODUCER/skills/ship-pr-cycle/run.sh" "$CONSUMER/.claude/skills/ship-pr-cycle/run.sh"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean"* ]]
+	[[ $output == *"clean"* ]] || return 1
 	[[ $output == *"4 files match"* ]]
 }
 
@@ -156,8 +156,8 @@ _make_consumer() {
 	printf 'echo DRIFTED\n' >"$CONSUMER/.claude/hooks/foo.sh"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 1 ]
-	[[ $output == *"drifted from plugin source"* ]]
-	[[ $output == *".claude/hooks/foo.sh"* ]]
+	[[ $output == *"drifted from plugin source"* ]] || return 1
+	[[ $output == *".claude/hooks/foo.sh"* ]] || return 1
 	[[ $output == *"local-overrides.yml"* ]]
 }
 
@@ -184,7 +184,7 @@ overrides:
 EOF
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean"* ]]
+	[[ $output == *"clean"* ]] || return 1
 	[[ $output == *"1 overridden"* ]]
 }
 
@@ -218,7 +218,7 @@ EOF
 	rm "$CONSUMER/.claude/hooks/foo.sh"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean"* ]]
+	[[ $output == *"clean"* ]] || return 1
 	[[ $output == *"1 not-installed"* ]]
 }
 
@@ -253,7 +253,7 @@ EOF
 	# Consumer's local .claude/hooks/foo.sh is still old.
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 1 ]
-	[[ $output == *"drifted"* ]]
+	[[ $output == *"drifted"* ]] || return 1
 	[[ $output == *"foo.sh"* ]]
 }
 
@@ -351,7 +351,7 @@ _make_consumer_gh() {
 	_make_consumer_gh "$CONSUMER" "$PRODUCER"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean"* ]]
+	[[ $output == *"clean"* ]] || return 1
 	[[ $output == *"5 files match"* ]]
 }
 
@@ -366,8 +366,8 @@ _make_consumer_gh() {
 	printf 'schema:\n  subject:\n    max_length: 50\n' >"$CONSUMER/.github/commit-template.yml"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 1 ]
-	[[ $output == *"drifted from plugin source"* ]]
-	[[ $output == *".github/commit-template.yml"* ]]
+	[[ $output == *"drifted from plugin source"* ]] || return 1
+	[[ $output == *".github/commit-template.yml"* ]] || return 1
 	# The pre-#232 bug signature: mapping .github under .claude/ would print
 	# `.claude/.github/...` and silently never find the file. Must NOT appear.
 	[[ $output != *".claude/.github"* ]]
@@ -384,7 +384,7 @@ _make_consumer_gh() {
 	rm "$CONSUMER/.github/ISSUE_TEMPLATE/bug.yml"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"clean"* ]]
+	[[ $output == *"clean"* ]] || return 1
 	[[ $output == *"1 not-installed"* ]]
 }
 
@@ -403,9 +403,9 @@ _make_consumer_gh() {
 	printf 'schema:\n  subject:\n    max_length: 50\n' >"$CONSUMER/.github/commit-template.yml"
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	[ "$status" -eq 1 ]
-	[[ $output == *".claude/hooks/foo.sh"* ]]        # hooks arm → under .claude/
-	[[ $output == *".github/commit-template.yml"* ]] # .github arm → repo root
-	[[ $output != *".claude/.github"* ]]             # never the mis-mapped form
+	[[ $output == *".claude/hooks/foo.sh"* ]]        # hooks arm → under .claude/ || return 1
+	[[ $output == *".github/commit-template.yml"* ]] # .github arm → repo root || return 1
+	[[ $output != *".claude/.github"* ]]             # never the mis-mapped form || return 1
 	[[ $output == *"2 file(s) drifted"* ]]           # both counted, mapping intact
 }
 
@@ -443,7 +443,7 @@ _make_consumer_gh() {
 		"$PRODUCER/scripts/bootstrap-manifest.yml"
 	run bash -c "cd '$PRODUCER' && bash '$SCRIPT' --generate"
 	[ "$status" -eq 2 ]
-	[[ $output == *"non-boolean hashed"* ]]
+	[[ $output == *"non-boolean hashed"* ]] || return 1
 	[[ $output == *".github/commit-template.yml"* ]]
 }
 
@@ -490,13 +490,13 @@ EOF
 	# bar.sh drift → exit 1.
 	[ "$status" -eq 1 ]
 	# bar.sh IS reported as drift (the un-overridden, genuinely-drifted file).
-	[[ $output == *".claude/hooks/bar.sh"* ]]
+	[[ $output == *".claude/hooks/bar.sh"* ]] || return 1
 	# Exactly ONE file drifted — foo.sh is suppressed by the override, so a
 	# phantom-key extraction (grep|sed) that failed to honor foo.sh would make
 	# this "2 file(s) drifted" + list foo.sh → revert tripwire.
-	[[ $output == *"1 file(s) drifted"* ]]
+	[[ $output == *"1 file(s) drifted"* ]] || return 1
 	# Drift-branch summary phrasing is `overridden: N` (clean-branch is `N overridden`).
-	[[ $output == *"overridden: 1"* ]]
+	[[ $output == *"overridden: 1"* ]] || return 1
 	# foo.sh must NOT appear in the drift report (it is overridden).
 	[[ $output != *".claude/hooks/foo.sh"* ]]
 }
@@ -586,10 +586,10 @@ EOF
 	run bash -c "cd '$CONSUMER' && bash '$SCRIPT' --verify --plugin-cache '$CONSUMER/plugin-cache' 2>&1"
 	# bar.sh still drifts (path-less entry did NOT suppress it) → exit 1.
 	[ "$status" -eq 1 ]
-	[[ $output == *".claude/hooks/bar.sh"* ]]
+	[[ $output == *".claude/hooks/bar.sh"* ]] || return 1
 	# foo.sh honored by the valid sibling → not in the drift report, counted overridden.
-	[[ $output != *".claude/hooks/foo.sh"* ]]
-	[[ $output == *"1 file(s) drifted"* ]]
+	[[ $output != *".claude/hooks/foo.sh"* ]] || return 1
+	[[ $output == *"1 file(s) drifted"* ]] || return 1
 	# Drift-branch summary phrasing is `overridden: N`.
 	[[ $output == *"overridden: 1"* ]]
 }
@@ -659,7 +659,7 @@ EOF
 	[ "$status" -eq 0 ]
 	# Falls back to the only installed cache (0.34.52) and emits the skew NOTE so
 	# the operator isn't misled into thinking it verified against the pinned ver.
-	[[ $output == *"NOTE pinned plugin v0.99.0 has no installed cache"* ]]
+	[[ $output == *"NOTE pinned plugin v0.99.0 has no installed cache"* ]] || return 1
 	[[ $output == *"comparing against installed v0.34.52"* ]]
 }
 

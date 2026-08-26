@@ -63,35 +63,36 @@ fi
 # That is what we inspect — not this script's own interpreter, which may
 # differ. Installing Homebrew's bash is the entire fix; /opt/homebrew/bin
 # already precedes /bin, so nothing else has to change.
-_harness_bash=$(command -v bash 2>/dev/null || echo /bin/bash)
+# The suite is PORTABLE now: every assertion is written in a form that fails
+# on 3.2 as well as 4/5 (`[ ]`, `case`, `|| return 1`, `assert_*`), and
+# .claude/bats-assertion-baseline.tsv is the ratchet keeping it that way. So
+# there is nothing to refuse — any bash is supported, and `--shell` exists so
+# BOTH can be verified in one sitting.
+#
+# The gate fires only while portability DEBT remains: a non-empty baseline
+# means some assertion still cannot fail on 3.2, and a green run there would
+# overstate what was checked. It lifts itself when the debt hits zero.
+_harness_bash="${TEST_BASH:-$(command -v bash 2>/dev/null || echo /bin/bash)}"
+if [ ! -x "$_harness_bash" ]; then
+	echo "ERROR: --shell/TEST_BASH '$_harness_bash' is not executable" >&2
+	exit 2
+fi
 _harness_major=$("$_harness_bash" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)
-if [ "${_harness_major:-0}" -lt 4 ]; then
+_baseline_file="$REPO_ROOT/.claude/bats-assertion-baseline.tsv"
+_debt=0
+if [ -s "$_baseline_file" ]; then
+	_debt=$(awk -F'\t' '{s += $2} END {print s + 0}' "$_baseline_file")
+fi
+if [ "${_harness_major:-0}" -lt 4 ] && [ "${_debt:-0}" -gt 0 ]; then
 	_harness_ver=$("$_harness_bash" -c 'echo "$BASH_VERSION"' 2>/dev/null || echo unknown)
-	if [ "${TEST_HARNESS_ALLOW_BASH32:-0}" = "1" ]; then
-		echo "WARN: bats will run under $_harness_bash ($_harness_ver)." >&2
-		echo '      Mid-test `[[ ]]` assertions CANNOT FAIL there — a green run' >&2
-		echo '      only proves the single-bracket `[ ]` assertions held.' >&2
-		echo "      Proceeding because TEST_HARNESS_ALLOW_BASH32=1 (audit-logged)." >&2
-		mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
-		printf '{"ts":"%s","kind":"bash32-harness-allowed","bash":"%s","version":"%s"}\n' \
-			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_harness_bash" "$_harness_ver" \
-			>>"$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
-	else
-		echo "ERROR: bats would run under $_harness_bash ($_harness_ver)." >&2
-		echo "" >&2
-		echo '  On bash 3.x a failing `[[ ]]` fires neither errexit nor the ERR' >&2
-		echo '  trap, so any mid-test `[[ ]]` assertion silently passes. Results' >&2
-		echo "  from this harness cannot be trusted, and refusing is cheaper than" >&2
-		echo "  a green suite that proves less than it claims." >&2
-		echo "" >&2
-		echo "  Fix (one command — /opt/homebrew/bin already precedes /bin, so" >&2
-		echo "  bats picks it up with no further change):" >&2
-		echo "      brew install bash" >&2
-		echo "" >&2
-		echo "  Deliberate override (audit-logged):" >&2
-		echo "      TEST_HARNESS_ALLOW_BASH32=1 scripts/test.sh ..." >&2
-		exit 2
-	fi
+	echo "ERROR: bats would run under $_harness_bash ($_harness_ver), and" >&2
+	echo "  $_debt assertion(s) still cannot fail there." >&2
+	echo "" >&2
+	echo "  Fix them (append '|| return 1'), then re-run:" >&2
+	echo "      scripts/refresh-bats-assertion-baseline.sh" >&2
+	echo "  Or use a newer shell:" >&2
+	echo "      scripts/test.sh --shell /opt/homebrew/bin/bash ..." >&2
+	exit 2
 fi
 
 LOG_FILE="${BATS_LOG:-$REPO_ROOT/.claude/logs/bats-run.jsonl}"
@@ -106,6 +107,19 @@ while [ "$#" -gt 0 ]; do
 	--no-log)
 		DO_LOG=0
 		shift
+		;;
+	--shell)
+		# (#2572) Run bats under a SPECIFIC bash. The suite is portable, so
+		# the honest acceptance test is "same verdict on the oldest and the
+		# newest shell we support" — and that is only checkable if the shell
+		# is selectable. Read above by TEST_BASH, which this sets.
+		if [ -z "${2:-}" ]; then
+			echo "error: --shell requires a path to a bash binary" >&2
+			exit 2
+		fi
+		TEST_BASH="$2"
+		export TEST_BASH
+		shift 2
 		;;
 	--coverage)
 		MODE="coverage"
@@ -384,7 +398,15 @@ FAIL_FILES=0
 for f in "${FILES[@]}"; do
 	TOTAL_FILES=$((TOTAL_FILES + 1))
 	rc=0
-	out=$(bats --tap "$f" 2>&1) || rc=$?
+	# (#2572) --shell/TEST_BASH: run bats UNDER a chosen bash. `bats` is
+	# `#!/usr/bin/env bash`, so invoking it as `<shell> <bats-path>` overrides
+	# the shebang and is what makes "same verdict on 3.2 and 5" checkable.
+	# Unset (the normal case) keeps the plain invocation.
+	if [ -n "${TEST_BASH:-}" ]; then
+		out=$("$TEST_BASH" "$(command -v bats)" --tap "$f" 2>&1) || rc=$?
+	else
+		out=$(bats --tap "$f" 2>&1) || rc=$?
+	fi
 	passed=$(printf '%s\n' "$out" | grep -cE '^ok ' || true)
 	failed=$(printf '%s\n' "$out" | grep -cE '^not ok ' || true)
 	TOTAL_PASS=$((TOTAL_PASS + passed))

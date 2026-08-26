@@ -53,7 +53,7 @@ _run_p1_gate() {
 	_row errored-emit
 	_run_cr_gate
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	[[ $output == *"no run logged"* ]]
 }
 
