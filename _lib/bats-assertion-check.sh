@@ -167,10 +167,17 @@ bats_assertion_scan() {
 				tx[n] = ""
 				next
 			}
+			# `|| return 0` and `|| exit 0` are NOT guards: the fallback fires
+			# exactly when the condition failed, and hands back SUCCESS. Same
+			# shape as `|| echo`, just less obvious. `&& return 0` is fine —
+			# there the zero is reached only when the condition HELD.
 			g = guard_pos(line)
 			if (line !~ /^\[\[ /) {
 				ln[n] = 0
 				tx[n] = ""
+			} else if (g ~ /\|\|[ \t]*(return|exit)[ \t]+0[ \t]*(;|$)/) {
+				ln[n] = NR
+				tx[n] = line
 			} else if (g ~ /(\|\||&&)[ \t]*(return|exit|break|continue|skip|fail)([ \t;)]|$)/) {
 				ln[n] = 0
 				tx[n] = ""

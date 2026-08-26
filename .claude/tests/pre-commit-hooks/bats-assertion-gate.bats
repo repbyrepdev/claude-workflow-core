@@ -323,3 +323,40 @@ _staged_repo() { # $1 = dir name, $2 = .bats contents
 	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\tif true; then { echo a; }; fi\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
 	[ "$output" -eq 0 ]
 }
+
+@test "|| return 0 is not a guard; && return 0 is" {
+	# `|| return 0` fires exactly when the condition FAILED, and hands back
+	# success — the same hole as `|| echo warn`, wearing a terminator. But
+	# `&& return 0` reaches its zero only when the condition HELD, which is
+	# ordinary early-exit control flow. The operator decides which zero is
+	# legitimate, so the rule cannot key on `return` alone.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || return 0\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] && return 0\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || return 1\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a bare [ ] DOES fail a real bats test — the helper forms need no guard" {
+	# Locked in because CR-CLI asked four times for `|| return 1` on bare
+	# single-bracket assertions. It is not needed, and this asserts it against
+	# the real harness rather than a simulation: `[` is an ordinary simple
+	# command, so errexit and the ERR trap apply to it in any position. Only
+	# `[[ ]]`, a shell conditional expression, is special-cased — which is the
+	# entire premise of this gate.
+	mkdir -p "$TEST_TMP/real"
+	printf '#!/usr/bin/env bats\n@test "t" {\n\t[ 1 -eq 2 ]\n\techo REACHED_PAST_IT\n\ttrue\n}\n' \
+		>"$TEST_TMP/real/probe.bats"
+	run bats --tap "$TEST_TMP/real/probe.bats"
+	[ "$status" -ne 0 ] || {
+		echo "a bare [ ] did NOT fail the test — the premise of this gate is wrong"
+		return 1
+	}
+	case "$output" in
+	*REACHED_PAST_IT*)
+		echo "execution continued past a failed [ ] — it is not enforcing"
+		return 1
+		;;
+	esac
+}
