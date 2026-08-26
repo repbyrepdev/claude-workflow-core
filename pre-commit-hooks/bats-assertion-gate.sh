@@ -100,9 +100,13 @@ else
 	}
 	while IFS= read -r -d '' rel; do
 		[ -n "$rel" ] || continue
-		# The staged blob. A deleted-then-restaged path can be absent from
-		# the index; `git show` fails and there is nothing to gate.
-		git show ":$rel" >"$tmp" 2>/dev/null || continue
+		# The staged blob. A failure here is NOT "nothing to gate": git listed
+		# this path as staged, so being unable to read it means a staged .bats
+		# would go unscanned — silently, and with the commit proceeding.
+		git show ":$rel" >"$tmp" 2>/dev/null || {
+			echo "bats-assertion-gate: cannot read staged blob for '$rel' — refusing" >&2
+			exit 2
+		}
 		scanned=$((scanned + 1))
 		_scan_one "$tmp" "$rel"
 	done <"$staged_list"

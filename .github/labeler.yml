@@ -39,6 +39,11 @@ area:infrastructure:
           # and merge blocks. Caught by labeler-yml.bats once its assertions
           # could actually fail.
           - .markdownlint-cli2.jsonc
+          # Same class again: plugin.json is bumped by the version gate on
+          # most PRs, but a PR touching ONLY it matched no glob and so got no
+          # area label. Whole directory, not just the one file — anything
+          # added beside it should label too.
+          - .claude-plugin/**
 area:docs:
   - changed-files:
       - any-glob-to-any-file:

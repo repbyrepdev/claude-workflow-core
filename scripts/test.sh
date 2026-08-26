@@ -171,6 +171,14 @@ if [ -n "${TEST_BASH:-}" ]; then
 		echo "  than logging a green run of zero tests." >&2
 		exit 2
 	fi
+	# Absolute path before the symlink: the shim lives in a temp dir, so a
+	# relative `--shell ./bash-3.2` would link to a path that does not exist
+	# from there. The version check below would catch it, but as a confusing
+	# "did not take effect" rather than the real cause.
+	case "$TEST_BASH" in
+	/*) ;;
+	*) TEST_BASH=$(cd "$(dirname "$TEST_BASH")" && pwd)/$(basename "$TEST_BASH") || exit 2 ;;
+	esac
 	SHELL_SHIM_DIR=$(mktemp -d -t bats-shell.XXXXXX) || exit 2
 	ln -s "$TEST_BASH" "$SHELL_SHIM_DIR/bash" || exit 2
 	_got_ver=$(PATH="$SHELL_SHIM_DIR:$PATH" /usr/bin/env bash -c 'echo "${BASH_VERSION:-}"' 2>/dev/null || echo "")

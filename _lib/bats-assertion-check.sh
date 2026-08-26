@@ -150,10 +150,22 @@ bats_assertion_scan() {
 			}
 		}
 	' "$f") || rc=$?
-	if [ "$rc" -eq 3 ]; then
+	case "$rc" in
+	0) ;;
+	3)
+		# The deliberate signal from the END block: a block that never closed.
 		printf '%s\n' "$out" >&2
 		return 2
-	fi
+		;;
+	*)
+		# awk itself failed (bad file, I/O error). Reported as rc 2 even
+		# though `out` is empty — the empty-output path below would otherwise
+		# read a crashed scan as "clean", which is the one answer a detector
+		# must never give when it did not run.
+		echo "bats_assertion_scan: scan of '$f' failed (awk rc $rc)" >&2
+		return 2
+		;;
+	esac
 	[ -n "$out" ] || return 0
 	printf '%s\n' "$out"
 	return 1

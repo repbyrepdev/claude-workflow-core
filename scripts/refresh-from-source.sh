@@ -307,11 +307,20 @@ _mirror_test_drift_gate() {
 			# replaced mirror hook as "verified" on the strength of a policy
 			# scan that never ran it. audits: routes in test-touched (the
 			# audit re-runs when its subjects change); it grants no credit.
-			grep -rlE --include='*.bats' \
-				"^#[[:space:]]*covers:.*(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" \
-				"$tests_dir" 2>/dev/null || grc=$?
+			# FIRST covers: line per file only (`grep -m1`), matching every
+			# other consumer of the header — test-touched.sh routing,
+			# test.sh --coverage, bats-gate.sh. `grep -rl` matched ANY line,
+			# so a path on a second covers: line earned drift-gate credit
+			# here while counting nowhere else.
+			while IFS= read -r _b; do
+				[ -n "$_b" ] || continue
+				_hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$_b" 2>/dev/null) || continue
+				printf '%s\n' "$_hdr" |
+					grep -qE "(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" &&
+					printf '%s\n' "$_b"
+			done < <(find "$tests_dir" -name '*.bats' -type f 2>/dev/null || grc=$?)
 			[ "$grc" -gt 1 ] &&
-				echo "  [drift-gate] WARN: grep failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+				echo "  [drift-gate] WARN: find failed (rc=$grc) scanning $tests_dir for $relpath" >&2
 		done | sort -u
 	)
 	[ "${#bats_to_run[@]}" -gt 0 ] || {

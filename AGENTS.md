@@ -196,8 +196,15 @@ Enforced mechanically, in layers:
    TEST_SH_FULL_OK=1 scripts/test.sh --shell "$(brew --prefix)/bin/bash"
    ```
 
-   Mind the direction: **3.2 is the more permissive harness**, since the
-   forms that silently pass there do fail on 4/5. So green on 5 implies green
-   on 3.2, and green on 3.2 implies *nothing*. Both runs are worth doing —
-   3.2 catches bash-4-only syntax, 5 catches assertions that cannot fail —
-   but only the newer one can certify that the assertions bite.
+   **Neither run implies the other — they check different things.** Run both.
+
+   | | what a green run proves | what it cannot prove |
+   |---|---|---|
+   | bash 3.2 | no bash-4-only syntax anywhere | that the assertions bite — the no-op forms pass here |
+   | bash 5 | every assertion can actually fail | that the suite parses on 3.2 |
+
+   The earlier claim "green on 3.2 implies green on 4, 5 and GitHub runners"
+   was backwards for assertion enforcement, since 3.2 is the more *permissive*
+   harness for that property. But simply reversing it is also wrong: bash-4
+   syntax (`declare -A`, `${v^^}`, `&>>`) parses on 5 and dies on 3.2, so
+   green on 5 implies nothing about 3.2 either. Two shells, two properties.

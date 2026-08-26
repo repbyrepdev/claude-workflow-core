@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
-# covers: scripts/test-touched.sh scripts/refresh-from-source.sh
+# covers: scripts/test-touched.sh
+# audits: scripts/refresh-from-source.sh
 #
 # (#2572) The `# audits:` header. A repo-wide meta-lint sweeps many files
 # without executing any of them, so it must ROUTE like `covers:` (re-run when
@@ -217,17 +218,21 @@ _fixture() {
 	# With the env var set but the flag absent, the routing list must NOT be
 	# what comes back — the script must go on to actually run something.
 	run env LIST_ONLY=1 bash -c "cd '$w' && scripts/test-touched.sh --base HEAD"
+	# Assert the run actually happened, rather than only complaining when a
+	# path shows up without it — output matching NEITHER pattern would
+	# otherwise pass, which is the shape of a test that cannot fail.
 	case "$output" in
-	*audits-only.bats*)
-		# A bare path list is the --list output. Running for real prints
-		# "test-touched: running N bats file(s)" first.
-		case "$output" in
-		*"running "*) ;;
-		*)
-			echo "LIST_ONLY=1 from the environment suppressed the run: $output"
-			return 1
-			;;
-		esac
+	*audits-only.bats*) ;;
+	*)
+		echo "the auditor did not route at all; fixture is wrong: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"running "*) ;;
+	*)
+		echo "LIST_ONLY=1 from the environment suppressed the run: $output"
+		return 1
 		;;
 	esac
 }

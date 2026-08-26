@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # covers: pre-commit-hooks/bats-assertion-gate.sh _lib/bats-assertion-check.sh
+# audits: .claude/tests/**/*.bats
 #
 # (#2631 follow-up) The gate that stops bats assertions which cannot fail.
 # bats reports failure through an ERR trap, and on bash 3.2 — what macOS
