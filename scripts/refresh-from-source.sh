@@ -293,8 +293,20 @@ _mirror_test_drift_gate() {
 	# clean no-match (rc=1). Dedup via `sort -u` (no associative arrays —
 	# bash 3.2, the macOS system bash). `replaced` is non-empty (caller
 	# guard), so the loop never expands an empty array under set -u.
-	local bats_to_run=() covering
+	# The discovery loop below runs inside a process substitution, so nothing
+	# it assigns survives — an earlier fix moved `find` out of a NESTED
+	# subshell but the enclosing one still swallowed the status. Failures
+	# therefore travel as a sentinel LINE in the stream, which is the only
+	# channel that crosses the boundary. Without it an unreadable candidate
+	# or a failed enumeration reached the "nothing to verify" success path
+	# and certified a refreshed mirror whose coverage was never checked.
+	local _UNVERIFIED_MARK="!!drift-gate-coverage-unverified!!"
+	local bats_to_run=() covering _coverage_unverified=0
 	while IFS= read -r covering; do
+		if [ "$covering" = "$_UNVERIFIED_MARK" ]; then
+			_coverage_unverified=1
+			continue
+		fi
 		[ -n "$covering" ] && bats_to_run+=("$covering")
 	done < <(
 		for hook in "${replaced[@]}"; do
@@ -319,6 +331,7 @@ _mirror_test_drift_gate() {
 			_bats_list=$(find "$tests_dir" -name '*.bats' -type f 2>/dev/null) || grc=$?
 			if [ "$grc" -gt 0 ]; then
 				echo "  [drift-gate] WARN: find failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+				printf '%s\n' "$_UNVERIFIED_MARK"
 			fi
 			while IFS= read -r _b; do
 				[ -n "$_b" ] || continue
@@ -330,7 +343,7 @@ _mirror_test_drift_gate() {
 				_hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$_b" 2>/dev/null) || _hgrc=$?
 				if [ "$_hgrc" -gt 1 ]; then
 					echo "  [drift-gate] WARN: cannot read $_b (grep rc=$_hgrc) — coverage for $relpath is UNVERIFIED" >&2
-					grc=2
+					printf '%s\n' "$_UNVERIFIED_MARK"
 					continue
 				fi
 				[ -n "$_hdr" ] || continue
@@ -340,6 +353,10 @@ _mirror_test_drift_gate() {
 			done <<<"$_bats_list"
 		done | sort -u
 	)
+	if [ "$_coverage_unverified" = "1" ]; then
+		echo "  [drift-gate] REFUSING: coverage could not be determined for at least one replaced mirror hook — a refreshed mirror must not be certified on an unread header" >&2
+		return 2
+	fi
 	[ "${#bats_to_run[@]}" -gt 0 ] || {
 		echo "  [drift-gate] no consumer bats cover the ${#replaced[@]} replaced mirror hook(s) — nothing to verify" >&2
 		return 0
