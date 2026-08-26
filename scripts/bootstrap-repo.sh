@@ -2180,12 +2180,23 @@ REFRESH_FAILED=0
 _sync_full_ssot() {
 	local refresher="$PLUGIN_SCRIPT_DIR/refresh-from-source.sh"
 	if [ ! -x "$refresher" ]; then
-		# Dry-run is a preview that writes nothing, so it cannot produce an
-		# incomplete repo — NOTE and continue. A REAL install with no refresher
-		# IS a broken plugin → fail-closed (exit 2) rather than silently lay down
-		# an INCOMPLETE repo (#223 CR-CLI r1).
+		# A REAL install with no refresher IS a broken plugin → fail-closed
+		# (exit 2) rather than silently lay down an INCOMPLETE repo (#223
+		# CR-CLI r1).
+		#
+		# CI r3: the dry-run arm used to return 0 on the reasoning that "a
+		# preview writes nothing, so it cannot produce an incomplete repo".
+		# True about the repo, wrong about the PREVIEW: with the propagator
+		# absent the preview silently omits the ENTIRE SSOT-sync section and
+		# still prints "dry-run complete", so the operator believes they have
+		# seen everything the real run would lay down. That is the same false
+		# success as the failed-refresher arm below, on a strictly worse
+		# input — the file is not merely erroring, it is missing. Both arms
+		# fail closed now; only the message differs, so the operator can tell
+		# "absent" from "errored".
 		if [ "${DRY_RUN:-0}" = "1" ]; then
-			_log "NOTE: refresh-from-source.sh not found at $refresher — dry-run previews seed files only (full SSOT sync not shown)"
+			_log "ERROR: refresh-from-source.sh not found at $refresher — this preview shows SEED FILES ONLY; the full SSOT sync could not be previewed at all"
+			REFRESH_FAILED=1
 			return 0
 		fi
 		# #223 CR-CLI: a REAL install with no refresher IS a broken plugin →

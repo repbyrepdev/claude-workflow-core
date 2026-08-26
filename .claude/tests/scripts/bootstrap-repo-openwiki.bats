@@ -267,20 +267,13 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"the steering channel"* ]]
 }
-
-@test "a missing plugin lockfile fails the bootstrap CLOSED, deferred (p2r1)" {
-	# The seeded openwiki-update.yml runs `npm ci`, which hard-requires the
-	# lockfile — so a bootstrap that could not place it produced a workflow
-	# that can never run. A warning alone still exited 0, which automation
-	# reads as a clean scaffold. Deferred like LABEL_RC/REFRESH_FAILED: the
-	# scaffold still lands, the RUN exits 2.
-	#
-	# The script resolves the lockfile relative to its OWN directory, so the
-	# only honest way to make it absent is to run the real script from a
-	# plugin root where it is. Symlink farm: every path the script reads
-	# resolves to the real repo EXCEPT that one file. `scripts/` and
-	# `.github/` must be real dirs — a symlinked dir would make the script's
-	# own `$PLUGIN_SCRIPT_DIR/../` traverse back into the real repo.
+# Builds a plugin root where every path the script reads resolves to the real
+# repo EXCEPT two deliberate omissions: the OpenWiki lockfile and
+# refresh-from-source.sh. `scripts/` and `.github/` must be REAL dirs — a
+# symlinked dir would make the script's own `$PLUGIN_SCRIPT_DIR/../` traverse
+# straight back into the real repo, and the fixture would test nothing.
+# Echoes the plugin root.
+_build_broken_plugin_farm() {
 	local plug="$TEST_TMP/plugin" e
 	mkdir -p "$plug/scripts" "$plug/.github/openwiki-toolchain"
 	for e in "$REPO_ROOT"/* "$REPO_ROOT"/.[!.]*; do
@@ -288,10 +281,6 @@ teardown() {
 		case "${e##*/}" in scripts | .github) continue ;; esac
 		ln -s "$e" "$plug/${e##*/}"
 	done
-	# refresh-from-source.sh is deliberately LEFT OUT so a SECOND, independent
-	# deferred failure fires alongside the lockfile one (ci-r2). With only the
-	# lockfile failing, the assertions below would pass even if an earlier
-	# handler still exited in place — the aggregation would be untested.
 	for e in "$REPO_ROOT"/scripts/* "$REPO_ROOT"/scripts/.[!.]*; do
 		[ -e "$e" ] || continue
 		case "${e##*/}" in refresh-from-source.sh) continue ;; esac
@@ -305,9 +294,24 @@ teardown() {
 	# package.json present, lockfile deliberately absent.
 	ln -s "$REPO_ROOT/.github/openwiki-toolchain/package.json" \
 		"$plug/.github/openwiki-toolchain/package.json"
+	echo "$plug"
+}
+
+@test "a missing plugin lockfile fails the bootstrap CLOSED, deferred (p2r1)" {
+	# The seeded openwiki-update.yml runs `npm ci`, which hard-requires the
+	# lockfile — so a bootstrap that could not place it produced a workflow
+	# that can never run. A warning alone still exited 0, which automation
+	# reads as a clean scaffold. Deferred like LABEL_RC/REFRESH_FAILED: the
+	# scaffold still lands, the RUN exits 2.
+	#
+	# The script resolves the lockfile relative to its OWN directory, so the
+	# only honest way to make it absent is to run the real script from a
+	# plugin root where it is.
+	local plug target
+	plug=$(_build_broken_plugin_farm)
 	[ ! -e "$plug/.github/openwiki-toolchain/package-lock.json" ]
 
-	local target="$TEST_TMP/lockless"
+	target="$TEST_TMP/lockless"
 	mkdir -p "$target"
 	(cd "$target" && git init -q)
 	run bash "$plug/scripts/bootstrap-repo.sh" "$target"
@@ -316,10 +320,11 @@ teardown() {
 	[ "$status" -eq 2 ]
 	[[ $output == *"lockfile not readable"* ]]
 	[[ $output == *"OpenWiki lockfile MISSING"* ]]
-	# ci-r2: BOTH deferred failures report. The refresh handler runs FIRST and
-	# used to exit in place, which would have hidden every lockfile line above
-	# — so seeing both remediation blocks in one run is the actual proof that
-	# the exits were aggregated rather than taken where they were detected.
+	# ci-r2: BOTH deferred failures report in ONE run. The refresh handler
+	# runs FIRST and used to exit in place, which would have hidden every
+	# lockfile line above — so seeing both remediation blocks together is the
+	# actual proof that the exits were aggregated rather than taken where
+	# they were detected. A single-failure fixture could not test this.
 	[[ $output == *"Full SSOT sync did NOT complete"* ]] || {
 		echo "the earlier deferred failure did not report — exits are not aggregated"
 		return 1
@@ -330,11 +335,32 @@ teardown() {
 	[ ! -f "$target/.github/openwiki-toolchain/package-lock.json" ]
 	# "complete" must never print on a failed run.
 	[[ $output != *"bootstrap-repo complete"* ]]
-	# (ci-r1) The deferred handlers REPORT and a single exit follows them, so
-	# a second overlapping failure is not suppressed by the first. Nothing
-	# here forces a second one, but the lockfile handler is now the LAST of
-	# the three, and it used to be unreachable whenever an earlier handler
-	# fired — so reaching its text at all is the assertion that the exits
-	# were aggregated rather than taken in place.
-	[[ $output == *"OpenWiki lockfile MISSING"* ]]
+}
+
+@test "a DRY-RUN with the propagator missing fails closed too (ci-r3)" {
+	# The dry-run arm used to return 0 on the reasoning that "a preview writes
+	# nothing, so it cannot produce an incomplete repo". True about the repo,
+	# wrong about the PREVIEW: with refresh-from-source.sh absent the preview
+	# silently omits the ENTIRE SSOT-sync section and still printed "dry-run
+	# complete", so the operator believed they had seen everything the real
+	# run would lay down.
+	local plug target
+	plug=$(_build_broken_plugin_farm)
+	[ ! -e "$plug/scripts/refresh-from-source.sh" ]
+
+	target="$TEST_TMP/drytarget"
+	mkdir -p "$target"
+	(cd "$target" && git init -q)
+	run bash "$plug/scripts/bootstrap-repo.sh" "$target" --dry-run
+
+	[ "$status" -eq 2 ]
+	# Names the ABSENT case specifically, so an operator can tell it from the
+	# refresher-errored case, which fails closed with a different message.
+	[[ $output == *"refresh-from-source.sh not found"* ]]
+	[[ $output == *"SEED FILES ONLY"* ]]
+	[[ $output == *"Full SSOT sync did NOT complete"* ]]
+	# The false success is gone.
+	[[ $output != *"dry-run complete"* ]]
+	# Still a preview: nothing was written into the target.
+	[ ! -e "$target/.github/workflows/openwiki-update.yml" ]
 }
