@@ -110,6 +110,11 @@ _openwiki_realpath() {
 		esac
 		hops=$((hops + 1))
 	done
+	# Budget exhausted while still a link: a cycle, or a chain long enough to
+	# be one. Refuse rather than answer about a path we did not finish
+	# resolving — `[ -e ]` alone would accept a >40-hop chain that still
+	# resolves, and the caller would trust a version from the wrong package.
+	[ ! -L "$p" ] || return 1
 	[ -e "$p" ] || return 1
 	printf '%s\n' "$p"
 }

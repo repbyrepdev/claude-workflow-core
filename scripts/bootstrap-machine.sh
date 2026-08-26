@@ -193,7 +193,11 @@ if ! command -v openwiki >/dev/null 2>&1; then
 		_log "    then re-run, or: npm install -g openwiki@$OPENWIKI_PIN"
 	else
 		_log "installing openwiki@$OPENWIKI_PIN via npm..."
-		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
+		# rc discarded ON PURPOSE: _ow_run_optional has already logged the
+		# failure and set OPENWIKI_WIRING_SKIPPED, which the end-of-run
+		# summary reads. Without the `||` this would abort the bootstrap
+		# under `set -e`, which is the whole point of the wrapper.
+		_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || :
 	fi
 else
 	# The probe returns a TOKEN (see the lib header). Each one gets its own
@@ -216,6 +220,11 @@ else
 		# reinstalling is what makes it true.
 		case "$OW_HAVE" in
 		[0-9]*) OW_DESC="openwiki is $OW_HAVE" ;;
+		# Unreachable from here today — this branch sits inside the
+		# `command -v openwiki` success arm — but if the CLI vanishes between
+		# the two checks, "not installed" is the truth and "could not be
+		# identified (no-cli)" would be a riddle.
+		no-cli) OW_DESC="openwiki is not installed" ;;
 		*) OW_DESC="the openwiki on PATH could not be identified ($OW_HAVE)" ;;
 		esac
 		if ! command -v npm >/dev/null 2>&1; then
@@ -228,7 +237,11 @@ else
 			OPENWIKI_WIRING_SKIPPED=1
 		else
 			_log "$OW_DESC, pin is $OPENWIKI_PIN — reinstalling..."
-			_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || true
+			# rc discarded ON PURPOSE: _ow_run_optional has already logged the
+			# failure and set OPENWIKI_WIRING_SKIPPED, which the end-of-run
+			# summary reads. Without the `||` this would abort the bootstrap
+			# under `set -e`, which is the whole point of the wrapper.
+			_ow_run_optional npm install -g "openwiki@$OPENWIKI_PIN" || :
 		fi
 		;;
 	esac

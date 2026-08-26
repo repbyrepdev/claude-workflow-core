@@ -35,7 +35,7 @@
     "_lib/hook-inline-sentinel.sh": "d7a5e3b7431cdb033b50a4f938a6a57000acf4b7a9b807c27b759578ae56f272",
     "_lib/lint-gate-core.sh": "0bcc9bbf892d995e80dc4974cd710a545a25c3baead5e05a05646bf8aacf7086",
     "_lib/lint-log.sh": "23060525ef8e5445803b46fc0933ee1211b3bde5895d8a6fc1ea3f6bbceca7b9",
-    "_lib/openwiki-mcp-state.sh": "6e917734f914daae9933106e3c6ba4d54cafe13d2eab2bdbce6969825ef8bcdb",
+    "_lib/openwiki-mcp-state.sh": "0e1f8136bca0bc22f725cd4d129f79440f755928f1e6eba3cb09702da43c823c",
     "_lib/phase-graduation.sh": "4fac4b2f11e18b44d0504c96eb54592072f897956472775a21b38154088449e0",
     "_lib/phase05-auth-summary.sh": "067548ad091fbe8c00761515cc7c5407739616b2b1e77fe3b6c21b5e530a4147",
     "_lib/phase05-dedupe.sh": "93b998f3225caa129686731bb8af16afab35423fd0524767dda521b1eb2d99f1",

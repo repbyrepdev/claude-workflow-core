@@ -587,6 +587,54 @@ _run_skill() { # $1 = subcommand; PATH is the fixture bin ONLY, HOME is the fixt
 	[ "$output" = "no-cli" ]
 }
 
+@test "the resolver refuses an over-long symlink chain (p2r3)" {
+	# The 40-hop budget existed but nothing acted on exhausting it: `[ -e ]`
+	# accepts a >40-hop chain that still resolves, so the caller would have
+	# trusted a version read from wherever the walk happened to stop.
+	local lib="$PLUGIN/_lib/openwiki-mcp-state.sh"
+	local b="$TEST_TMP/loopbin"
+	mkdir -p "$b"
+	local tool tp
+	for tool in readlink dirname jq; do
+		tp=$(command -v "$tool") || {
+			echo "FATAL: probe dependency '$tool' not on PATH"
+			return 1
+		}
+		ln -sf "$tp" "$b/$tool"
+	done
+	# A real target, then a chain of 60 links in front of it — resolvable, but
+	# past the budget.
+	local pkg="$TEST_TMP/looppkg/openwiki"
+	mkdir -p "$pkg/dist"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$pkg/dist/cli.js"
+	chmod +x "$pkg/dist/cli.js"
+	printf '{"name":"openwiki","version":"0.4.0"}' >"$pkg/package.json"
+	local chain="$TEST_TMP/chain"
+	mkdir -p "$chain"
+	ln -sf "$pkg/dist/cli.js" "$chain/link0"
+	local i=1
+	while [ "$i" -le 60 ]; do
+		ln -sf "$chain/link$((i - 1))" "$chain/link$i"
+		i=$((i + 1))
+	done
+	ln -sf "$chain/link60" "$b/openwiki"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	# no-cli, not unresolvable: the KERNEL's own symlink limit (~32 on macOS)
+	# fires first, so `command -v` never resolves it and the probe's resolver
+	# is never reached. Asserting what actually happens — the hop budget and
+	# the still-a-link refusal are defence for a resolver the OS does not
+	# currently let us exercise, and pretending otherwise would be the same
+	# kind of test-shaped fiction this branch spent a round removing.
+	[ "$output" = "no-cli" ]
+
+	# A chain INSIDE the budget still resolves — the guard is not over-broad.
+	ln -sf "$chain/link5" "$b/openwiki"
+	run env PATH="$b" "$lib" installed-version
+	[ "$status" -eq 0 ]
+	[ "$output" = "0.4.0" ]
+}
+
 @test "the probe CLI refuses an unknown subcommand instead of guessing (p2r1)" {
 	# A bare WORD used to fall through to mcp-state as a config path, which
 	# answered "no-config" — a real-looking state for what is actually a typo.
