@@ -225,6 +225,14 @@ EOF
 		echo "a command-prefixed review took the SKILL_WRAPPER bypass: $output"
 		return 1
 	}
+	# Brace-grouped INSIDE the wrapper: WRAPPED_CMD then starts with `{`, and
+	# a boundary matcher without it read the whole thing as "not a review".
+	_run_guard "SKILL_WRAPPER=1 bash -lc '{ coderabbit review --base main; }'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a brace-grouped wrapped review took the SKILL_WRAPPER bypass: $output"
+		return 1
+	}
 }
 
 @test "SKILL_WRAPPER=1 still exempts the OTHER guarded verbs (#2548 r1)" {

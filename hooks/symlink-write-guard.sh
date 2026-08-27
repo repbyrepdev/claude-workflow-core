@@ -161,6 +161,26 @@ if [ -n "$CMD" ]; then
 	# Grab the whole tee segment up to the next shell separator, then split it
 	# into words and keep the non-flag ones. `--` ends option parsing, so
 	# everything after it is a filename even if it starts with a dash.
+	#
+	# A QUOTED separator defeats the segment scan: in
+	#     tee '/tmp/safe|decoy' <protected-path>
+	# the `|` is DATA, but `[^|;&]*` stops there and the protected operand is
+	# never seen. Properly fixing that needs a shell tokenizer, which is not
+	# something a regex hook should pretend to be — so the ambiguous case is
+	# REFUSED instead. Fail-closed on "I cannot parse this" is the contract
+	# the rest of this file already keeps; quietly parsing half a command is
+	# how the two incidents in the header happened.
+	# Scoped to the tee CLAUSE: the quoted span must begin in the operand
+	# region, not merely somewhere in the command. The first cut asked "does
+	# the command contain tee, and separately contain a quoted separator" —
+	# which refused any long text argument that happened to mention both, and
+	# blocked this very fix's own audit record twice. A guard that fires on
+	# prose gets bypassed habitually, and then it guards nothing.
+	if printf '%s' "$CMD" |
+		grep -qE '\btee[[:space:]]+([^"'"'"'|;&]*[[:space:]]+)*("[^"]*[|;&][^"]*"|'"'"'[^'"'"']*[|;&][^'"'"']*'"'"')'; then
+		hook_deny "symlink-write-guard" 'REFUSED: a tee clause contains a QUOTED shell separator, so this hook cannot tell which words are operands and which are pipeline boundaries — and guessing is how a protected path gets skipped. Rewrite without the quoted separator, or use the audited bypass:
+  SYMLINK_WRITE_GUARD_SKIP=1 SYMLINK_WRITE_GUARD_SKIP_REASON="why" <command>'
+	fi
 	_rc=0
 	_tee_seg=$(_extract '\btee[[:space:]]+[^|;&]*' 's/^tee[[:space:]]+//') || _rc=$?
 	[ "$_rc" -eq 0 ] || _ext_deny "tee" "$_rc"

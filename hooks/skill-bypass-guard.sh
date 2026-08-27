@@ -133,7 +133,12 @@ _cr_review_cmd=0
 _cr_wrapper='(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|env|sudo|-E)[[:space:]]+)*'
 for _c in "$CMD" "$WRAPPED_CMD"; do
 	[ -n "$_c" ] || continue
-	printf '%s' "$_c" | grep -qE '(^|[;&|(][[:space:]]*)'"$_cr_wrapper"'coderabbit[[:space:]]' || continue
+	# `{` is a command-segment boundary too. Without it,
+	# `bash -lc '{ coderabbit review ...; }'` left WRAPPED_CMD starting with a
+	# brace, the classifier said "not a review", and the SKILL_WRAPPER branch
+	# exited before the raw-review guard — the same brace-grouping evasion
+	# #2396 closed for the other verbs, reintroduced here.
+	printf '%s' "$_c" | grep -qE '(^|[;&|({][[:space:]]*)'"$_cr_wrapper"'coderabbit[[:space:]]' || continue
 	printf '%s' "$_c" | grep -qE '[[:space:]]review([[:space:]]|$)' && _cr_review_cmd=1
 done
 

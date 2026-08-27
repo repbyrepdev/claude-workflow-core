@@ -271,6 +271,23 @@ _allowed() {
 	_denied
 }
 
+@test "a QUOTED shell separator in a tee clause is refused, not half-parsed" {
+	# The `|` here is DATA. The segment scan stops at it, so the protected
+	# operand after it was never inspected. A regex hook cannot tokenize a
+	# shell, so the ambiguous case is refused rather than guessed at.
+	_guard "echo x | tee '/tmp/safe|decoy' .claude/scripts/cr/x.sh"
+	_denied
+}
+
+@test "prose that merely MENTIONS tee and a quoted pipe is not refused" {
+	# The ambiguity check first asked "contains tee" AND "contains a quoted
+	# separator" as two independent questions, so any long text argument
+	# discussing both was refused — it blocked this fix's own audit record.
+	# The quoted span has to begin in the tee OPERAND region to count.
+	_guard "some-tool --note 'the tee extractor stops at a quoted | separator'"
+	_allowed
+}
+
 @test "an ordinary multi-operand tee is still allowed" {
 	# The other direction: broadening the parse must not start refusing writes
 	# that touch nothing protected.
