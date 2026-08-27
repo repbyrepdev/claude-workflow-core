@@ -35,6 +35,8 @@ set -euo pipefail
 #   push              → ready to push to origin
 #   cr-in-ci-wait     → waiting for GitHub CR
 #   auto-triage       → classify CR threads via scripts/cr/auto-triage.sh (#733)
+#   cr-thread-reply   → reply-with-evidence to non-actionable CR threads (#2548);
+#                       only UNADDRESSED threads block the gate
 #   cr-conflict-check → route DIRTY PR through CR resolver before gate (#190)
 #   merge-gate        → OPERATOR APPROVES HERE (only interaction)
 #   merged            → terminal
@@ -1568,6 +1570,29 @@ cmd_status() {
 		_p1runs=$(_phase1_branch_round_count) || _p1runs=""
 		echo "  P1 cap:      ${_p1runs:-<unavailable>}/$_p1cap phase-1 round(s) used on this branch (enforced pre-arm, #2575)"
 	fi
+
+	# (#2548) CR thread buckets, once the cycle is far enough along for threads
+	# to exist. Advisory render, same contract as the cap lines above: a query
+	# failure prints `unknown`, NEVER 0 — reporting a clean state on an error
+	# is how an operator merges over findings nobody counted.
+	case "$_p2stage" in
+	cr-in-ci-wait | auto-triage | cr-autofix | cr-thread-reply | cr-conflict-check | merge-gate)
+		local _tr_helper _tr_pr _tr_json _tr_un _tr_rep
+		_tr_pr=$(gh pr view --json number --jq .number 2>/dev/null) || _tr_pr=""
+		_tr_helper=$(_shipcycle_resolve scripts/cr/thread-reply.sh 2>/dev/null) || _tr_helper=""
+		if [ -n "$_tr_pr" ] && [ -n "$_tr_helper" ]; then
+			_tr_json=$("$_tr_helper" "$_tr_pr" --json 2>/dev/null) || _tr_json=""
+		fi
+		if [ -n "$_tr_json" ]; then
+			_tr_un=$(printf '%s' "$_tr_json" | jq -r '.unaddressed // "unknown"' 2>/dev/null) || _tr_un="unknown"
+			_tr_rep=$(printf '%s' "$_tr_json" | jq -r '.replied_awaiting_cr // "unknown"' 2>/dev/null) || _tr_rep="unknown"
+		else
+			_tr_un="unknown"
+			_tr_rep="unknown"
+		fi
+		echo "  CR threads:  ${_tr_un} unaddressed (BLOCKING), ${_tr_rep} replied-awaiting-CR (not blocking)"
+		;;
+	esac
 }
 
 cmd_next() {
@@ -2721,6 +2746,64 @@ After autofix commits, re-run 'ship-pr-cycle.sh next' to loop back to phase1
 Opt-in to server-side autofix (CR-bot pushes commit instead):
   SHIP_CI_SIDE_AUTOFIX=1 ship-pr-cycle.sh next
 EOF
+		return 0
+		;;
+	cr-thread-reply)
+		# (#2548) The cycle had a stage for FIXING a CR finding and none for
+		# the other three outcomes. A verified-fixed, false-positive or
+		# rejected-by-design thread could only be closed by REPLYING with
+		# evidence and letting CR resolve — and that step was in no stage, so
+		# the cycle stalled at merge-gate with non-zero threads and no defined
+		# next action. Seen on #2540 (5 threads, 1 fixable by code) and #2635.
+		#
+		# Dispatch is mechanical; CLASSIFICATION stays operator-driven. The
+		# stage never invents evidence and never posts a reply on its own —
+		# same contract auto-triage documents.
+		local ctr_pr ctr_err ctr_err_file ctr_rc=0
+		ctr_err_file=$(mktemp -t ship-cycle-crthread-pr.XXXXXX) ||
+			scm_fail "mktemp for cr-thread-reply gh pr view stderr capture failed"
+		ctr_pr=$(gh pr view --json number --jq .number 2>"$ctr_err_file") || ctr_rc=$?
+		[ -s "$ctr_err_file" ] && ctr_err=$(cat "$ctr_err_file")
+		rm -f "$ctr_err_file"
+		if [ "$ctr_rc" -ne 0 ]; then
+			echo "ship-pr-cycle: cr-thread-reply — cannot resolve PR (gh rc=$ctr_rc): ${ctr_err:-not pushed?}" >&2
+			return 2
+		fi
+
+		local ctr_helper ctr_json ctr_jrc=0
+		ctr_helper=$(_shipcycle_resolve scripts/cr/thread-reply.sh) ||
+			scm_fail "cr-thread-reply: cannot resolve scripts/cr/thread-reply.sh"
+		ctr_json=$("$ctr_helper" "$ctr_pr" --json) || ctr_jrc=$?
+		# Fail CLOSED, like auto-triage and cr-autofix: a read error must never
+		# fall through to "nothing unaddressed", which would advance a PR whose
+		# findings were never counted.
+		if [ "$ctr_jrc" -ne 0 ]; then
+			echo "ship-pr-cycle: cr-thread-reply — thread read failed (rc=$ctr_jrc); refusing to advance" >&2
+			return "$ctr_jrc"
+		fi
+
+		local ctr_unaddressed ctr_replied
+		ctr_unaddressed=$(printf '%s' "$ctr_json" | jq -r '.unaddressed // "err"')
+		ctr_replied=$(printf '%s' "$ctr_json" | jq -r '.replied_awaiting_cr // "err"')
+		case "$ctr_unaddressed" in
+		'' | err | null)
+			echo "ship-pr-cycle: cr-thread-reply — unreadable unaddressed count; refusing to advance" >&2
+			return 2
+			;;
+		esac
+
+		if [ "$ctr_unaddressed" = "0" ]; then
+			# Every unresolved thread has been answered (or there are none).
+			# `replied-awaiting-CR` is a distinct NON-blocking state: the
+			# operator did their part and CR has yet to resolve.
+			_set_stage "cr-conflict-check"
+			echo "→ no unaddressed CR threads ($ctr_replied replied-awaiting-CR); advanced to cr-conflict-check"
+			return 0
+		fi
+
+		echo "ship-pr-cycle: cr-thread-reply — $ctr_unaddressed unaddressed thread(s), $ctr_replied awaiting CR" >&2
+		"$ctr_helper" "$ctr_pr" --list || true
+		_emit_stage_directive cr-thread-reply
 		return 0
 		;;
 	cr-conflict-check)

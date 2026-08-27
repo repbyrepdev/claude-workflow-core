@@ -114,8 +114,17 @@ _gh_returns() {
 	# reason, AND that the extracted PR number surfaced.
 	[ "$status" -eq 0 ]
 	[[ $output == *deny* ]] || return 1
-	[[ $output == *"unresolved CodeRabbit findings"* ]] || return 1
-	[[ $output == *"#42"* ]]
+	# UNADDRESSED, not "unresolved" (#2548): a thread carrying an evidence
+	# reply is `replied-awaiting-CR` and does NOT block, so the refusal has to
+	# name the class it actually means.
+	[[ $output == *"UNADDRESSED CodeRabbit findings"* ]] || return 1
+	[[ $output == *"#42"* ]] || return 1
+	# The three resolutions must be spelled out — a refusal that does not say
+	# what to do next is how #2540 and #2635 stalled.
+	[[ $output == *"thread-reply.sh"* ]] || return 1
+	[[ $output == *"resolve-stranded.sh"* ]] || return 1
+	# And the standing rule survives the rewrite.
+	[[ $output == *"NEVER resolve a CR thread by hand"* ]]
 }
 
 @test "gh pr merge --pr <N> form → PR number extracted (DENIED on findings)" {

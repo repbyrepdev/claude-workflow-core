@@ -42,6 +42,9 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
     ↓ next (gate-checked: CR-in-CI terminal state)
 [auto-triage]     classify CR threads via scripts/cr/auto-triage.sh (#733); routes by unresolved count
     ↓ next
+[cr-thread-reply]  reply-with-evidence to verified-fixed / false-positive / rejected threads (#2548);
+                   only UNADDRESSED threads block — `replied-awaiting-CR` passes through
+    ↓ next (gate-checked: unaddressed == 0)
 [cr-conflict-check] route a DIRTY PR through CR's resolver (#190); CLEAN passes straight through
     ↓ next
 [merge-gate]      OPERATOR APPROVES HERE
@@ -168,5 +171,6 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 - **`next` advanced a stage** → re-run `next` to continue; the state machine drives branch-ready → phase0.5 → phase1 → phase2 → push → cr-in-ci-wait → auto-triage → (cr-autofix) → cr-conflict-check → merge-gate.
 - **phase1 directive emitted** → fire the 5 parallel review agents + semgrep + security-review, log each via `review-log.sh`, then re-run `next`.
 - **phase2 / CR findings** → apply or reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire; do not advance with open findings.
+- **cr-thread-reply reached** → classify each UNADDRESSED thread and reply with evidence via `scripts/cr/thread-reply.sh`. Never resolve a thread by hand — the reply is the action, CR resolving is the outcome. `verified-fixed` is gated on `git show HEAD:<path>`; `actionable` is not repliable and goes back to autofix.
 - **merge-gate reached** → operator approval point; on approval, invoke `github-pr-merge`. This is the one human gate.
 - **`resume`** → auto-advances until it hits phase1 (needs agents), merge-gate (needs operator), or a terminal state.

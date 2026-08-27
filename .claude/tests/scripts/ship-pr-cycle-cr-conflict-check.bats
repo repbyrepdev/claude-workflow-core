@@ -119,7 +119,10 @@ _cur_stage() {
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
 	[[ $output == *"no unresolved CR threads (resolved without a commit)"* ]] || return 1
-	[ "$(_cur_stage)" = cr-conflict-check ]
+	# (#2548) cr-thread-reply now sits between cr-autofix and cr-conflict-check.
+	# Zero unresolved still means nothing to reply to, so the new stage passes
+	# straight through on its next call — but the immediate hop is to it.
+	[ "$(_cur_stage)" = cr-thread-reply ]
 }
 
 @test "cr-autofix + count-query failure fails closed (return non-0, no silent advance)" {
@@ -264,6 +267,110 @@ AT
 	chmod +x .claude/scripts/cr/auto-triage.sh
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
+	# (#2548) routes to cr-thread-reply first; that stage forwards to
+	# cr-conflict-check when no thread is unaddressed.
+	[[ $output == *"advanced to cr-thread-reply"* ]] || return 1
+	[ "$(_cur_stage)" = cr-thread-reply ]
+}
+
+@test "cr-thread-reply forwards when every thread is answered (#2548)" {
+	# `replied-awaiting-CR` is a distinct NON-blocking state. The operator did
+	# what the stage asked; blocking further would leave no available action.
+	_seed_stage cr-thread-reply
+	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
+	# write from the repo root follows it and clobbers production.
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		for a in "$@"; do
+			if [ "$a" = "--json" ]; then
+				printf '{"pr":42,"unresolved":2,"unaddressed":0,"replied_awaiting_cr":2,"threads":[]}\n'
+				exit 0
+			fi
+		done
+		exit 0
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
 	[[ $output == *"advanced to cr-conflict-check"* ]] || return 1
+	[[ $output == *"replied-awaiting-CR"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
+}
+
+@test "cr-thread-reply HOLDS while a thread is unaddressed (#2548)" {
+	# The stall #2540 and #2635 hit, now a defined state instead of silence.
+	_seed_stage cr-thread-reply
+	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
+	# write from the repo root follows it and clobbers production.
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		for a in "$@"; do
+			if [ "$a" = "--json" ]; then
+				printf '{"pr":42,"unresolved":3,"unaddressed":2,"replied_awaiting_cr":1,"threads":[]}\n'
+				exit 0
+			fi
+		done
+		exit 0
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$status" -eq 0 ]
+	[ "$(_cur_stage)" = cr-thread-reply ] || {
+		echo "stage advanced with unaddressed threads: $(_cur_stage)"
+		return 1
+	}
+	# The directive must name the three classes and the evidence each needs —
+	# a hold that does not say what to do is the stall it replaces.
+	[[ $output == *"verified-fixed"* ]] || return 1
+	[[ $output == *"false-positive"* ]] || return 1
+	[[ $output == *"rejected-by-design"* ]] || return 1
+	[[ $output == *"git show HEAD:"* ]]
+}
+
+@test "cr-thread-reply FAILS CLOSED when the thread read errors (#2548)" {
+	# A read error must never read as "nothing unaddressed" — that would
+	# advance a PR whose findings were never counted.
+	_seed_stage cr-thread-reply
+	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
+	# write from the repo root follows it and clobbers production.
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		echo "graphql exploded" >&2
+		exit 2
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$status" -ne 0 ] || {
+		echo "a failed thread read reported success"
+		return 1
+	}
+	[ "$(_cur_stage)" = cr-thread-reply ] || {
+		echo "stage advanced despite a failed read: $(_cur_stage)"
+		return 1
+	}
+	[[ $output == *"refusing to advance"* ]]
+}
+
+@test "cr-thread-reply refuses an unreadable count rather than guessing (#2548)" {
+	# Valid JSON with no `unaddressed` key is not zero — it is unknown.
+	_seed_stage cr-thread-reply
+	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
+	# write from the repo root follows it and clobbers production.
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		printf '{"pr":42}\n'
+		exit 0
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$status" -ne 0 ]
+	[ "$(_cur_stage)" = cr-thread-reply ]
 }

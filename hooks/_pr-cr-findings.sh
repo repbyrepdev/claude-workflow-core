@@ -94,6 +94,7 @@ fi
 # previous hard-fail-over-100. Hard cap at 20 pages (2000 threads) as a
 # runaway guard — no realistic PR exceeds that.
 UNRESOLVED="[]"
+REPLIED="[]" # (#2548) answered, awaiting CR — reported, never counted
 CURSOR=""
 PAGE=0
 MAX_PAGES=20
@@ -136,7 +137,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 									id
 									isResolved
 									isOutdated
-									comments(first:1) {
+									comments(first:100) {
 										nodes {
 											author { login }
 											path
@@ -159,9 +160,24 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
 		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select(([.comments.nodes[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not)] | length) == 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:400])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_NODES" ]; then
 		echo "ERROR: thread-nodes jq-parse failed on page $PAGE" >&2
+		exit 1
+	fi
+	# (#2548) `replied-awaiting-CR`: a human answered with evidence and CR has
+	# not resolved yet. Surfaced at the gate for visibility, but NOT counted —
+	# blocking on it would punish the operator for doing exactly what the
+	# cr-thread-reply stage asks, and there is no further action available.
+	PAGE_REPLIED=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+		| select(.isResolved == false)
+		| select(.isOutdated == false)
+		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select(([.comments.nodes[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not)] | length) > 0)
+		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id}]' 2>/dev/null || true)
+	if [ -z "$PAGE_REPLIED" ]; then
+		echo "ERROR: replied-thread jq-parse failed on page $PAGE" >&2
 		exit 1
 	fi
 	# v4.0 CR #354: stranded outdated-but-unresolved threads (CR's
@@ -178,6 +194,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	fi
 	# Merge this page's nodes into UNRESOLVED + STRANDED
 	UNRESOLVED=$(jq -n --argjson a "$UNRESOLVED" --argjson b "$PAGE_NODES" '$a + $b')
+	REPLIED=$(jq -n --argjson a "$REPLIED" --argjson b "$PAGE_REPLIED" '$a + $b')
 	STRANDED=$(jq -n --argjson a "${STRANDED:-[]}" --argjson b "$PAGE_STRANDED" '$a + $b')
 	HAS_NEXT=$(echo "$RAW" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false')
 	NEXT_CURSOR=$(echo "$RAW" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""')
