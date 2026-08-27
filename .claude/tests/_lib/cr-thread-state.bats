@@ -73,12 +73,56 @@ _count() { # $1 = thread node JSON
 	[ "$output" = "0" ]
 }
 
-@test "a null author login does not crash, and does not count as CR" {
+@test "an UNREADABLE author fails CLOSED — a ghost cannot silence a thread" {
+	# This previously asserted 1, i.e. a null author counted as a human reply.
+	# That is a fail-open on a merge gate: a deleted or ghost account would
+	# stop the thread blocking. An unidentifiable commenter is not evidence
+	# that anyone addressed the finding, so the unknown case counts as
+	# unanswered.
 	run _count '{"comments":{"nodes":[
 	  {"author":{"login":"coderabbitai"},"body":"finding"},
 	  {"author":null,"body":"ghost"}]}}'
 	[ "$status" -eq 0 ]
+	[ "$output" = "0" ]
+	# An empty login string, same reasoning.
+	run _count '{"comments":{"nodes":[
+	  {"author":{"login":"coderabbitai"},"body":"finding"},
+	  {"author":{"login":""},"body":"blank"}]}}'
+	[ "$status" -eq 0 ]
+	[ "$output" = "0" ]
+}
+
+@test "the bot match is ANCHORED — a human named coderabbitfan still counts" {
+	# As a substring, `test("coderabbit")` swallowed any login containing it,
+	# so that person's replies would never count and their thread would block
+	# forever with no diagnosable cause.
+	run _count '{"comments":{"nodes":[
+	  {"author":{"login":"coderabbitfan"},"body":"I found this"},
+	  {"author":{"login":"coderabbitfan"},"body":"and here is the fix"}]}}'
+	[ "$status" -eq 0 ]
 	[ "$output" = "1" ]
+	# ...while the real bot logins are still recognised.
+	run _count '{"comments":{"nodes":[
+	  {"author":{"login":"coderabbitai"},"body":"finding"},
+	  {"author":{"login":"coderabbitai[bot]"},"body":"follow-up"}]}}'
+	[ "$status" -eq 0 ]
+	[ "$output" = "0" ]
+}
+
+@test "CR REBUTTING a reply puts the thread back to unaddressed" {
+	# The predicate is positional for this reason. As "any human comment
+	# exists after the first", the sequence below read as ANSWERED — so the
+	# merge gate stopped counting a thread on which CR had explicitly
+	# rejected the evidence, and no later CR comment could undo it.
+	run _count '{"comments":{"nodes":[
+	  {"author":{"login":"coderabbitai"},"body":"bug here"},
+	  {"author":{"login":"me"},"body":"fixed in abc123"},
+	  {"author":{"login":"coderabbitai"},"body":"No — still broken"}]}}'
+	[ "$status" -eq 0 ]
+	[ "$output" = "0" ] || {
+		echo "a CR rebuttal did not re-block the thread"
+		return 1
+	}
 }
 
 @test "BOTH consumers use the shared fragment, not a private copy" {

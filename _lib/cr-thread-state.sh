@@ -49,7 +49,18 @@ set -u
 # and 0 otherwise. Answered means BOTH:
 #   - more than one comment exists (comment 0 is the finding itself, so a
 #     lone opening comment is never an answer to itself), AND
-#   - the LAST comment is not CodeRabbit's.
+#   - the LAST comment is not CodeRabbit's, AND
+#   - that comment has a readable author.
+#
+# An EMPTY or missing author login counts as NOT answered. A deleted or ghost
+# account previously read as a human reply and silenced the thread — an
+# unidentifiable commenter is not evidence that anyone addressed the finding,
+# and this predicate gates a merge, so the unknown case fails closed.
+#
+# The bot match is ANCHORED (^coderabbit(ai)?(\[bot\])?$). As a substring it
+# also matched any human login containing "coderabbit", whose replies would
+# then never count and whose thread would block forever with no diagnosable
+# cause.
 #
 # The name says COUNT because callers compare it numerically and because it
 # is the same shape the earlier counting form had; it is now 0-or-1.
@@ -60,7 +71,7 @@ set -u
 # those checks warn about. Their suggested fix, an array, cannot be spliced
 # into a jq expression at all.
 # shellcheck disable=SC2089,SC2090
-CR_THREAD_HUMAN_REPLY_COUNT_JQ='(((.comments.nodes // []) | length) as $n | if $n < 2 then 0 else (if ((((.comments.nodes // []) | last | .author.login) // "") | test("coderabbit"; "i")) then 0 else 1 end) end)'
+CR_THREAD_HUMAN_REPLY_COUNT_JQ='(((.comments.nodes // []) | length) as $n | if $n < 2 then 0 else (((.comments.nodes // []) | last | .author.login) // "") as $who | if ($who == "") then 0 elif ($who | test("^coderabbit(ai)?(\\[bot\\])?$"; "i")) then 0 else 1 end end)'
 
 # Deliberately the ONLY export. Boolean convenience forms
 # (CR_THREAD_IS_REPLIED / _IS_UNADDRESSED) were defined here and used by

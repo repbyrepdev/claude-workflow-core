@@ -82,15 +82,18 @@ merge_auto_ok() {
 	# and the #2540 shape it exists to refuse sailed through to rc 0. The unit
 	# tests passed only because their fixture hand-injected a `description`
 	# key that gh never produces — they proved the fixture, not the system.
-	local checks
-	checks=$(gh pr checks "$pr" --json name,state,description 2>/dev/null) || {
-		echo "could not read PR checks (gh pr checks failed)"
+	# `gh pr checks` exits NON-ZERO when a check is failing (1) or pending (8)
+	# — those are answers, not errors, and it still prints valid JSON. Treating
+	# a non-zero rc as unreadable turned "a required check failed" (rc 1, go
+	# fix it) into "could not determine" (rc 2, something is broken), which
+	# defeats the very rc distinction this file is built around. Only an
+	# unusable PAYLOAD is a read failure.
+	local checks checks_rc=0
+	checks=$(gh pr checks "$pr" --json name,state,description 2>/dev/null) || checks_rc=$?
+	if [ -z "$checks" ] || ! printf '%s' "$checks" | jq -e 'type == "array"' >/dev/null 2>&1; then
+		echo "could not read PR checks (gh rc=$checks_rc, payload unusable)"
 		return 2
-	}
-	[ -n "$checks" ] || {
-		echo "gh pr checks returned nothing"
-		return 2
-	}
+	fi
 	[ -n "$view" ] || {
 		echo "gh pr view returned nothing"
 		return 2

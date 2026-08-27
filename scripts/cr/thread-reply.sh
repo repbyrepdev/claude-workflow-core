@@ -191,7 +191,18 @@ _classify() {
 		outdated: $t.isOutdated,
 		author: ($c[0].author.login // "unknown"),
 		excerpt: (($c[0].body // "") | gsub("\r"; "") | split("\n")[0] | .[0:90]),
-		reply_state: (if $human > 0 then "replied-awaiting-CR" else "unaddressed" end)
+		reply_state: (
+		  # THREE states, not two. A stranded thread (isResolved=false AND
+		  # isOutdated=true) was bucketed as `unaddressed`, so the stage held
+		  # and told the operator to REPLY to it — while the header above,
+		  # the merge gate, and the gate deny text all say a stranded thread
+		  # is the ONE case where manual resolution IS correct, via
+		  # scripts/cr/resolve-stranded.sh. Wrong remedy, and the same
+		  # stall-with-no-defined-action this stage exists to remove.
+		  # (No apostrophes here: the jq program is single-quoted.)
+		  if $t.isOutdated then "stranded"
+		  elif $human > 0 then "replied-awaiting-CR"
+		  else "unaddressed" end)
 	      }
 	  ]'
 }
@@ -201,6 +212,7 @@ if [ "$MODE" != "reply" ]; then
 	RECORDS=$(printf '%s' "$THREADS" | _classify)
 	UNADDRESSED=$(printf '%s' "$RECORDS" | jq '[.[] | select(.reply_state == "unaddressed")] | length')
 	REPLIED=$(printf '%s' "$RECORDS" | jq '[.[] | select(.reply_state == "replied-awaiting-CR")] | length')
+	STRANDED=$(printf '%s' "$RECORDS" | jq '[.[] | select(.reply_state == "stranded")] | length')
 	TOTAL=$(printf '%s' "$RECORDS" | jq 'length')
 
 	case "$MODE" in
@@ -209,15 +221,19 @@ if [ "$MODE" != "reply" ]; then
 		;;
 	json)
 		jq -n --argjson u "$UNADDRESSED" --argjson r "$REPLIED" \
-			--argjson t "$TOTAL" --argjson recs "$RECORDS" \
-			'{pr: '"$PR"', unresolved: $t, unaddressed: $u, replied_awaiting_cr: $r, threads: $recs}'
+			--argjson s "$STRANDED" --argjson t "$TOTAL" --argjson recs "$RECORDS" \
+			'{pr: '"$PR"', unresolved: $t, unaddressed: $u, replied_awaiting_cr: $r, stranded: $s, threads: $recs}'
 		;;
 	list)
 		if [ "$TOTAL" = "0" ]; then
 			echo "✓ PR #$PR: no unresolved review threads"
 			exit 0
 		fi
-		echo "PR #$PR — $TOTAL unresolved thread(s): $UNADDRESSED unaddressed, $REPLIED replied-awaiting-CR"
+		echo "PR #$PR — $TOTAL unresolved: $UNADDRESSED unaddressed, $REPLIED replied-awaiting-CR, $STRANDED stranded"
+		if [ "$STRANDED" -gt 0 ]; then
+			echo "  NOTE: stranded threads are NOT repliable. Resolve them instead:"
+			echo "        scripts/cr/resolve-stranded.sh $PR"
+		fi
 		echo ""
 		printf '%-22s %-42s %s\n' "STATE" "PATH:LINE" "EXCERPT"
 		printf '%s\n' "$RECORDS" | jq -r '.[] | "\(.reply_state)\t\(.path):\(.line)\t\(.excerpt)"' |

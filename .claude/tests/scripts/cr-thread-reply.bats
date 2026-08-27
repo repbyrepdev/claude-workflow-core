@@ -125,6 +125,42 @@ _two_threads() {
 	[ "$(printf '%s' "$output" | jq -r '.threads[] | select(.id=="T_rep") | .reply_state')" = "replied-awaiting-CR" ]
 }
 
+@test "a STRANDED thread gets its own bucket, not 'unaddressed'" {
+	# isResolved=false + isOutdated=true. Bucketed as `unaddressed`, the stage
+	# held and told the operator to REPLY — while this script's header, the
+	# merge gate and the gate deny text all say a stranded thread is the ONE
+	# case where manual resolution IS correct, via resolve-stranded.sh. Wrong
+	# remedy, and the same stall-with-no-defined-action the stage removes.
+	_stub_gh '[{"id":"T_str","isResolved":false,"isOutdated":true,"path":"a.sh","line":1,
+	            "comments":{"nodes":[{"author":{"login":"coderabbitai"},"body":"old finding"}]}}]'
+	_run_tr 7 --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.stranded')" = "1" ]
+	[ "$(printf '%s' "$output" | jq -r '.unaddressed')" = "0" ]
+	[ "$(printf '%s' "$output" | jq -r '.threads[0].reply_state')" = "stranded" ]
+	# ...and --count must not hold the stage on it, since replying is not the
+	# remedy.
+	_run_tr 7 --count
+	[ "$status" -eq 0 ]
+	[ "$output" = "0" ]
+}
+
+@test "--list names resolve-stranded.sh when a stranded thread exists" {
+	# A bucket the operator cannot act on is as bad as no bucket. The list
+	# must point at the right tool.
+	_stub_gh '[{"id":"T_str","isResolved":false,"isOutdated":true,"path":"a.sh","line":1,
+	            "comments":{"nodes":[{"author":{"login":"coderabbitai"},"body":"old finding"}]}}]'
+	_run_tr 7 --list
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*resolve-stranded.sh*) ;;
+	*)
+		echo "expected the stranded remedy to be named; got: $output"
+		return 1
+		;;
+	esac
+}
+
 @test "--count reports UNADDRESSED only, not total unresolved" {
 	# The stage advances on unaddressed==0. If --count returned total
 	# unresolved, a PR whose threads were all answered would never advance.
