@@ -73,10 +73,35 @@ set -u
 # shellcheck disable=SC2089,SC2090
 CR_THREAD_HUMAN_REPLY_COUNT_JQ='(((.comments.nodes // []) | length) as $n | if $n < 2 then 0 else (((.comments.nodes // []) | last | .author.login) // "") as $who | if ($who == "") then 0 elif ($who | test("^coderabbit(ai)?(\\[bot\\])?$"; "i")) then 0 else 1 end end)'
 
-# Deliberately the ONLY export. Boolean convenience forms
-# (CR_THREAD_IS_REPLIED / _IS_UNADDRESSED) were defined here and used by
-# neither consumer — unused API on a shared lib is the same dead surface that
-# got removed from _lib/bats-assertion-check.sh earlier. Both call sites read
-# this fragment and apply their own comparison, which is one concept, not two.
+# The OTHER half of the same agreement: which threads are even in scope.
+#
+# The reply PREDICATE above was shared from the start; the POPULATION was
+# not, and the two consumers had already drifted — the stage matched the
+# ANCHORED form while the gate matched the substring `test("coderabbit"; "i")`
+# in three separate places. So a human login merely CONTAINING "coderabbit"
+# ("coderabbit-fan") opened a thread that the gate counted as a CR finding and
+# the stage did not, which is the stage-vs-gate disagreement this file exists
+# to make impossible. Copying the anchored pattern into the second file would
+# have fixed today's drift and left tomorrow's in place.
+#
+# Given a thread node as input, emits true when comment 0 — the finding
+# itself — is CodeRabbit's.
+#
+# Anchored for the same reason as the bot match above, and a missing or empty
+# login is NOT CodeRabbit: an unidentifiable author is a human thread, which
+# fails toward asking a person rather than toward silently dropping it from
+# both the stage's work-list and the gate's block-list.
+# shellcheck disable=SC2089,SC2090
+CR_THREAD_IS_CR_AUTHORED_JQ='((((.comments.nodes // [])[0].author.login) // "") | test("^coderabbit(ai)?(\\[bot\\])?$"; "i"))'
+
+# Deliberately the only two exports, and they are two because they answer two
+# questions — WHICH threads (population) and ANSWERED YET (predicate). Boolean
+# convenience forms (CR_THREAD_IS_REPLIED / _IS_UNADDRESSED) were defined here
+# and used by neither consumer — unused API on a shared lib is the same dead
+# surface that got removed from _lib/bats-assertion-check.sh earlier. Both call
+# sites read the reply fragment and apply their own comparison, which is one
+# concept, not two.
 # shellcheck disable=SC2090
 export CR_THREAD_HUMAN_REPLY_COUNT_JQ
+# shellcheck disable=SC2090
+export CR_THREAD_IS_CR_AUTHORED_JQ

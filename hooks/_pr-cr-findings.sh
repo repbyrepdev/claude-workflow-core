@@ -175,7 +175,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	PAGE_NODES=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
-		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select('"$CR_THREAD_IS_CR_AUTHORED_JQ"')
 		| select('"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' == 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:400])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_NODES" ]; then
@@ -189,7 +189,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	PAGE_REPLIED=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
-		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select('"$CR_THREAD_IS_CR_AUTHORED_JQ"')
 		| select('"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' > 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id}]' 2>/dev/null || true)
 	if [ -z "$PAGE_REPLIED" ]; then
@@ -202,7 +202,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	PAGE_STRANDED=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
 		| select(.isResolved == false)
 		| select(.isOutdated == true)
-		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select('"$CR_THREAD_IS_CR_AUTHORED_JQ"')
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:200])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_STRANDED" ]; then
 		echo "ERROR: stranded-thread jq-parse failed on page $PAGE" >&2

@@ -125,35 +125,163 @@ _count() { # $1 = thread node JSON
 	}
 }
 
-@test "BOTH consumers use the shared fragment, not a private copy" {
-	# The point of the SSOT. If either re-inlines its own `[.comments.nodes[1:]`
-	# filter, the two definitions can drift apart again silently.
+##
+## Agreement between the two consumers, checked by RUNNING them.
+##
+## These were grep-over-source tests: they asserted that each file MENTIONED
+## the shared symbol. That is satisfied by a comment. It cannot see a consumer
+## that sources the lib, names the fragment, and then applies its own filter
+## first — which is what had actually happened to the POPULATION half, where
+## the gate matched the substring "coderabbit" while the stage matched the
+## anchored form. The property worth pinning is not "the text appears" but
+## "the two answer the same".
+##
+## So: one fixture, both consumers, assert the classification agrees.
+##
+
+# The rebuttal sequence — the case that made the predicate positional. Reused
+# by both consumers below so neither can be right about a different input.
+_rebuttal_thread() {
+	cat <<-'J'
+		[{"id":"T_reb","isResolved":false,"isOutdated":false,"path":"a.sh","line":1,
+		  "comments":{"nodes":[
+		    {"author":{"login":"coderabbitai"},"path":"a.sh","line":1,"body":"finding"},
+		    {"author":{"login":"someone"},"path":"a.sh","line":1,"body":"fixed in abc123"},
+		    {"author":{"login":"coderabbitai"},"path":"a.sh","line":1,"body":"No — still broken"}]}}]
+	J
+}
+
+_agreement_tmp() {
+	AGREE_TMP=$(mktemp -d -t crthreadagree.XXXXXX) || return 1
+	mkdir -p "$AGREE_TMP/bin"
+}
+
+_agreement_cleanup() {
+	case "${AGREE_TMP:-}" in
+	*/crthreadagree.*) rm -rf "$AGREE_TMP" ;;
+	esac
+}
+
+@test "STAGE and GATE agree on a CR rebuttal: both say unaddressed" {
+	# CR rejected the evidence, so the thread is open again. If the stage read
+	# it as answered while the gate still blocked, the cycle would advance to a
+	# merge that could not happen — with nothing naming the disagreement.
+	_agreement_tmp || return 1
+	printf '%s' "$(_rebuttal_thread)" >"$AGREE_TMP/nodes.json"
+
+	# --- the GATE (hooks/_pr-cr-findings.sh), via its own test harness ---
+	jq -n --argjson n "$(_rebuttal_thread)" \
+		'{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$n}}}}}' \
+		>"$AGREE_TMP/threads.json"
+	run env CR_TEST_MODE=1 CR_TEST_HEAD=abc123 CR_TEST_OWNER=o CR_TEST_REPO=r \
+		CR_TEST_THREADS_FILE="$AGREE_TMP/threads.json" \
+		bash "$PLUGIN/hooks/_pr-cr-findings.sh" 1
+	local gate_out=$output gate_status=$status
+	case "$gate_out" in
+	*"Unresolved current threads: 1 (unaddressed"*) ;;
+	*)
+		_agreement_cleanup
+		echo "GATE did not count the rebuttal as unaddressed (status=$gate_status): $gate_out"
+		return 1
+		;;
+	esac
+
+	# --- the STAGE (scripts/cr/thread-reply.sh), via a PATH-stubbed gh ---
+	cat >"$AGREE_TMP/bin/gh" <<-'STUB'
+		#!/bin/bash
+		case "$*" in
+		*"repo view"*) printf 'o/r\n'; exit 0 ;;
+		*reviewThreads*)
+			printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":%s}}}}}\n' "$(cat "$NODES_FILE")"
+			exit 0
+			;;
+		esac
+		printf '{}\n'
+	STUB
+	chmod +x "$AGREE_TMP/bin/gh"
+	run env PATH="$AGREE_TMP/bin:$PATH" NODES_FILE="$AGREE_TMP/nodes.json" \
+		"$PLUGIN/scripts/cr/thread-reply.sh" 7 --json
+	local stage_out=$output stage_status=$status
+	_agreement_cleanup
+	[ "$stage_status" -eq 0 ] || {
+		echo "STAGE exited $stage_status: $stage_out"
+		return 1
+	}
+	[ "$(printf '%s' "$stage_out" | jq -r '.unaddressed')" = "1" ] || {
+		echo "STAGE disagreed with the GATE on the rebuttal: $stage_out"
+		return 1
+	}
+}
+
+@test "STAGE and GATE agree a human-opened thread is not a CR finding" {
+	# The POPULATION half of the same agreement, and the half that HAD drifted:
+	# the gate's substring match counted "coderabbit-fan" as CodeRabbit, the
+	# stage's anchored match did not. Both now read the shared fragment.
+	_agreement_tmp || return 1
+	local human='[{"id":"T_h","isResolved":false,"isOutdated":false,"path":"a.sh","line":1,
+	  "comments":{"nodes":[{"author":{"login":"coderabbit-fan"},"path":"a.sh","line":1,"body":"a human question"}]}}]'
+	printf '%s' "$human" >"$AGREE_TMP/nodes.json"
+
+	jq -n --argjson n "$human" \
+		'{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$n}}}}}' \
+		>"$AGREE_TMP/threads.json"
+	run env CR_TEST_MODE=1 CR_TEST_HEAD=abc123 CR_TEST_OWNER=o CR_TEST_REPO=r \
+		CR_TEST_THREADS_FILE="$AGREE_TMP/threads.json" \
+		bash "$PLUGIN/hooks/_pr-cr-findings.sh" 1
+	local gate_out=$output
+	case "$gate_out" in
+	*"Unresolved current threads: 0 (unaddressed"*) ;;
+	*)
+		_agreement_cleanup
+		echo "GATE counted a human-opened thread as a CR finding: $gate_out"
+		return 1
+		;;
+	esac
+
+	cat >"$AGREE_TMP/bin/gh" <<-'STUB'
+		#!/bin/bash
+		case "$*" in
+		*"repo view"*) printf 'o/r\n'; exit 0 ;;
+		*reviewThreads*)
+			printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":%s}}}}}\n' "$(cat "$NODES_FILE")"
+			exit 0
+			;;
+		esac
+		printf '{}\n'
+	STUB
+	chmod +x "$AGREE_TMP/bin/gh"
+	run env PATH="$AGREE_TMP/bin:$PATH" NODES_FILE="$AGREE_TMP/nodes.json" \
+		"$PLUGIN/scripts/cr/thread-reply.sh" 7 --json
+	local stage_out=$output stage_status=$status
+	_agreement_cleanup
+	[ "$stage_status" -eq 0 ] || {
+		echo "STAGE exited $stage_status: $stage_out"
+		return 1
+	}
+	[ "$(printf '%s' "$stage_out" | jq -r '.unaddressed')" = "0" ] || {
+		echo "STAGE counted a human-opened thread as a CR finding: $stage_out"
+		return 1
+	}
+}
+
+@test "neither consumer re-inlined a private copy of the predicate" {
+	# Kept as a cheap tripwire ALONGSIDE the runtime agreement above, not
+	# instead of it: it catches a re-inlined copy on a code path the fixtures
+	# above happen not to reach. On its own it proved nothing — that is why the
+	# two tests it replaced are now runtime tests.
 	cd "$PLUGIN" || return 1
 	local f
 	for f in scripts/cr/thread-reply.sh hooks/_pr-cr-findings.sh; do
-		run grep -c 'CR_THREAD_HUMAN_REPLY_COUNT_JQ' "$f"
-		[ "$output" -ge 1 ] || {
-			echo "$f no longer reads the shared predicate"
-			return 1
-		}
-		# A re-inlined copy would reintroduce this literal shape.
 		run bash -c "grep -c 'comments.nodes\[1:\]' '$f' || true"
 		[ "$output" = "0" ] || {
 			echo "$f re-inlined its own reply predicate — the two can now drift"
 			return 1
 		}
-	done
-}
-
-@test "both consumers SOURCE the lib, so the fragment is always defined" {
-	# Reading the variable without sourcing would silently expand to empty,
-	# turning `select(<empty> == 0)` into a jq syntax error at runtime.
-	cd "$PLUGIN" || return 1
-	local f
-	for f in scripts/cr/thread-reply.sh hooks/_pr-cr-findings.sh; do
-		run grep -c 'cr-thread-state.sh' "$f"
-		[ "$output" -ge 1 ] || {
-			echo "$f uses the predicate without sourcing its SSOT"
+		# The old unanchored author match, which is how the population halves
+		# came apart in the first place.
+		run bash -c "grep -c 'author.login | test(\"coderabbit\"; \"i\")' '$f' || true"
+		[ "$output" = "0" ] || {
+			echo "$f re-inlined the UNANCHORED author match — populations can drift again"
 			return 1
 		}
 	done

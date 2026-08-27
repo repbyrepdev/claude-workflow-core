@@ -200,7 +200,15 @@ EOF
 @test "read-only coderabbit subcommands stay free (#2548)" {
 	# --version/auth spend no budget and write no ledger row, so blocking
 	# them would be friction with no protective value.
+	# Status FIRST, then the absence check. An allow test that only looks for
+	# the absence of a deny string passes when the guard crashed and printed
+	# nothing at all — it would report "read-only subcommands stay free" about
+	# a hook that had stopped making any decision whatsoever.
 	_run_guard "coderabbit --version"
+	[ "$status" -eq 0 ] || {
+		echo "guard exited $status on a read-only subcommand: $output"
+		return 1
+	}
 	case "$output" in
 	*'"permissionDecision":"deny"'*)
 		echo "a read-only subcommand was blocked: $output"
@@ -208,6 +216,10 @@ EOF
 		;;
 	esac
 	_run_guard "coderabbit auth status"
+	[ "$status" -eq 0 ] || {
+		echo "guard exited $status on auth status: $output"
+		return 1
+	}
 	case "$output" in
 	*'"permissionDecision":"deny"'*)
 		echo "auth status was blocked: $output"
@@ -216,14 +228,39 @@ EOF
 	esac
 }
 
+@test "a global flag before the subcommand does not slip the guard (#2548)" {
+	# `coderabbit --plain review` spends exactly the same budget and writes
+	# exactly the same absent ledger row. The pattern used to require `review`
+	# immediately after the binary, so one flag walked past the guard that
+	# exists because six reviews were already lost that way.
+	_run_guard "coderabbit --plain review --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a flag-first invocation slipped the guard: $output"
+		return 1
+	}
+	# Separated option argument: the value sits between the flag and `review`.
+	_run_guard "coderabbit -c cfg.yaml review --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a separated option argument slipped the guard: $output"
+		return 1
+	}
+	# Still names the ledger, so the operator knows which record went missing
+	# rather than only that something was refused.
+	[[ $output == *"cr-local-review.jsonl"* ]]
+}
+
 @test "coderabbit deny survives wrapper and env prefixes (#2548)" {
 	# Same evasion shapes the #2396 fix closed for the other verbs.
 	_run_guard "{ coderabbit review --base main; }"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]] || {
 		echo "brace-grouped invocation slipped the guard"
 		return 1
 	}
 	_run_guard "bash -lc 'coderabbit review --base main'"
+	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]] || {
 		echo "bash -lc wrapped invocation slipped the guard"
 		return 1

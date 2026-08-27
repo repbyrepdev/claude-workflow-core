@@ -150,6 +150,17 @@ _call() {
 	                         {"name":"verify","state":"SUCCESS","description":""}]'
 	_call
 	[ "$status" -eq 2 ]
+	# The REASON, not just the refusal. This file has a dozen independent rc-2
+	# paths; a status-only assertion here is satisfied by any of them, so the
+	# test would stay green while the hollow-check branch stopped working and
+	# something unrelated (an unreadable SSOT, a broken stub) refused instead.
+	case "$output" in
+	*"without running"*) ;;
+	*)
+		echo "expected the hollow-check refusal for a paused review; got: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "a SKIPPED required check is NOT green" {
@@ -204,6 +215,15 @@ _call() {
 	                         {"name":"verify","state":"SUCCESS","description":""}]'
 	_call
 	[ "$status" -eq 2 ]
+	# Names the check AND why it could not be read, so the operator is not
+	# left comparing an rc against a list of a dozen rc-2 paths.
+	case "$output" in
+	*"CodeRabbit=unreadable-or-running"*) ;;
+	*)
+		echo "rc 2, but not for the in-progress CodeRabbit check; got: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "CR findings delegate to the FOUR-SOURCE helper, not a thread count" {
@@ -237,6 +257,13 @@ _call() {
 		MERGE_GATE_AUTO=1 \
 		bash -c ". '$LIB'; merge_auto_ok 42"
 	[ "$status" -eq 2 ]
+	case "$output" in
+	*"not found or not executable"*) ;;
+	*)
+		echo "rc 2, but not because the helper was missing; got: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "mergeStateStatus other than CLEAN holds the gate" {
@@ -271,6 +298,13 @@ _call() {
 	export MERGE_GATE_AUTO
 	_call
 	[ "$status" -eq 1 ]
+	case "$output" in
+	*opt-in*) ;;
+	*)
+		echo "rc 1, but not for the disabled-mode reason; got: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "a draft PR is never auto-merged" {
@@ -314,6 +348,13 @@ _call() {
 		MERGE_GATE_AUTO=1 \
 		bash -c ". '$LIB'; merge_auto_ok 42"
 	[ "$status" -eq 2 ]
+	case "$output" in
+	*"SSOT unreadable"*) ;;
+	*)
+		echo "rc 2, but not because the SSOT was unreadable; got: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "no PR number is rc 2" {
@@ -321,4 +362,11 @@ _call() {
 	run env PATH="$TEST_TMP/bin:$PATH" MERGE_GATE_AUTO=1 \
 		bash -c ". '$LIB'; merge_auto_ok"
 	[ "$status" -eq 2 ]
+	case "$output" in
+	*"no PR number"*) ;;
+	*)
+		echo "rc 2, but not for the missing PR number; got: $output"
+		return 1
+		;;
+	esac
 }

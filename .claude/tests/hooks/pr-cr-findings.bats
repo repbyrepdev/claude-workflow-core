@@ -155,6 +155,10 @@ _run_gate_threads() {
 }
 
 @test "#2548: an UNADDRESSED thread blocks the gate" {
+	# Status AND classification. The gate has several independent reasons to
+	# block (walkthrough parse failing closed, a GraphQL read error), so a
+	# status-only assertion here passed on a run that never counted the thread
+	# at all — the test would stay green while the thread source was broken.
 	_threads_fixture '[{"id":"T1","isResolved":false,"isOutdated":false,
 	  "comments":{"nodes":[{"author":{"login":"coderabbitai"},"path":"a.sh","line":1,"body":"finding"}]}}]'
 	_run_gate_threads
@@ -162,6 +166,13 @@ _run_gate_threads() {
 		echo "an unaddressed thread did not block: $output"
 		return 1
 	}
+	case "$output" in
+	*"Unresolved current threads: 1 (unaddressed"*) ;;
+	*)
+		echo "blocked, but NOT as one unaddressed thread: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "#2548: a REPLIED thread does NOT block" {
@@ -176,6 +187,45 @@ _run_gate_threads() {
 		echo "a replied-awaiting-CR thread still blocked: $output"
 		return 1
 	}
+	# It passed because it was SEEN and classified, not because the thread
+	# source dropped it. Those two produce the same exit status and opposite
+	# meanings: one is the feature, the other is the gate going blind.
+	case "$output" in
+	*"Unresolved current threads: 0 (unaddressed"*) ;;
+	*)
+		echo "passed, but not with zero unaddressed: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"replied-awaiting-CR: 1"*) ;;
+	*)
+		echo "the thread was not counted as replied — the gate may not have seen it: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "#2548: a human-opened thread is not a CR finding (shared population)" {
+	# The population predicate, from the gate's side. The stage and the gate
+	# read CR_THREAD_IS_CR_AUTHORED_JQ from the same lib; before it was shared
+	# the gate matched the SUBSTRING "coderabbit", so a human whose login
+	# merely contains it opened a thread the gate counted and the stage did
+	# not — the exact stage-vs-gate disagreement the SSOT exists to prevent.
+	_threads_fixture '[{"id":"T1","isResolved":false,"isOutdated":false,
+	  "comments":{"nodes":[{"author":{"login":"coderabbit-fan"},"path":"a.sh","line":1,"body":"a human question"}]}}]'
+	_run_gate_threads
+	[ "$status" -eq 0 ] || {
+		echo "a human-opened thread blocked the merge gate: $output"
+		return 1
+	}
+	case "$output" in
+	*"Unresolved current threads: 0 (unaddressed"*) ;;
+	*)
+		echo "a human-opened thread was counted as a CR finding: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "#2548: a replied thread is REPORTED even though it does not block" {

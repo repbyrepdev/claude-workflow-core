@@ -44,15 +44,21 @@ _guard_write() { # $1 = file_path (Write/Edit tool shape)
 }
 
 _denied() {
-	# The PreToolUse contract string, not just prose. `deny()` emits the
-	# decision and exits 0, so the exit status is never the signal — and a
-	# hook that CRASHED emits neither, which the prose-only form read as
-	# "allowed".
+	# BOTH halves of the PreToolUse contract: `deny()` emits the decision
+	# string AND exits 0. Asserting only the string let a hook that emitted a
+	# correct deny and then exited nonzero — a broken hook Claude Code treats
+	# as an error rather than a refusal — pass as a working guard.
 	case "$output" in
-	*'"permissionDecision":"deny"'*) return 0 ;;
+	*'"permissionDecision":"deny"'*) ;;
+	*)
+		echo "expected a deny DECISION; got: $output"
+		return 1
+		;;
 	esac
-	echo "expected a deny DECISION; got: $output"
-	return 1
+	[ "$status" -eq 0 ] || {
+		echo "deny must exit 0 (the JSON is the signal, not the status); got $status: $output"
+		return 1
+	}
 }
 
 _allowed() {

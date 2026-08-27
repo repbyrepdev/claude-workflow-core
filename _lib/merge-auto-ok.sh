@@ -234,7 +234,11 @@ merge_auto_ok() {
 	if [ -n "${MERGE_AUTO_FINDINGS_HELPER:-}" ]; then
 		findings_helper="$MERGE_AUTO_FINDINGS_HELPER"
 	else
-		local repo_root
+		# `c` declared local too: this file is SOURCED, so an undeclared loop
+		# variable is written into the caller's shell, where a `c` of its own
+		# would be silently overwritten from inside a function it only asked a
+		# yes/no question of.
+		local repo_root c
 		repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || repo_root=""
 		for c in "$repo_root/hooks/_pr-cr-findings.sh" "$repo_root/.claude/hooks/_pr-cr-findings.sh"; do
 			[ -x "$c" ] && findings_helper="$c" && break

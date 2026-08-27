@@ -190,11 +190,11 @@ _classify() {
 	jq -c '
 	  [ .[]
 	    | select(.isResolved == false)
-	    # CR-authored threads only, matching the population the MERGE GATE
-	    # scans (hooks/_pr-cr-findings.sh). Without this the stage counted
+	    # CR-authored threads only, from the SAME shared fragment the MERGE
+	    # GATE uses (hooks/_pr-cr-findings.sh). Without this the stage counted
 	    # human-opened review threads as CR findings, held the cycle on them,
 	    # and told the operator to reply with evidence to their own comment.
-	    | select(((.comments.nodes // [])[0].author.login // "") | test("^coderabbit(ai)?(\\[bot\\])?$"; "i"))
+	    | select( '"$CR_THREAD_IS_CR_AUTHORED_JQ"' )
 	    | . as $t
 	    | ($t.comments.nodes // []) as $c
 	    | ( '"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' ) as $human

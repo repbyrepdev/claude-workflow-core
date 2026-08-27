@@ -2792,8 +2792,14 @@ EOF
 		fi
 
 		local ctr_unaddressed ctr_replied
-		ctr_unaddressed=$(printf '%s' "$ctr_json" | jq -r '.unaddressed // "err"')
-		ctr_replied=$(printf '%s' "$ctr_json" | jq -r '.replied_awaiting_cr // "err"')
+		# rc captured rather than swallowed: the helper exiting 0 does not
+		# guarantee its stdout is JSON, and under `set -e` a jq parse failure
+		# killed cmd_next inside the command substitution — BEFORE the guard
+		# right below could name the cause. The unreadable-count refusal exists
+		# precisely for this input; letting `set -e` fire first replaced a
+		# stated reason with a bare nonzero exit.
+		ctr_unaddressed=$(printf '%s' "$ctr_json" | jq -r '.unaddressed // "err"' 2>/dev/null) || ctr_unaddressed="err"
+		ctr_replied=$(printf '%s' "$ctr_json" | jq -r '.replied_awaiting_cr // "err"' 2>/dev/null) || ctr_replied="err"
 		case "$ctr_unaddressed" in
 		'' | err | null)
 			echo "ship-pr-cycle: cr-thread-reply — unreadable unaddressed count; refusing to advance" >&2

@@ -222,6 +222,17 @@ _two_threads() {
 	_stub_gh "$(_two_threads)"
 	_run_tr 7 --thread T_un --class verified-fixed --body "fixed"
 	[ "$status" -ne 0 ]
+	# The reason, not just a nonzero exit. This script's `cd` wrapper exits 9,
+	# an absent lib exits 2, and a bash syntax error exits 2 as well — all of
+	# which satisfy "nonzero and posted nothing" while proving nothing about
+	# the evidence gate this test is named for.
+	case "$output" in
+	*"requires --path"*) ;;
+	*)
+		echo "refused, but not for the missing --path; got: $output"
+		return 1
+		;;
+	esac
 	run grep -c 'addPullRequestReviewThreadReply' "$GH_CALLS"
 	[ "$output" = "0" ]
 }
@@ -247,6 +258,15 @@ _two_threads() {
 	_stub_gh "$(_two_threads)"
 	_run_tr 7 --thread T_un --class whatever --body "x"
 	[ "$status" -ne 0 ]
+	# Naming the four valid classes is the whole value of this refusal — a
+	# bare nonzero exit leaves the operator guessing which word was wrong.
+	case "$output" in
+	*"--class must be one of"*) ;;
+	*)
+		echo "refused, but without naming the valid classes; got: $output"
+		return 1
+		;;
+	esac
 	run grep -c 'addPullRequestReviewThreadReply' "$GH_CALLS"
 	[ "$output" = "0" ]
 }

@@ -320,7 +320,24 @@ fi
 #
 # Only `review` is blocked. Read-only subcommands (--version, auth, --help)
 # spend no budget and write no ledger row, so they stay free.
-cr_pattern="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}coderabbit[[:space:]]+review${CMD_SEGMENT_END}"
+#
+# GLOBAL FLAGS BEFORE THE SUBCOMMAND: `coderabbit --plain review` and
+# `coderabbit -c cfg.yaml review` spend exactly the same budget and write
+# exactly the same absent ledger row, and the earlier pattern — which required
+# `review` to sit immediately after the binary — matched neither. A guard that
+# is one flag away from being walked past is the advisory gate this block was
+# written to replace, so the flags are absorbed:
+#
+#   ((-{1,2}[A-Za-z0-9][A-Za-z0-9-]*(=[^[:space:]]+)?|<value>)[[:space:]]+)*
+#
+# A bare value is accepted between flags because a separated option argument
+# (`-c cfg.yaml`) is one, and this hook cannot know which flags take one. The
+# cost of that generosity is that a DIFFERENT subcommand reached past a flag —
+# `coderabbit --plain auth review-something` — could match. That direction is
+# a false BLOCK with a stated override, not a false allow, which is the side a
+# fail-closed gate errs on.
+cr_flag_run='((-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(=[^[:space:]]+)?|[A-Za-z0-9._/-]+)[[:space:]]+)*'
+cr_pattern="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}coderabbit[[:space:]]+${cr_flag_run}review${CMD_SEGMENT_END}"
 cr_matched=0
 if printf '%s' "$CMD" | grep -qE "$cr_pattern"; then
 	cr_matched=1

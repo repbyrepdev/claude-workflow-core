@@ -373,4 +373,42 @@ AT
 	run "$SCRIPT" next
 	[ "$status" -ne 0 ]
 	[ "$(_cur_stage)" = cr-thread-reply ]
+	# Held for THIS reason. `next` has many ways to exit nonzero without
+	# leaving the stage — a resolve failure, a hook-ack block, an unrelated
+	# `set -e` abort — and every one of them satisfies the two assertions
+	# above. Naming the count is what distinguishes the guard doing its job
+	# from the script falling over in front of it.
+	case "$output" in
+	*"unreadable unaddressed count"*) ;;
+	*)
+		echo "held, but not on the unreadable count; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "cr-thread-reply refuses NON-JSON output with the same named reason (#2548)" {
+	# The `set -e` case: the helper exits 0 and prints prose. jq then failed
+	# INSIDE a command substitution, killing cmd_next before the guard below
+	# it could name the cause — so the operator got a bare nonzero exit for an
+	# input the script has a written diagnostic for.
+	_seed_stage cr-thread-reply
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		printf 'not json at all\n'
+		exit 0
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$status" -ne 0 ]
+	[ "$(_cur_stage)" = cr-thread-reply ]
+	case "$output" in
+	*"unreadable unaddressed count"*) ;;
+	*)
+		echo "non-JSON output did not reach the named guard; got: $output"
+		return 1
+		;;
+	esac
 }
