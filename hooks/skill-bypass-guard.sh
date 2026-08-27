@@ -294,4 +294,48 @@ Emergency override (user-facing — audit-logged): GH_SKILL_BYPASS_SKIP=1 bats <
 	deny "$BATS_DIRECTIVE"
 fi
 
+# coderabbit → scripts/cr/local-review.sh (#2548).
+#
+# This block existed for `git commit`, `gh pr create`, `gh pr merge` and `bats`
+# — and not for `coderabbit`, which is how six Phase-2 reviews on PR #2635 were
+# spent outside the ledger. The raw CLI writes NEITHER of the two records the
+# cycle depends on:
+#
+#   - .claude/logs/cr-local-review.jsonl — the per-SHA ledger that
+#     pre-push-pipeline-gate reads. Without a row, the gate correctly says
+#     "no review has ever run" for a SHA that was in fact reviewed six times.
+#   - the rolling budget log via cr-log-invocation.sh, which is only called
+#     BY the wrapper. So `rate-budget.sh --check` reported 0/10 used while
+#     the real spend was ~7 of the prepaid hourly bucket.
+#
+# Neither failure is visible at the time — you get a review, it just does not
+# count. That is exactly the "advisory gate that can be walked past" class
+# epic #2544 exists to close, so it is closed the same way as the others.
+#
+# Only `review` is blocked. Read-only subcommands (--version, auth, --help)
+# spend no budget and write no ledger row, so they stay free.
+cr_pattern="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}coderabbit[[:space:]]+review${CMD_SEGMENT_END}"
+cr_matched=0
+if printf '%s' "$CMD" | grep -qE "$cr_pattern"; then
+	cr_matched=1
+elif [ -n "$WRAPPED_CMD" ] && printf '%s' "$WRAPPED_CMD" | grep -qE "$cr_pattern"; then
+	cr_matched=1
+fi
+# The wrapper itself runs `coderabbit review` — let it through, or the guard
+# would block the very command it redirects to.
+if [ "$cr_matched" = "1" ] && [ "${SKILL_WRAPPER:-0}" != "1" ]; then
+	CMD_PREVIEW=$(printf '%s' "$CMD" | head -c 120)
+	CR_DIRECTIVE="BLOCKED: raw \`coderabbit review\` — bypasses the per-SHA ledger AND the budget log.
+Command: ${CMD_PREVIEW}...
+Why blocked: the raw CLI writes neither .claude/logs/cr-local-review.jsonl (which pre-push-pipeline-gate reads to confirm Phase 2 ran for this SHA) nor the rolling budget log (written by cr-log-invocation.sh, which only the wrapper calls). You still get a review — it just does not count, and the spend is invisible. Six reviews were lost this way on PR #2635.
+
+To proceed:
+  1. scripts/cr/local-review.sh [--base main]
+       Budget preflight, Phase-1 convergence check, HEAD-freshness check,
+       then the same review — ledgered and budget-logged.
+
+Emergency override (user-facing — audit-logged): GH_SKILL_BYPASS_SKIP=1 coderabbit review ..."
+	deny "$CR_DIRECTIVE"
+fi
+
 exit 0

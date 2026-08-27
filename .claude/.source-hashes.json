@@ -134,7 +134,7 @@
     "hooks/session-start-stale-pin.sh": "2d4a0fdd27b8f5cbf4b77aa881351729d3471767e4e41479939b75a34da2e9be",
     "hooks/ship-cycle-director-gate.sh": "93c1fe6ec042ebdb67b9ce890deeb75978141cc0f5245d3b39e4a7f8b7da4411",
     "hooks/ship-cycle-guard.sh": "289547c345013177e63457dae77910810a4e7e006e809d3e7aef9b199d0213b2",
-    "hooks/skill-bypass-guard.sh": "f470eb19af261d81cc5cf3fd27d3712d94bf03ca7396c598a987918e837941ec",
+    "hooks/skill-bypass-guard.sh": "d3dfc9125d6283e523c3725f6f1652cf923fb46246b4344e8c9026639006d08b",
     "hooks/skip-env-approval-gate.sh": "00603f0ba1cda5f0e78e151a0c7f78eb87a8ad56dcec09622de611d15afd9e46",
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",

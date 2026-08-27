@@ -2590,8 +2590,8 @@ EOF
 			return 2
 		fi
 		if [ "$unresolved_count" = "0" ]; then
-			_set_stage "cr-conflict-check"
-			echo "→ no unresolved CR threads; advanced to cr-conflict-check"
+			_set_stage "cr-thread-reply"
+			echo "→ no unresolved CR threads; advanced to cr-thread-reply"
 			return 0
 		fi
 		echo "  $unresolved_count unresolved CR thread(s) — advancing to cr-autofix"
@@ -2637,8 +2637,8 @@ EOF
 			return "$cra_unrl_rc"
 		fi
 		if [ "$cra_unresolved" = "0" ]; then
-			_set_stage "cr-conflict-check"
-			echo "→ no unresolved CR threads (resolved without a commit); advanced to cr-conflict-check"
+			_set_stage "cr-thread-reply"
+			echo "→ no unresolved CR threads (resolved without a commit); advanced to cr-thread-reply"
 			return 0
 		fi
 		# Capture _get_state_field rc explicitly — it now returns 2 on

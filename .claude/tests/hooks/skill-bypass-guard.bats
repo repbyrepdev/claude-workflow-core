@@ -144,3 +144,88 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
+
+@test "raw 'coderabbit review' is blocked (#2548)" {
+	# This guard covered `git commit`, `gh pr create`, `gh pr merge` and `bats`
+	# — and not `coderabbit`. Six Phase-2 reviews on PR #2635 were spent
+	# outside the ledger because of it: the raw CLI writes neither
+	# cr-local-review.jsonl (which pre-push-pipeline-gate reads) nor the
+	# budget log (written only by the wrapper's cr-log-invocation call). You
+	# get a review; it just does not count, and the spend is invisible.
+	_run_guard "coderabbit review --agent -t committed --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
+	case "$output" in
+	*"local-review.sh"*) ;;
+	*)
+		echo "expected the deny to name the wrapper; got: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*ledger* | *"cr-local-review.jsonl"*) ;;
+	*)
+		echo "expected the deny to say WHY (the ledger); got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "the local-review wrapper itself is NOT blocked (#2548)" {
+	# The wrapper runs `coderabbit review` internally. If the guard matched
+	# that, it would block the very command it redirects to — an infinite
+	# redirect with no way through.
+	_run_guard "scripts/cr/local-review.sh --base main"
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "the wrapper was blocked; the guard would have no exit: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "SKILL_WRAPPER=1 lets the wrapper's own coderabbit call through (#2548)" {
+	# local-review.sh exports SKILL_WRAPPER=1 before invoking the CLI.
+	_run_guard "SKILL_WRAPPER=1 coderabbit review --agent -t committed"
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "SKILL_WRAPPER=1 did not exempt the wrapper's call: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "read-only coderabbit subcommands stay free (#2548)" {
+	# --version/auth spend no budget and write no ledger row, so blocking
+	# them would be friction with no protective value.
+	_run_guard "coderabbit --version"
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "a read-only subcommand was blocked: $output"
+		return 1
+		;;
+	esac
+	_run_guard "coderabbit auth status"
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "auth status was blocked: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "coderabbit deny survives wrapper and env prefixes (#2548)" {
+	# Same evasion shapes the #2396 fix closed for the other verbs.
+	_run_guard "{ coderabbit review --base main; }"
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "brace-grouped invocation slipped the guard"
+		return 1
+	}
+	_run_guard "bash -lc 'coderabbit review --base main'"
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "bash -lc wrapped invocation slipped the guard"
+		return 1
+	}
+}
