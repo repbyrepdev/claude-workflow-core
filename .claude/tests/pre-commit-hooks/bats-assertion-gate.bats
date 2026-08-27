@@ -591,3 +591,36 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 		;;
 	esac
 }
+
+@test "a terminator COMMENTED OUT after a ; does not count" {
+	# bash opens a comment at any word boundary, not only after whitespace —
+	# `;`, `&`, `|`, `(`, `)`, `<`, `>` all end the preceding word. Checking
+	# space/tab alone left `echo ignored;# return 1` visible, so a
+	# commented-out terminator satisfied the brace-group check and a group
+	# that can never fail was accepted.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo ignored;# return 1\n\t}\n\ttrue\n}\n')"
+	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+	case "$output" in
+	3:*) ;;
+	*)
+		echo "expected the unguarded assertion on line 3; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a REAL terminator after a ; still counts" {
+	# The counterpart: word-boundary detection must not swallow live code.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo why; return 1\n\t}\n\ttrue\n}\n')"
+	[ -z "$output" ] || {
+		echo "a valid guard body was reported: $output"
+		return 1
+	}
+}
+
+@test "a guard commented out after ; on the assertion line is not a guard" {
+	# Same rule applied to guard_pos rather than the brace-group body:
+	# `[[ ... ]];# || return 1` has no live guard at all.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]];# || return 1\n\ttrue\n}\n')"
+	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+}

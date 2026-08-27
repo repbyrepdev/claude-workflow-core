@@ -136,7 +136,13 @@ bats_assertion_scan() {
 				if (c != "#") continue
 				if (i == 1) return ""
 				prev = substr(code, i - 1, 1)
-				if (prev == " " || prev == "\t") return substr(code, 1, i - 1)
+				# A `#` opens a comment at any WORD boundary, not only after
+				# whitespace: `;`, `&`, `|`, `(`, `)`, `<` and `>` all end the
+				# preceding word. Checking space/tab alone left
+				# `echo ignored;# return 1` visible, so the COMMENTED-OUT
+				# terminator satisfied the brace-group check and a group that
+				# can never fail was accepted.
+				if (index(" \t;&|()<>", prev) > 0) return substr(code, 1, i - 1)
 			}
 			return code
 		}
