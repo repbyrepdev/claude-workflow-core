@@ -302,6 +302,16 @@ _two_threads() {
 		echo "a GraphQL error reported success: $output"
 		return 1
 	}
+	# Named, so a SILENT failure elsewhere (a missing lib, the cd wrapper, a
+	# syntax error) cannot satisfy a test whose whole subject is that the
+	# GraphQL error surfaced rather than being swallowed.
+	case "$output" in
+	*"graphql returned .errors"*) ;;
+	*)
+		echo "failed, but the GraphQL error was not the stated reason: $output"
+		return 1
+		;;
+	esac
 	case "$output" in
 	*0*)
 		# A bare "0" on stdout would be read by the stage as "nothing to do".

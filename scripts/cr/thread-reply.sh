@@ -127,6 +127,20 @@ done
 
 [ -n "$PR" ] || scm_fail "usage: $0 <pr-num> [--list|--count|--json] [--thread ID --class C --body TEXT]"
 
+# Reply-only options in a read mode are a MISTAKE, not a no-op. `--class
+# verified-fixed --body "..."` without `--thread` silently printed the list
+# and exited 0, which reads as "the reply was posted" — the one outcome this
+# script must never fake. Refuse instead, naming the missing flag.
+if [ "$MODE" != "reply" ]; then
+	_stray=""
+	[ "$DRY_RUN" = "1" ] && _stray="$_stray --dry-run"
+	[ -n "$CLASS" ] && _stray="$_stray --class"
+	[ -n "$BODY" ] && _stray="$_stray --body"
+	[ -n "$SUBJECT_PATH" ] && _stray="$_stray --path"
+	[ -z "$_stray" ] ||
+		scm_fail "reply-only option(s)$_stray given in --$MODE mode; add --thread <id> to post a reply, or drop them to read"
+fi
+
 # Separate stderr so a warning on the success path cannot pollute the value.
 TMPERR=$(mktemp) || scm_fail "mktemp failed"
 trap 'rm -f "$TMPERR"' EXIT

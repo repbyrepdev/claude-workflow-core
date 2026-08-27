@@ -149,8 +149,17 @@ merge_auto_ok() {
 		echo "required-checks SSOT unreadable ($ssot)"
 		return 2
 	}
-	local required
-	required=$(yq -r '.required[].check_name' "$ssot" 2>/dev/null) || required=""
+	# yq's rc captured separately from the empty-result test. Both are rc 2,
+	# but they send the operator to different places: a parse failure means
+	# the file is malformed or yq is missing, while an empty extraction means
+	# the file is fine and genuinely lists nothing. Collapsing them printed
+	# "listed no checks" about a file that lists plenty.
+	local required required_rc=0
+	required=$(yq -r '.required[].check_name' "$ssot" 2>/dev/null) || required_rc=$?
+	if [ "$required_rc" -ne 0 ]; then
+		echo "required-checks SSOT could not be parsed (yq rc=$required_rc on $ssot) — cannot determine what is required"
+		return 2
+	fi
 	[ -n "$required" ] || {
 		echo "required-checks SSOT listed no checks — refusing to call that green"
 		return 2

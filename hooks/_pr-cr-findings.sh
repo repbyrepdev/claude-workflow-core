@@ -109,6 +109,15 @@ else
 	exit 1
 fi
 
+# THREADS are paginated below; COMMENTS WITHIN A THREAD ARE NOT. The query
+# asks for comments(first:100), which is a bounded sample, not an exhaustive
+# result. Since the reply predicate reads the LAST comment, a thread with more
+# than 100 comments would be classified from its 100th rather than its real
+# last one — i.e. potentially read as lacking a human reply when one exists.
+# 100 is the GitHub per-page maximum, so lifting it means paginating comments
+# too; no CR thread observed has come within an order of magnitude. Stated
+# here rather than assumed, because the previous value was 1, which made
+# EVERY thread look unanswered and is exactly this bug at its extreme.
 UNRESOLVED="[]"
 REPLIED="[]" # (#2548) answered, awaiting CR — reported, never counted
 CURSOR=""

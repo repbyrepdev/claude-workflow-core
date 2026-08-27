@@ -21,11 +21,11 @@ set -uo pipefail
 # this header overstated it and phase-1 review caught that the guard let both
 # of its own cited incidents through by their real routes:
 #
-#   Inspected:  `> path`, `>> path`, `N> path`, `tee [-a] path`, and the
-#               Write/Edit tool's `file_path`.
-#   NOT parsed: cp, mv, install, ln, dd, `sed -i`, and any write performed
-#               inside a script this hook cannot see. Those are real gaps,
-#               listed so nobody assumes coverage that is not here.
+#   Inspected:  `> path`, `>> path`, `N> path`, `tee [-a] path`, `dd of=path`,
+#               and the Write/Edit tool's `file_path`.
+#   NOT parsed: cp, mv, install, ln, `sed -i`, and any write performed inside
+#               a script this hook cannot see. Those are real gaps, listed so
+#               nobody assumes coverage that is not here.
 #
 # WHAT IS REFUSED, of the shapes above:
 #   A. A write landing under `.claude/{scripts,hooks,_lib}/` INSIDE this repo
@@ -110,7 +110,14 @@ if [ -n "$CMD" ]; then
 	TEES=$(printf '%s\n' "$CMD" |
 		grep -oE '\btee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
 		sed -E 's/^tee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?//' || true)
-	TARGETS=$(printf '%s\n%s\n%s\n' "$TARGETS" "$REDIRECTS" "$TEES")
+	# `dd of=path` writes through a symlink exactly like a redirect does, and
+	# it was in the documented-gaps list purely because nobody had written the
+	# two lines. cp/mv/install/ln/sed -i stay listed as gaps: each needs
+	# argument parsing this hook has no business attempting.
+	DDS=$(printf '%s\n' "$CMD" |
+		grep -oE '\bdd[[:space:]]+([^|;&]*[[:space:]])?of=["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
+		sed -E 's/^.*of=["'"'"']?//' || true)
+	TARGETS=$(printf '%s\n%s\n%s\n%s\n' "$TARGETS" "$REDIRECTS" "$TEES" "$DDS")
 fi
 [ -n "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ] || exit 0
 
@@ -141,6 +148,21 @@ Bypass (audit-logged to .claude/logs/pipeline-skip.jsonl):
 # ever send absolute paths.
 _lands_in_repo_symlink_dir() { # $1 = absolute path
 	local d real
+	# The MARKER is checked before the parent-exists test, because the
+	# resolved-parent path below cannot see a directory that does not exist
+	# yet. An absolute write to `<repo>/.claude/scripts/newdir/x.sh` failed
+	# `[ -d "$d" ]`, returned 1, and was ALLOWED — and the relative case arm
+	# never got a look at it, since a leading `/` matches the `/*` arm first.
+	# Creating a subdirectory is the ordinary way a fixture gets built, so
+	# that was the hole open on the most likely route.
+	case "$1" in
+	*/.claude/scripts/* | */.claude/hooks/* | */.claude/_lib/*)
+		[ -n "$REPO_ROOT" ] || return 1
+		case "$1" in
+		"$REPO_ROOT"/*) return 0 ;;
+		esac
+		;;
+	esac
 	d=$(dirname "$1")
 	[ -d "$d" ] || return 1
 	real=$(cd "$d" 2>/dev/null && pwd -P) || return 1

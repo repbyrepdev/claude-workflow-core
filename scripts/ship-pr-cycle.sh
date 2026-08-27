@@ -2817,7 +2817,15 @@ EOF
 		fi
 
 		echo "ship-pr-cycle: cr-thread-reply — $ctr_unaddressed unaddressed thread(s), $ctr_replied awaiting CR" >&2
-		"$ctr_helper" "$ctr_pr" --list || true
+		# `|| true` swallowed a listing failure, so the operator got the count
+		# ("3 unaddressed") and then an empty list, with nothing saying the
+		# listing had failed — the shape most likely to be read as "3 threads,
+		# none of them shown, so presumably nothing to do". The stage still
+		# holds either way; what changes is that the failure is named.
+		"$ctr_helper" "$ctr_pr" --list || {
+			_ctr_list_rc=$?
+			echo "ship-pr-cycle: cr-thread-reply — listing the threads failed (rc=$_ctr_list_rc); the $ctr_unaddressed unaddressed thread(s) above are still outstanding" >&2
+		}
 		_emit_stage_directive cr-thread-reply
 		return 0
 		;;

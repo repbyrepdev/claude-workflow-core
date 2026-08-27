@@ -257,6 +257,13 @@ _run_gate_threads() {
 		echo "a CR self-reply was mistaken for an answer: $output"
 		return 1
 	}
+	case "$output" in
+	*"Unresolved current threads: 1 (unaddressed"*) ;;
+	*)
+		echo "blocked, but not as one unaddressed thread: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "#2548: mixed threads block on the unaddressed one only" {
@@ -269,7 +276,23 @@ _run_gate_threads() {
 	   "comments":{"nodes":[{"author":{"login":"coderabbitai"},"path":"b.sh","line":2,"body":"open"}]}}]'
 	_run_gate_threads
 	[ "$status" -ne 0 ]
-	# The blocking count is 1, not 2 — the replied one is excluded from it.
+	# The blocking COUNT is 1, not 2 — asserted, not just described. Naming
+	# b.sh proves the open thread was seen; only the count proves the replied
+	# one was excluded rather than also counted.
+	case "$output" in
+	*"Unresolved current threads: 1 (unaddressed"*) ;;
+	*)
+		echo "expected exactly one blocking thread; got: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"replied-awaiting-CR: 1"*) ;;
+	*)
+		echo "the replied thread was not reported alongside: $output"
+		return 1
+		;;
+	esac
 	case "$output" in
 	*"b.sh"*) ;;
 	*)

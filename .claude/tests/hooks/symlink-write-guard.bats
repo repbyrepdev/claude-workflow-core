@@ -196,10 +196,31 @@ _allowed() {
 	}
 }
 
+@test "an absolute write into a NOT-YET-EXISTING .claude subdir is refused" {
+	# The parent-exists test came first, so a path whose directory had not
+	# been created yet resolved to nothing and fell through to ALLOWED — and
+	# the relative case arm never saw it, because a leading `/` matches the
+	# absolute arm first. Creating a subdirectory is the ordinary way a
+	# fixture gets built, so the hole sat on the most likely route.
+	_guard_write "$PLUGIN/.claude/scripts/brand-new-dir/x.sh"
+	_denied
+}
+
+@test "dd of= is inspected like a redirect" {
+	# Same write, different verb. It was a documented gap purely because
+	# nobody had written the two lines.
+	_guard "dd if=/dev/zero of=.claude/scripts/cr/x.sh bs=1 count=1"
+	_denied
+}
+
 @test "the inline bypass works and is named in the denial" {
 	_guard "SYMLINK_WRITE_GUARD_SKIP=1 cat > .claude/scripts/cr/x.sh"
 	_allowed
 	_guard "cat > .claude/scripts/cr/x.sh"
+	# _denied FIRST. These two tests inspect the denial TEXT; without
+	# establishing that a denial happened at all, a guard that crashed with a
+	# stack trace mentioning the bypass token would satisfy them.
+	_denied
 	case "$output" in
 	*SYMLINK_WRITE_GUARD_SKIP*) ;;
 	*)
@@ -212,6 +233,7 @@ _allowed() {
 @test "the denial explains the FIX, not just the refusal" {
 	# A guard that only says no teaches nothing and gets bypassed.
 	_guard "cat > .claude/scripts/cr/x.sh"
+	_denied
 	case "$output" in
 	*TEST_TMP*) ;;
 	*)
