@@ -24,6 +24,11 @@ set -u
 #   2. unaddressed CR threads == 0
 #   3. mergeStateStatus == CLEAN
 #
+# ...and three prior refusals that short-circuit before any of them are read:
+#   MERGE_GATE_AUTO=0        operator disabled auto mode          → rc 1
+#   isDraft                  a draft is never auto-merged         → rc 1
+#   needs-operator label     human gate forced regardless         → rc 1
+#
 # FAIL CLOSED on any signal that cannot be READ. "I could not determine it" is
 # not "it is fine" — that distinction is the whole reason this lib exists as
 # something testable rather than an inline condition.
@@ -31,7 +36,9 @@ set -u
 # A `pass` check is not automatically evidence: on #2540 the CodeRabbit check
 # reported pass with description "Review rate limited" while having performed
 # NO review. Check state alone is insufficient, so a pass whose description
-# says no review ran is treated as not-green.
+# says no review ran returns rc 2 — "could not determine", not rc 1
+# "not green". The distinction is deliberate: the check did not fail, it
+# failed to HAPPEN, and those want different operator action.
 #
 # merge_auto_ok <pr>
 #   rc 0 = arm auto-merge · 1 = hold the human gate (reason on stdout)
@@ -74,10 +81,20 @@ merge_auto_ok() {
 	# `needs-operator` forces the human gate regardless of every other signal.
 	# This is the deliberate escape hatch for a change that is green but wants
 	# a person to look at it anyway.
-	if printf '%s' "$view" | jq -e '[.labels[]?.name] | index("needs-operator")' >/dev/null 2>&1; then
+	local _labels _lrc=0
+	_labels=$(printf '%s' "$view" | jq -r '[.labels[]?.name] | join(" ")' 2>/dev/null) || _lrc=$?
+	if [ "$_lrc" -ne 0 ]; then
+		# A jq failure here previously read the same as "label absent", which
+		# would carry an unreadable PR toward auto-merge. Unreadable is rc 2.
+		echo "labels unreadable — cannot confirm needs-operator is absent"
+		return 2
+	fi
+	case " $_labels " in
+	*" needs-operator "*)
 		echo "needs-operator label present — human gate forced"
 		return 1
-	fi
+		;;
+	esac
 
 	local mss
 	mss=$(printf '%s' "$view" | jq -r '.mergeStateStatus // ""')

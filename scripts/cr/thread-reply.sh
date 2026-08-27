@@ -183,7 +183,7 @@ _classify() {
 	    | select(.isResolved == false)
 	    | . as $t
 	    | ($t.comments.nodes // []) as $c
-	    | ( '"$CR_THREAD_HUMAN_REPLY_COUNT"' ) as $human
+	    | ( '"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' ) as $human
 	    | {
 		id: $t.id,
 		path: ($t.path // "?"),

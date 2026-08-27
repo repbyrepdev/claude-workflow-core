@@ -28,7 +28,7 @@ setup() {
 
 # Apply the shared fragment to one thread node; echoes the human-reply count.
 _count() { # $1 = thread node JSON
-	printf '%s' "$1" | jq "$CR_THREAD_HUMAN_REPLY_COUNT"
+	printf '%s' "$1" | jq "$CR_THREAD_HUMAN_REPLY_COUNT_JQ"
 }
 
 @test "CR alone on the thread = unaddressed" {
@@ -87,7 +87,7 @@ _count() { # $1 = thread node JSON
 	cd "$PLUGIN" || return 1
 	local f
 	for f in scripts/cr/thread-reply.sh hooks/_pr-cr-findings.sh; do
-		run grep -c 'CR_THREAD_HUMAN_REPLY_COUNT' "$f"
+		run grep -c 'CR_THREAD_HUMAN_REPLY_COUNT_JQ' "$f"
 		[ "$output" -ge 1 ] || {
 			echo "$f no longer reads the shared predicate"
 			return 1

@@ -29,8 +29,12 @@ set -u
 # exported as a jq FRAGMENT rather than a function: one string, interpolated
 # in both places, impossible to paraphrase differently.
 
-# Given a thread node as input, emits the count of non-CodeRabbit comments
-# following the first. `> 0` means replied.
+# jq SOURCE TEXT, not a value — the `_JQ` suffix says so, because a name
+# ending in COUNT reads like a number and invites `[ "$X" -gt 0 ]`, which
+# would silently compare a string of jq code against an integer.
+#
+# Given a thread node as input, it emits the count of non-CodeRabbit
+# comments following the first. `> 0` means replied.
 #
 # SC2089/SC2090 are suppressed deliberately: this variable holds jq SOURCE
 # TEXT that is interpolated into a larger jq program, not a command line. The
@@ -38,13 +42,12 @@ set -u
 # those checks warn about. Their suggested fix, an array, cannot be spliced
 # into a jq expression at all.
 # shellcheck disable=SC2089,SC2090
-CR_THREAD_HUMAN_REPLY_COUNT='([(.comments.nodes // [])[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not)] | length)'
+CR_THREAD_HUMAN_REPLY_COUNT_JQ='([(.comments.nodes // [])[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not)] | length)'
 
-# Boolean forms, for readability at the call sites.
-# shellcheck disable=SC2089,SC2090
-CR_THREAD_IS_REPLIED="(${CR_THREAD_HUMAN_REPLY_COUNT} > 0)"
-# shellcheck disable=SC2089,SC2090
-CR_THREAD_IS_UNADDRESSED="(${CR_THREAD_HUMAN_REPLY_COUNT} == 0)"
-
+# Deliberately the ONLY export. Boolean convenience forms
+# (CR_THREAD_IS_REPLIED / _IS_UNADDRESSED) were defined here and used by
+# neither consumer — unused API on a shared lib is the same dead surface that
+# got removed from _lib/bats-assertion-check.sh earlier. Both call sites read
+# this fragment and apply their own comparison, which is one concept, not two.
 # shellcheck disable=SC2090
-export CR_THREAD_HUMAN_REPLY_COUNT CR_THREAD_IS_REPLIED CR_THREAD_IS_UNADDRESSED
+export CR_THREAD_HUMAN_REPLY_COUNT_JQ

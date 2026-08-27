@@ -176,7 +176,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
 		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
-		| select('"$CR_THREAD_HUMAN_REPLY_COUNT"' == 0)
+		| select('"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' == 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:400])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_NODES" ]; then
 		echo "ERROR: thread-nodes jq-parse failed on page $PAGE" >&2
@@ -190,7 +190,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
 		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
-		| select('"$CR_THREAD_HUMAN_REPLY_COUNT"' > 0)
+		| select('"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' > 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id}]' 2>/dev/null || true)
 	if [ -z "$PAGE_REPLIED" ]; then
 		echo "ERROR: replied-thread jq-parse failed on page $PAGE" >&2
@@ -386,11 +386,25 @@ if [ "$OUTSIDE_DIFF_COUNT" -gt 0 ]; then
 		awk '/Outside diff range/,/<\/details>\s*$/' | head -60)
 fi
 
+REPLIED_COUNT=$(echo "$REPLIED" | jq 'length' 2>/dev/null || true)
+if [ -z "$REPLIED_COUNT" ]; then
+	echo "ERROR: replied-thread count jq-parse failed" >&2
+	exit 1
+fi
+
+# REPLIED_COUNT is deliberately NOT in this sum. A thread that has been
+# answered with evidence has no further action available to the operator —
+# blocking on it would punish doing exactly what the cr-thread-reply stage
+# asks. It is REPORTED below so the state is visible at the gate. (#2548)
 TOTAL_FINDINGS=$((THREAD_COUNT + STRANDED_COUNT + WALKTHROUGH_FAILURES + OUTSIDE_DIFF_COUNT))
 
 # ---- Report ----
 echo "PR #$PR HEAD: ${HEAD:0:8}"
-echo "Unresolved current threads: $THREAD_COUNT"
+echo "Unresolved current threads: $THREAD_COUNT (unaddressed — these block)"
+if [ "$REPLIED_COUNT" -gt 0 ]; then
+	echo "replied-awaiting-CR: $REPLIED_COUNT (NOT blocking — evidence posted, CR yet to resolve)"
+	echo "$REPLIED" | jq -r '.[] | "  - \(.path):\(.line)  \(.thread_id)"' 2>/dev/null || true
+fi
 echo "Stranded outdated threads: $STRANDED_COUNT (CR missed auto-resolve; run resolveReviewThread)"
 echo "Outside-diff-range findings: $OUTSIDE_DIFF_COUNT (CR can't post inline on untouched lines)"
 echo "CR walkthrough Pre-merge failures: $WALKTHROUGH_FAILURES (warnings: $WALKTHROUGH_WARNINGS)"
