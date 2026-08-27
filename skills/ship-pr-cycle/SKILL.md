@@ -154,6 +154,24 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 
 ## Rules
 
+### Two failure modes that look identical (#2549)
+
+A merge that does not happen has two very different causes, and they are worth
+telling apart before debugging:
+
+1. **A repo/cycle gate refused** — `merge-gate` held, the CR gate denied, the
+   branch ruleset blocked. The remedy is in this repo: address the signal it
+   named.
+2. **The harness permission layer refused** — the Claude Code auto-mode
+   classifier declined the invocation shape (e.g. `APPROVE=1 <script>`, or a
+   repo-settings `PATCH`). Nothing in this plugin can fix that; it needs a
+   Bash permission rule in the operator's settings.
+
+From the cycle's point of view both look like "merge did not happen". Native
+auto-merge also requires `allow_auto_merge` on the repository — if it is off,
+`--auto` fails with `enablePullRequestAutoMerge` and the gate holds.
+
+
 - **NEVER** bypass the convergence gate without auditing — `PIPELINE_GATE_SKIP=1` bypasses the gate (audit-logged); set `PIPELINE_GATE_SKIP_REASON=...` to record the rationale in the bypass log.
 - **ALWAYS** run `phase1-scaler.sh --explain` at start of a long PR cycle; iterate to ROUNDS=N target. Burning 17 rounds when the scaler said 2 is the explicit anti-pattern this orchestrator addresses.
 - **NEVER** advance phase2 → push when CR-CLI returned a malformed `complete` event. The orchestrator now hard-fails this case (return 2) — do not work around.
@@ -172,5 +190,5 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 - **phase1 directive emitted** → fire the 5 parallel review agents + semgrep + security-review, log each via `review-log.sh`, then re-run `next`.
 - **phase2 / CR findings** → apply or reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire; do not advance with open findings.
 - **cr-thread-reply reached** → classify each UNADDRESSED thread and reply with evidence via `scripts/cr/thread-reply.sh`. Never resolve a thread by hand — the reply is the action, CR resolving is the outcome. `verified-fixed` is gated on `git show HEAD:<path>`; `actionable` is not repliable and goes back to autofix.
-- **merge-gate reached** → operator approval point; on approval, invoke `github-pr-merge`. This is the one human gate.
+- **merge-gate reached** → if the PR is provably green (every required check green AND 0 unaddressed threads AND `mergeStateStatus == CLEAN`), the stage ARMS GitHub native auto-merge and returns; otherwise it holds for operator approval. `MERGE_GATE_AUTO=0` disables auto mode; a `needs-operator` label forces the human gate regardless. Fails closed: a signal that cannot be READ holds the gate, and a check that passed WITHOUT running (CR "rate limited" / "review paused") does not count as green.
 - **`resume`** → auto-advances until it hits phase1 (needs agents), merge-gate (needs operator), or a terminal state.

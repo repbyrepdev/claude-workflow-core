@@ -2959,6 +2959,47 @@ EOF
 				fi
 			fi
 		fi
+		# (#2549) Auto-merge when the PR is provably green. The gate is
+		# deliberate, but it fired unconditionally — including when every
+		# signal that DEFINES mergeable was already machine-verified. On
+		# #2540 the operator pressed the button after ~12 rounds in which
+		# every finding had been fixed-and-verified or rejected-with-evidence.
+		#
+		# Arming --auto does not weaken review: GitHub still enforces the
+		# branch ruleset (approving review, self-approval block). It stops
+		# requiring a human AFTER the machine has agreed.
+		local _ma_lib="$SCRIPT_DIR/../_lib/merge-auto-ok.sh"
+		if [ -f "$_ma_lib" ]; then
+			# shellcheck source=../_lib/merge-auto-ok.sh
+			source "$_ma_lib"
+			local _ma_pr _ma_reason _ma_rc=0
+			_ma_pr=$(gh pr view --json number --jq .number 2>/dev/null) || _ma_pr=""
+			if [ -n "$_ma_pr" ]; then
+				_ma_reason=$(merge_auto_ok "$_ma_pr") || _ma_rc=$?
+				if [ "$_ma_rc" -eq 0 ]; then
+					echo "ship-pr-cycle: merge-gate — $_ma_reason"
+					echo "  arming GitHub native auto-merge (MERGE_GATE_AUTO=0 to disable)"
+					local _ma_skill
+					_ma_skill=$(_shipcycle_resolve skills/github-pr-merge/run.sh 2>/dev/null) || _ma_skill=""
+					if [ -n "$_ma_skill" ]; then
+						"$_ma_skill" --pr "$_ma_pr" --auto --yes && return 0
+						scm_warn "merge-gate: --auto arming failed; holding the operator gate"
+					else
+						scm_warn "merge-gate: github-pr-merge skill unresolved; holding the operator gate"
+					fi
+				else
+					# rc 1 = a signal is genuinely not green. rc 2 = a signal
+					# could not be READ, which is NOT the same as not-green and
+					# is worth saying differently — an unreadable signal means
+					# nothing was verified.
+					if [ "$_ma_rc" -eq 2 ]; then
+						echo "ship-pr-cycle: merge-gate — cannot verify auto-merge preconditions: $_ma_reason"
+					else
+						echo "ship-pr-cycle: merge-gate — not auto-mergeable: $_ma_reason"
+					fi
+				fi
+			fi
+		fi
 		echo "ship-pr-cycle: merge-gate — operator approves here"
 		_emit_stage_directive merge-gate
 		return 0
