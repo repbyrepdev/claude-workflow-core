@@ -427,10 +427,16 @@ if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 		# Prune on write, so merged and deleted branches do not accumulate pins
 		# forever. 30 days is well past any branch this cycle keeps open, and
 		# a wrongly-pruned pin costs one re-resolve, not a wrong cap.
-		# WARNs on failure like every other path in this block — a prune that
-		# silently stops working just grows the directory forever.
-		find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>/dev/null ||
-			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR; old branch pins may accumulate" >&2
+		#
+		# The failure signal is STDERR, not the exit status. `find -delete`
+		# reports a permission error and still exits 0 (verified on macOS bfs
+		# and GNU findutils alike), so the `|| echo` this replaced could never
+		# fire — a "warn on failure" that was decoration. A prune that
+		# silently stops working just grows the directory forever, which is
+		# the failure nobody notices until it is large.
+		_prune_err=$(find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>&1 >/dev/null) || true
+		[ -z "$_prune_err" ] ||
+			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR ($_prune_err); old branch pins may accumulate" >&2
 		_pin_tmp="$PIN_FILE.$$"
 		if printf '{"rounds":%s,"tier":"%s","pinned_at":"%s","base":"%s","cr_at_pin":%s,"p05_at_pin":%s}\n' \
 			"$rounds" "$tier" "$pin_ts" "$BASE" "$cr_count" "$p05_count" \
@@ -451,8 +457,14 @@ if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 		echo "phase1-scaler: WARN: could not write the tier pin to $PIN_FILE — the cap will be re-resolved on every call (the pre-#2544 treadmill)" >&2
 		# A pin that could not be replaced must not be READ next call either:
 		# it holds a number this run already decided was out of date.
-		rm -f "$PIN_FILE" 2>/dev/null ||
-			echo "phase1-scaler: WARN: a STALE pin remains at $PIN_FILE and could not be removed; the next call may read an out-of-date cap" >&2
+		#
+		# Verified by ABSENCE, not by rm's exit status: `rm -f` suppresses the
+		# failure status by definition, so `rm -f ... || warn` never warned.
+		# That was the same decorative-guard mistake as the prune above, made
+		# in the same commit.
+		rm -f "$PIN_FILE" 2>/dev/null || true
+		[ ! -f "$PIN_FILE" ] ||
+			echo "phase1-scaler: WARN: a STALE pin remains at $PIN_FILE and could not be removed; the next call may read an out-of-date cap. Remove it by hand, or re-run with --repin once the directory is writable." >&2
 	fi
 fi
 

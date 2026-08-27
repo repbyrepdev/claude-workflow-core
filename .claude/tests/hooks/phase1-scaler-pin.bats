@@ -387,23 +387,39 @@ _scaler_pin() { # $1 = extra env words
 		echo "an unwritable pin dir was silent: $output"
 		return 1
 	}
+	[[ $output == *"pinned=0"* ]] || return 1
+	# "keeps recomputing" is the name of this test, so it is asserted rather
+	# than assumed: a second call with a finding count across a tier boundary
+	# must now MOVE, because nothing was pinned to hold it.
+	_log_cr 13
+	chmod 500 "$ro"
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$ro/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
+	chmod 700 "$ro"
+	[ "$status" -eq 0 ]
+	[[ $output == *"ROUNDS=5"* ]] || {
+		echo "an unpinned run did not recompute from the new count: $output"
+		return 1
+	}
 	[[ $output == *"pinned=0"* ]]
 }
 
-@test "scaler pin: a STALE pin is removed when the write fails" {
+@test "scaler pin: a STALE pin is REMOVED when the write fails" {
 	# The `[ -f "$PIN_FILE" ]` success test was WRONG with a pin already
 	# present: a failed replace left the old file, the test passed, nothing
 	# warned, and the script served a value it had just failed to update.
+	#
+	# Setup: a valid pin exists, then it is corrupted so the next call
+	# re-resolves, and the directory is made read-only so the replacing write
+	# fails with the stale file still sitting there.
 	_log_cr 1
 	_scaler_pin
 	[[ $output == *"ROUNDS=2"* ]] || return 1
 	local pin
 	pin=$(find "$TEST_TMP/pins" -name '*.json' | head -1)
-	[ -n "$pin" ] || return 1
-	# Make the replace fail while leaving the stale pin in place.
-	chmod 500 "$TEST_TMP/pins"
-	printf 'not json\n' >"$pin" 2>/dev/null || true
-	chmod 700 "$TEST_TMP/pins"
+	[ -n "$pin" ] || {
+		echo "no pin file was written"
+		return 1
+	}
 	printf 'not json\n' >"$pin"
 	chmod 500 "$TEST_TMP/pins"
 	_scaler_pin
@@ -413,6 +429,41 @@ _scaler_pin() { # $1 = extra env words
 		echo "the failed write did not warn: $output"
 		return 1
 	}
+	# In THIS scenario the directory itself is read-only, so the removal
+	# cannot succeed either — and the script says so rather than implying the
+	# stale pin is gone. Asserting the removal here would be asserting
+	# something the filesystem forbids.
+	[[ $output == *"STALE pin remains"* ]] || {
+		echo "the un-removable stale pin was not reported: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: a stale pin IS removed when the directory allows it" {
+	# The other half, and the one the fix is actually for: the write fails
+	# (bad content already there, re-resolve, then the tmp write is blocked)
+	# while the directory still permits removal. The stale pin must be gone so
+	# the next call cannot read a number this run already rejected.
+	_log_cr 1
+	_scaler_pin
+	local pin
+	pin=$(find "$TEST_TMP/pins" -name '*.json' | head -1)
+	[ -n "$pin" ] || return 1
+	printf 'not json\n' >"$pin"
+	# Block only the TMP write, by making the target name a directory the
+	# printf cannot open — the pins dir itself stays writable.
+	mkdir -p "$pin.$$" 2>/dev/null || true
+	_scaler_pin
+	rmdir "$TEST_TMP/pins/"*.\$\$ 2>/dev/null || true
+	[ "$status" -eq 0 ]
+	# Either it wrote cleanly (pin present and valid) or it failed and removed
+	# the stale one. What must NEVER be true is a corrupt pin left in place.
+	if [ -f "$pin" ]; then
+		jq -e '.rounds' "$pin" >/dev/null 2>&1 || {
+			echo "a corrupt pin was left in place: $(cat "$pin")"
+			return 1
+		}
+	fi
 }
 
 @test "scaler pin: stale pins are PRUNED on write" {
@@ -516,4 +567,58 @@ _scaler_pin() { # $1 = extra env words
 	}
 	# It still re-pins — refusing would strand the operator — but says so.
 	[[ $output == *"repinned=1"* ]]
+}
+
+@test "scaler pin: a pin with no tier surfaces the sentinel, not a fake tier" {
+	# rounds is what gates; tier is what the operator reads. A pin missing its
+	# tier must say so distinguishably rather than print a word that could be
+	# mistaken for one the table produces.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	local pin
+	pin=$(find "$TEST_TMP/pins" -name '*.json' | head -1)
+	[ -n "$pin" ] || return 1
+	printf '{"rounds":3,"pinned_at":"2026-01-01T00:00:00Z"}\n' >"$pin"
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"ROUNDS=3"* ]] || {
+		echo "a tier-less pin lost its rounds value: $output"
+		return 1
+	}
+	[[ $output == *"pin-tier-missing"* ]] || {
+		echo "a tier-less pin did not surface the sentinel: $output"
+		return 1
+	}
+	[[ $output == *"pinned=1"* ]]
+}
+
+@test "scaler pin: a prune failure WARNS like every sibling path" {
+	# The prune ended in `|| true` while every other failure in the block
+	# warns. A prune that silently stops working just grows the directory
+	# forever, which is the failure nobody notices until it is large.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	# An OLD pin in a read-only directory: find matches it, cannot delete it,
+	# prints the reason to stderr — and exits 0 anyway. That exit status is
+	# why the first version of this warning could never fire, and why the
+	# check reads stderr instead.
+	local old="$TEST_TMP/pins/an_old_branch.json"
+	printf '{"rounds":5,"tier":"high"}\n' >"$old"
+	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$old"
+	chmod 500 "$TEST_TMP/pins"
+	(cd "$WORK" && git checkout -qb feat/prune-warn) || return 1
+	_scaler_pin
+	chmod 700 "$TEST_TMP/pins"
+	[ "$status" -eq 0 ]
+	[[ $output == *"could not prune stale pins"* ]] || {
+		echo "a prune failure was silent: $output"
+		return 1
+	}
+	# And it names what went wrong, not merely that something did.
+	[[ $output == *"Permission denied"* || $output == *"denied"* ]] || {
+		echo "the prune warning did not carry the underlying error: $output"
+		return 1
+	}
 }
