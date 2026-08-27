@@ -5,7 +5,7 @@ description: Drive the local PR review pipeline (Phase 0.5 → Phase 1 → Phase
 
 # ship-pr-cycle
 
-Mechanical driver for the staged local PR review pipeline. Operator interaction goal: ONE gate (approve-to-ship at merge time). Everything else autonomous.
+Mechanical driver for the staged local PR review pipeline. Operator interaction goal: AT MOST ONE gate (approve-to-ship at merge time) — and none at all when `MERGE_GATE_AUTO=1` and the PR is provably green (#2549). Everything else autonomous.
 
 Consumer repos that need domain-specific overlays (e.g. deferring a stage until a dependency lands; adding a post-merge deploy step) declare them in `.claude/skills/ship-pr-cycle/domain-extension.md` next to their `local-overrides.yml`. The plugin's SKILL.md is the SSOT for everything not consumer-specific.
 
@@ -47,8 +47,9 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
     ↓ next (gate-checked: unaddressed == 0)
 [cr-conflict-check] route a DIRTY PR through CR's resolver (#190); CLEAN passes straight through
     ↓ next
-[merge-gate]      OPERATOR APPROVES HERE
-    ↓ next (after explicit user "go")
+[merge-gate]      OPERATOR APPROVES HERE — unless MERGE_GATE_AUTO=1 and the PR is
+                  provably green (#2549), in which case native auto-merge is armed
+    ↓ next (after explicit user "go", or automatically when armed)
 [merged]          terminal
 ```
 
@@ -186,7 +187,7 @@ auto-merge also requires `allow_auto_merge` on the repository — if it is off,
 
 ## Auto-continue
 
-- **`next` advanced a stage** → re-run `next` to continue; the state machine drives branch-ready → phase0.5 → phase1 → phase2 → push → cr-in-ci-wait → auto-triage → (cr-autofix) → cr-conflict-check → merge-gate.
+- **`next` advanced a stage** → re-run `next` to continue; the state machine drives branch-ready → phase0.5 → phase1 → phase2 → push → cr-in-ci-wait → auto-triage → (cr-autofix) → cr-thread-reply → cr-conflict-check → merge-gate.
 - **phase1 directive emitted** → fire the 5 parallel review agents + semgrep + security-review, log each via `review-log.sh`, then re-run `next`.
 - **phase2 / CR findings** → apply or reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire; do not advance with open findings.
 - **cr-thread-reply reached** → classify each UNADDRESSED thread and reply with evidence via `scripts/cr/thread-reply.sh`. Never resolve a thread by hand — the reply is the action, CR resolving is the outcome. `verified-fixed` is gated on `git show HEAD:<path>`; `actionable` is not repliable and goes back to autofix.

@@ -21,7 +21,7 @@ set -u
 #
 # THE THREE SIGNALS, all of which must hold:
 #   1. every required check per .github/required-checks-list.yml is green
-#   2. unaddressed CR threads == 0
+#   2. hooks/_pr-cr-findings.sh reports clean (all FOUR of its sources)
 #   3. mergeStateStatus == CLEAN
 #
 # ...and three prior refusals that short-circuit before any of them are read:
@@ -54,16 +54,41 @@ merge_auto_ok() {
 		return 2
 	}
 
-	# Operator kill switch. Default ON per #2549, off with MERGE_GATE_AUTO=0.
-	if [ "${MERGE_GATE_AUTO:-1}" = "0" ]; then
-		echo "MERGE_GATE_AUTO=0 — operator disabled auto-merge"
+	# OPT-IN, not opt-out. #2549 specified default-on; phase-1 review then
+	# found four independent ways this returned rc 0 on a PR that should have
+	# held, and they COMPOSE — a rate-limited CodeRabbit plus a skipped
+	# required check plus a thread CR had re-flagged all read green at once.
+	# Every one is fixed below, but a predicate that decides to merge without
+	# a human earns default-on by being trusted, and it has not been trusted
+	# yet. Turn it on with MERGE_GATE_AUTO=1 once it has run alongside the
+	# human gate for a while and agreed with it.
+	if [ "${MERGE_GATE_AUTO:-0}" != "1" ]; then
+		echo "auto-merge is opt-in (set MERGE_GATE_AUTO=1); holding the operator gate"
 		return 1
 	fi
 
 	local view
 	view=$(gh pr view "$pr" \
-		--json mergeStateStatus,mergeable,labels,statusCheckRollup,isDraft 2>/dev/null) || {
+		--json mergeStateStatus,labels,isDraft 2>/dev/null) || {
 		echo "could not read PR state (gh pr view failed)"
+		return 2
+	}
+	# Checks come from `gh pr checks`, NOT from `gh pr view --json
+	# statusCheckRollup`. The rollup carries no `description`/`title` field at
+	# all — verified against live PR #2635, where a CheckRun node holds only
+	# {__typename, completedAt, conclusion, detailsUrl, name, startedAt,
+	# status, workflowName}. Reading `.description` from it made the entire
+	# hollow-check dead code: `desc` was always "", the regex never matched,
+	# and the #2540 shape it exists to refuse sailed through to rc 0. The unit
+	# tests passed only because their fixture hand-injected a `description`
+	# key that gh never produces — they proved the fixture, not the system.
+	local checks
+	checks=$(gh pr checks "$pr" --json name,state,description 2>/dev/null) || {
+		echo "could not read PR checks (gh pr checks failed)"
+		return 2
+	}
+	[ -n "$checks" ] || {
+		echo "gh pr checks returned nothing"
 		return 2
 	}
 	[ -n "$view" ] || {
@@ -132,20 +157,39 @@ merge_auto_ok() {
 	while IFS= read -r name; do
 		[ -n "$name" ] || continue
 		local row
-		row=$(printf '%s' "$view" | jq -c --arg n "$name" \
-			'[.statusCheckRollup[]? | select((.name // .context // "") == $n)] | last // empty' 2>/dev/null)
+		row=$(printf '%s' "$checks" | jq -c --arg n "$name" \
+			'[.[]? | select((.name // "") == $n)] | last // empty' 2>/dev/null)
 		if [ -z "$row" ] || [ "$row" = "null" ]; then
 			missing=$((missing + 1))
 			detail="$detail ${name}=absent"
 			continue
 		fi
-		state=$(printf '%s' "$row" | jq -r '(.conclusion // .state // "") | ascii_upcase')
-		desc=$(printf '%s' "$row" | jq -r '(.description // .title // "")')
+		state=$(printf '%s' "$row" | jq -r '(.state // "") | ascii_upcase')
+		desc=$(printf '%s' "$row" | jq -r '(.description // "")')
 		case "$state" in
-		SUCCESS | NEUTRAL | SKIPPED) ;;
+		SUCCESS) ;;
+		SKIPPED | NEUTRAL)
+			# A required check that was SKIPPED is the definition of "passed
+			# without doing its job" — a path filter, a false `if:`, a
+			# cancelled matrix leg. GitHub counts it as satisfied for branch
+			# protection, so mergeStateStatus stays CLEAN and nothing else
+			# catches it. This file previously accepted it as green while its
+			# own hollow-regex listed "skipped" as disqualifying.
+			hollow=$((hollow + 1))
+			detail="$detail ${name}=${state}"
+			continue
+			;;
+		"" | null)
+			# Unreadable, or still running: `//` does not fall through an
+			# empty STRING, so an in-progress check yields "". Not the same as
+			# failing, and rc 2 says so.
+			missing=$((missing + 1))
+			detail="$detail ${name}=unreadable-or-running"
+			continue
+			;;
 		*)
 			notgreen=$((notgreen + 1))
-			detail="$detail ${name}=${state:-unknown}"
+			detail="$detail ${name}=${state}"
 			continue
 			;;
 		esac
@@ -169,36 +213,46 @@ merge_auto_ok() {
 		return 1
 	fi
 
-	# --- unaddressed CR threads -------------------------------------------
-	local helper="" count
-	if [ -n "${MERGE_AUTO_THREAD_HELPER:-}" ]; then
-		helper="$MERGE_AUTO_THREAD_HELPER"
+	# --- CR findings: the SAME check the merge gate runs --------------------
+	#
+	# Delegates to hooks/_pr-cr-findings.sh rather than counting threads
+	# itself. That helper is the authority and consults FOUR sources —
+	# unresolved current threads, STRANDED outdated threads, CR walkthrough
+	# "Pre-merge checks" failures, and outside-diff-range findings embedded in
+	# review bodies. This lib previously consulted only the first, so a PR
+	# with a failed walkthrough check or an outside-diff finding was "provably
+	# green" here while pre-merge-cr-comments-gate.sh would have refused it.
+	#
+	# That mattered more than it looks: the auto path runs the merge as a
+	# grandchild process, where no PreToolUse hook fires, so the gate could
+	# not catch afterwards what this missed. The one path that merges with no
+	# human was the one path skipping the four-source check.
+	local findings_helper="" fh_out fh_rc=0
+	if [ -n "${MERGE_AUTO_FINDINGS_HELPER:-}" ]; then
+		findings_helper="$MERGE_AUTO_FINDINGS_HELPER"
 	else
-		local root2
-		root2=$(git rev-parse --show-toplevel 2>/dev/null) || root2=""
-		[ -x "$root2/scripts/cr/thread-reply.sh" ] && helper="$root2/scripts/cr/thread-reply.sh"
-		[ -z "$helper" ] && [ -x "$root2/.claude/scripts/cr/thread-reply.sh" ] &&
-			helper="$root2/.claude/scripts/cr/thread-reply.sh"
+		local repo_root
+		repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || repo_root=""
+		for c in "$repo_root/hooks/_pr-cr-findings.sh" "$repo_root/.claude/hooks/_pr-cr-findings.sh"; do
+			[ -x "$c" ] && findings_helper="$c" && break
+		done
 	fi
-	[ -n "$helper" ] || {
-		echo "thread-reply helper not found — cannot count unaddressed threads"
+	# Executable, not merely named: an override pointing at a missing path
+	# otherwise fell through to "the helper ran and reported findings" (rc 1)
+	# instead of "the check could not run" (rc 2), which is the distinction
+	# this whole file exists to keep.
+	if [ -z "$findings_helper" ] || [ ! -x "$findings_helper" ]; then
+		echo "_pr-cr-findings.sh not found or not executable ('${findings_helper:-unset}') — cannot verify CR findings"
 		return 2
-	}
-	count=$("$helper" "$pr" --count 2>/dev/null) || {
-		echo "unaddressed-thread count failed"
-		return 2
-	}
-	case "$count" in
-	'' | *[!0-9]*)
-		echo "unaddressed-thread count unreadable ('$count')"
-		return 2
-		;;
-	esac
-	if [ "$count" -gt 0 ]; then
-		echo "$count unaddressed CR thread(s)"
+	fi
+	fh_out=$("$findings_helper" "$pr" 2>&1) || fh_rc=$?
+	if [ "$fh_rc" -ne 0 ]; then
+		# rc 1 is "findings present OR query failure" — the helper does not
+		# distinguish, and neither should this: both mean the gate holds.
+		echo "CR findings outstanding (or unreadable): $(printf '%s' "$fh_out" | grep -iE 'TOTAL needing cleanup|ERROR' | head -1)"
 		return 1
 	fi
 
-	echo "all required checks green, 0 unaddressed threads, mergeStateStatus CLEAN"
+	echo "all required checks green, CR findings clean (4-source), mergeStateStatus CLEAN"
 	return 0
 }

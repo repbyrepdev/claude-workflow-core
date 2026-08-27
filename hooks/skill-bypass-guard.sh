@@ -304,9 +304,15 @@ fi
 #   - .claude/logs/cr-local-review.jsonl — the per-SHA ledger that
 #     pre-push-pipeline-gate reads. Without a row, the gate correctly says
 #     "no review has ever run" for a SHA that was in fact reviewed six times.
-#   - the rolling budget log via cr-log-invocation.sh, which is only called
-#     BY the wrapper. So `rate-budget.sh --check` reported 0/10 used while
-#     the real spend was ~7 of the prepaid hourly bucket.
+#   - the rolling budget log, which scripts/cr/local-review.sh writes INLINE
+#     (see its `LOG=.../cr-budget.jsonl` and the jq append beside it). So
+#     `rate-budget.sh --check` reported 0/10 used while the real spend was ~7
+#     of the prepaid hourly bucket.
+#
+#     NB for whoever edits budget logging next: hooks/cr-log-invocation.sh
+#     looks like the writer and is NOT — nothing executes it; its only
+#     references are comments and docs. An earlier version of this comment
+#     named it, which would have sent you to edit a file that never runs.
 #
 # Neither failure is visible at the time — you get a review, it just does not
 # count. That is exactly the "advisory gate that can be walked past" class
@@ -321,13 +327,17 @@ if printf '%s' "$CMD" | grep -qE "$cr_pattern"; then
 elif [ -n "$WRAPPED_CMD" ] && printf '%s' "$WRAPPED_CMD" | grep -qE "$cr_pattern"; then
 	cr_matched=1
 fi
-# The wrapper itself runs `coderabbit review` — let it through, or the guard
-# would block the very command it redirects to.
-if [ "$cr_matched" = "1" ] && [ "${SKILL_WRAPPER:-0}" != "1" ]; then
+# No per-block SKILL_WRAPPER check here, deliberately: the global bypass near
+# the top already exits 0 for both the exported and the command-prefix forms,
+# so a local copy is unreachable. (And the wrapper's own `coderabbit review`
+# is a SUBPROCESS of local-review.sh, which no PreToolUse hook observes at
+# all — the exemption it appeared to provide was for a case that cannot
+# arise.) No sibling block carries one either.
+if [ "$cr_matched" = "1" ]; then
 	CMD_PREVIEW=$(printf '%s' "$CMD" | head -c 120)
 	CR_DIRECTIVE="BLOCKED: raw \`coderabbit review\` — bypasses the per-SHA ledger AND the budget log.
 Command: ${CMD_PREVIEW}...
-Why blocked: the raw CLI writes neither .claude/logs/cr-local-review.jsonl (which pre-push-pipeline-gate reads to confirm Phase 2 ran for this SHA) nor the rolling budget log (written by cr-log-invocation.sh, which only the wrapper calls). You still get a review — it just does not count, and the spend is invisible. Six reviews were lost this way on PR #2635.
+Why blocked: the raw CLI writes neither .claude/logs/cr-local-review.jsonl (which pre-push-pipeline-gate reads to confirm Phase 2 ran for this SHA) nor .claude/review-log/cr-budget.jsonl (which scripts/cr/local-review.sh appends to inline, and rate-budget.sh reads). You still get a review — it just does not count, and the spend is invisible. Six reviews were lost this way on PR #2635.
 
 To proceed:
   1. scripts/cr/local-review.sh [--base main]

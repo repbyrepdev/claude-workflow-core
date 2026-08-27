@@ -38,7 +38,8 @@ set -euo pipefail
 #   cr-thread-reply   → reply-with-evidence to non-actionable CR threads (#2548);
 #                       only UNADDRESSED threads block the gate
 #   cr-conflict-check → route DIRTY PR through CR resolver before gate (#190)
-#   merge-gate        → OPERATOR APPROVES HERE (only interaction)
+#   merge-gate        → OPERATOR APPROVES HERE (only interaction) — unless
+#                       MERGE_GATE_AUTO=1 and the PR is provably green (#2549)
 #   merged            → terminal
 #
 # Sub-issue scope: #657 (state machine + state-file MVP) + #728 (phase2/push/
@@ -1577,7 +1578,14 @@ cmd_status() {
 	# is how an operator merges over findings nobody counted.
 	case "$_p2stage" in
 	cr-in-ci-wait | auto-triage | cr-autofix | cr-thread-reply | cr-conflict-check | merge-gate)
-		local _tr_helper _tr_pr _tr_json _tr_un _tr_rep
+		# _tr_json is initialised, not merely declared: it is assigned only
+		# inside the `if` below, so when `gh pr view` fails (not pushed, auth
+		# expired, offline) the later `[ -n "$_tr_json" ]` expanded an unset
+		# local under `set -u` and aborted the whole script — killing a
+		# read-only `status` command, in the exact path whose own comment
+		# promises it degrades to "unknown".
+		local _tr_helper _tr_pr _tr_un _tr_rep
+		local _tr_json=""
 		_tr_pr=$(gh pr view --json number --jq .number 2>/dev/null) || _tr_pr=""
 		_tr_helper=$(_shipcycle_resolve scripts/cr/thread-reply.sh 2>/dev/null) || _tr_helper=""
 		if [ -n "$_tr_pr" ] && [ -n "$_tr_helper" ]; then
@@ -2601,7 +2609,8 @@ EOF
 		# v4.28-W5 (#774, #775): route based on unresolved CR-thread count.
 		# >0 → cr-autofix stage applies via skill (auto-apply all severities;
 		# operator gates only at merge-gate per 4-gate autonomy model).
-		# 0 → cr-conflict-check (#190); that stage advances to merge-gate when
+		# 0 → cr-thread-reply (#2548), which forwards to cr-conflict-check (#190)
+		# when nothing is unaddressed; that stage advances to merge-gate when
 		# mergeable, routes a DIRTY PR through CR's resolver, or holds if
 		# mergeability is still computing (see its handler). Counting is
 		# extracted to

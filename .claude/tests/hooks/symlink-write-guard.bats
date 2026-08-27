@@ -44,16 +44,24 @@ _guard_write() { # $1 = file_path (Write/Edit tool shape)
 }
 
 _denied() {
+	# The PreToolUse contract string, not just prose. `deny()` emits the
+	# decision and exits 0, so the exit status is never the signal — and a
+	# hook that CRASHED emits neither, which the prose-only form read as
+	# "allowed".
 	case "$output" in
-	*deny* | *REFUSED*) return 0 ;;
+	*'"permissionDecision":"deny"'*) return 0 ;;
 	esac
-	echo "expected a denial; got: $output"
+	echo "expected a deny DECISION; got: $output"
 	return 1
 }
 
 _allowed() {
+	[ "$status" -eq 0 ] || {
+		echo "guard exited $status — a crash is not permission: $output"
+		return 1
+	}
 	case "$output" in
-	*deny* | *REFUSED*)
+	*'"permissionDecision":"deny"'*)
 		echo "expected this to be allowed; got: $output"
 		return 1
 		;;
@@ -128,13 +136,58 @@ _allowed() {
 	_allowed
 }
 
-@test "the Write/Edit tool shape is inspected, not just Bash" {
-	# file_path, not command — the harness's own file tools can clobber the
-	# same way.
-	_guard_write ".claude/scripts/cr/thread-reply.sh"
+@test "the Write/Edit shape is inspected — with the ABSOLUTE path it really sends" {
+	# The first version of this test passed a RELATIVE file_path, a shape
+	# Claude Code's Write/Edit tools never produce: they require absolute
+	# paths. Rule A only matched relative ones, and Rule B then resolved the
+	# symlink to a location inside the repo and ALLOWED it. So the guard did
+	# not block incident #2 by the route incident #2 actually took, and the
+	# test claiming to cover it exercised a shape that cannot occur.
+	_guard_write "$PLUGIN/.claude/scripts/cr/thread-reply.sh"
 	_denied
-	_guard_write "scripts/cr/thread-reply.sh"
+	# ...while editing the real path stays allowed — that is ordinary work.
+	_guard_write "$PLUGIN/scripts/cr/thread-reply.sh"
 	_allowed
+}
+
+@test "an absolute redirect through the symlink is refused too" {
+	# Same hole, Bash shape: $PWD-built paths are how bats fixtures normally
+	# construct targets.
+	_guard "cat > $PLUGIN/.claude/hooks/some-hook.sh"
+	_denied
+}
+
+@test "a SINGLE-quoted PATH target is refused, not just a bare one" {
+	# The extractor stripped only a leading double quote, so a single-quoted
+	# target kept its apostrophe, failed the absolute test, and skipped Rule B
+	# entirely — incident #1 with different quoting.
+	_guard "printf x > '/opt/homebrew/bin/brew'"
+	_denied
+}
+
+@test "the bypass token must be a PREFIX, not text inside the payload" {
+	# Unanchored, the token disabled the guard whenever it merely appeared
+	# anywhere in the command — so writing that very text to a production file
+	# was what let the write through.
+	_guard "echo SYMLINK_WRITE_GUARD_SKIP=1 > .claude/scripts/cr/x.sh"
+	_denied
+}
+
+@test "a bypass WRITES an audit row — the header promises it" {
+	# The header and the deny text both said "audit-logged" while neither
+	# bypass path recorded anything. A silent bypass of a guard that exists
+	# because two silent overwrites went unnoticed is the same bug again.
+	local log="$PLUGIN/.claude/logs/pipeline-skip.jsonl"
+	local before=0
+	[ -f "$log" ] && before=$(grep -c 'symlink-write-guard-skip' "$log" 2>/dev/null || echo 0)
+	_guard "SYMLINK_WRITE_GUARD_SKIP=1 SYMLINK_WRITE_GUARD_SKIP_REASON=under-test cat > .claude/scripts/cr/x.sh"
+	_allowed
+	local after=0
+	[ -f "$log" ] && after=$(grep -c 'symlink-write-guard-skip' "$log" 2>/dev/null || echo 0)
+	[ "$after" -gt "$before" ] || {
+		echo "the bypass wrote no audit row (before=$before after=$after)"
+		return 1
+	}
 }
 
 @test "the inline bypass works and is named in the denial" {

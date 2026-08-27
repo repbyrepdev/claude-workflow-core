@@ -6,35 +6,42 @@ set -uo pipefail
 #
 # Refuse a write whose path resolves, THROUGH A SYMLINK, into something the
 # write plainly did not mean to touch. Two incidents in one session, same
-# shape both times:
+# shape both times, both silent:
 #
-#   1. `printf '...' > "$dir/brew"` where $dir was /opt/homebrew/bin. The
-#      entry there is a symlink into the Cellar, so the redirect followed it
-#      and replaced the real brew binary with a 3-line stub. Nothing warned;
-#      brew simply went silent afterwards.
+#   1. `printf '...' > "$dir/brew"` with $dir=/opt/homebrew/bin. That entry is
+#      a symlink into the Cellar, so the redirect followed it and replaced the
+#      real brew binary with a 3-line stub. brew simply went quiet afterwards.
 #
 #   2. A bats test doing `cat > .claude/scripts/cr/thread-reply.sh` to build a
-#      stub. `.claude/scripts` is a SYMLINK to the repo's real scripts/ dir,
-#      so the fixture write went straight through and replaced a 292-line
-#      production helper. The test then "passed" against its own stub.
+#      fixture. `.claude/scripts` is a SYMLINK to this repo's scripts/ dir, so
+#      the fixture write replaced a production helper — and the test then
+#      passed against its own stub.
 #
-# Both are invisible at the time — the write succeeds, and the damage shows up
-# later as something inexplicably broken. That is precisely the class epic
-# #2544 exists to make mechanical.
+# WHAT IS ACTUALLY PARSED — stated precisely, because the first version of
+# this header overstated it and phase-1 review caught that the guard let both
+# of its own cited incidents through by their real routes:
 #
-# WHAT IS REFUSED
-#   A. Any write under `.claude/{scripts,hooks,_lib}/` reached by a RELATIVE
-#      path. Those three are symlinks to the production dirs, so a relative
-#      write from the repo root always lands on production. A test that wants
-#      a fixture must write under its own $TEST_TMP (an absolute path outside
-#      the repo), which stays allowed.
-#   B. Any write landing in a PATH directory outside this repo — /usr/bin,
-#      /usr/local/bin, /opt/homebrew/bin and friends. Installing a tool is a
-#      deliberate act that belongs in a package manager, not a redirect.
+#   Inspected:  `> path`, `>> path`, `N> path`, `tee [-a] path`, and the
+#               Write/Edit tool's `file_path`.
+#   NOT parsed: cp, mv, install, ln, dd, `sed -i`, and any write performed
+#               inside a script this hook cannot see. Those are real gaps,
+#               listed so nobody assumes coverage that is not here.
 #
-# Read-only use of those paths is untouched; only writes are inspected.
+# WHAT IS REFUSED, of the shapes above:
+#   A. A write landing under `.claude/{scripts,hooks,_lib}/` INSIDE this repo
+#      — whether written relatively, absolutely, or through $PWD. Those three
+#      are symlinks to the production dirs. A fixture under a temp dir is
+#      allowed; that is the sanctioned place for one.
+#   B. A write landing in a PATH directory outside this repo — /usr/bin,
+#      /usr/local/bin, /opt/homebrew/bin. Installing a tool is a job for a
+#      package manager, not a redirect.
 #
-# Bypass (audit-logged): SYMLINK_WRITE_GUARD_SKIP=1 <command>
+# Reads are untouched; only writes are inspected.
+#
+# Bypass: SYMLINK_WRITE_GUARD_SKIP=1 as a COMMAND PREFIX (or exported). It is
+# genuinely audit-logged — see _audit_bypass. The token is anchored, because
+# an unanchored match meant `echo SYMLINK_WRITE_GUARD_SKIP=1 > production.sh`
+# disabled the guard using the very text it was about to write.
 
 HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
 LIB_DENY="${HOOK_DIR}/../_lib/hook-deny.sh"
@@ -48,36 +55,60 @@ else
 	}
 fi
 
-PAYLOAD=$(cat 2>/dev/null) || PAYLOAD=""
-[ -n "$PAYLOAD" ] || exit 0
-command -v jq >/dev/null 2>&1 || exit 0
+# Fail CLOSED on unreadable input, matching the sibling gate
+# (pre-merge-cr-comments-gate.sh), whose own comment records that silently
+# coercing a bad payload to {} hid real bugs. The first version of this file
+# exited 0 on all three of these, which quietly disabled the guard.
+PAYLOAD=$(cat 2>/dev/null) || hook_deny "symlink-write-guard" "stdin read failed — failing closed"
+[ -n "$PAYLOAD" ] || hook_deny "symlink-write-guard" "empty hook payload — failing closed"
+command -v jq >/dev/null 2>&1 ||
+	hook_deny "symlink-write-guard" "jq not installed — this guard cannot parse its payload without it, and silently allowing writes is how both incidents happened. Install jq."
+printf '%s' "$PAYLOAD" | jq -e . >/dev/null 2>&1 ||
+	hook_deny "symlink-write-guard" "hook payload is not valid JSON — failing closed"
 
-CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""' 2>/dev/null)
-FILE_PATH=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.file_path // ""' 2>/dev/null)
+CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // ""')
+FILE_PATH=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.file_path // ""')
+CWD=$(printf '%s' "$PAYLOAD" | jq -r '.cwd // ""')
+[ -n "$CWD" ] || CWD=$PWD
 
-# Inline bypass, matching the sibling guards' shape.
-case "$CMD" in
-*SYMLINK_WRITE_GUARD_SKIP=1*) exit 0 ;;
-esac
-[ "${SYMLINK_WRITE_GUARD_SKIP:-0}" = "1" ] && exit 0
+_audit_bypass() {
+	local root reason
+	root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$CWD"
+	reason=${SYMLINK_WRITE_GUARD_SKIP_REASON:-unstated}
+	reason=${reason//\\/\\\\}
+	reason=${reason//\"/\\\"}
+	reason=${reason//$'\n'/ }
+	mkdir -p "$root/.claude/logs" 2>/dev/null || return 0
+	printf '{"ts":"%s","kind":"symlink-write-guard-skip","reason":"%s"}\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" \
+		>>"$root/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
+}
+
+# Anchored: the token must be a command-position assignment, not text that
+# merely appears somewhere in the command.
+if printf '%s' "$CMD" | grep -qE '(^|[;&|][[:space:]]*)SYMLINK_WRITE_GUARD_SKIP=1[[:space:]]'; then
+	_audit_bypass
+	exit 0
+fi
+if [ "${SYMLINK_WRITE_GUARD_SKIP:-0}" = "1" ]; then
+	_audit_bypass
+	exit 0
+fi
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
 
-# Collect candidate write targets.
-TARGETS=""
-if [ -n "$FILE_PATH" ]; then
-	TARGETS="$FILE_PATH"
-fi
+# --- collect write targets ------------------------------------------------
+TARGETS=$FILE_PATH
 if [ -n "$CMD" ]; then
-	# `> path`, `>> path`, and `tee [-a] path`. Deliberately narrow: these two
-	# shapes cover both observed incidents, and a broader parser would produce
-	# false denials on ordinary commands — a guard nobody trusts gets skipped.
+	# Strips a leading double OR single quote. Single quotes were not handled,
+	# so `> '/opt/homebrew/bin/brew'` kept its apostrophe, failed the absolute
+	# test, and skipped Rule B entirely — incident #1 with different quoting.
 	REDIRECTS=$(printf '%s\n' "$CMD" |
-		grep -oE '>>?[[:space:]]*"?[^ "|;&)]+' 2>/dev/null |
-		sed -E 's/^>>?[[:space:]]*"?//' || true)
+		grep -oE '[0-9]?>>?[[:space:]]*["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
+		sed -E 's/^[0-9]?>>?[[:space:]]*["'"'"']?//' || true)
 	TEES=$(printf '%s\n' "$CMD" |
-		grep -oE '\btee[[:space:]]+(-a[[:space:]]+)?"?[^ "|;&)]+' 2>/dev/null |
-		sed -E 's/^tee[[:space:]]+(-a[[:space:]]+)?"?//' || true)
+		grep -oE '\btee[[:space:]]+(-a[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
+		sed -E 's/^tee[[:space:]]+(-a[[:space:]]+)?["'"'"']?//' || true)
 	TARGETS=$(printf '%s\n%s\n%s\n' "$TARGETS" "$REDIRECTS" "$TEES")
 fi
 [ -n "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ] || exit 0
@@ -85,30 +116,74 @@ fi
 _deny_symlink() { # $1 = path, $2 = why
 	hook_deny "symlink-write-guard" "REFUSED a write to '$1' — $2
 
-This is the shape that replaced /opt/homebrew/bin/brew with a 3-line stub, and
-that replaced a 292-line production helper with a test fixture. Both succeeded
-silently; the damage surfaced much later.
+This is the shape that replaced /opt/homebrew/bin/brew with a stub, and that
+replaced a production helper with a test fixture. Both succeeded silently; the
+damage surfaced much later.
 
-If this is a TEST FIXTURE: write it under your \$TEST_TMP (an absolute path
-outside the repo), then cd into that fixture BEFORE creating any .claude/
-subdirectory. The symlinked dirs only resolve to production when reached by a
-relative path from the repo.
+If this is a TEST FIXTURE: build the path from your \$TEST_TMP so it lands in
+a temp dir — e.g. \"\\\$TEST_TMP/.claude/scripts/x.sh\". A temp path is allowed.
+Writing '.claude/scripts/...' relative to the repo is refused NO MATTER the
+cwd, because the guard cannot tell a cd'd shell from an un-cd'd one.
 
-If you really mean to change the production file: edit the real path directly
-(scripts/..., hooks/..., _lib/...), so the change is visible in the diff.
+If you really mean to change the production file: edit the real path
+(scripts/..., hooks/..., _lib/...), so the change shows up in the diff.
 
-Bypass (audit-logged): SYMLINK_WRITE_GUARD_SKIP=1 <command>"
+Bypass (audit-logged to .claude/logs/pipeline-skip.jsonl):
+  SYMLINK_WRITE_GUARD_SKIP=1 SYMLINK_WRITE_GUARD_SKIP_REASON=\"why\" <command>"
+}
+
+# Does an absolute path land inside one of THIS repo's symlinked .claude dirs?
+# Resolving the parent is what catches the absolute form: `pwd -P` follows the
+# symlink to <repo>/scripts, which the earlier version then treated as
+# "inside the repo, therefore fine" — permitting the exact damage it exists to
+# stop, and permitting it for Write/Edit specifically, since those tools only
+# ever send absolute paths.
+_lands_in_repo_symlink_dir() { # $1 = absolute path
+	local d real
+	d=$(dirname "$1")
+	[ -d "$d" ] || return 1
+	real=$(cd "$d" 2>/dev/null && pwd -P) || return 1
+	[ -n "$REPO_ROOT" ] || return 1
+	case "$real/" in
+	"$REPO_ROOT"/scripts/* | "$REPO_ROOT"/scripts/ | \
+		"$REPO_ROOT"/hooks/* | "$REPO_ROOT"/hooks/ | \
+		"$REPO_ROOT"/_lib/* | "$REPO_ROOT"/_lib/)
+		# It resolves into production. Only refuse when the path was written
+		# THROUGH the .claude symlink — a direct `scripts/foo.sh` edit is
+		# ordinary work and must stay allowed.
+		case "$1" in
+		*/.claude/scripts/* | */.claude/hooks/* | */.claude/_lib/*) return 0 ;;
+		esac
+		;;
+	esac
+	return 1
 }
 
 while IFS= read -r t; do
 	[ -n "$t" ] || continue
-	# Strip a leading ./ for matching.
 	t_norm="${t#./}"
 
-	# --- Rule A: the repo's symlinked .claude dirs, reached relatively ------
+	# A target built from an unexpanded variable cannot be resolved here. The
+	# common case by far is a fixture path ($TEST_TMP/...), and refusing those
+	# would deny the remedy this guard prescribes — after which it gets
+	# bypassed habitually and protects nothing. Left to Rule B's realpath
+	# check, which sees through nothing, so this is a known bound.
 	case "$t_norm" in
-	/*) ;; # absolute — handled by rule B below
+	'$'* | '"$'* | "'\$"*) continue ;;
+	esac
+
+	case "$t_norm" in
+	/*)
+		# Absolute: does it land in the repo's symlinked dirs?
+		if _lands_in_repo_symlink_dir "$t_norm"; then
+			_deny_symlink "$t" \
+				".claude/{scripts,hooks,_lib} are SYMLINKS to this repo's production directories — this absolute path resolves into one of them"
+		fi
+		;;
 	*.claude/scripts/* | *.claude/hooks/* | *.claude/_lib/*)
+		# Relative through the symlink. Refused regardless of cwd: the hook
+		# cannot verify a cd that happens inside the same command, and the
+		# fixture remedy (an absolute temp path) is unaffected.
 		_deny_symlink "$t" \
 			".claude/{scripts,hooks,_lib} are SYMLINKS to this repo's production directories, so a relative write there lands on the real file"
 		;;
@@ -118,21 +193,16 @@ while IFS= read -r t; do
 	case "$t_norm" in
 	/*)
 		t_dir=$(dirname "$t_norm")
-		# Only care about existing dirs; a write into a new tree is not the
-		# hazard this guard is about.
 		[ -d "$t_dir" ] || continue
 		t_real=$(cd "$t_dir" 2>/dev/null && pwd -P) || continue
-		# Inside the repo is fine — that is ordinary work.
 		if [ -n "$REPO_ROOT" ]; then
 			case "$t_real/" in
 			"$REPO_ROOT"/*) continue ;;
 			esac
 		fi
-		# A temp dir is the sanctioned place for fixtures.
 		case "$t_real" in
 		/tmp/* | /private/tmp/* | /var/folders/*) continue ;;
 		esac
-		# Is it on PATH? Then it holds executables something else depends on.
 		_on_path=0
 		_old_ifs=$IFS
 		IFS=:
