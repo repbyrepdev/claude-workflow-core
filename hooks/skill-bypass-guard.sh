@@ -118,10 +118,24 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_lib/cmd-anchor.sh"
 #
 # GH_SKILL_BYPASS_SKIP still works — that is the documented, operator-facing
 # emergency override, and the deny text names it.
+# WRAPPED_CMD is extracted HERE rather than at its historical position ~90
+# lines below, because this classification runs before the bypass exits and
+# must see the same command the later matcher does. Without it,
+# `SKILL_WRAPPER=1 bash -lc 'coderabbit review ...'` was classified on the
+# OUTER string — which contains no bare `coderabbit` verb — took the bypass,
+# and never reached the matcher that would have caught it. Same for
+# `command coderabbit review`, hence the wrapper-word alternation.
+#
+# (Pure function of CMD, so hoisting it changes nothing else.)
+WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s|.*(bash\|sh\|zsh\|/bin/bash\|/bin/sh\|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*|\3|p" | head -1)
+
 _cr_review_cmd=0
-if printf '%s' "$CMD" | grep -qE '(^|[;&|][[:space:]]*)([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*coderabbit[[:space:]]'; then
-	printf '%s' "$CMD" | grep -qE '[[:space:]]review([[:space:]]|$)' && _cr_review_cmd=1
-fi
+_cr_wrapper='(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|env|sudo|-E)[[:space:]]+)*'
+for _c in "$CMD" "$WRAPPED_CMD"; do
+	[ -n "$_c" ] || continue
+	printf '%s' "$_c" | grep -qE '(^|[;&|(][[:space:]]*)'"$_cr_wrapper"'coderabbit[[:space:]]' || continue
+	printf '%s' "$_c" | grep -qE '[[:space:]]review([[:space:]]|$)' && _cr_review_cmd=1
+done
 
 bypass_var=""
 if [ "${SKILL_WRAPPER:-0}" = "1" ] && [ "$_cr_review_cmd" = "0" ]; then
@@ -217,8 +231,10 @@ fi
 # invocations like `bash -lc 'git commit ...'` or `sh -c 'bats foo.bats'`.
 # Strip the wrapper to get the inner command, then match against the same
 # regexes. WRAPPED_CMD is "" when CMD doesn't have a wrapper.
-# Use `|` as the sed delimiter so `/bin/bash` slashes don't break parsing.
-WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s|.*(bash\|sh\|zsh\|/bin/bash\|/bin/sh\|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*|\3|p" | head -1)
+#
+# ASSIGNED ABOVE, near the bypass block, which needs the same value to
+# classify a wrapped `coderabbit review` before deciding whether to exit. Left
+# named here because this is where every reader expects to find it.
 
 SKILL=""
 REASON=""

@@ -62,6 +62,13 @@ _denied() {
 }
 
 _allowed() {
+	# Exit 0 AND nothing on the wire. A hook that allows says nothing at all,
+	# so "no deny string" was too weak — an unexpected diagnostic or a partial
+	# error printed alongside exit 0 read as a clean allow.
+	[ -z "$output" ] || {
+		echo "an allowed write produced output; a passing guard is silent: $output"
+		return 1
+	}
 	[ "$status" -eq 0 ] || {
 		echo "guard exited $status — a crash is not permission: $output"
 		return 1
@@ -247,6 +254,27 @@ _allowed() {
 	# anything. The unanchored pattern refused it, and a guard that blocks
 	# innocent writes gets bypassed habitually — after which it guards nothing.
 	_guard "cat > notes.claude/scripts/x.sh"
+	_allowed
+}
+
+@test "EVERY tee operand is inspected, not just the first" {
+	# tee takes a LIST. Checking only operand 1 meant a decoy in front hid the
+	# protected target completely.
+	_guard "echo x | tee /tmp/safe .claude/scripts/cr/x.sh"
+	_denied
+}
+
+@test "tee operands after -- are still inspected" {
+	# `--` ends option parsing, so everything after it is a filename. The old
+	# extractor recorded `--` itself and dropped every real operand.
+	_guard "echo x | tee -- .claude/scripts/cr/x.sh"
+	_denied
+}
+
+@test "an ordinary multi-operand tee is still allowed" {
+	# The other direction: broadening the parse must not start refusing writes
+	# that touch nothing protected.
+	_guard "echo x | tee /tmp/a /tmp/b"
 	_allowed
 }
 

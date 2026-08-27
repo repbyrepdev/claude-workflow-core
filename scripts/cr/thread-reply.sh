@@ -197,6 +197,14 @@ query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
 		printf '%s' "$page" |
 			jq -e '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"' >/dev/null 2>&1 ||
 			scm_fail "reviewThreads page $page_n has no .data.repository.pullRequest.reviewThreads.nodes ARRAY — refusing to read that as zero threads"
+		# hasNextPage must be a BOOLEAN, checked here and not merely compared
+		# below. A page whose nodes ARE an array but whose pageInfo is missing
+		# yields null, `[ null = true ]` is false, pagination stops, and an
+		# INCOMPLETE thread set is returned as if it were the whole PR — the
+		# same fail-open as the nodes case, one field over.
+		printf '%s' "$page" |
+			jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | type) == "boolean"' >/dev/null 2>&1 ||
+			scm_fail "reviewThreads page $page_n has no boolean pageInfo.hasNextPage — refusing to end pagination on an unreadable page"
 		all=$(jq -c -n --argjson a "$all" --argjson p "$page" \
 			'$a + $p.data.repository.pullRequest.reviewThreads.nodes') ||
 			scm_fail "jq failed merging a reviewThreads page"

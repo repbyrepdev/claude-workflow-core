@@ -153,12 +153,38 @@ if [ -n "$CMD" ]; then
 		'[0-9]?>>?[[:space:]]*["'"'"']?[^ "'"'"'|;&)]+' \
 		's/^[0-9]?>>?[[:space:]]*["'"'"']?//') || _rc=$?
 	[ "$_rc" -eq 0 ] || _ext_deny "redirects" "$_rc"
-	# `--append` as well as `-a`: tee accepts both, and only one was matched.
+	# EVERY tee operand, not just the first. `tee` takes a LIST of files, so
+	# `tee /tmp/safe .claude/scripts/cr/x.sh` checked only /tmp/safe and let
+	# the protected target through — the guard reported on a decoy. `tee --`
+	# was worse: it recorded `--` and dropped every real operand.
+	#
+	# Grab the whole tee segment up to the next shell separator, then split it
+	# into words and keep the non-flag ones. `--` ends option parsing, so
+	# everything after it is a filename even if it starts with a dash.
 	_rc=0
-	TEES=$(_extract \
-		'\btee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' \
-		's/^tee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?//') || _rc=$?
+	_tee_seg=$(_extract '\btee[[:space:]]+[^|;&]*' 's/^tee[[:space:]]+//') || _rc=$?
 	[ "$_rc" -eq 0 ] || _ext_deny "tee" "$_rc"
+	TEES=""
+	if [ -n "$_tee_seg" ]; then
+		_past_ddash=0
+		# shellcheck disable=SC2086 # deliberate word-splitting of the operand list
+		for _w in $_tee_seg; do
+			if [ "$_past_ddash" = "0" ]; then
+				case "$_w" in
+				--)
+					_past_ddash=1
+					continue
+					;;
+				-*) continue ;;
+				esac
+			fi
+			_w=${_w%\"}
+			_w=${_w#\"}
+			_w=${_w%\'}
+			_w=${_w#\'}
+			TEES=$(printf '%s\n%s' "$TEES" "$_w")
+		done
+	fi
 	# `dd of=path` writes through a symlink exactly like a redirect does, and
 	# it was in the documented-gaps list purely because nobody had written the
 	# two lines. cp/mv/install/ln/sed -i stay listed as gaps: each needs

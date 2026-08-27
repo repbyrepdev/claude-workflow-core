@@ -136,11 +136,11 @@
     "hooks/session-start-stale-pin.sh": "2d4a0fdd27b8f5cbf4b77aa881351729d3471767e4e41479939b75a34da2e9be",
     "hooks/ship-cycle-director-gate.sh": "93c1fe6ec042ebdb67b9ce890deeb75978141cc0f5245d3b39e4a7f8b7da4411",
     "hooks/ship-cycle-guard.sh": "289547c345013177e63457dae77910810a4e7e006e809d3e7aef9b199d0213b2",
-    "hooks/skill-bypass-guard.sh": "eeac58aee578fedfff1aabb983eede9877df9a4f07cff4978c3344a60967fdaf",
+    "hooks/skill-bypass-guard.sh": "4db830670ea32cefa50687ba644cc30dbe4b75cfc158744dd0c026a2ea7796be",
     "hooks/skip-env-approval-gate.sh": "00603f0ba1cda5f0e78e151a0c7f78eb87a8ad56dcec09622de611d15afd9e46",
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
-    "hooks/symlink-write-guard.sh": "749ec360bc3cd5adfc3d426a37bf22f068333794051c114027c40a554b68843c",
+    "hooks/symlink-write-guard.sh": "1fe3c2bc6e36615dce9034e34351fd431c63a2a07d62b796fb38d29341624f62",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
     "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
     "skills/ship-pr-cycle/run.sh": "7a1e055339ae285ddcf9fd66b77ab2091d461da97ae5af3f48fd38417accec0b"

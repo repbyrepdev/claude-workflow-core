@@ -208,6 +208,25 @@ EOF
 	}
 }
 
+@test "SKILL_WRAPPER=1 does not exempt WRAPPED coderabbit forms (#2548 r2)" {
+	# The classification ran on the OUTER command string, which contains no
+	# bare `coderabbit` verb — so the bypass fired and the invocation never
+	# reached the matcher that would have caught it. Both evasion shapes the
+	# #2396 fix already closed for the other verbs.
+	_run_guard "SKILL_WRAPPER=1 bash -lc 'coderabbit review --base main'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a bash -lc wrapped review took the SKILL_WRAPPER bypass: $output"
+		return 1
+	}
+	_run_guard "SKILL_WRAPPER=1 command coderabbit review --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a command-prefixed review took the SKILL_WRAPPER bypass: $output"
+		return 1
+	}
+}
+
 @test "SKILL_WRAPPER=1 still exempts the OTHER guarded verbs (#2548 r1)" {
 	# The narrowing is scoped to coderabbit. Revoking the marker wholesale
 	# would break every skill wrapper that legitimately shells out to gh.
