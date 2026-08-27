@@ -275,7 +275,12 @@ _scaler_pin() { # $1 = extra env words
 	# symlink step rather than silently testing the wrong thing.
 	local nojq="$TEST_TMP/nojq" _c
 	mkdir -p "$nojq"
-	for _c in awk cut date find git mkdir mv rm sed tail tr; do
+	# cksum, mktemp and touch were ADDED to the script (slug hash, safe temp
+	# file, read-touch) after this list was written, and the list did not
+	# follow — so the test ran with those unresolvable and reached the right
+	# assertion for the wrong reason. The comment above claims the list comes
+	# from the script; keeping that true is the point.
+	for _c in awk cksum cut date find git mkdir mktemp mv rm sed tail touch tr; do
 		ln -sf "$(command -v "$_c")" "$nojq/$_c" || {
 			echo "fixture: could not shim $_c"
 			return 1
@@ -436,20 +441,27 @@ _scaler_pin() { # $1 = extra env words
 	pin=$(find "$TEST_TMP/pins" -name '*.json' | head -1)
 	[ -n "$pin" ] || return 1
 	printf 'not json\n' >"$pin"
-	# Block only the TMP write, by making the target name a directory the
-	# printf cannot open — the pins dir itself stays writable.
-	mkdir -p "$pin.$$" 2>/dev/null || true
-	_scaler_pin
-	rmdir "$TEST_TMP/pins/"*.\$\$ 2>/dev/null || true
+	# Block ONLY the temp write, with a failing mktemp shim. The previous
+	# attempt did `mkdir -p "$pin.$$"` to occupy the temp name — but `$$` there
+	# is the bats shell PID while the script builds its own from a different
+	# process, so the two never matched (measured: 95530 vs 95531) and the
+	# write simply succeeded. The test then re-covered the happy path and its
+	# `if [ -f ]` guard passed vacuously. The pins dir stays writable, so the
+	# stale-pin REMOVAL can and must succeed.
+	local shim="$TEST_TMP/shim"
+	mkdir -p "$shim"
+	printf '#!/bin/sh\nexit 1\n' >"$shim/mktemp"
+	chmod +x "$shim/mktemp"
+	run bash -c "cd '$WORK' && PATH='$shim:$PATH' PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
 	[ "$status" -eq 0 ]
-	# Either it wrote cleanly (pin present and valid) or it failed and removed
-	# the stale one. What must NEVER be true is a corrupt pin left in place.
-	if [ -f "$pin" ]; then
-		jq -e '.rounds' "$pin" >/dev/null 2>&1 || {
-			echo "a corrupt pin was left in place: $(cat "$pin")"
-			return 1
-		}
-	fi
+	[[ $output == *"could not write the tier pin"* ]] || {
+		echo "the blocked write did not warn: $output"
+		return 1
+	}
+	[ ! -f "$pin" ] || {
+		echo "the stale pin was not removed: $(cat "$pin")"
+		return 1
+	}
 }
 
 @test "scaler pin: stale pins are PRUNED on write" {

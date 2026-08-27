@@ -503,7 +503,13 @@ if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
 		read -r _pin_tier || true
 		read -r pin_ts || true
 	} <<<"$_pin_vals"
-	if [[ ${_pin_rounds:-} =~ ^[1-9][0-9]*$ ]]; then
+	# CLAMPED to the table's own maximum, not merely "a positive integer".
+	# The regex alone accepts `999`, so a corrupt or hand-edited pin could
+	# demand a round count the tier table can never produce — and since the
+	# cap is a ceiling on review iteration, an absurdly high one is a
+	# treadmill with extra steps. 5 is the `high` tier; the pin cannot mean
+	# more than the table can.
+	if [[ ${_pin_rounds:-} =~ ^[1-9][0-9]*$ ]] && [ "$_pin_rounds" -le 5 ]; then
 		rounds="$_pin_rounds"
 		# A distinguishable sentinel, not the bare word "unknown" — which
 		# reads like a tier name in REASON output and could be mistaken for
