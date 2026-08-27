@@ -430,7 +430,25 @@ if [ -n "$branch_slug" ] && ! command -v jq >/dev/null 2>&1; then
 fi
 PIN_FILE="$PIN_DIR/${branch_slug}.json"
 
-if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
+# DEFER, DON'T DESTROY. `--repin` removes the old pin and logs the change, but
+# the CR-informed gate further down declines to WRITE a replacement while
+# cr_ran=0. Run in that state, --repin left the branch with: the old pin
+# deleted, a durable audit row claiming a new cap, and NO pin at all — so
+# every later ordinary call re-resolved fresh, which is precisely the ratchet
+# this whole feature removes, with the trail asserting the opposite.
+#
+# cr_ran can be 0 on a branch that HAS been pinned: cr-local-review.jsonl is
+# append-only and SHARED across branches, and the scan window is the last 50
+# rows, so a busy repo rolls a branch's own row out of view between the pin
+# and a later --repin.
+#
+# So the same rule the first-time pin follows applies here: if the informed
+# value is not available, change nothing and say why. Refusing costs a retry;
+# proceeding costs the pin and lies about it.
+if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ] && [ "$cr_ran" = "0" ]; then
+	_pin_state_add "repin-deferred-no-cr"
+	echo "phase1-scaler: WARN: --repin REFUSED — CR has not reported for this branch (cr_ran=0), so there is no informed value to re-pin to. The existing pin is UNTOUCHED and nothing was logged; re-run after a CR round. (A shared, append-only cr-local-review.jsonl can roll this branch's row out of the 50-row scan window, which looks the same from here.)" >&2
+elif [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
 	# REMOVAL FIRST, and verified by ABSENCE. The earlier order wrote the
 	# audit row, then attempted the removal, then set repinned=1 regardless —
 	# so when the removal failed the surviving pin was re-read below,

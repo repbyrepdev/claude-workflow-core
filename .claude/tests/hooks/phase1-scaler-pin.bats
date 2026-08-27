@@ -1069,3 +1069,66 @@ _log_p05() { # $1 = findings count for a single ok agent row
 	}
 	[[ $output == *"pinned=1"* ]]
 }
+
+@test "scaler pin: --repin with no CR signal changes NOTHING" {
+	# The destructive window: --repin removes the pin and logs the change, but
+	# the CR gate further down declines to write a replacement while cr_ran=0.
+	# Run in that state it left the branch with the old pin deleted, an audit
+	# row claiming a new cap, and no pin at all — the ratchet back, with the
+	# trail asserting the opposite.
+	#
+	# cr_ran=0 on an ALREADY-PINNED branch is not hypothetical: the CR log is
+	# shared and append-only and the scan window is 50 rows, so a busy repo
+	# rolls this branch's row out of view. Truncating the log reproduces that.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	_scaler_pin
+	[[ $output == *"pinned=1"* ]] || {
+		echo "setup did not establish a pin: $output"
+		return 1
+	}
+	local pin before_content
+	pin=$(find "$TEST_TMP/pins" -name "*.json" -type f | head -1)
+	[ -n "$pin" ] || {
+		echo "no pin file was written"
+		return 1
+	}
+	before_content=$(cat "$pin")
+
+	# The branch's CR row rolls out of the window.
+	: >"$WORK/.claude/logs/cr-local-review.jsonl"
+
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' PHASE1_REPIN_REASON='rotated out' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	[ "$status" -eq 0 ]
+	[[ $output == *"repin-deferred-no-cr"* ]] || {
+		echo "--repin without CR signal did not report the deferral: $output"
+		return 1
+	}
+	# The pin is UNTOUCHED — not removed, not rewritten.
+	[ -f "$pin" ] || {
+		echo "--repin destroyed the pin it could not replace"
+		return 1
+	}
+	[ "$(cat "$pin")" = "$before_content" ] || {
+		echo "--repin rewrote the pin from an uninformed resolve: $(cat "$pin")"
+		return 1
+	}
+	# ...and NOTHING was logged, because nothing changed.
+	if [ -f "$WORK/.claude/logs/pipeline-skip.jsonl" ]; then
+		! grep -q 'phase1-scaler-repin' "$WORK/.claude/logs/pipeline-skip.jsonl" || {
+			echo "a refused repin still wrote an audit row"
+			return 1
+		}
+	fi
+	# The branch stays PINNED at its old value — the point of refusing.
+	_scaler_pin
+	[[ $output == *"pinned=1"* ]] || {
+		echo "the branch ended up unpinned after a refused repin: $output"
+		return 1
+	}
+	[[ $output == *"ROUNDS=3"* ]] || {
+		echo "the old cap did not survive a refused repin: $output"
+		return 1
+	}
+}
