@@ -24,8 +24,11 @@ set -euo pipefail
 # never lower the count. Both phases read this number, so the treadmill was
 # never phase-2-specific. See the pin block for the full account.
 #
-# The first INFORMED resolve pins; an uninformed one (no-prefilter-signal) is
-# deliberately not pinned. `--repin` re-resolves on purpose (audit-logged);
+# The pin is CR-ANCHORED: it is taken on the first resolve that has heard
+# from CR, the dominant signal, and deferred before that. Deferring only on
+# no-prefilter-signal was not enough — ship-pr-cycle calls the scaler from its
+# phase1 handler, before phase 2 has ever written a CR row, so every branch
+# pinned its whole budget from prefilter data alone. `--repin` re-resolves on purpose (audit-logged);
 # floors still apply upward over a pin.
 #
 # Env:
@@ -161,6 +164,10 @@ fi
 # an unreadable/non-numeric CR log must not read as "clean" — force at
 # least the minimal tier instead of silently vouching 0.
 cr_count=0
+# Whether CR has REPORTED for this branch at all, which cr_count cannot say:
+# 0 means both "CR ran and found nothing" and "CR has never run". The pin
+# defers on the second and not the first.
+cr_ran=0
 cr_log="$REPO_ROOT/.claude/logs/cr-local-review.jsonl"
 if [ -f "$cr_log" ] && command -v jq >/dev/null 2>&1; then
 	# (#2523) Scope the lookup to THIS branch. The log is append-only and shared
@@ -267,6 +274,10 @@ EOF
 		fi
 		if [ -n "$_cr_scoped" ]; then
 			cr_count=$_cr_scoped
+			# CR has actually reported for this branch. Distinct from cr_count,
+			# which is 0 both when CR ran and found nothing AND when CR has
+			# never run — and the pin below must tell those apart.
+			cr_ran=1
 			# A rejected row must FLOOR the tier even when another row produced a
 			# usable value: an older clean ancestor yielding 0 would otherwise let
 			# a malformed newer row vouch a clean branch, which is the same
@@ -548,20 +559,30 @@ if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
 	fi
 fi
 
-# DO NOT PIN AN UNINFORMED RESOLVE. `no-prefilter-signal` is the tier #2259
-# created to mean "nothing has measured this diff yet" — and SKILL.md tells the
-# operator to run `--explain` at the START of a long PR cycle, which is exactly
-# when p05_ran=0 and cr_count=0. Pinning there froze the branch at the floor
-# before Phase 0.5 or CR had said anything, which is the mirror image of the
-# bug this feature fixes: instead of a cap that only rises, a cap decided by
-# the one call that knew least.
+# DO NOT PIN BEFORE CR HAS REPORTED. CR is the dominant signal — Phase 0.5 is
+# a prefilter — and `cr-local-review.jsonl` is written ONLY by
+# scripts/cr/local-review.sh, which ship-pr-cycle.sh invokes ONLY from its
+# `phase2)` stage. But `_scaler_rounds` is called from the `phase1)` handler
+# too (ship-pr-cycle.sh:1898), which runs BEFORE Phase 2 ever has.
 #
-# Observed on this very branch: the first call pinned tier=no-prefilter-signal
-# rounds=2 and held it through sixteen prefilter findings.
+# So on the mechanized path the first call reaching here always has p05_ran=1
+# and cr_ran=0. An earlier version of this guard deferred only on
+# `no-prefilter-signal` (p05_ran=0) — a tier that call sequence never
+# produces. Every branch therefore pinned its ENTIRE budget from Phase-0.5
+# data alone, and both consumers read that one pin: a branch whose prefilter
+# came back clean pinned `all-clean rounds=1`, so when CR later returned 13
+# findings the Phase-2 cap was already spent after a single round.
 #
-# The ratchet stays closed, because the first INFORMED resolve pins and every
-# call after it reads.
-if [ "$pinned" = "0" ] && [ -n "$branch_slug" ] && [ "$tier" = "no-prefilter-signal" ]; then
+# That traded "ratchets upward forever" for "freezes too low before the
+# dominant signal arrives" — worse, because it fires on the common path and,
+# unlike the ratchet, cannot self-correct: nothing in the automated flow calls
+# `--repin`.
+#
+# The rule is therefore CR-anchored: defer while CR has not reported, pin on
+# the first resolve that has heard from it. `cr_ran`, not `cr_count`, because
+# a genuine 0-finding CR round IS informed and must pin.
+if [ "$pinned" = "0" ] && [ -n "$branch_slug" ] &&
+	{ [ "$cr_ran" = "0" ] || [ "$tier" = "no-prefilter-signal" ]; }; then
 	_pin_state_add "deferred-no-signal"
 elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)

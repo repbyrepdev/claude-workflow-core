@@ -902,3 +902,87 @@ _scaler_pin() { # $1 = extra env words
 		return 1
 	}
 }
+
+# Feeds the PHASE 0.5 signal, which the mechanized call path has but CR does
+# not at the point ship-pr-cycle.sh first reaches the scaler.
+_log_p05() { # $1 = findings count for a single ok agent row
+	printf '{"ts":"2026-07-08T00:00:00Z","sha":"%s","phase":"0.5","agent":"code-reviewer","findings":%s,"status":"ok"}\n' \
+		"$(cd "$WORK" && git rev-parse HEAD)" "$1" \
+		>>"$WORK/.claude/logs/phase0.5-run.jsonl"
+}
+
+@test "scaler pin: phase 0.5 ALONE does not pin — CR is the dominant signal" {
+	# The real call sequence, which none of the other tests reproduce: they all
+	# seed CR data before the first resolve. ship-pr-cycle.sh calls the scaler
+	# from its phase1) handler (line 1898), and cr-local-review.jsonl is
+	# written ONLY by local-review.sh, invoked ONLY from phase2) — so the first
+	# mechanized call always has p05_ran=1 and cr_ran=0.
+	#
+	# Deferring only on no-prefilter-signal never fired there. A clean
+	# prefilter pinned all-clean/1, and CR returning 13 findings afterwards
+	# found the whole budget already spent.
+	_log_p05 0
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"p05_ran=1"* ]] || {
+		echo "the fixture did not produce a phase 0.5 signal: $output"
+		return 1
+	}
+	[[ $output == *"cr=0"* ]] || {
+		echo "the fixture leaked CR data into a phase-0.5-only case: $output"
+		return 1
+	}
+	[[ $output == *"pin=deferred-no-signal"* ]] || {
+		echo "phase 0.5 alone pinned the whole budget: $output"
+		return 1
+	}
+	[[ $output == *"pinned=0"* ]] || return 1
+
+	# CR then reports 13 — the case the old behaviour froze out — and the pin
+	# is taken from the FULL signal.
+	_log_cr 13
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"ROUNDS=5"* ]] || {
+		echo "the first CR-informed resolve did not reach the high tier: $output"
+		return 1
+	}
+	[[ $output == *"pinned=0"* ]] || {
+		echo "the CR-informed resolve should be the one that WRITES the pin: $output"
+		return 1
+	}
+	# ...and it holds from there.
+	_log_cr 2
+	_scaler_pin
+	[[ $output == *"ROUNDS=5"* ]] || {
+		echo "the pin did not hold after CR informed it: $output"
+		return 1
+	}
+	[[ $output == *"pinned=1"* ]]
+}
+
+@test "scaler pin: a CLEAN CR round is informed and DOES pin" {
+	# cr_ran, not cr_count: a genuine 0-finding CR round has heard from the
+	# dominant signal and must pin, or a clean branch defers forever and the
+	# cap is never held at all.
+	_log_p05 0
+	_log_cr 0
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"cr=0"* ]] || return 1
+	[[ $output != *"deferred-no-signal"* ]] || {
+		echo "a clean CR round was treated as no signal: $output"
+		return 1
+	}
+	_log_cr 13
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"pinned=1"* ]] || {
+		echo "the clean CR resolve did not write a pin: $output"
+		return 1
+	}
+	[[ $output == *"ROUNDS=1"* ]] || {
+		echo "the pin from the clean round did not hold: $output"
+		return 1
+	}
+}
