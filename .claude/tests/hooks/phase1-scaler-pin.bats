@@ -313,8 +313,12 @@ _scaler_pin() { # $1 = extra env words
 	}
 	# all-clean would be 1 round; the floor lifts it to 2 even though the pin
 	# was written from the same resolve.
-	[[ $output != *"ROUNDS=1"* ]] || {
-		echo "a pin held the count under the sensitive-path floor: $output"
+	#
+	# Asserted POSITIVELY. `!= *"ROUNDS=1"*` also passes on a run that prints
+	# no ROUNDS= at all, which is every way this could break other than the
+	# one being tested.
+	[[ $output == *"ROUNDS=2"* ]] || {
+		echo "the sensitive-path floor did not lift the count to 2: $output"
 		return 1
 	}
 }
@@ -471,7 +475,7 @@ _scaler_pin() { # $1 = extra env words
 	local old="$TEST_TMP/pins/a_long_dead_branch-1234567890.json"
 	printf '{"rounds":5,"tier":"high"}\n' >"$old"
 	# 40 days back — past the 30-day window.
-	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$old"
+	_backdate_40d "$old"
 	(cd "$WORK" && git checkout -qb feat/prune-trigger) || return 1
 	_scaler_pin
 	[ "$status" -eq 0 ]
@@ -610,7 +614,7 @@ _scaler_pin() { # $1 = extra env words
 	# check reads stderr instead.
 	local old="$TEST_TMP/pins/an_old_branch-1234567890.json"
 	printf '{"rounds":5,"tier":"high"}\n' >"$old"
-	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$old"
+	_backdate_40d "$old"
 	chmod 500 "$TEST_TMP/pins"
 	(cd "$WORK" && git checkout -qb feat/prune-warn) || return 1
 	_scaler_pin
