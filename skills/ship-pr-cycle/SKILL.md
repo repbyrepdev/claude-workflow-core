@@ -151,6 +151,17 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 
 `phase1-scaler.sh --explain` resolves the per-tier `ROUNDS=N` cap. Honored as ceiling on Phase 1 + Phase 2 iteration. Scaler error → falls back to 2 rounds with `scm_warn`.
 
+**The tier is PINNED per branch (#2544).** The tier tables are a pure function of the current finding count, so re-resolving on every call let the cap grow as the rounds it bounds found things — cap 3 became cap 5 because the round that hit 3/3 returned 13 findings, and "3/3 ENFORCED" turned into "4/5". It could only rise, since unattributable CR rows are combined with a MAX. Both phases read this one number, so it was never phase-2-specific.
+
+The pin is **CR-anchored**: taken on the first resolve that has heard from CR, and deferred before that. CR is the dominant signal — Phase 0.5 is a prefilter — and `cr-local-review.jsonl` is written only from the `phase2` stage, while `_scaler_rounds` is also called from the `phase1` handler, which runs earlier. Pinning there froze the whole budget (both phases read the same pin) from prefilter data alone: a clean prefilter pinned `all-clean rounds=1`, and CR returning 13 findings afterwards found the Phase-2 cap already spent. A genuine 0-finding CR round **is** informed and does pin.
+
+- `--repin` — deliberately re-resolve a pinned branch. Audit-logged to `.claude/logs/pipeline-skip.jsonl` alongside the other audited escapes; set `PHASE1_REPIN_REASON="..."` to record why. If the existing pin cannot be removed, the cap is left UNCHANGED and nothing is logged — an audit row for a change that did not happen is worse than none.
+- `PHASE1_REPIN_REASON` — the rationale recorded by `--repin` (defaults to `unstated`).
+- `PHASE1_SCALER_PIN_DIR` — relocate pin state (shared checkout, read-only tree). Defaults to `.claude/.session-state/phase1-scaler/`.
+- `PHASE1_ROUNDS` still overrides everything; `PHASE1_MIN_ROUNDS` and the sensitive-path floor still apply **upward** over a pin — it bounds growth, it does not grant permission to review less.
+
+Pin state rides the `--explain` REASON line (`pinned=`, `pinned_at=`, `pin=<state>`), because every consumer discards stderr.
+
 ## Out of scope (separate sub-issues)
 
 - Phase 1 actual agent firing from bash (#732 — Claude-side directive hand-off)
