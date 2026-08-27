@@ -176,8 +176,18 @@ if [ -n "$CMD" ]; then
 	# which refused any long text argument that happened to mention both, and
 	# blocked this very fix's own audit record twice. A guard that fires on
 	# prose gets bypassed habitually, and then it guards nothing.
+	#
+	# The leading run has to skip QUOTED operands too, not just bare words.
+	# Excluding quotes from it meant one quoted operand in front of the
+	# ambiguous one broke the match entirely — `tee "/tmp/safe"
+	# '/tmp/decoy|tail' <protected>` sailed through the check it exists for.
+	# Three alternatives, all separator-free so the run cannot swallow the
+	# very thing being looked for: a bare word, a double-quoted span, a
+	# single-quoted span.
+	_tee_operand='([^"'"'"'|;&[:space:]]+|"[^"|;&]*"|'"'"'[^'"'"'|;&]*'"'"')'
+	_tee_ambiguous='("[^"]*[|;&][^"]*"|'"'"'[^'"'"']*[|;&][^'"'"']*'"'"')'
 	if printf '%s' "$CMD" |
-		grep -qE '\btee[[:space:]]+([^"'"'"'|;&]*[[:space:]]+)*("[^"]*[|;&][^"]*"|'"'"'[^'"'"']*[|;&][^'"'"']*'"'"')'; then
+		grep -qE '\btee[[:space:]]+('"$_tee_operand"'[[:space:]]+)*'"$_tee_ambiguous"; then
 		hook_deny "symlink-write-guard" 'REFUSED: a tee clause contains a QUOTED shell separator, so this hook cannot tell which words are operands and which are pipeline boundaries — and guessing is how a protected path gets skipped. Rewrite without the quoted separator, or use the audited bypass:
   SYMLINK_WRITE_GUARD_SKIP=1 SYMLINK_WRITE_GUARD_SKIP_REASON="why" <command>'
 	fi

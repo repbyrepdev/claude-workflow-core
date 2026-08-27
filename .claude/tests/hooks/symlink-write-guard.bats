@@ -279,6 +279,20 @@ _allowed() {
 	_denied
 }
 
+@test "a quoted operand BEFORE the ambiguous one does not hide it" {
+	# The leading run excluded quotes, so one quoted operand in front broke
+	# the match and the clause sailed through the check that exists for it.
+	_guard "echo x | tee \"/tmp/safe\" '/tmp/decoy|tail' .claude/scripts/cr/x.sh"
+	_denied
+}
+
+@test "quoted operands with no separator stay allowed" {
+	# The run must skip ordinary quoted operands, not refuse them — otherwise
+	# every `tee "$SOME_PATH"` becomes a denial.
+	_guard "echo x | tee \"/tmp/a b\" '/tmp/c d'"
+	_allowed
+}
+
 @test "prose that merely MENTIONS tee and a quoted pipe is not refused" {
 	# The ambiguity check first asked "contains tee" AND "contains a quoted
 	# separator" as two independent questions, so any long text argument
