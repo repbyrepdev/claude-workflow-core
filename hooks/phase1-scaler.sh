@@ -58,7 +58,12 @@ while [ "$#" -gt 0 ]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '4,22p' "$0"
+		# Derived, not hardcoded. `sed -n '4,22p'` printed the header by
+		# LINE NUMBER, so adding the pin paragraph pushed Usage/Output out of
+		# range and --help silently stopped showing how to invoke the script.
+		# Print the comment block from line 4 up to the first non-comment
+		# line, which cannot drift as the header grows.
+		awk 'NR>3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
 		exit 0
 		;;
 	*)
@@ -333,38 +338,64 @@ fi
 # not grant permission to review less.
 pinned=0
 pin_ts=""
-if [ -n "${BATS_TEST_NAME:-}" ] && [ -n "${BATS_TEST_TMPDIR:-}" ]; then
-	# Mirrors _lib/hook-ack.sh in intent: tests must never read or write the
-	# operator's real pin. But it keys on BATS_TEST_TMPDIR (per-TEST), not
-	# BATS_RUN_TMPDIR (per-RUN) — the first cut used the latter and every test
-	# in a file shared one pin directory under one fixture branch name, so the
-	# first test to resolve silently capped the next six. A pin that leaks
-	# between tests is the same class of bug as a cap that leaks between
-	# branches, which is what this whole block exists to stop.
+repinned=0
+# ONE injectable seam. The bats short-circuit stays as a backstop because a
+# test that forgets the override must not touch the operator's real pin — but
+# it keys on BATS_TEST_TMPDIR (per-TEST), not BATS_RUN_TMPDIR (per-RUN). The
+# first cut used the latter, so every test in a file shared one pin directory
+# under one fixture branch name and the first test to resolve silently capped
+# the next six. A pin leaking between tests is the same bug as a cap leaking
+# between branches. (bats has set BATS_TEST_TMPDIR since 1.4; this repo runs
+# 1.13, so no older-bats fallback is carried.)
+if [ -n "${PHASE1_SCALER_PIN_DIR:-}" ]; then
+	PIN_DIR="$PHASE1_SCALER_PIN_DIR"
+elif [ -n "${BATS_TEST_NAME:-}" ] && [ -n "${BATS_TEST_TMPDIR:-}" ]; then
 	PIN_DIR="$BATS_TEST_TMPDIR/phase1-scaler"
-elif [ -n "${BATS_TEST_NAME:-}" ] && [ -n "${BATS_RUN_TMPDIR:-}" ]; then
-	# Older bats without BATS_TEST_TMPDIR: still keep it out of the real tree,
-	# and namespace by test name so the isolation survives.
-	PIN_DIR="$BATS_RUN_TMPDIR/phase1-scaler/$(printf '%s' "$BATS_TEST_NAME" | tr -c 'A-Za-z0-9._-' '_')"
 else
 	PIN_DIR="$REPO_ROOT/.claude/.session-state/phase1-scaler"
 fi
-branch_name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+branch_name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch_name=""
 # Slugged so a branch name with slashes cannot escape PIN_DIR.
 branch_slug=$(printf '%s' "$branch_name" | tr -c 'A-Za-z0-9._-' '_')
+# A detached HEAD or unreadable branch name yields an empty slug, and BOTH pin
+# blocks below are then skipped — which silently restores the pre-#2544
+# treadmill. Silent is the one thing this feature cannot be, so say it.
+if [ -z "$branch_slug" ] || [ "$branch_name" = "HEAD" ]; then
+	echo "phase1-scaler: WARN: no branch name (detached HEAD?) — the tier cannot be pinned, so the cap will be re-resolved on every call and can grow with the finding count (#2544)" >&2
+	branch_slug=""
+fi
+# Same for a missing jq: the pin is JSON, so without it the cap is recomputed
+# every call. The tier tables above degrade quietly by design; this must not.
+if [ -n "$branch_slug" ] && ! command -v jq >/dev/null 2>&1; then
+	echo "phase1-scaler: WARN: jq not found — the tier pin cannot be read or written, so the cap will be re-resolved on every call (#2544)" >&2
+	branch_slug=""
+fi
 PIN_FILE="$PIN_DIR/${branch_slug}.json"
 
-if [ "$REPIN" = "1" ]; then
+if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
+	# The audit row is written BEFORE the pin is dropped, and its failure is
+	# LOUD. `--repin` is sold as audit-logged; a silent write failure makes
+	# that sentence false exactly when someone is changing a cap on purpose.
+	# Same posture as the symlink guard's bypass audit.
+	_repin_log="$REPO_ROOT/.claude/logs/pipeline-skip.jsonl"
+	if mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null &&
+		printf '{"ts":"%s","kind":"phase1-scaler-repin","branch":"%s","reason":"%s","new_rounds":%s}\n' \
+			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch_slug" \
+			"${PHASE1_REPIN_REASON:-unstated}" "$rounds" \
+			>>"$_repin_log" 2>/dev/null; then
+		:
+	else
+		echo "phase1-scaler: WARN: --repin audit row could NOT be written to $_repin_log; the re-pin still happened but is untracked" >&2
+	fi
 	rm -f "$PIN_FILE" 2>/dev/null || true
-	mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
-	printf '{"ts":"%s","kind":"phase1-scaler-repin","branch":"%s","reason":"%s","new_rounds":%s}\n' \
-		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch_slug" \
-		"${PHASE1_REPIN_REASON:-unstated}" "$rounds" \
-		>>"$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
-	tier="${tier}+repinned"
+	# Tracked SEPARATELY from `tier`. Appending "+repinned" to the tier string
+	# meant the marker was persisted into the new pin file and every later read
+	# reported `moderate+repinned` forever — a one-off event conflated with the
+	# tier field, permanently.
+	repinned=1
 fi
 
-if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ] && command -v jq >/dev/null 2>&1; then
+if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
 	_pin_rounds=$(jq -r '.rounds // empty' "$PIN_FILE" 2>/dev/null) || _pin_rounds=""
 	_pin_tier=$(jq -r '.tier // empty' "$PIN_FILE" 2>/dev/null) || _pin_tier=""
 	pin_ts=$(jq -r '.pinned_at // empty' "$PIN_FILE" 2>/dev/null) || pin_ts=""
@@ -377,12 +408,17 @@ if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ] && command -v jq >/dev/null 2>&1;
 		# and SAY so — a silently discarded pin looks identical to a first run.
 		echo "phase1-scaler: WARN: pin file $PIN_FILE is unreadable or has no valid rounds; re-resolving from current signals" >&2
 		rm -f "$PIN_FILE" 2>/dev/null || true
+		pin_ts=""
 	fi
 fi
 
 if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	if mkdir -p "$PIN_DIR" 2>/dev/null; then
+		# Prune on write, so merged and deleted branches do not accumulate pins
+		# forever. 30 days is well past any branch this cycle keeps open, and
+		# a wrongly-pruned pin costs one re-resolve, not a wrong cap.
+		find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>/dev/null || true
 		_pin_tmp="$PIN_FILE.$$"
 		if printf '{"rounds":%s,"tier":"%s","pinned_at":"%s","base":"%s","cr_at_pin":%s,"p05_at_pin":%s}\n' \
 			"$rounds" "$tier" "$pin_ts" "$BASE" "$cr_count" "$p05_count" \
@@ -426,7 +462,11 @@ if [ "$EXPLAIN" = "1" ]; then
 	# `pinned` is reported so the operator can tell a held cap from a freshly
 	# computed one — without it, a pin and a coincidentally-equal recompute
 	# print identically, and the whole point is knowing the number is stable.
-	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive pinned=$pinned${pin_ts:+ pinned_at=$pin_ts}"
+	# `repinned` is reported as its OWN field rather than appended to `tier`.
+	# The first cut did `tier="${tier}+repinned"`, which then got persisted into
+	# the new pin file — so every later read reported `moderate+repinned`
+	# forever, conflating a one-off event with the tier field permanently.
+	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive pinned=$pinned${pin_ts:+ pinned_at=$pin_ts}$([ "$repinned" = "1" ] && printf ' repinned=1')"
 else
 	printf '%s' "$rounds"
 fi
