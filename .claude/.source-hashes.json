@@ -58,7 +58,7 @@
     "hooks/_lib.sh": "57ff0032f45b672fc9a501086bb6190ac5a8de99897a10175862a6401fddde44",
     "hooks/_otel-silence.sh": "606246aa6856494e99b2858fc07a230132a51aab2f3e624e52a67427b1d73e2b",
     "hooks/_phase1-collect-logs.sh": "488f2dac255ee29cb946df3e2411855b7d6c7de232318b8a91e3bf1937ca3b1b",
-    "hooks/_pr-cr-findings.sh": "a5b8104d0e57a5b485c419abd0d59de9334abd4c336255a6c13574fea5c6799e",
+    "hooks/_pr-cr-findings.sh": "fbcd64f4d92f40673332588679ea62cc705ae3c927e9e9f6bca11ee4321767af",
     "hooks/_read-actions-mode.sh": "afa5d5dff6a4bf41f77e106cf9dc84e35b26ebeefa7fbf2a7efedd25135d9b7d",
     "hooks/agent-relevant-files.sh": "812bb921f4be08cc28cf26f0437eef77f03b65283a564869576cf323ee699bc3",
     "hooks/auto-close-parent.sh": "475c9160d73e7ff7d1439af318934af90b21521ef47ed2b44cacf8bc0c76fc91",
@@ -140,7 +140,7 @@
     "hooks/skip-env-approval-gate.sh": "00603f0ba1cda5f0e78e151a0c7f78eb87a8ad56dcec09622de611d15afd9e46",
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
-    "hooks/symlink-write-guard.sh": "7fd07914cdd1c1972c38487b037a4a1c6219bce2f8870885c80f34dbe68d14ee",
+    "hooks/symlink-write-guard.sh": "b6b2a970f7380681036b08d94c40b1d8a3730e661e9c466fe2d0790455c1e446",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
     "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
     "skills/ship-pr-cycle/run.sh": "7a1e055339ae285ddcf9fd66b77ab2091d461da97ae5af3f48fd38417accec0b"

@@ -200,6 +200,17 @@ query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
 
 # Classify: unresolved threads only. `replied-awaiting-CR` when any comment
 # AFTER CR's first is authored by someone other than coderabbitai.
+#
+# WHAT `stranded` IS AND IS NOT, for whoever reads the --json output next:
+# it is a reported reply_state and a top-level count, and it is deliberately
+# NOT part of `unaddressed`. That is a classification boundary, not a
+# statement that stranded threads are harmless — they ARE counted by
+# hooks/_pr-cr-findings.sh (STRANDED_COUNT), and ship-pr-cycle holds the
+# cr-thread-reply stage on a non-zero stranded count in its own arm. They are
+# separate because the REMEDY is opposite: a stranded thread is the one case
+# where manual resolution is correct and a reply is refused. A consumer
+# deciding whether anything blocks must read both counts, never `unaddressed`
+# alone.
 _classify() {
 	jq -c '
 	  [ .[]

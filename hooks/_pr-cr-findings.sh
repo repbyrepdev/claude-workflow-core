@@ -111,9 +111,10 @@ fi
 
 # THREADS are paginated below; COMMENTS WITHIN A THREAD ARE NOT. The query
 # asks for comments(first:100), which is a bounded sample, not an exhaustive
-# result. Since the reply predicate reads the LAST comment, a thread with more
-# than 100 comments would be classified from its 100th rather than its real
-# last one — i.e. potentially read as lacking a human reply when one exists.
+# result: on a thread longer than that, every comment past the 100th is simply
+# ABSENT from the set the predicate sees. Since the predicate reads the LAST
+# comment of what it was given, a human reply beyond the bound is omitted and
+# the thread reads as unanswered — it blocks a merge it should not.
 # 100 is the GitHub per-page maximum, so lifting it means paginating comments
 # too; no CR thread observed has come within an order of magnitude. Stated
 # here rather than assumed, because the previous value was 1, which made

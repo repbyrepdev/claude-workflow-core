@@ -285,7 +285,7 @@ AT
 		#!/bin/bash
 		for a in "$@"; do
 			if [ "$a" = "--json" ]; then
-				printf '{"pr":42,"unresolved":2,"unaddressed":0,"replied_awaiting_cr":2,"threads":[]}\n'
+				printf '{"pr":42,"unresolved":2,"unaddressed":0,"replied_awaiting_cr":2,"stranded":0,"threads":[]}\n'
 				exit 0
 			fi
 		done
@@ -299,6 +299,69 @@ AT
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
+@test "cr-thread-reply HOLDS on a STRANDED thread even at zero unaddressed (#2548)" {
+	# Stranded (unresolved + outdated) is counted by the merge gate, so
+	# advancing past it only relocated the stall to merge-gate — one step from
+	# the approve prompt, where the remedy is least obvious. The remedy is the
+	# OPPOSITE of a reply: resolve it.
+	_seed_stage cr-thread-reply
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		for a in "$@"; do
+			if [ "$a" = "--json" ]; then
+				printf '{"pr":42,"unresolved":1,"unaddressed":0,"replied_awaiting_cr":0,"stranded":1,"threads":[]}\n'
+				exit 0
+			fi
+		done
+		exit 0
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$(_cur_stage)" = cr-thread-reply ] || {
+		echo "stage advanced with a stranded thread: $(_cur_stage)"
+		return 1
+	}
+	# Points at resolve-stranded, NOT at a reply — thread-reply refuses these.
+	case "$output" in
+	*"resolve-stranded.sh"*) ;;
+	*)
+		echo "held, but did not name the stranded remedy: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "cr-thread-reply refuses a MISSING stranded count rather than guessing" {
+	# Same fail-closed posture as the unaddressed count: an older helper that
+	# does not emit the key must not read as "zero stranded" and advance.
+	_seed_stage cr-thread-reply
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
+		#!/bin/bash
+		for a in "$@"; do
+			if [ "$a" = "--json" ]; then
+				printf '{"pr":42,"unresolved":0,"unaddressed":0,"replied_awaiting_cr":0,"threads":[]}\n'
+				exit 0
+			fi
+		done
+		exit 0
+	TR
+	chmod +x .claude/scripts/cr/thread-reply.sh
+	run "$SCRIPT" next
+	[ "$status" -ne 0 ]
+	[ "$(_cur_stage)" = cr-thread-reply ]
+	case "$output" in
+	*"unreadable stranded count"*) ;;
+	*)
+		echo "held, but not on the missing stranded count: $output"
+		return 1
+		;;
+	esac
+}
+
 @test "cr-thread-reply HOLDS while a thread is unaddressed (#2548)" {
 	# The stall #2540 and #2635 hit, now a defined state instead of silence.
 	_seed_stage cr-thread-reply
@@ -310,7 +373,7 @@ AT
 		#!/bin/bash
 		for a in "$@"; do
 			if [ "$a" = "--json" ]; then
-				printf '{"pr":42,"unresolved":3,"unaddressed":2,"replied_awaiting_cr":1,"threads":[]}\n'
+				printf '{"pr":42,"unresolved":3,"unaddressed":2,"replied_awaiting_cr":1,"stranded":0,"threads":[]}\n'
 				exit 0
 			fi
 		done

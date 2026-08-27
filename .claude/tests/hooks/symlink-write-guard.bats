@@ -206,6 +206,14 @@ _allowed() {
 	_denied
 }
 
+@test "a directory that merely ENDS in .claude is not refused" {
+	# `notes.claude/scripts/x` is an ordinary directory, not a symlink to
+	# anything. The unanchored pattern refused it, and a guard that blocks
+	# innocent writes gets bypassed habitually — after which it guards nothing.
+	_guard "cat > notes.claude/scripts/x.sh"
+	_allowed
+}
+
 @test "dd of= is inspected like a redirect" {
 	# Same write, different verb. It was a documented gap purely because
 	# nobody had written the two lines.

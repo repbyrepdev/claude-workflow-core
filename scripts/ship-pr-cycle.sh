@@ -2800,14 +2800,38 @@ EOF
 		# stated reason with a bare nonzero exit.
 		ctr_unaddressed=$(printf '%s' "$ctr_json" | jq -r '.unaddressed // "err"' 2>/dev/null) || ctr_unaddressed="err"
 		ctr_replied=$(printf '%s' "$ctr_json" | jq -r '.replied_awaiting_cr // "err"' 2>/dev/null) || ctr_replied="err"
+		local ctr_stranded
+		ctr_stranded=$(printf '%s' "$ctr_json" | jq -r '.stranded // "err"' 2>/dev/null) || ctr_stranded="err"
 		case "$ctr_unaddressed" in
 		'' | err | null)
 			echo "ship-pr-cycle: cr-thread-reply — unreadable unaddressed count; refusing to advance" >&2
 			return 2
 			;;
 		esac
+		case "$ctr_stranded" in
+		'' | err | null)
+			echo "ship-pr-cycle: cr-thread-reply — unreadable stranded count; refusing to advance" >&2
+			return 2
+			;;
+		esac
 
-		if [ "$ctr_unaddressed" = "0" ]; then
+		# STRANDED holds the stage too. The helper has always REPORTED it, and
+		# the stage advanced on `unaddressed == 0` alone — but a stranded
+		# thread (isResolved:false + isOutdated:true) is counted by
+		# hooks/_pr-cr-findings.sh, so advancing past it only relocated the
+		# stall to merge-gate, where the remedy is less obvious and the
+		# operator is one step from approving.
+		#
+		# It is a SEPARATE arm because the remedy is the opposite one: these
+		# are the threads where manual resolution IS correct, and a reply is
+		# not. Folding them into the unaddressed count would point the
+		# operator at thread-reply.sh, which refuses them.
+		if [ "$ctr_stranded" != "0" ]; then
+			echo "ship-pr-cycle: cr-thread-reply — $ctr_stranded stranded thread(s) (unresolved + outdated); these are NOT repliable, resolve them:" >&2
+			echo "    scripts/cr/resolve-stranded.sh $ctr_pr" >&2
+		fi
+
+		if [ "$ctr_unaddressed" = "0" ] && [ "$ctr_stranded" = "0" ]; then
 			# Every unresolved thread has been answered (or there are none).
 			# `replied-awaiting-CR` is a distinct NON-blocking state: the
 			# operator did their part and CR has yet to resolve.
@@ -2816,7 +2840,7 @@ EOF
 			return 0
 		fi
 
-		echo "ship-pr-cycle: cr-thread-reply — $ctr_unaddressed unaddressed thread(s), $ctr_replied awaiting CR" >&2
+		echo "ship-pr-cycle: cr-thread-reply — $ctr_unaddressed unaddressed thread(s), $ctr_replied awaiting CR, $ctr_stranded stranded" >&2
 		# `|| true` swallowed a listing failure, so the operator got the count
 		# ("3 unaddressed") and then an empty list, with nothing saying the
 		# listing had failed — the shape most likely to be read as "3 threads,
@@ -2991,7 +3015,14 @@ EOF
 		# Arming --auto does not weaken review: GitHub still enforces the
 		# branch ruleset (approving review, self-approval block). It stops
 		# requiring a human AFTER the machine has agreed.
-		local _ma_lib="$SCRIPT_DIR/../_lib/merge-auto-ok.sh"
+		# Resolved, not hardcoded: `$SCRIPT_DIR/../_lib/` is the PLUGIN layout
+		# only. In a consumer repo the helper lives under .claude/, where that
+		# path does not exist — the `[ -f ]` guard below then quietly skipped
+		# the arm, so MERGE_GATE_AUTO=1 held the gate with no reason given.
+		# Same resolver as thread-reply.sh, auto-triage.sh and _common.sh.
+		local _ma_lib
+		_ma_lib=$(_shipcycle_resolve _lib/merge-auto-ok.sh)
+		[ -f "$_ma_lib" ] || _ma_lib="$SCRIPT_DIR/../_lib/merge-auto-ok.sh"
 		if [ -f "$_ma_lib" ]; then
 			# shellcheck source=../_lib/merge-auto-ok.sh
 			source "$_ma_lib"

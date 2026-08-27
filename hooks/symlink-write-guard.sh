@@ -203,10 +203,17 @@ while IFS= read -r t; do
 				".claude/{scripts,hooks,_lib} are SYMLINKS to this repo's production directories — this absolute path resolves into one of them"
 		fi
 		;;
-	*.claude/scripts/* | *.claude/hooks/* | *.claude/_lib/*)
+	.claude/scripts/* | .claude/hooks/* | .claude/_lib/* | \
+		*/.claude/scripts/* | */.claude/hooks/* | */.claude/_lib/*)
 		# Relative through the symlink. Refused regardless of cwd: the hook
 		# cannot verify a cd that happens inside the same command, and the
 		# fixture remedy (an absolute temp path) is unaffected.
+		#
+		# Anchored to a path boundary — leading, or after a `/`. The bare
+		# `*.claude/...` form also matched `notes.claude/scripts/x`, an
+		# ordinary directory that merely ENDS in ".claude" and is nobody's
+		# symlink. A guard that refuses innocent writes gets bypassed
+		# habitually, and then it is not guarding anything.
 		_deny_symlink "$t" \
 			".claude/{scripts,hooks,_lib} are SYMLINKS to this repo's production directories, so a relative write there lands on the real file"
 		;;
