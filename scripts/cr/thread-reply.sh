@@ -40,6 +40,15 @@ set -euo pipefail
 # Exit: 0 ok · 2 usage/precondition · 3 reply refused (evidence gate failed)
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# Both sources are guarded, matching the sibling hooks: an absent lib would
+# otherwise leave the predicate variable empty, and `select( == 0)` is a jq
+# syntax error at runtime — a confusing crash in place of a clear refusal.
+for _dep in "$SCRIPT_DIR/../_common.sh" "$SCRIPT_DIR/../../_lib/cr-thread-state.sh"; do
+	if [ ! -r "$_dep" ]; then
+		echo "thread-reply: required lib not readable: $_dep" >&2
+		exit 2
+	fi
+done
 # shellcheck source=../_common.sh
 source "$SCRIPT_DIR/../_common.sh"
 # (#2548) SSOT for the replied/unaddressed predicate — shared with
@@ -181,6 +190,11 @@ _classify() {
 	jq -c '
 	  [ .[]
 	    | select(.isResolved == false)
+	    # CR-authored threads only, matching the population the MERGE GATE
+	    # scans (hooks/_pr-cr-findings.sh). Without this the stage counted
+	    # human-opened review threads as CR findings, held the cycle on them,
+	    # and told the operator to reply with evidence to their own comment.
+	    | select(((.comments.nodes // [])[0].author.login // "") | test("^coderabbit(ai)?(\\[bot\\])?$"; "i"))
 	    | . as $t
 	    | ($t.comments.nodes // []) as $c
 	    | ( '"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' ) as $human

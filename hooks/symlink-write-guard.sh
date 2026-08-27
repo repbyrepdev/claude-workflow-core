@@ -106,9 +106,10 @@ if [ -n "$CMD" ]; then
 	REDIRECTS=$(printf '%s\n' "$CMD" |
 		grep -oE '[0-9]?>>?[[:space:]]*["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
 		sed -E 's/^[0-9]?>>?[[:space:]]*["'"'"']?//' || true)
+	# `--append` as well as `-a`: tee accepts both, and only one was matched.
 	TEES=$(printf '%s\n' "$CMD" |
-		grep -oE '\btee[[:space:]]+(-a[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
-		sed -E 's/^tee[[:space:]]+(-a[[:space:]]+)?["'"'"']?//' || true)
+		grep -oE '\btee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
+		sed -E 's/^tee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?//' || true)
 	TARGETS=$(printf '%s\n%s\n%s\n' "$TARGETS" "$REDIRECTS" "$TEES")
 fi
 [ -n "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ] || exit 0
