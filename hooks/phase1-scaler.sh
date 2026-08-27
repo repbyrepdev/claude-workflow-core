@@ -20,10 +20,19 @@ set -euo pipefail
 # The table above is a pure function of the current finding count, so
 # recomputing it every call let the cap grow as the rounds found things —
 # cap 3 became cap 5 because the round that hit 3/3 returned 13 findings. It
-# only ever rose, cr_count being floored by ancestors. Both phases read this
-# number, so the treadmill was never phase-2-specific. See the pin block for
-# the full account. `--repin` re-resolves deliberately (audit-logged); floors
-# still apply upward over a pin.
+# only ever rose, since UNATTRIBUTABLE cr rows are combined with a MAX and can
+# never lower the count. Both phases read this number, so the treadmill was
+# never phase-2-specific. See the pin block for the full account.
+#
+# The first INFORMED resolve pins; an uninformed one (no-prefilter-signal) is
+# deliberately not pinned. `--repin` re-resolves on purpose (audit-logged);
+# floors still apply upward over a pin.
+#
+# Env:
+#   PHASE1_ROUNDS          override the cap outright
+#   PHASE1_MIN_ROUNDS      floor, applied over a pin
+#   PHASE1_SCALER_PIN_DIR  relocate pin state (shared/read-only checkouts)
+#   PHASE1_REPIN_REASON    rationale recorded by --repin
 #
 # Usage:
 #   .claude/hooks/phase1-scaler.sh [--base main] [--explain] [--repin]
@@ -339,6 +348,14 @@ fi
 pinned=0
 pin_ts=""
 repinned=0
+# EVERY pin failure signal below is also carried HERE, on the parsed --explain
+# line, because stderr does not reach a single consumer: phase1-before-cr.sh
+# and pre-push-pipeline-gate.sh both capture with `2>/dev/null`, and
+# ship-pr-cycle.sh merges `2>&1` into a variable it only echoes when rc is
+# non-zero or ROUNDS is unparseable — neither of which happens when a pin
+# write fails. So three rounds of carefully-worded warnings were invisible in
+# production. A diagnostic nobody can read is not a diagnostic.
+pin_state="ok"
 # ONE seam, and it is operator-facing rather than test-only: relocating pin
 # state is a legitimate thing to want (a shared checkout, a read-only tree).
 #
@@ -354,68 +371,141 @@ repinned=0
 # there before the special case was.
 PIN_DIR="${PHASE1_SCALER_PIN_DIR:-$REPO_ROOT/.claude/.session-state/phase1-scaler}"
 branch_name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch_name=""
-# Slugged so a branch name with slashes cannot escape PIN_DIR.
+# Slugged so a branch name with slashes cannot escape PIN_DIR — and SUFFIXED
+# with a hash of the full name, because the slug is many-to-one: `feat/probe`
+# and `feat_probe` both map to `feat_probe`, and the second branch then read
+# the first one's pin and inherited its cap on its very first call. That is
+# the cap-leaking-between-branches failure this whole feature exists to stop,
+# reintroduced by the sanitiser. The slug is kept in the filename so the
+# directory stays readable by a human.
 branch_slug=$(printf '%s' "$branch_name" | tr -c 'A-Za-z0-9._-' '_')
-# A detached HEAD or unreadable branch name yields an empty slug, and BOTH pin
-# blocks below are then skipped — which silently restores the pre-#2544
-# treadmill. Silent is the one thing this feature cannot be, so say it.
+if [ -n "$branch_slug" ]; then
+	_slug_hash=$(printf '%s' "$branch_name" | cksum | cut -d' ' -f1) || _slug_hash=""
+	[ -n "$_slug_hash" ] && branch_slug="${branch_slug}-${_slug_hash}"
+fi
+# An unreadable branch name yields an EMPTY slug; a detached HEAD yields the
+# literal string "HEAD", which slugs to a non-empty "HEAD". Both must disable
+# pinning, which is why the second clause below is not redundant — without it
+# every detached checkout would share one HEAD.json. (An earlier version of
+# this comment said a detached HEAD gives an empty slug, which would have
+# invited exactly that deletion.)
 if [ -z "$branch_slug" ] || [ "$branch_name" = "HEAD" ]; then
+	pin_state="no-branch"
 	echo "phase1-scaler: WARN: no branch name (detached HEAD?) — the tier cannot be pinned, so the cap will be re-resolved on every call and can grow with the finding count (#2544)" >&2
 	branch_slug=""
 fi
 # Same for a missing jq: the pin is JSON, so without it the cap is recomputed
 # every call. The tier tables above degrade quietly by design; this must not.
 if [ -n "$branch_slug" ] && ! command -v jq >/dev/null 2>&1; then
+	pin_state="no-jq"
 	echo "phase1-scaler: WARN: jq not found — the tier pin cannot be read or written, so the cap will be re-resolved on every call (#2544)" >&2
 	branch_slug=""
 fi
 PIN_FILE="$PIN_DIR/${branch_slug}.json"
 
 if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
-	# The audit row is written BEFORE the pin is dropped, and its failure is
-	# LOUD. `--repin` is sold as audit-logged; a silent write failure makes
-	# that sentence false exactly when someone is changing a cap on purpose.
-	# Same posture as the symlink guard's bypass audit.
-	_repin_log="$REPO_ROOT/.claude/logs/pipeline-skip.jsonl"
-	if mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null &&
-		printf '{"ts":"%s","kind":"phase1-scaler-repin","branch":"%s","reason":"%s","new_rounds":%s}\n' \
-			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch_slug" \
-			"${PHASE1_REPIN_REASON:-unstated}" "$rounds" \
-			>>"$_repin_log" 2>/dev/null; then
-		:
+	# REMOVAL FIRST, and verified by ABSENCE. The earlier order wrote the
+	# audit row, then attempted the removal, then set repinned=1 regardless —
+	# so when the removal failed the surviving pin was re-read below,
+	# `pinned=1` won, the OLD cap was served, and both `--explain` and a
+	# durable audit row announced a change that had not happened. Verified
+	# live against a read-only pin dir: ROUNDS=3 served while the row claimed
+	# new_rounds=5.
+	#
+	# An audit trail that records changes which did not occur is worse than
+	# none, so nothing is claimed until the old pin is actually gone.
+	rm -f "$PIN_FILE" 2>/dev/null || true
+	if [ -f "$PIN_FILE" ]; then
+		pin_state="repin-failed"
+		echo "phase1-scaler: WARN: --repin could NOT remove the existing pin at $PIN_FILE — the pinned cap is UNCHANGED and nothing was logged. Fix the permissions and retry." >&2
 	else
-		echo "phase1-scaler: WARN: --repin audit row could NOT be written to $_repin_log; the re-pin still happened but is untracked" >&2
+		# `--repin` is sold as audit-logged; a silent write failure makes that
+		# sentence false exactly when someone is changing a cap on purpose.
+		# Same posture as the symlink guard bypass audit.
+		_repin_log="$REPO_ROOT/.claude/logs/pipeline-skip.jsonl"
+		if mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null &&
+			printf '{"ts":"%s","kind":"phase1-scaler-repin","branch":"%s","reason":"%s","new_rounds":%s}\n' \
+				"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch_slug" \
+				"${PHASE1_REPIN_REASON:-unstated}" "$rounds" \
+				>>"$_repin_log" 2>/dev/null; then
+			:
+		else
+			echo "phase1-scaler: WARN: --repin audit row could NOT be written to $_repin_log; the re-pin still happened but is untracked" >&2
+		fi
+		# Tracked SEPARATELY from `tier`. Appending "+repinned" to the tier
+		# string meant the marker was persisted into the new pin file and
+		# every later read reported `moderate+repinned` forever — a one-off
+		# event conflated with the tier field, permanently.
+		repinned=1
 	fi
-	rm -f "$PIN_FILE" 2>/dev/null ||
-		echo "phase1-scaler: WARN: --repin could not remove the existing pin at $PIN_FILE; the re-resolved value may not take effect" >&2
-	# Tracked SEPARATELY from `tier`. Appending "+repinned" to the tier string
-	# meant the marker was persisted into the new pin file and every later read
-	# reported `moderate+repinned` forever — a one-off event conflated with the
-	# tier field, permanently.
-	repinned=1
 fi
 
 if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
-	_pin_rounds=$(jq -r '.rounds // empty' "$PIN_FILE" 2>/dev/null) || _pin_rounds=""
-	_pin_tier=$(jq -r '.tier // empty' "$PIN_FILE" 2>/dev/null) || _pin_tier=""
-	pin_ts=$(jq -r '.pinned_at // empty' "$PIN_FILE" 2>/dev/null) || pin_ts=""
-	if [[ $_pin_rounds =~ ^[1-9][0-9]*$ ]]; then
+	# ONE jq, not three. This runs on every gate call, and three sequential
+	# forks reading the same small file — each with its own rc guard — is
+	# three times the process cost for one read.
+	#
+	# NEWLINE-separated with one `read` per field, NOT `@tsv` + a single
+	# `IFS=$'\t' read`. Tab is IFS *whitespace*, so consecutive tabs COLLAPSE:
+	# a pin with no `.tier` produced `3\t\t<timestamp>`, the empty field
+	# vanished, and pinned_at shifted into tier — REASON printed
+	# `tier=2026-01-01T00:00:00Z`. Caught by the sentinel test, which is what
+	# it was for. One field per line has no such rule: an empty line reads as
+	# an empty variable, which is the whole point of reading it.
+	# Each `read` is guarded because a CORRUPT pin makes jq fail, leaving
+	# `_pin_vals` empty — the second and third reads then hit EOF, return
+	# non-zero, and under `set -e` the group aborts the whole script. The
+	# corrupt-pin path is supposed to WARN and re-resolve, so aborting there
+	# would break the recovery this block exists to provide (and did, until
+	# the corrupt-pin test caught it).
+	_pin_rounds=""
+	_pin_tier=""
+	pin_ts=""
+	_pin_vals=$(jq -r '(.rounds // ""), (.tier // ""), (.pinned_at // "")' "$PIN_FILE" 2>/dev/null) || _pin_vals=""
+	{
+		read -r _pin_rounds || true
+		read -r _pin_tier || true
+		read -r pin_ts || true
+	} <<<"$_pin_vals"
+	if [[ ${_pin_rounds:-} =~ ^[1-9][0-9]*$ ]]; then
 		rounds="$_pin_rounds"
 		# A distinguishable sentinel, not the bare word "unknown" — which
 		# reads like a tier name in REASON output and could be mistaken for
 		# one the table actually produces.
 		tier="${_pin_tier:-<pin-tier-missing>}"
 		pinned=1
+		# Touch on READ, so the prune below measures "last used" rather than
+		# "first written". Without this a branch open past the prune window
+		# loses its pin to any other branch's write and re-resolves at the
+		# now-higher finding count — which is the #2544 treadmill, re-armed by
+		# the housekeeping meant to be harmless.
+		touch "$PIN_FILE" 2>/dev/null || true
 	else
 		# Corrupt or truncated pin: re-resolve rather than abort inside a hook,
 		# and SAY so — a silently discarded pin looks identical to a first run.
+		pin_state="corrupt-recovered"
 		echo "phase1-scaler: WARN: pin file $PIN_FILE is unreadable or has no valid rounds; re-resolving from current signals" >&2
 		rm -f "$PIN_FILE" 2>/dev/null || true
 		pin_ts=""
 	fi
 fi
 
-if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
+# DO NOT PIN AN UNINFORMED RESOLVE. `no-prefilter-signal` is the tier #2259
+# created to mean "nothing has measured this diff yet" — and SKILL.md tells the
+# operator to run `--explain` at the START of a long PR cycle, which is exactly
+# when p05_ran=0 and cr_count=0. Pinning there froze the branch at the floor
+# before Phase 0.5 or CR had said anything, which is the mirror image of the
+# bug this feature fixes: instead of a cap that only rises, a cap decided by
+# the one call that knew least.
+#
+# Observed on this very branch: the first call pinned tier=no-prefilter-signal
+# rounds=2 and held it through sixteen prefilter findings.
+#
+# The ratchet stays closed, because the first INFORMED resolve pins and every
+# call after it reads.
+if [ "$pinned" = "0" ] && [ -n "$branch_slug" ] && [ "$tier" = "no-prefilter-signal" ]; then
+	pin_state="deferred-no-signal"
+elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	# Tracked explicitly rather than inferred from `[ -f "$PIN_FILE" ]`. The
 	# existence test was WRONG when a stale pin from a prior run was already
@@ -425,18 +515,35 @@ if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	_pin_written=0
 	if mkdir -p "$PIN_DIR" 2>/dev/null; then
 		# Prune on write, so merged and deleted branches do not accumulate pins
-		# forever. 30 days is well past any branch this cycle keeps open, and
-		# a wrongly-pruned pin costs one re-resolve, not a wrong cap.
+		# forever. mtime is refreshed on every pinned READ (see above), so the
+		# window measures time since the branch was last WORKED ON, not since
+		# the pin was first written.
 		#
-		# The failure signal is STDERR, not the exit status. `find -delete`
-		# reports a permission error and still exits 0 (verified on macOS bfs
-		# and GNU findutils alike), so the `|| echo` this replaced could never
-		# fire — a "warn on failure" that was decoration. A prune that
-		# silently stops working just grows the directory forever, which is
-		# the failure nobody notices until it is large.
-		_prune_err=$(find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>&1 >/dev/null) || true
-		[ -z "$_prune_err" ] ||
-			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR ($_prune_err); old branch pins may accumulate" >&2
+		# Stated plainly rather than reassuringly: a wrongly-pruned pin costs
+		# a RE-RESOLVE, and a re-resolve at a later, higher finding count is
+		# exactly how the cap grows. So the 30-day window is a real tradeoff,
+		# not a free one — it is survivable only because the read-touch keeps
+		# an active branch out of range. A branch genuinely dormant for 30
+		# days losing its cap is the accepted cost.
+		#
+		# BOTH signals, because neither alone is guaranteed. `find -delete`
+		# does exit non-zero on a permission error here (measured: rc 1), so
+		# the exit status is real — an earlier version of this comment claimed
+		# it exits 0 and called the rc check decoration, which was WRONG: that
+		# reading came from `$?` after a PIPELINE, which reports the last
+		# command in the pipe, not find. Corrected rather than quietly
+		# reworded, because the same mismeasurement would recur.
+		#
+		# stderr is still captured and checked, since a tool that reports a
+		# partial failure without setting rc would otherwise prune nothing and
+		# say nothing — and a prune that silently stops working just grows the
+		# directory forever, which is the failure nobody notices until it is
+		# large.
+		_prune_rc=0
+		_prune_err=$(find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>&1 >/dev/null) || _prune_rc=$?
+		if [ "$_prune_rc" -ne 0 ] || [ -n "$_prune_err" ]; then
+			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR (rc=$_prune_rc${_prune_err:+: $_prune_err}); old branch pins may accumulate" >&2
+		fi
 		_pin_tmp="$PIN_FILE.$$"
 		if printf '{"rounds":%s,"tier":"%s","pinned_at":"%s","base":"%s","cr_at_pin":%s,"p05_at_pin":%s}\n' \
 			"$rounds" "$tier" "$pin_ts" "$BASE" "$cr_count" "$p05_count" \
@@ -454,14 +561,16 @@ if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	# which is the old behaviour. Advisory, because the operator should know
 	# the cap is not actually being held.
 	if [ "$_pin_written" = "0" ]; then
+		pin_state="write-failed"
 		echo "phase1-scaler: WARN: could not write the tier pin to $PIN_FILE — the cap will be re-resolved on every call (the pre-#2544 treadmill)" >&2
 		# A pin that could not be replaced must not be READ next call either:
 		# it holds a number this run already decided was out of date.
 		#
-		# Verified by ABSENCE, not by rm's exit status: `rm -f` suppresses the
-		# failure status by definition, so `rm -f ... || warn` never warned.
-		# That was the same decorative-guard mistake as the prune above, made
-		# in the same commit.
+		# Checked by ABSENCE. `rm -f` does return non-zero here on a
+		# permission error (measured: rc 1) — an earlier comment claimed `-f`
+		# always suppresses it, which is not what this platform does — but the
+		# file being GONE is the property that actually matters, and it holds
+		# whatever any rm implementation chooses to report.
 		rm -f "$PIN_FILE" 2>/dev/null || true
 		[ ! -f "$PIN_FILE" ] ||
 			echo "phase1-scaler: WARN: a STALE pin remains at $PIN_FILE and could not be removed; the next call may read an out-of-date cap. Remove it by hand, or re-run with --repin once the directory is writable." >&2
@@ -499,7 +608,24 @@ if [ "$EXPLAIN" = "1" ]; then
 	# The first cut did `tier="${tier}+repinned"`, which then got persisted into
 	# the new pin file — so every later read reported `moderate+repinned`
 	# forever, conflating a one-off event with the tier field permanently.
-	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive pinned=$pinned${pin_ts:+ pinned_at=$pin_ts}$([ "$repinned" = "1" ] && printf ' repinned=1')"
+	#
+	# Built up plainly instead of inline. The previous form embedded control
+	# flow in the string via `$([ x ] && printf ...)`, a command substitution
+	# whose non-zero exit was silently load-bearing, sitting next to a `${x:+}`
+	# expansion — dense enough to be hard to edit safely.
+	_reason_extra=""
+	[ -n "$pin_ts" ] && _reason_extra=" pinned_at=$pin_ts"
+	[ "$repinned" = "1" ] && _reason_extra="$_reason_extra repinned=1"
+	# pin_state rides the PARSED channel so consumers that discard stderr can
+	# still see that pinning failed — see the pin_state declaration for why
+	# that matters.
+	[ "$pin_state" = "ok" ] || _reason_extra="$_reason_extra pin=$pin_state"
+	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive pinned=$pinned$_reason_extra"
 else
+	# STDOUT IS THE INTEGER AND NOTHING ELSE on this path. Two consumers gate
+	# on `^[1-9][0-9]*$` / `^[0-9]+$` (hooks/phase1-before-cr.sh,
+	# hooks/pre-push-pipeline-gate.sh) and fall back to 5 rounds — the MAXIMUM,
+	# i.e. this feature's own bug — if anything else leaks here. Every
+	# diagnostic above goes to stderr for exactly this reason.
 	printf '%s' "$rounds"
 fi

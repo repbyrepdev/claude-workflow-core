@@ -20,16 +20,18 @@
 # These drive the REAL script against a scratch consumer repo, with PIN_DIR
 # pointed at the per-test tmpdir via PHASE1_SCALER_PIN_DIR, so nothing here
 # can read or write the operator's own pin.
+#
+# The ratchet named above comes from UNATTRIBUTABLE cr rows (the normal
+# post-rebase / force-push state), which are combined with a MAX so they can
+# never lower the count — not from ancestor rows, which are newest-wins.
 
 setup() {
 	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
-	TEST_TMP=$(mktemp -d -t phase05-skip.XXXXXX) || {
+	TEST_TMP=$(mktemp -d -t phase1-pin.XXXXXX) || {
 		echo "FATAL: mktemp failed" >&2
 		return 1
 	}
-	TREE="$TEST_TMP/tree" # scratch plugin tree (hooks/ + _lib/)
 	WORK="$TEST_TMP/work" # scratch consumer git repo
-	BIN="$TEST_TMP/bin"   # controlled PATH (jq/yq present; codex/gemini absent)
 	_mk_fixture || {
 		echo "FATAL: fixture build failed" >&2
 		return 1
@@ -38,28 +40,25 @@ setup() {
 
 teardown() {
 	cd /tmp || return 0
-	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */phase05-skip.* ]]; then
+	if [ -n "${TEST_TMP:-}" ] && [ -d "$TEST_TMP" ] && [[ $TEST_TMP == */phase1-pin.* ]]; then
+		# Several tests chmod a dir read-only to force a write failure; a
+		# leftover 500 would defeat the rm and leak the tmpdir.
+		chmod -R u+w "$TEST_TMP" 2>/dev/null || true
 		rm -rf "$TEST_TMP"
 	fi
 }
 
+# Just the scratch repo. This file was split out of
+# phase05-skip-scaler-signal.bats and carried that suite's fixture wholesale —
+# a $TREE with six real Phase 0.5 hook/lib copies, a $BIN of jq/yq/git
+# symlinks, review-config.yml, and a FATAL host check for codex/gemini. Not
+# one pin test reads any of it: the scaler runs straight out of $REPO_ROOT and
+# touches two log files under .claude/logs. The inherited host check could
+# abort this whole suite over a PATH-isolation contract it does not have.
 _mk_fixture() {
-	mkdir -p "$TREE/hooks" "$TREE/_lib" "$WORK/.claude" "$BIN" || return 1
-	# Real hook + lib copies — the resolver's plugin root becomes $TREE.
-	cp "$REPO_ROOT/hooks/phase0.5-copilot-prefilter.sh" "$TREE/hooks/" || return 1
-	cp "$REPO_ROOT/hooks/phase0.5-codex-prefilter.sh" "$TREE/hooks/" || return 1
-	cp "$REPO_ROOT/hooks/phase0.5-gemini-prefilter.sh" "$TREE/hooks/" || return 1
-	cp "$REPO_ROOT/_lib/resolve-plugin-helper.sh" "$TREE/_lib/" || return 1
-	cp "$REPO_ROOT/_lib/phase05-dedupe.sh" "$TREE/_lib/" || return 1
-	# Sourced at end-of-run by the gemini happy path (CR r4 --policy test).
-	cp "$REPO_ROOT/_lib/phase05-auth-summary.sh" "$TREE/_lib/" || return 1
-	# Sibling helpers the hooks preflight (stubs; never invoked on skip paths).
-	printf '#!/bin/bash\ncat\n' >"$TREE/hooks/phase1-dedup.sh" || return 1
-	printf '#!/bin/bash\ncat\n' >"$TREE/hooks/phase0.5-dedupe-against-audit.sh" || return 1
-	chmod +x "$TREE/hooks/phase1-dedup.sh" "$TREE/hooks/phase0.5-dedupe-against-audit.sh" || return 1
-	# Consumer repo: main + feature branch with a real diff. -b main pins
-	# the branch name so the hooks' default --base main is host-independent
-	# (init.defaultBranch varies).
+	mkdir -p "$WORK/.claude/logs" || return 1
+	# -b main pins the branch name so the default --base main is
+	# host-independent (init.defaultBranch varies).
 	(cd "$WORK" &&
 		git init -q -b main &&
 		git config user.email t@t.t &&
@@ -69,30 +68,12 @@ _mk_fixture() {
 		git checkout -qb feat/test &&
 		printf 'base\nchanged line for the diff\n' >f.txt &&
 		git add -A && git commit -qm change) || return 1
-	cp "$REPO_ROOT/.claude/review-config.yml" "$WORK/.claude/review-config.yml" || return 1
-	# Controlled PATH: coreutils from /usr/bin:/bin, jq/yq symlinked in,
-	# codex/gemini deliberately ABSENT regardless of host installs.
-	ln -sf "$(command -v jq)" "$BIN/jq" || return 1
-	ln -sf "$(command -v yq)" "$BIN/yq" || return 1
-	ln -sf "$(command -v git)" "$BIN/git" || return 1
-	# CR r6: /usr/bin:/bin stay on PATH for coreutils (shimming ~15 of
-	# them is fragile), so the absent-CLI contract holds only while no
-	# host ships codex/gemini THERE (brew -> /opt/homebrew, npm ->
-	# /usr/local|~). Fail LOUD if an exotic host breaks that assumption
-	# instead of letting absent-CLI tests silently test the wrong thing.
-	for _cli in codex gemini; do
-		if [ -x "/usr/bin/$_cli" ] || [ -x "/bin/$_cli" ]; then
-			echo "FATAL: host has $_cli in /usr/bin or /bin - fixture PATH isolation broken" >&2
-			return 1
-		fi
-	done
 	return 0
 }
 
 # Feeds the CR-findings signal the tier tables read. Appends are safe: each
 # test gets a fresh TEST_TMP from setup().
 _log_cr() { # $1 = findings count for the latest CR entry
-	mkdir -p "$WORK/.claude/logs"
 	printf '{"ts":"2026-07-08T00:00:00Z","findings":%s}\n' "$1" \
 		>>"$WORK/.claude/logs/cr-local-review.jsonl"
 }
@@ -529,10 +510,16 @@ _scaler_pin() { # $1 = extra env words
 		echo "the audit row did not record the re-resolved value: $row"
 		return 1
 	}
-	[ "$(printf '%s' "$row" | jq -r '.branch')" = "feat_test" ] || {
+	# The slug carries a hash suffix of the full branch name, because the
+	# sanitiser is many-to-one and two branches were sharing one pin. So the
+	# assertion is on the readable prefix plus the presence of a suffix.
+	case "$(printf '%s' "$row" | jq -r '.branch')" in
+	feat_test-*) ;;
+	*)
 		echo "the audit row did not record the branch: $row"
 		return 1
-	}
+		;;
+	esac
 }
 
 @test "scaler pin: an unstated repin reason is recorded as such" {
@@ -619,6 +606,139 @@ _scaler_pin() { # $1 = extra env words
 	# And it names what went wrong, not merely that something did.
 	[[ $output == *"Permission denied"* || $output == *"denied"* ]] || {
 		echo "the prune warning did not carry the underlying error: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: colliding branch slugs do NOT share a pin" {
+	# `tr -c 'A-Za-z0-9._-' '_'` is many-to-one: feat/probe and feat_probe both
+	# slug to feat_probe. Verified live before the fix — the second branch read
+	# the first one pin and inherited its cap on its very first call, which is
+	# the cap-leaking-between-branches failure this whole feature exists to
+	# stop, reintroduced by the sanitiser.
+	(cd "$WORK" && git checkout -qb feat/probe) || return 1
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	[[ $output == *"pinned=0"* ]] || return 1
+	(cd "$WORK" && git checkout -qb feat_probe) || return 1
+	_log_cr 13
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"pinned=0"* ]] || {
+		echo "a colliding slug inherited the other branch pin: $output"
+		return 1
+	}
+	[[ $output == *"ROUNDS=5"* ]] || {
+		echo "the colliding branch did not resolve from its own signals: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: an uninformed first resolve is NOT pinned" {
+	# no-prefilter-signal is the tier meaning "nothing has measured this diff
+	# yet", and SKILL.md tells the operator to run --explain at the START of a
+	# cycle — exactly when that is true. Pinning there froze the branch at the
+	# floor before Phase 0.5 or CR had said anything: the mirror image of the
+	# bug this feature fixes, a cap decided by the call that knew least.
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"tier=no-prefilter-signal"* ]] || {
+		echo "expected the uninformed tier: $output"
+		return 1
+	}
+	[[ $output == *"pin=deferred-no-signal"* ]] || {
+		echo "an uninformed resolve did not report the deferral: $output"
+		return 1
+	}
+	# And the FIRST informed call is the one that pins, so the ratchet stays
+	# closed from that point on.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	_log_cr 13
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"ROUNDS=3"* ]] || {
+		echo "the first informed resolve did not pin: $output"
+		return 1
+	}
+	[[ $output == *"pinned=1"* ]]
+}
+
+@test "scaler pin: --repin that cannot remove the pin claims NOTHING" {
+	# Verified live before the fix: the audit row said new_rounds=5 while
+	# ROUNDS=3 was served and --explain reported repinned=1. An audit trail
+	# that records changes which did not happen is worse than none.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	_log_cr 13
+	chmod 500 "$TEST_TMP/pins"
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	chmod 700 "$TEST_TMP/pins"
+	[ "$status" -eq 0 ]
+	# The OLD cap is still served, and it says so.
+	[[ $output == *"ROUNDS=3"* ]] || {
+		echo "a failed repin changed the served cap: $output"
+		return 1
+	}
+	[[ $output == *"pin=repin-failed"* ]] || {
+		echo "a failed repin did not report itself on the parsed channel: $output"
+		return 1
+	}
+	[[ $output != *"repinned=1"* ]] || {
+		echo "a failed repin still claimed to have repinned: $output"
+		return 1
+	}
+	# ...and NOTHING was written to the audit log.
+	if [ -f "$WORK/.claude/logs/pipeline-skip.jsonl" ]; then
+		! grep -q 'phase1-scaler-repin' "$WORK/.claude/logs/pipeline-skip.jsonl" || {
+			echo "a failed repin wrote an audit row for a change that did not happen"
+			return 1
+		}
+	fi
+}
+
+@test "scaler pin: pin failures reach the PARSED channel, not just stderr" {
+	# Every consumer discards stderr — phase1-before-cr.sh and
+	# pre-push-pipeline-gate.sh capture with 2>/dev/null, and ship-pr-cycle.sh
+	# only echoes its merged output when rc is non-zero or ROUNDS is
+	# unparseable, neither of which happens when a pin write fails. So the
+	# state has to ride REASON to be visible at all.
+	_log_cr 10
+	local ro="$TEST_TMP/readonly"
+	mkdir -p "$ro"
+	chmod 500 "$ro"
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$ro/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main 2>/dev/null"
+	chmod 700 "$ro"
+	[ "$status" -eq 0 ]
+	# stderr is DISCARDED here on purpose — this is what a real consumer sees.
+	[[ $output == *"pin=write-failed"* ]] || {
+		echo "a pin write failure was invisible with stderr discarded: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: bare stdout is the integer and nothing else" {
+	# hooks/phase1-before-cr.sh gates on ^[1-9][0-9]*$ and FALLS BACK TO 5 —
+	# the maximum, i.e. this feature own bug — if anything else leaks onto
+	# stdout. pre-push-pipeline-gate.sh gates on ^[0-9]+$ and returns 1.
+	# Neither had a test, and every warning added to this script is one
+	# misdirected redirect away from breaking both.
+	_log_cr 10
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --base main 2>/dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output =~ ^[1-9][0-9]*$ ]] || {
+		echo "bare stdout was not a lone integer: [$output]"
+		return 1
+	}
+	# And on a path that emits warnings, stdout must STILL be only the integer.
+	(cd "$WORK" && git checkout -q --detach HEAD) || return 1
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --base main 2>/dev/null"
+	[ "$status" -eq 0 ]
+	[[ $output =~ ^[1-9][0-9]*$ ]] || {
+		echo "a warning leaked onto the bare-integer channel: [$output]"
 		return 1
 	}
 }
