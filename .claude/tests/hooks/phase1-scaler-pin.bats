@@ -56,7 +56,14 @@ teardown() {
 # touches two log files under .claude/logs. The inherited host check could
 # abort this whole suite over a PATH-isolation contract it does not have.
 _mk_fixture() {
-	mkdir -p "$WORK/.claude/logs" || return 1
+	mkdir -p "$WORK/.claude/logs" "$WORK/_lib" || return 1
+	# The REAL pipeline-skip.sh, because the repin path prefers it and falls
+	# back to a hand-rolled jq only when it is absent. Without this copy the
+	# audit tests exercised the FALLBACK — a shape production never emits —
+	# and asserted a `new_rounds` key, a verbatim reason and a slugged branch
+	# that the shared writer does not produce. Three tests certifying a row
+	# nobody writes.
+	cp "$REPO_ROOT/_lib/pipeline-skip.sh" "$WORK/_lib/" || return 1
 	# -b main pins the branch name so the default --base main is
 	# host-independent (init.defaultBranch varies).
 	(cd "$WORK" &&
@@ -521,26 +528,46 @@ _scaler_pin() { # $1 = extra env words
 		echo "no phase1-scaler-repin row in $log"
 		return 1
 	}
-	# The reason is the operator wording — the field exists so a later reader
-	# knows WHY the cap moved, not merely that it did.
-	[ "$(printf '%s' "$row" | jq -r '.reason')" = "widened for the auth rewrite" ] || {
-		echo "PHASE1_REPIN_REASON did not reach the audit row: $row"
+	# Asserted against the shape _lib/pipeline-skip.sh ACTUALLY writes:
+	# ts, sha, branch, reason, gate. Nothing else.
+	#
+	# An earlier version of this test asserted a `new_rounds` key, a verbatim
+	# reason and a slugged branch — the hand-rolled FALLBACK shape, which only
+	# runs when the lib is absent. The fixture did not copy the lib, so the
+	# suite exercised the fallback exclusively and three tests certified a row
+	# production never emits. The fixture now copies it, so this asserts the
+	# path that ships.
+	[ "$(printf '%s' "$row" | jq -r '.gate')" = "phase1-scaler-repin" ] || {
+		echo "the row is not attributed to this gate: $row"
 		return 1
 	}
-	[ "$(printf '%s' "$row" | jq -r '.new_rounds')" = "5" ] || {
-		echo "the audit row did not record the re-resolved value: $row"
-		return 1
-	}
-	# The slug carries a hash suffix of the full branch name, because the
-	# sanitiser is many-to-one and two branches were sharing one pin. So the
-	# assertion is on the readable prefix plus the presence of a suffix.
-	case "$(printf '%s' "$row" | jq -r '.branch')" in
-	feat_test-*) ;;
+	# The operator wording reaches .reason, with the resolved count appended —
+	# the shared writer has no numeric field for it, and the suffix is how the
+	# number survives into a schema this hook does not own.
+	case "$(printf '%s' "$row" | jq -r '.reason')" in
+	"widened for the auth rewrite"*) ;;
 	*)
-		echo "the audit row did not record the branch: $row"
+		echo "PHASE1_REPIN_REASON did not reach the audit row: $row"
 		return 1
 		;;
 	esac
+	case "$(printf '%s' "$row" | jq -r '.reason')" in
+	*"rounds=5"*) ;;
+	*)
+		echo "the audit row did not record the re-resolved value: $row"
+		return 1
+		;;
+	esac
+	# The shared writer records the RAW branch name, not the pin slug.
+	[ "$(printf '%s' "$row" | jq -r '.branch')" = "feat/test" ] || {
+		echo "the audit row did not record the branch: $row"
+		return 1
+	}
+	# And the fields the shared writer guarantees are present.
+	[ "$(printf '%s' "$row" | jq -r '.sha')" != "null" ] || {
+		echo "the shared writer did not stamp the sha: $row"
+		return 1
+	}
 }
 
 @test "scaler pin: an unstated repin reason is recorded as such" {
@@ -552,10 +579,16 @@ _scaler_pin() { # $1 = extra env words
 	[ "$status" -eq 0 ]
 	local row
 	row=$(grep 'phase1-scaler-repin' "$WORK/.claude/logs/pipeline-skip.jsonl" | tail -1)
-	[ "$(printf '%s' "$row" | jq -r '.reason')" = "unstated" ] || {
+	# Prefix, not equality: the shared writer receives the reason with the
+	# resolved round count appended, so the assertion is that `unstated` is
+	# what stands where the operator wording would have been.
+	case "$(printf '%s' "$row" | jq -r '.reason')" in
+	"unstated"*) ;;
+	*)
 		echo "the default reason is not recognisable: $row"
 		return 1
-	}
+		;;
+	esac
 }
 
 @test "scaler pin: a FAILED repin audit write warns instead of proceeding quietly" {
@@ -985,4 +1018,54 @@ _log_p05() { # $1 = findings count for a single ok agent row
 		echo "the pin from the clean round did not hold: $output"
 		return 1
 	}
+}
+
+@test "scaler pin: the repin row comes from the SHARED writer, not the fallback" {
+	# Proves the fixture actually reaches the code path that ships. The shared
+	# writer emits `gate`; the hand-rolled fallback emits `kind`. If this ever
+	# flips, the three audit tests above silently go back to certifying a row
+	# production never writes.
+	_log_cr 10
+	_scaler_pin
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	[ "$status" -eq 0 ]
+	local row
+	row=$(grep 'phase1-scaler-repin' "$WORK/.claude/logs/pipeline-skip.jsonl" | tail -1)
+	[ -n "$row" ] || return 1
+	[ "$(printf '%s' "$row" | jq -r 'has("gate")')" = "true" ] || {
+		echo "no gate field — the shared writer did not produce this row: $row"
+		return 1
+	}
+	[ "$(printf '%s' "$row" | jq -r 'has("kind")')" = "false" ] || {
+		echo "a kind field means the hand-rolled FALLBACK ran, not the lib: $row"
+		return 1
+	}
+}
+
+@test "scaler pin: CR reporting ZERO with no phase 0.5 still pins" {
+	# The belt-and-braces `|| tier == no-prefilter-signal` clause re-opened the
+	# ratchet here: CR 0 findings and no phase 0.5 row gives total=0 and
+	# p05_ran=0, hence that tier, so the resolve stayed unpinned — and a later
+	# 13-finding round raised the cap. Defer on cr_ran alone.
+	_log_cr 0
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"tier=no-prefilter-signal"* ]] || {
+		echo "the fixture did not reproduce the tier in question: $output"
+		return 1
+	}
+	[[ $output != *"deferred-no-signal"* ]] || {
+		echo "a reported CR round was treated as no signal: $output"
+		return 1
+	}
+	local first_rounds
+	first_rounds=$(printf '%s' "$output" | sed -n 's/^ROUNDS=//p')
+	_log_cr 13
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[[ $output == *"ROUNDS=$first_rounds"* ]] || {
+		echo "the cap moved after CR had already reported — the ratchet is back: $output"
+		return 1
+	}
+	[[ $output == *"pinned=1"* ]]
 }

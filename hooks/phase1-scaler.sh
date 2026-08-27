@@ -581,8 +581,13 @@ fi
 # The rule is therefore CR-anchored: defer while CR has not reported, pin on
 # the first resolve that has heard from it. `cr_ran`, not `cr_count`, because
 # a genuine 0-finding CR round IS informed and must pin.
-if [ "$pinned" = "0" ] && [ -n "$branch_slug" ] &&
-	{ [ "$cr_ran" = "0" ] || [ "$tier" = "no-prefilter-signal" ]; }; then
+# `cr_ran` ALONE. An earlier cut also deferred on tier=no-prefilter-signal,
+# kept as belt-and-braces from the previous rule — but that clause re-opened
+# the ratchet: CR reporting 0 findings with no Phase 0.5 row gives total=0,
+# p05_ran=0, hence that tier, so the resolve stayed unpinned at 2 even though
+# CR HAD spoken. A later 13-finding round then raised the cap to 5. The whole
+# bug, reintroduced by a redundant guard.
+if [ "$pinned" = "0" ] && [ -n "$branch_slug" ] && [ "$cr_ran" = "0" ]; then
 	_pin_state_add "deferred-no-signal"
 elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
