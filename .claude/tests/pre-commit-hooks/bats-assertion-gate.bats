@@ -56,21 +56,26 @@ _scan() { # $1 = file contents; echoes the detector's hit count
 # line was named rather than only how many were. Used by the lexical
 # regressions below, where "1 finding" alone would not prove the right line
 # was blamed.
-_scan_raw() { # $1 = file contents; $output becomes the scanner's own output
+# $status becomes the SCANNER's own rc (0 clean, 1 findings) and $output its
+# report, so a caller can assert both. The earlier form asserted the wrapper's
+# status instead, which was 0 either way — it could not tell a clean verdict
+# from a findings verdict, only read the text.
+_scan_raw() { # $1 = file contents
 	printf '%s' "$1" >"$TEST_TMP/raw.bats"
 	run bash -c '
 		. "$1"
 		out=$(bats_assertion_scan "$2") || rc=$?
-		case "${rc:-0}" in
-		0 | 1) ;;
-		*) exit 9 ;;
-		esac
 		printf "%s\n" "$out"
+		exit "${rc:-0}"
 	' _ "$LIB" "$TEST_TMP/raw.bats"
-	[ "$status" -eq 0 ] || {
+	# Anything but 0/1 is a scan error the caller cannot interpret.
+	case "$status" in
+	0 | 1) ;;
+	*)
 		echo "scan errored (status $status): $output"
 		return 1
-	}
+		;;
+	esac
 }
 
 # A miniature repo with the gate and lib in place, one .bats file STAGED.
@@ -517,6 +522,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# no guard at all. Blanking strings must not let the pattern text stand
 	# in for command position.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"return 1"* ]]\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
 	# Exactly one finding, AND it names the right line. A count alone would
 	# also hold if the scanner blamed the wrong line; the line alone would not
 	# catch a spurious second finding.
@@ -534,6 +540,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# Blanking strings must not break the legitimate one-line body, where the
 	# terminator follows a `;` rather than starting the line.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"; return 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
 	# Silence, not a zero count: a scanner that emitted a diagnostic while
 	# reporting nothing would still satisfy a count check.
 	[ -z "$output" ] || {
@@ -548,6 +555,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# pending_ok. That silently re-opened the exact hole the string-blanking
 	# was added to close.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "he said \\"fail\\" loudly"\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
 	case "$output" in
 	*'[[ $output == *"nope"* ]] || {'*) ;;
 	*)
@@ -562,6 +570,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# of a word. Cutting at the first `#` regardless dropped the closing `]]`
 	# with it, so a correctly guarded assertion was reported.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *#tag* ]] || return 1\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
 	[ -z "$output" ] || {
 		echo "a guarded assertion with a # in its pattern was reported: $output"
 		return 1
@@ -573,6 +582,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# resolved the deferred verdict before the terminator was reached — and
 	# the assertion was reported despite being correctly guarded.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "}"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
 	[ -z "$output" ] || {
 		echo "a guarded assertion was reported because of a brace in a string: $output"
 		return 1
@@ -583,6 +593,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# The output contract is `line:text`. Nothing asserted the number before,
 	# so an off-by-one in the recording would have gone unnoticed.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
 	case "$output" in
 	3:*) ;;
 	*)
@@ -599,6 +610,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# commented-out terminator satisfied the brace-group check and a group
 	# that can never fail was accepted.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo ignored;# return 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
 	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
 	case "$output" in
 	3:*) ;;
@@ -612,6 +624,7 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 @test "a REAL terminator after a ; still counts" {
 	# The counterpart: word-boundary detection must not swallow live code.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo why; return 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
 	[ -z "$output" ] || {
 		echo "a valid guard body was reported: $output"
 		return 1
@@ -622,5 +635,14 @@ a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
 	# Same rule applied to guard_pos rather than the brace-group body:
 	# `[[ ... ]];# || return 1` has no live guard at all.
 	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]];# || return 1\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
 	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+	# The LINE, not merely "one line of something".
+	case "$output" in
+	3:*) ;;
+	*)
+		echo "expected the dead-guard assertion on line 3; got: $output"
+		return 1
+		;;
+	esac
 }
