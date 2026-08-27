@@ -93,6 +93,22 @@ fi
 # v3.22 CR: cursor-based pagination. Accumulates all pages rather than the
 # previous hard-fail-over-100. Hard cap at 20 pages (2000 threads) as a
 # runaway guard — no realistic PR exceeds that.
+# (#2548) SSOT for the replied/unaddressed predicate — shared with
+# scripts/cr/thread-reply.sh so the MERGE GATE and the cr-thread-reply STAGE
+# cannot disagree about whether a thread has been answered. Written twice they
+# drift, and the failure is silent: the stage advances believing everything is
+# answered while the gate still blocks, or the gate passes a thread nobody was
+# asked to address. Phase 0.5 flagged the duplication on the commit that
+# introduced it.
+_CTS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd)/cr-thread-state.sh"
+if [ -r "$_CTS_LIB" ]; then
+	# shellcheck source=../_lib/cr-thread-state.sh
+	source "$_CTS_LIB"
+else
+	echo "ERROR: _lib/cr-thread-state.sh not found — cannot classify threads, failing closed" >&2
+	exit 1
+fi
+
 UNRESOLVED="[]"
 REPLIED="[]" # (#2548) answered, awaiting CR — reported, never counted
 CURSOR=""
@@ -160,7 +176,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
 		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
-		| select(([.comments.nodes[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not)] | length) == 0)
+		| select('"$CR_THREAD_HUMAN_REPLY_COUNT"' == 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:400])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_NODES" ]; then
 		echo "ERROR: thread-nodes jq-parse failed on page $PAGE" >&2
@@ -174,7 +190,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
 		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
-		| select(([.comments.nodes[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not)] | length) > 0)
+		| select('"$CR_THREAD_HUMAN_REPLY_COUNT"' > 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id}]' 2>/dev/null || true)
 	if [ -z "$PAGE_REPLIED" ]; then
 		echo "ERROR: replied-thread jq-parse failed on page $PAGE" >&2

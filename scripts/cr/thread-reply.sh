@@ -42,6 +42,11 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../_common.sh
 source "$SCRIPT_DIR/../_common.sh"
+# (#2548) SSOT for the replied/unaddressed predicate — shared with
+# hooks/_pr-cr-findings.sh so the STAGE and the MERGE GATE cannot disagree
+# about whether a thread has been answered.
+# shellcheck source=../../_lib/cr-thread-state.sh
+source "$SCRIPT_DIR/../../_lib/cr-thread-state.sh"
 
 # skill-bypass-guard permits the gh api calls below for a skill wrapper.
 export SKILL_WRAPPER=1
@@ -178,7 +183,7 @@ _classify() {
 	    | select(.isResolved == false)
 	    | . as $t
 	    | ($t.comments.nodes // []) as $c
-	    | ( [ $c[1:][] | select((.author.login // "") | test("coderabbit"; "i") | not) ] | length ) as $human
+	    | ( '"$CR_THREAD_HUMAN_REPLY_COUNT"' ) as $human
 	    | {
 		id: $t.id,
 		path: ($t.path // "?"),
