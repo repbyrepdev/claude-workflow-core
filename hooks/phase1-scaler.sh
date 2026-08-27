@@ -586,8 +586,15 @@ elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 		# operator-supplied, and a `-delete` over `*.json` in a directory that
 		# turned out to hold something else is a destructive default for a
 		# hook that runs automatically. Narrow first, delete second.
+		# BOTH suffixes. The tracked-pin branch redirects PIN_FILE to
+		# `<slug>.json.ignored-tracked` and the write block then writes THERE,
+		# so a glob matching only `*.json` left those to accumulate forever —
+		# the prune silently not covering the very file the newest code path
+		# creates.
 		_prune_rc=0
-		_prune_err=$(find "$PIN_DIR" -maxdepth 1 -name '*-[0-9]*.json' -type f -mtime +30 -delete 2>&1 >/dev/null) || _prune_rc=$?
+		_prune_err=$(find "$PIN_DIR" -maxdepth 1 \
+			\( -name '*-[0-9]*.json' -o -name '*-[0-9]*.json.ignored-tracked' \) \
+			-type f -mtime +30 -delete 2>&1 >/dev/null) || _prune_rc=$?
 		if [ "$_prune_rc" -ne 0 ] || [ -n "$_prune_err" ]; then
 			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR (rc=$_prune_rc${_prune_err:+: $_prune_err}); old branch pins may accumulate" >&2
 		fi
