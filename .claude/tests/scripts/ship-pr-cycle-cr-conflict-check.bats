@@ -273,25 +273,46 @@ AT
 	[ "$(_cur_stage)" = cr-thread-reply ]
 }
 
+# ONE stub, parameterised by its payload. Seven tests inlined a near-identical
+# copy differing only in what it prints, so each had to independently keep the
+# `--json` argv guard and the chmod, and any change to the helper contract
+# meant seven edits. The payload stays visible at the call site — including a
+# deliberately ABSENT key and a deliberately non-JSON body, which is exactly
+# what three of these tests are about.
+#
+# `cd` FIRST is not incidental: `.claude/scripts` is a symlink to the real
+# scripts/ dir, so a write from the repo root follows it and lands on
+# production. That happened once already, to this very file.
+_stub_thread_reply() { # $1 = what the stub prints for --json
+	local payload=$1
+	cd "$TEST_TMP" || return 1
+	mkdir -p .claude/scripts/cr
+	{
+		echo '#!/bin/bash'
+		echo 'for a in "$@"; do'
+		echo '	if [ "$a" = "--json" ]; then'
+		# The generated line must read: printf '%s\n' '<payload>'
+		# Both the format AND the payload are quoted IN THE GENERATED SCRIPT.
+		# Emitting a bare `printf %s\n` instead let the running shell strip
+		# the backslash, so the stub printed its JSON with a trailing "n" and
+		# no newline — which jq then refused, and four tests failed for a
+		# reason that had nothing to do with what they were testing.
+		# %%s survives as the inner format; %s takes the payload. JSON has no
+		# single quotes, so its double quotes arrive intact.
+		printf "\t\tprintf '%%s\\\\n' '%s'\n" "$payload"
+		echo '		exit 0'
+		echo '	fi'
+		echo 'done'
+		echo 'exit 0'
+	} >.claude/scripts/cr/thread-reply.sh
+	chmod +x .claude/scripts/cr/thread-reply.sh
+}
+
 @test "cr-thread-reply forwards when every thread is answered (#2548)" {
 	# `replied-awaiting-CR` is a distinct NON-blocking state. The operator did
 	# what the stage asked; blocking further would leave no available action.
 	_seed_stage cr-thread-reply
-	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
-	# write from the repo root follows it and clobbers production.
-	cd "$TEST_TMP" || return 1
-	mkdir -p .claude/scripts/cr
-	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
-		#!/bin/bash
-		for a in "$@"; do
-			if [ "$a" = "--json" ]; then
-				printf '{"pr":42,"unresolved":2,"unaddressed":0,"replied_awaiting_cr":2,"stranded":0,"threads":[]}\n'
-				exit 0
-			fi
-		done
-		exit 0
-	TR
-	chmod +x .claude/scripts/cr/thread-reply.sh
+	_stub_thread_reply '{"pr":42,"unresolved":2,"unaddressed":0,"replied_awaiting_cr":2,"stranded":0,"threads":[]}' || return 1
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
 	[[ $output == *"advanced to cr-conflict-check"* ]] || return 1
@@ -305,19 +326,7 @@ AT
 	# the approve prompt, where the remedy is least obvious. The remedy is the
 	# OPPOSITE of a reply: resolve it.
 	_seed_stage cr-thread-reply
-	cd "$TEST_TMP" || return 1
-	mkdir -p .claude/scripts/cr
-	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
-		#!/bin/bash
-		for a in "$@"; do
-			if [ "$a" = "--json" ]; then
-				printf '{"pr":42,"unresolved":1,"unaddressed":0,"replied_awaiting_cr":0,"stranded":1,"threads":[]}\n'
-				exit 0
-			fi
-		done
-		exit 0
-	TR
-	chmod +x .claude/scripts/cr/thread-reply.sh
+	_stub_thread_reply '{"pr":42,"unresolved":1,"unaddressed":0,"replied_awaiting_cr":0,"stranded":1,"threads":[]}' || return 1
 	run "$SCRIPT" next
 	[ "$(_cur_stage)" = cr-thread-reply ] || {
 		echo "stage advanced with a stranded thread: $(_cur_stage)"
@@ -337,19 +346,7 @@ AT
 	# Same fail-closed posture as the unaddressed count: an older helper that
 	# does not emit the key must not read as "zero stranded" and advance.
 	_seed_stage cr-thread-reply
-	cd "$TEST_TMP" || return 1
-	mkdir -p .claude/scripts/cr
-	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
-		#!/bin/bash
-		for a in "$@"; do
-			if [ "$a" = "--json" ]; then
-				printf '{"pr":42,"unresolved":0,"unaddressed":0,"replied_awaiting_cr":0,"threads":[]}\n'
-				exit 0
-			fi
-		done
-		exit 0
-	TR
-	chmod +x .claude/scripts/cr/thread-reply.sh
+	_stub_thread_reply '{"pr":42,"unresolved":0,"unaddressed":0,"replied_awaiting_cr":0,"threads":[]}' || return 1
 	run "$SCRIPT" next
 	[ "$status" -ne 0 ]
 	[ "$(_cur_stage)" = cr-thread-reply ]
@@ -365,21 +362,7 @@ AT
 @test "cr-thread-reply HOLDS while a thread is unaddressed (#2548)" {
 	# The stall #2540 and #2635 hit, now a defined state instead of silence.
 	_seed_stage cr-thread-reply
-	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
-	# write from the repo root follows it and clobbers production.
-	cd "$TEST_TMP" || return 1
-	mkdir -p .claude/scripts/cr
-	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
-		#!/bin/bash
-		for a in "$@"; do
-			if [ "$a" = "--json" ]; then
-				printf '{"pr":42,"unresolved":3,"unaddressed":2,"replied_awaiting_cr":1,"stranded":0,"threads":[]}\n'
-				exit 0
-			fi
-		done
-		exit 0
-	TR
-	chmod +x .claude/scripts/cr/thread-reply.sh
+	_stub_thread_reply '{"pr":42,"unresolved":3,"unaddressed":2,"replied_awaiting_cr":1,"stranded":0,"threads":[]}' || return 1
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
 	[ "$(_cur_stage)" = cr-thread-reply ] || {
@@ -398,8 +381,6 @@ AT
 	# A read error must never read as "nothing unaddressed" — that would
 	# advance a PR whose findings were never counted.
 	_seed_stage cr-thread-reply
-	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
-	# write from the repo root follows it and clobbers production.
 	cd "$TEST_TMP" || return 1
 	mkdir -p .claude/scripts/cr
 	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
@@ -423,16 +404,7 @@ AT
 @test "cr-thread-reply refuses an unreadable count rather than guessing (#2548)" {
 	# Valid JSON with no `unaddressed` key is not zero — it is unknown.
 	_seed_stage cr-thread-reply
-	# cd FIRST: `.claude/scripts` is a symlink to the real scripts/ dir, so a
-	# write from the repo root follows it and clobbers production.
-	cd "$TEST_TMP" || return 1
-	mkdir -p .claude/scripts/cr
-	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
-		#!/bin/bash
-		printf '{"pr":42}\n'
-		exit 0
-	TR
-	chmod +x .claude/scripts/cr/thread-reply.sh
+	_stub_thread_reply '{"pr":42}' || return 1
 	run "$SCRIPT" next
 	[ "$status" -ne 0 ]
 	[ "$(_cur_stage)" = cr-thread-reply ]
@@ -456,14 +428,7 @@ AT
 	# it could name the cause — so the operator got a bare nonzero exit for an
 	# input the script has a written diagnostic for.
 	_seed_stage cr-thread-reply
-	cd "$TEST_TMP" || return 1
-	mkdir -p .claude/scripts/cr
-	cat >.claude/scripts/cr/thread-reply.sh <<-'TR'
-		#!/bin/bash
-		printf 'not json at all\n'
-		exit 0
-	TR
-	chmod +x .claude/scripts/cr/thread-reply.sh
+	_stub_thread_reply 'not json at all' || return 1
 	run "$SCRIPT" next
 	[ "$status" -ne 0 ]
 	[ "$(_cur_stage)" = cr-thread-reply ]

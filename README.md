@@ -63,7 +63,7 @@ Per `scripts/ship-pr-cycle.sh` (the `# Stages (state.stage):` header block), the
 - **cr-in-ci-wait** — wait for server-side CodeRabbit on the open PR
 - **auto-triage** — classify CR threads via `scripts/cr/auto-triage.sh` (#733); routes by unresolved-thread count
 - **cr-autofix** — apply actionable CR findings via `coderabbit:autofix`, then loop back to phase1 for delta re-review
-- **cr-thread-reply** — reply-with-evidence to verified-fixed / false-positive / rejected threads (#2548); only UNADDRESSED threads block, `replied-awaiting-CR` passes through
+- **cr-thread-reply** — reply-with-evidence to verified-fixed / false-positive / rejected threads (#2548); UNADDRESSED and STRANDED threads block, `replied-awaiting-CR` passes through. Stranded (unresolved + outdated) is not repliable — resolve it via `scripts/cr/resolve-stranded.sh`
 - **cr-conflict-check** — route a DIRTY PR through CodeRabbit's resolver before the gate (#190); CLEAN PRs pass straight through
 - **merge-gate** — operator approves here — unless `MERGE_GATE_AUTO=1` and the PR is provably green (#2549), which arms native auto-merge instead
 - **merged** — terminal

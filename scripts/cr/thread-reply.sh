@@ -156,8 +156,9 @@ REPO="${OWNER_REPO#*/}"
 # feeds the MERGE GATE: a PR whose 101st thread is unaddressed must not read
 # as clean. Truncation here would be a fail-open.
 _fetch_threads() {
-	local cursor="" page all="[]" has_next
+	local cursor="" page all="[]" has_next page_n=0
 	while :; do
+		page_n=$((page_n + 1))
 		local args=(-f "owner=$OWNER" -f "repo=$REPO" -F "pr=$PR")
 		[ -n "$cursor" ] && args+=(-f "cursor=$cursor")
 		if ! page=$(gh api graphql "${args[@]}" -f query='
@@ -185,6 +186,17 @@ query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
 		if printf '%s' "$page" | jq -e '(.errors // []) | length > 0' >/dev/null 2>&1; then
 			scm_fail "graphql returned .errors: $(printf '%s' "$page" | jq -c .errors)"
 		fi
+		# The node list must BE an array before it is merged. A structurally
+		# valid but empty response — `{}` — passes the .errors check above,
+		# and then `$a + null` in jq is the IDENTITY, not an error: the page
+		# merges cleanly, `hasNextPage` reads as null so pagination stops, and
+		# on page 1 the whole function returns []. `--count` prints 0, the
+		# stage advances, and the merge gate is told there is nothing to
+		# answer. That is the fail-open this script exists to prevent, hidden
+		# behind an operator that quietly does nothing.
+		printf '%s' "$page" |
+			jq -e '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"' >/dev/null 2>&1 ||
+			scm_fail "reviewThreads page $page_n has no .data.repository.pullRequest.reviewThreads.nodes ARRAY — refusing to read that as zero threads"
 		all=$(jq -c -n --argjson a "$all" --argjson p "$page" \
 			'$a + $p.data.repository.pullRequest.reviewThreads.nodes') ||
 			scm_fail "jq failed merging a reviewThreads page"

@@ -1,7 +1,18 @@
 #!/bin/bash
 set -u
-# NB: sourced lib → `set -u` (nounset) ONLY, intentionally NOT `set -euo
-# pipefail`: sourcing scripts define their own option discipline.
+# NB: this file sets `set -u` for the case where it is EXECUTED. When SOURCED
+# — the only way it is actually used — that line is a no-op against what
+# matters, because shell options are per-SHELL, not per-file. An earlier
+# version of this header said "sourcing scripts define their own option
+# discipline" as though that isolated this code from theirs; it is the
+# opposite. `merge_auto_ok` runs under the CALLER's options, and its only
+# caller is scripts/ship-pr-cycle.sh, which sets `set -euo pipefail`.
+#
+# So every `var=$(... | jq ...)` in here runs with errexit AND pipefail
+# active, and an unguarded one ABORTS cmd_next instead of returning the rc 2
+# this file exists to produce — delivering neither "not green" nor "could not
+# tell", just an unexplained non-zero exit at merge-gate. Each substitution
+# below therefore captures its own rc.
 #
 # auto-register: false
 # (#2549) Decide whether a PR is provably green enough to ARM GitHub native
@@ -124,8 +135,12 @@ merge_auto_ok() {
 		;;
 	esac
 
-	local mss
-	mss=$(printf '%s' "$view" | jq -r '.mergeStateStatus // ""')
+	local mss mss_rc=0
+	mss=$(printf '%s' "$view" | jq -r '.mergeStateStatus // ""') || mss_rc=$?
+	[ "$mss_rc" -eq 0 ] || {
+		echo "mergeStateStatus unreadable (jq rc=$mss_rc)"
+		return 2
+	}
 	case "$mss" in
 	CLEAN) ;;
 	"" | null)
@@ -168,16 +183,24 @@ merge_auto_ok() {
 	local name state desc missing=0 hollow=0 notgreen=0 detail=""
 	while IFS= read -r name; do
 		[ -n "$name" ] || continue
-		local row
+		local row row_rc=0 sd_rc=0
 		row=$(printf '%s' "$checks" | jq -c --arg n "$name" \
-			'[.[]? | select((.name // "") == $n)] | last // empty' 2>/dev/null)
+			'[.[]? | select((.name // "") == $n)] | last // empty' 2>/dev/null) || row_rc=$?
+		if [ "$row_rc" -ne 0 ]; then
+			echo "check rollup unreadable for '$name' (jq rc=$row_rc)"
+			return 2
+		fi
 		if [ -z "$row" ] || [ "$row" = "null" ]; then
 			missing=$((missing + 1))
 			detail="$detail ${name}=absent"
 			continue
 		fi
-		state=$(printf '%s' "$row" | jq -r '(.state // "") | ascii_upcase')
-		desc=$(printf '%s' "$row" | jq -r '(.description // "")')
+		state=$(printf '%s' "$row" | jq -r '(.state // "") | ascii_upcase') || sd_rc=$?
+		desc=$(printf '%s' "$row" | jq -r '(.description // "")') || sd_rc=$?
+		if [ "$sd_rc" -ne 0 ]; then
+			echo "check state/description unreadable for '$name' (jq rc=$sd_rc)"
+			return 2
+		fi
 		case "$state" in
 		SUCCESS) ;;
 		SKIPPED | NEUTRAL)

@@ -106,14 +106,32 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_lib/cmd-anchor.sh"
 # wrappers so the guard is ready when they ship. Distinct from the
 # emergency GH_SKILL_BYPASS_SKIP path because the intent is "this IS
 # the sanctioned skill flow" rather than "override for a meta-PR".
+#
+# SKILL_WRAPPER DOES NOT EXEMPT `coderabbit review` (r1 #2548). The marker is
+# caller-settable — `SKILL_WRAPPER=1 coderabbit review ...` is one prefix away
+# from any prompt — and the coderabbit block below exists precisely because
+# six reviews were spent outside the ledger. Worse, the exemption bought
+# nothing: the sanctioned wrapper (scripts/cr/local-review.sh) runs the CLI as
+# a SUBPROCESS, which no PreToolUse hook observes at all, so the wrapper never
+# needed it. A self-issued pass on the one guard whose whole subject is
+# unledgered spend.
+#
+# GH_SKILL_BYPASS_SKIP still works — that is the documented, operator-facing
+# emergency override, and the deny text names it.
+_cr_review_cmd=0
+if printf '%s' "$CMD" | grep -qE '(^|[;&|][[:space:]]*)([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*coderabbit[[:space:]]'; then
+	printf '%s' "$CMD" | grep -qE '[[:space:]]review([[:space:]]|$)' && _cr_review_cmd=1
+fi
+
 bypass_var=""
-if [ "${SKILL_WRAPPER:-0}" = "1" ]; then
+if [ "${SKILL_WRAPPER:-0}" = "1" ] && [ "$_cr_review_cmd" = "0" ]; then
 	bypass_var="SKILL_WRAPPER(env)"
 elif [ "${GH_SKILL_BYPASS_SKIP:-0}" = "1" ]; then
 	bypass_var="GH_SKILL_BYPASS_SKIP(env)"
 elif [ "${PHASE1_GATE_SKIP:-0}" = "1" ]; then
 	bypass_var="PHASE1_GATE_SKIP(env)"
-elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])SKILL_WRAPPER=1([[:space:]]|;|&|$)'; then
+elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])SKILL_WRAPPER=1([[:space:]]|;|&|$)' &&
+	[ "$_cr_review_cmd" = "0" ]; then
 	bypass_var="SKILL_WRAPPER(prefix)"
 elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])GH_SKILL_BYPASS_SKIP=1([[:space:]]|;|&|$)'; then
 	bypass_var="GH_SKILL_BYPASS_SKIP(prefix)"

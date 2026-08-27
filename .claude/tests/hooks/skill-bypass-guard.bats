@@ -185,13 +185,51 @@ EOF
 	esac
 }
 
-@test "SKILL_WRAPPER=1 lets the wrapper's own coderabbit call through (#2548)" {
-	# local-review.sh exports SKILL_WRAPPER=1 before invoking the CLI.
+@test "SKILL_WRAPPER=1 does NOT exempt a raw coderabbit review (#2548 r1)" {
+	# The marker is caller-settable, so treating it as proof of the sanctioned
+	# path let any prompt re-open the exact hole this block closes: one prefix
+	# and the raw CLI runs again with no ledger row and no budget entry.
+	#
+	# It also bought nothing. The real wrapper (scripts/cr/local-review.sh)
+	# invokes the CLI as a SUBPROCESS, which no PreToolUse hook observes — so
+	# the wrapper was never relying on this exemption to get through.
 	_run_guard "SKILL_WRAPPER=1 coderabbit review --agent -t committed"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a caller-supplied SKILL_WRAPPER=1 still exempted the raw CLI: $output"
+		return 1
+	}
+	# And the exported form, which is the same claim by another route.
+	run env SKILL_WRAPPER=1 bash -c "printf '%s' '$(jq -nc '{tool_name:"Bash",tool_input:{command:"coderabbit review --base main"}}')' | bash '$GUARD'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "an exported SKILL_WRAPPER=1 still exempted the raw CLI: $output"
+		return 1
+	}
+}
+
+@test "SKILL_WRAPPER=1 still exempts the OTHER guarded verbs (#2548 r1)" {
+	# The narrowing is scoped to coderabbit. Revoking the marker wholesale
+	# would break every skill wrapper that legitimately shells out to gh.
+	_run_guard "SKILL_WRAPPER=1 gh issue create --title x"
 	[ "$status" -eq 0 ]
 	case "$output" in
 	*'"permissionDecision":"deny"'*)
-		echo "SKILL_WRAPPER=1 did not exempt the wrapper's call: $output"
+		echo "the narrowing leaked past coderabbit and broke gh wrappers: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "GH_SKILL_BYPASS_SKIP remains the working escape for coderabbit (#2548 r1)" {
+	# The deny text advertises this override. If tightening SKILL_WRAPPER also
+	# killed the documented emergency path, the denial would print a remedy
+	# that does not work.
+	_run_guard "GH_SKILL_BYPASS_SKIP=1 coderabbit review --base main"
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "the documented emergency override no longer works: $output"
 		return 1
 		;;
 	esac

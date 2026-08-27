@@ -2846,6 +2846,7 @@ EOF
 		# listing had failed — the shape most likely to be read as "3 threads,
 		# none of them shown, so presumably nothing to do". The stage still
 		# holds either way; what changes is that the failure is named.
+		local _ctr_list_rc=0
 		"$ctr_helper" "$ctr_pr" --list || {
 			_ctr_list_rc=$?
 			echo "ship-pr-cycle: cr-thread-reply — listing the threads failed (rc=$_ctr_list_rc); the $ctr_unaddressed unaddressed thread(s) above are still outstanding" >&2
@@ -3023,12 +3024,28 @@ EOF
 		local _ma_lib
 		_ma_lib=$(_shipcycle_resolve _lib/merge-auto-ok.sh)
 		[ -f "$_ma_lib" ] || _ma_lib="$SCRIPT_DIR/../_lib/merge-auto-ok.sh"
+		# Both skip paths below now SAY SO. Holding the gate is the safe
+		# direction, but an operator who set MERGE_GATE_AUTO=1 and got silence
+		# cannot tell an unresolvable helper from a PR that is genuinely not
+		# green — which is the same complaint the comment above records about
+		# the hardcoded path, left half-fixed.
 		if [ -f "$_ma_lib" ]; then
+			# Guarded source: `set -euo pipefail` is active, so a parse error
+			# in the lib would abort cmd_next BEFORE the operator gate below
+			# prints — an unexplained non-zero exit at merge-gate. Same idiom
+			# this file already uses for phase-graduation.sh.
+			local _ma_src_rc=0
 			# shellcheck source=../_lib/merge-auto-ok.sh
-			source "$_ma_lib"
+			source "$_ma_lib" || _ma_src_rc=$?
+			if [ "$_ma_src_rc" -ne 0 ]; then
+				scm_warn "merge-gate: could not source $_ma_lib (rc=$_ma_src_rc) — holding the operator gate"
+			fi
 			local _ma_pr _ma_reason _ma_rc=0
 			_ma_pr=$(gh pr view --json number --jq .number 2>/dev/null) || _ma_pr=""
-			if [ -n "$_ma_pr" ]; then
+			if [ -z "$_ma_pr" ] && [ "$_ma_src_rc" -eq 0 ]; then
+				scm_warn "merge-gate: could not resolve the PR number (gh pr view failed) — auto-merge not evaluated, holding the operator gate"
+			fi
+			if [ -n "$_ma_pr" ] && [ "$_ma_src_rc" -eq 0 ]; then
 				_ma_reason=$(merge_auto_ok "$_ma_pr") || _ma_rc=$?
 				if [ "$_ma_rc" -eq 0 ]; then
 					echo "ship-pr-cycle: merge-gate — $_ma_reason"
@@ -3053,6 +3070,8 @@ EOF
 					fi
 				fi
 			fi
+		else
+			scm_warn "merge-gate: merge-auto-ok.sh not found (tried '$_ma_lib') — auto-merge not evaluated, holding the operator gate"
 		fi
 		echo "ship-pr-cycle: merge-gate — operator approves here"
 		_emit_stage_directive merge-gate

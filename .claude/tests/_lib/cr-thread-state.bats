@@ -156,10 +156,16 @@ _agreement_tmp() {
 	mkdir -p "$AGREE_TMP/bin"
 }
 
-_agreement_cleanup() {
+# Cleanup lives in teardown(), which bats runs on EVERY exit path — including
+# a failed assertion, a `set -u` reference, or a bats-level abort. It was
+# called manually on four paths across two tests, so every future early return
+# had to remember it and any hard abort leaked the directory. The
+# `*/crthreadagree.*` guard keeps the rm -rf honest.
+teardown() {
 	case "${AGREE_TMP:-}" in
 	*/crthreadagree.*) rm -rf "$AGREE_TMP" ;;
 	esac
+	return 0
 }
 
 @test "STAGE and GATE agree on a CR rebuttal: both say unaddressed" {
@@ -180,7 +186,6 @@ _agreement_cleanup() {
 	case "$gate_out" in
 	*"Unresolved current threads: 1 (unaddressed"*) ;;
 	*)
-		_agreement_cleanup
 		echo "GATE did not count the rebuttal as unaddressed (status=$gate_status): $gate_out"
 		return 1
 		;;
@@ -202,7 +207,6 @@ _agreement_cleanup() {
 	run env PATH="$AGREE_TMP/bin:$PATH" NODES_FILE="$AGREE_TMP/nodes.json" \
 		"$PLUGIN/scripts/cr/thread-reply.sh" 7 --json
 	local stage_out=$output stage_status=$status
-	_agreement_cleanup
 	[ "$stage_status" -eq 0 ] || {
 		echo "STAGE exited $stage_status: $stage_out"
 		return 1
@@ -232,7 +236,6 @@ _agreement_cleanup() {
 	case "$gate_out" in
 	*"Unresolved current threads: 0 (unaddressed"*) ;;
 	*)
-		_agreement_cleanup
 		echo "GATE counted a human-opened thread as a CR finding: $gate_out"
 		return 1
 		;;
@@ -253,7 +256,6 @@ _agreement_cleanup() {
 	run env PATH="$AGREE_TMP/bin:$PATH" NODES_FILE="$AGREE_TMP/nodes.json" \
 		"$PLUGIN/scripts/cr/thread-reply.sh" 7 --json
 	local stage_out=$output stage_status=$status
-	_agreement_cleanup
 	[ "$stage_status" -eq 0 ] || {
 		echo "STAGE exited $stage_status: $stage_out"
 		return 1

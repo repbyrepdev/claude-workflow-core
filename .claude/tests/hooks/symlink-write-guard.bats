@@ -184,12 +184,31 @@ _allowed() {
 	# bypass path recorded anything. A silent bypass of a guard that exists
 	# because two silent overwrites went unnoticed is the same bug again.
 	local log="$PLUGIN/.claude/logs/pipeline-skip.jsonl"
-	local before=0
-	[ -f "$log" ] && before=$(grep -c 'symlink-write-guard-skip' "$log" 2>/dev/null || echo 0)
+	# `grep -c` prints 0 AND exits 1 when there is no match, so `|| echo 0`
+	# appended a SECOND line and the integer comparison below then failed with
+	# a confusing "integer expression expected". rc 1 is the zero-count
+	# answer; anything else is a real error and fails the test.
+	_skip_rows() { # $1 = log path; echoes the count
+		local n rc=0
+		[ -f "$1" ] || {
+			echo 0
+			return 0
+		}
+		n=$(grep -c 'symlink-write-guard-skip' "$1" 2>/dev/null) || rc=$?
+		if [ "$rc" -eq 1 ]; then
+			echo 0
+		elif [ "$rc" -ne 0 ]; then
+			echo "grep failed on $1 (rc=$rc)" >&2
+			return 1
+		else
+			echo "$n"
+		fi
+	}
+	local before after
+	before=$(_skip_rows "$log") || return 1
 	_guard "SYMLINK_WRITE_GUARD_SKIP=1 SYMLINK_WRITE_GUARD_SKIP_REASON=under-test cat > .claude/scripts/cr/x.sh"
 	_allowed
-	local after=0
-	[ -f "$log" ] && after=$(grep -c 'symlink-write-guard-skip' "$log" 2>/dev/null || echo 0)
+	after=$(_skip_rows "$log") || return 1
 	[ "$after" -gt "$before" ] || {
 		echo "the bypass wrote no audit row (before=$before after=$after)"
 		return 1
@@ -204,6 +223,23 @@ _allowed() {
 	# fixture gets built, so the hole sat on the most likely route.
 	_guard_write "$PLUGIN/.claude/scripts/brand-new-dir/x.sh"
 	_denied
+}
+
+@test "the bypass token AFTER the write does not authorise it" {
+	# `cat > .claude/scripts/cr/x.sh; SYMLINK_WRITE_GUARD_SKIP=1 true` — the
+	# token accepted at any `;`/`&`/`|` boundary meant it could sit AFTER the
+	# write it was supposedly authorising. The hook sees ONE command string
+	# and cannot attribute a per-segment prefix to a particular redirect, so
+	# the only honest reading is an up-front declaration.
+	_guard "cat > .claude/scripts/cr/x.sh; SYMLINK_WRITE_GUARD_SKIP=1 true"
+	_denied
+}
+
+@test "the bypass at the START of the command still works" {
+	# The other half: tightening the anchor must not break the documented
+	# escape, or the remedy the denial prints is a lie.
+	_guard "SYMLINK_WRITE_GUARD_SKIP=1 SYMLINK_WRITE_GUARD_SKIP_REASON=x cat > .claude/scripts/cr/y.sh"
+	_allowed
 }
 
 @test "a directory that merely ENDS in .claude is not refused" {

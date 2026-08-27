@@ -48,7 +48,7 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
                    scripts/cr/resolve-stranded.sh. This stage does not see the merge gate's
                    other sources (walkthrough pre-merge failures, outside-diff findings), so a
                    clean pass here is not a promise that merge-gate will be clean.
-    ↓ next (gate-checked: unaddressed == 0)
+    ↓ next (gate-checked: unaddressed == 0 AND stranded == 0)
 [cr-conflict-check] route a DIRTY PR through CR's resolver (#190); CLEAN passes straight through
     ↓ next
 [merge-gate]      OPERATOR APPROVES HERE — unless MERGE_GATE_AUTO=1 and the PR is

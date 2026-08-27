@@ -71,52 +71,103 @@ FILE_PATH=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.file_path // ""')
 CWD=$(printf '%s' "$PAYLOAD" | jq -r '.cwd // ""')
 [ -n "$CWD" ] || CWD=$PWD
 
+# Returns NON-ZERO when the audit row could not be written. The bypass is
+# sold as "genuinely audit-logged"; if the row does not land, that sentence is
+# false and the escape hatch becomes an untracked hole. An unwritable log is
+# rare and easy to fix, so refusing is cheap — silently allowing is not.
 _audit_bypass() {
-	local root reason
+	local root reason log
 	root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$CWD"
 	reason=${SYMLINK_WRITE_GUARD_SKIP_REASON:-unstated}
 	reason=${reason//\\/\\\\}
 	reason=${reason//\"/\\\"}
 	reason=${reason//$'\n'/ }
-	mkdir -p "$root/.claude/logs" 2>/dev/null || return 0
+	log="$root/.claude/logs/pipeline-skip.jsonl"
+	mkdir -p "$root/.claude/logs" 2>/dev/null || return 1
 	printf '{"ts":"%s","kind":"symlink-write-guard-skip","reason":"%s"}\n' \
 		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" \
-		>>"$root/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
+		>>"$log" 2>/dev/null || return 1
 }
 
-# Anchored: the token must be a command-position assignment, not text that
-# merely appears somewhere in the command.
-if printf '%s' "$CMD" | grep -qE '(^|[;&|][[:space:]]*)SYMLINK_WRITE_GUARD_SKIP=1[[:space:]]'; then
-	_audit_bypass
-	exit 0
+_bypass_or_deny() {
+	_audit_bypass && exit 0
+	hook_deny "symlink-write-guard" "bypass REFUSED — the audit row could not be written to .claude/logs/pipeline-skip.jsonl, and an unlogged bypass is not a bypass this guard offers. Fix the log path (check permissions on .claude/logs), then retry."
+}
+
+# Anchored to the START of the command, not to any segment boundary. Accepting
+# it after `;`, `&` or `|` meant the token could sit AFTER the write it was
+# meant to authorise:
+#
+#     cat > .claude/scripts/cr/x.sh; SYMLINK_WRITE_GUARD_SKIP=1 true
+#
+# The guard sees one CMD string and cannot attribute a per-segment prefix to a
+# particular redirect, so the only honest reading is "the whole command is
+# bypassed, and the operator said so up front".
+if printf '%s' "$CMD" | grep -qE '^[[:space:]]*SYMLINK_WRITE_GUARD_SKIP=1[[:space:]]'; then
+	_bypass_or_deny
 fi
 if [ "${SYMLINK_WRITE_GUARD_SKIP:-0}" = "1" ]; then
-	_audit_bypass
-	exit 0
+	_bypass_or_deny
 fi
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
 
 # --- collect write targets ------------------------------------------------
 TARGETS=$FILE_PATH
+# Every extractor below used `|| true`, which maps ANY failure — a missing
+# grep, a broken sed, an OOM — onto "no targets found", and the empty-TARGETS
+# check further down then EXITS 0. A guard whose parser silently disappearing
+# means "allow" is the fail-open shape this whole file exists to remove.
+#
+# grep's rc 1 is the one benign non-zero: it means "no match", which really is
+# "no target". Anything else, from either tool, denies.
+#
+# _extract RETURNS a status; it must NOT call hook_deny itself. Each call site
+# is a command substitution, so hook_deny would print its JSON into the
+# captured value and its `exit 0` would end only the subshell — the deny would
+# be swallowed and assigned to a variable, which is worse than the `|| true`
+# it replaces. The caller checks the rc and denies in the parent shell.
+_extract() { # $1 = grep -E pattern, $2 = sed -E script; echoes matches, rc 0/9
+	local out rc=0
+	out=$(printf '%s\n' "$CMD" | grep -oE "$1" 2>/dev/null) || rc=$?
+	if [ "$rc" -eq 1 ]; then
+		return 0 # no match — a real, empty answer
+	elif [ "$rc" -ne 0 ]; then
+		return 9 # grep itself failed
+	fi
+	[ -n "$out" ] || return 0
+	printf '%s\n' "$out" | sed -E "$2" || return 9
+}
+_ext_deny() { # $1 = which extractor, $2 = rc
+	hook_deny "symlink-write-guard" "target extraction failed ($1, rc=$2) — failing closed rather than treating an unparsed command as having no write targets"
+}
 if [ -n "$CMD" ]; then
 	# Strips a leading double OR single quote. Single quotes were not handled,
 	# so `> '/opt/homebrew/bin/brew'` kept its apostrophe, failed the absolute
 	# test, and skipped Rule B entirely — incident #1 with different quoting.
-	REDIRECTS=$(printf '%s\n' "$CMD" |
-		grep -oE '[0-9]?>>?[[:space:]]*["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
-		sed -E 's/^[0-9]?>>?[[:space:]]*["'"'"']?//' || true)
+	# rc checked OUTSIDE each substitution — `$(...)` propagates the function
+	# status to `||`, so the deny runs in this shell and its JSON reaches
+	# stdout instead of a variable.
+	_rc=0
+	REDIRECTS=$(_extract \
+		'[0-9]?>>?[[:space:]]*["'"'"']?[^ "'"'"'|;&)]+' \
+		's/^[0-9]?>>?[[:space:]]*["'"'"']?//') || _rc=$?
+	[ "$_rc" -eq 0 ] || _ext_deny "redirects" "$_rc"
 	# `--append` as well as `-a`: tee accepts both, and only one was matched.
-	TEES=$(printf '%s\n' "$CMD" |
-		grep -oE '\btee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
-		sed -E 's/^tee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?//' || true)
+	_rc=0
+	TEES=$(_extract \
+		'\btee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?[^ "'"'"'|;&)]+' \
+		's/^tee[[:space:]]+((-a|--append)[[:space:]]+)?["'"'"']?//') || _rc=$?
+	[ "$_rc" -eq 0 ] || _ext_deny "tee" "$_rc"
 	# `dd of=path` writes through a symlink exactly like a redirect does, and
 	# it was in the documented-gaps list purely because nobody had written the
 	# two lines. cp/mv/install/ln/sed -i stay listed as gaps: each needs
 	# argument parsing this hook has no business attempting.
-	DDS=$(printf '%s\n' "$CMD" |
-		grep -oE '\bdd[[:space:]]+([^|;&]*[[:space:]])?of=["'"'"']?[^ "'"'"'|;&)]+' 2>/dev/null |
-		sed -E 's/^.*of=["'"'"']?//' || true)
+	_rc=0
+	DDS=$(_extract \
+		'\bdd[[:space:]]+([^|;&]*[[:space:]])?of=["'"'"']?[^ "'"'"'|;&)]+' \
+		's/^.*of=["'"'"']?//') || _rc=$?
+	[ "$_rc" -eq 0 ] || _ext_deny "dd" "$_rc"
 	TARGETS=$(printf '%s\n%s\n%s\n%s\n' "$TARGETS" "$REDIRECTS" "$TEES" "$DDS")
 fi
 [ -n "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ] || exit 0

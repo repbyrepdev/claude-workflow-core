@@ -307,4 +307,21 @@ _run_gate_threads() {
 	  "comments":{"nodes":[{"author":{"login":"coderabbitai"},"path":"a.sh","line":1,"body":"done"}]}}]'
 	_run_gate_threads
 	[ "$status" -eq 0 ]
+	# The count, for the reason stated at the top of this group: rc 0 is
+	# produced by every clean path the gate has, including one where the
+	# thread source never read the fixture. Only the count shows the thread
+	# was SEEN and then excluded.
+	case "$output" in
+	*"Unresolved current threads: 0 (unaddressed"*) ;;
+	*)
+		echo "passed, but not with the resolved thread excluded: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"replied-awaiting-CR"*)
+		echo "a resolved thread was reported as replied-awaiting-CR: $output"
+		return 1
+		;;
+	esac
 }

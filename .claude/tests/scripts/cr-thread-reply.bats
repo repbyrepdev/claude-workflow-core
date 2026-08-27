@@ -323,6 +323,37 @@ _two_threads() {
 	esac
 }
 
+@test "a structurally EMPTY page is refused, not read as zero threads" {
+	# `{}` passes the .errors check, and `$a + null` in jq is the IDENTITY
+	# rather than an error — so the page merged cleanly, hasNextPage read as
+	# null, pagination stopped, and page 1 returned []. `--count` then printed
+	# 0 and the merge gate was told there was nothing to answer.
+	cat >"$TEST_TMP/bin/gh" <<-'STUB'
+		#!/bin/bash
+		case "$*" in
+		*"repo view"*) printf 'o/r\n'; exit 0 ;;
+		esac
+		printf '{}\n'
+	STUB
+	chmod +x "$TEST_TMP/bin/gh"
+	run env PATH="$TEST_TMP/bin:$PATH" bash -c "cd '$TEST_TMP' && '$TR' 7 --count"
+	[ "$status" -ne 0 ] || {
+		echo "an empty GraphQL page reported success: $output"
+		return 1
+	}
+	case "$output" in
+	*"no .data.repository.pullRequest.reviewThreads.nodes ARRAY"*) ;;
+	*)
+		echo "failed, but not on the missing node list: $output"
+		return 1
+		;;
+	esac
+	[ "$(printf '%s' "$output" | tr -d '[:space:]')" != "0" ] || {
+		echo "an empty page printed a bare 0 count"
+		return 1
+	}
+}
+
 @test "zero unresolved threads is a clean, quiet answer" {
 	_stub_gh '[]'
 	_run_tr 7 --count

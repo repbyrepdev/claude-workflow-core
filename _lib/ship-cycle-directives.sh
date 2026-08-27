@@ -109,8 +109,11 @@ _emit_stage_directive() {
     false-positive     → --class false-positive --body '...'   Include the command you ran and its output.
     rejected-by-design → --class rejected-by-design --body '...'  Include the rationale AND where it is recorded in-tree.
     actionable         → NOT repliable. Fix it: coderabbit:autofix, commit, let the delta re-review confirm.
-  A replied thread becomes 'replied-awaiting-CR' — a distinct, NON-blocking state. Only UNADDRESSED threads block
-  merge-gate. Re-run 'scripts/ship-pr-cycle.sh next' once every unaddressed thread has a reply."
+  A replied thread becomes 'replied-awaiting-CR' — a distinct, NON-blocking state.
+  UNADDRESSED and STRANDED threads both block. STRANDED (unresolved + outdated) is NOT repliable — replying to
+  every unaddressed thread and re-running will still be refused while one exists. Resolve those instead:
+      scripts/cr/resolve-stranded.sh <pr>
+  Re-run 'scripts/ship-pr-cycle.sh next' once unaddressed AND stranded are both zero."
 		;;
 	*)
 		echo "_emit_stage_directive: unknown label '$label' — no directive emitted" >&2
