@@ -810,10 +810,21 @@ _scaler_pin() { # $1 = extra env words
 		echo "no audit log written"
 		return 1
 	}
-	# Every line must be valid JSON — an injected newline would leave a
-	# fragment that breaks the whole-file pass session-start-report.sh does.
-	jq -e . "$log" >/dev/null 2>&1 || {
-		echo "the audit log is no longer parseable line-by-line: $(cat "$log")"
+	# Every PHYSICAL LINE must be valid JSON, checked one at a time. `jq -e .`
+	# over the whole file reads a STREAM: it happily parses an object split
+	# across several lines, so it would accept exactly the injected-newline
+	# record this test exists to catch. The consumers read JSONL line-by-line.
+	local _n=0 _line
+	while IFS= read -r _line; do
+		_n=$((_n + 1))
+		[ -n "$_line" ] || continue
+		printf '%s' "$_line" | jq -e . >/dev/null 2>&1 || {
+			echo "audit log line $_n is not self-contained JSON: $_line"
+			return 1
+		}
+	done <"$log"
+	[ "$_n" -gt 0 ] || {
+		echo "the audit log was empty — nothing was validated"
 		return 1
 	}
 	# And no FORGED record exists as its own row.
@@ -870,10 +881,20 @@ _scaler_pin() { # $1 = extra env words
 	local bystander="$TEST_TMP/pins/important-config.json"
 	printf '{"not":"a pin"}\n' >"$bystander"
 	_backdate_40d "$bystander"
+	# A stale file in OUR shape, same age, same directory. Without it the test
+	# passes on a prune that deletes nothing at all — proving the glob is
+	# narrow but not that pruning still happens.
+	local ours="$TEST_TMP/pins/some_dead_branch-987654321.json"
+	printf '{"rounds":5,"tier":"high"}\n' >"$ours"
+	_backdate_40d "$ours"
 	_scaler_pin
 	[ "$status" -eq 0 ]
 	[ -f "$bystander" ] || {
 		echo "the prune deleted a file that was not one of our pins"
+		return 1
+	}
+	[ ! -f "$ours" ] || {
+		echo "the prune ran but did not delete a stale pin of our own shape"
 		return 1
 	}
 }

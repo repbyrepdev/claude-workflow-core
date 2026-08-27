@@ -297,6 +297,12 @@ fi
 
 total=$((p05_count + cr_count))
 
+# The ceiling the tier table can produce, named ONCE. The pin read clamps to
+# it (a corrupt pin must not demand more rounds than the table has), and the
+# `high` tier assigns from it — so the clamp and the table cannot drift apart,
+# which they would the moment either number was edited alone.
+SCALER_MAX_ROUNDS=5
+
 # Tier decision. The 1-round all-clean tier requires the pre-filter to have
 # ACTUALLY RUN (#2259): with no pre-filter signal (skipped or never logged
 # for THIS sha), zero findings proves nothing — floor at 2 rounds instead.
@@ -313,7 +319,7 @@ elif [ "$total" -le 10 ]; then
 	rounds=3
 	tier="moderate"
 else
-	rounds=5
+	rounds=$SCALER_MAX_ROUNDS
 	tier="high"
 fi
 
@@ -356,6 +362,16 @@ repinned=0
 # write fails. So three rounds of carefully-worded warnings were invisible in
 # production. A diagnostic nobody can read is not a diagnostic.
 pin_state="ok"
+# ACCUMULATES. More than one of these can be true in a single call — a
+# tracked pin is ignored and THEN the replacement write fails — and a plain
+# assignment kept only the last, dropping the reason the operator most needed.
+_pin_state_add() { # $1 = token
+	if [ "$pin_state" = "ok" ]; then
+		pin_state="$1"
+	else
+		pin_state="$pin_state,$1"
+	fi
+}
 # ONE seam, and it is operator-facing rather than test-only: relocating pin
 # state is a legitimate thing to want (a shared checkout, a read-only tree).
 #
@@ -390,14 +406,14 @@ fi
 # this comment said a detached HEAD gives an empty slug, which would have
 # invited exactly that deletion.)
 if [ -z "$branch_slug" ] || [ "$branch_name" = "HEAD" ]; then
-	pin_state="no-branch"
+	_pin_state_add "no-branch"
 	echo "phase1-scaler: WARN: no branch name (detached HEAD?) — the tier cannot be pinned, so the cap will be re-resolved on every call and can grow with the finding count (#2544)" >&2
 	branch_slug=""
 fi
 # Same for a missing jq: the pin is JSON, so without it the cap is recomputed
 # every call. The tier tables above degrade quietly by design; this must not.
 if [ -n "$branch_slug" ] && ! command -v jq >/dev/null 2>&1; then
-	pin_state="no-jq"
+	_pin_state_add "no-jq"
 	echo "phase1-scaler: WARN: jq not found — the tier pin cannot be read or written, so the cap will be re-resolved on every call (#2544)" >&2
 	branch_slug=""
 fi
@@ -416,7 +432,7 @@ if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
 	# none, so nothing is claimed until the old pin is actually gone.
 	rm -f "$PIN_FILE" 2>/dev/null || true
 	if [ -f "$PIN_FILE" ]; then
-		pin_state="repin-failed"
+		_pin_state_add "repin-failed"
 		echo "phase1-scaler: WARN: --repin could NOT remove the existing pin at $PIN_FILE — the pinned cap is UNCHANGED and nothing was logged. Fix the permissions and retry." >&2
 	else
 		# `--repin` is sold as audit-logged; a silent write failure makes that
@@ -471,7 +487,7 @@ fi
 # toward MORE review.
 if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ] &&
 	git ls-files --error-unmatch "$PIN_FILE" >/dev/null 2>&1; then
-	pin_state="tracked-ignored"
+	_pin_state_add "tracked-ignored"
 	echo "phase1-scaler: WARN: $PIN_FILE is TRACKED BY GIT — a pin that arrives with the branch is the branch's claim about its own review depth, not this machine's. Ignoring it and re-resolving locally; remove it from the index (git rm --cached)." >&2
 	PIN_FILE="$PIN_DIR/${branch_slug}.json.ignored-tracked"
 fi
@@ -507,9 +523,9 @@ if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
 	# The regex alone accepts `999`, so a corrupt or hand-edited pin could
 	# demand a round count the tier table can never produce — and since the
 	# cap is a ceiling on review iteration, an absurdly high one is a
-	# treadmill with extra steps. 5 is the `high` tier; the pin cannot mean
-	# more than the table can.
-	if [[ ${_pin_rounds:-} =~ ^[1-9][0-9]*$ ]] && [ "$_pin_rounds" -le 5 ]; then
+	# treadmill with extra steps. Derived from SCALER_MAX_ROUNDS, which the
+	# `high` tier also assigns from, so the two cannot drift.
+	if [[ ${_pin_rounds:-} =~ ^[1-9][0-9]*$ ]] && [ "$_pin_rounds" -le "$SCALER_MAX_ROUNDS" ]; then
 		rounds="$_pin_rounds"
 		# A distinguishable sentinel, not the bare word "unknown" — which
 		# reads like a tier name in REASON output and could be mistaken for
@@ -525,7 +541,7 @@ if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
 	else
 		# Corrupt or truncated pin: re-resolve rather than abort inside a hook,
 		# and SAY so — a silently discarded pin looks identical to a first run.
-		pin_state="corrupt-recovered"
+		_pin_state_add "corrupt-recovered"
 		echo "phase1-scaler: WARN: pin file $PIN_FILE is unreadable or has no valid rounds; re-resolving from current signals" >&2
 		rm -f "$PIN_FILE" 2>/dev/null || true
 		pin_ts=""
@@ -546,7 +562,7 @@ fi
 # The ratchet stays closed, because the first INFORMED resolve pins and every
 # call after it reads.
 if [ "$pinned" = "0" ] && [ -n "$branch_slug" ] && [ "$tier" = "no-prefilter-signal" ]; then
-	pin_state="deferred-no-signal"
+	_pin_state_add "deferred-no-signal"
 elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	# Tracked explicitly rather than inferred from `[ -f "$PIN_FILE" ]`. The
@@ -630,7 +646,7 @@ elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	# which is the old behaviour. Advisory, because the operator should know
 	# the cap is not actually being held.
 	if [ "$_pin_written" = "0" ]; then
-		pin_state="write-failed"
+		_pin_state_add "write-failed"
 		echo "phase1-scaler: WARN: could not write the tier pin to $PIN_FILE — the cap will be re-resolved on every call (the pre-#2544 treadmill)" >&2
 		# A pin that could not be replaced must not be READ next call either:
 		# it holds a number this run already decided was out of date.
