@@ -35,8 +35,11 @@ set -euo pipefail
 #   push              → ready to push to origin
 #   cr-in-ci-wait     → waiting for GitHub CR
 #   auto-triage       → classify CR threads via scripts/cr/auto-triage.sh (#733)
+#   cr-thread-reply   → reply-with-evidence to non-actionable CR threads (#2548);
+#                       only UNADDRESSED threads block the gate
 #   cr-conflict-check → route DIRTY PR through CR resolver before gate (#190)
-#   merge-gate        → OPERATOR APPROVES HERE (only interaction)
+#   merge-gate        → OPERATOR APPROVES HERE (only interaction) — unless
+#                       MERGE_GATE_AUTO=1 and the PR is provably green (#2549)
 #   merged            → terminal
 #
 # Sub-issue scope: #657 (state machine + state-file MVP) + #728 (phase2/push/
@@ -1568,6 +1571,36 @@ cmd_status() {
 		_p1runs=$(_phase1_branch_round_count) || _p1runs=""
 		echo "  P1 cap:      ${_p1runs:-<unavailable>}/$_p1cap phase-1 round(s) used on this branch (enforced pre-arm, #2575)"
 	fi
+
+	# (#2548) CR thread buckets, once the cycle is far enough along for threads
+	# to exist. Advisory render, same contract as the cap lines above: a query
+	# failure prints `unknown`, NEVER 0 — reporting a clean state on an error
+	# is how an operator merges over findings nobody counted.
+	case "$_p2stage" in
+	cr-in-ci-wait | auto-triage | cr-autofix | cr-thread-reply | cr-conflict-check | merge-gate)
+		# _tr_json is initialised, not merely declared: it is assigned only
+		# inside the `if` below, so when `gh pr view` fails (not pushed, auth
+		# expired, offline) the later `[ -n "$_tr_json" ]` expanded an unset
+		# local under `set -u` and aborted the whole script — killing a
+		# read-only `status` command, in the exact path whose own comment
+		# promises it degrades to "unknown".
+		local _tr_helper _tr_pr _tr_un _tr_rep
+		local _tr_json=""
+		_tr_pr=$(gh pr view --json number --jq .number 2>/dev/null) || _tr_pr=""
+		_tr_helper=$(_shipcycle_resolve scripts/cr/thread-reply.sh 2>/dev/null) || _tr_helper=""
+		if [ -n "$_tr_pr" ] && [ -n "$_tr_helper" ]; then
+			_tr_json=$("$_tr_helper" "$_tr_pr" --json 2>/dev/null) || _tr_json=""
+		fi
+		if [ -n "$_tr_json" ]; then
+			_tr_un=$(printf '%s' "$_tr_json" | jq -r '.unaddressed // "unknown"' 2>/dev/null) || _tr_un="unknown"
+			_tr_rep=$(printf '%s' "$_tr_json" | jq -r '.replied_awaiting_cr // "unknown"' 2>/dev/null) || _tr_rep="unknown"
+		else
+			_tr_un="unknown"
+			_tr_rep="unknown"
+		fi
+		echo "  CR threads:  ${_tr_un} unaddressed (BLOCKING), ${_tr_rep} replied-awaiting-CR (not blocking)"
+		;;
+	esac
 }
 
 cmd_next() {
@@ -2576,7 +2609,8 @@ EOF
 		# v4.28-W5 (#774, #775): route based on unresolved CR-thread count.
 		# >0 → cr-autofix stage applies via skill (auto-apply all severities;
 		# operator gates only at merge-gate per 4-gate autonomy model).
-		# 0 → cr-conflict-check (#190); that stage advances to merge-gate when
+		# 0 → cr-thread-reply (#2548), which forwards to cr-conflict-check (#190)
+		# when nothing is unaddressed; that stage advances to merge-gate when
 		# mergeable, routes a DIRTY PR through CR's resolver, or holds if
 		# mergeability is still computing (see its handler). Counting is
 		# extracted to
@@ -2590,8 +2624,8 @@ EOF
 			return 2
 		fi
 		if [ "$unresolved_count" = "0" ]; then
-			_set_stage "cr-conflict-check"
-			echo "→ no unresolved CR threads; advanced to cr-conflict-check"
+			_set_stage "cr-thread-reply"
+			echo "→ no unresolved CR threads; advanced to cr-thread-reply"
 			return 0
 		fi
 		echo "  $unresolved_count unresolved CR thread(s) — advancing to cr-autofix"
@@ -2637,8 +2671,8 @@ EOF
 			return "$cra_unrl_rc"
 		fi
 		if [ "$cra_unresolved" = "0" ]; then
-			_set_stage "cr-conflict-check"
-			echo "→ no unresolved CR threads (resolved without a commit); advanced to cr-conflict-check"
+			_set_stage "cr-thread-reply"
+			echo "→ no unresolved CR threads (resolved without a commit); advanced to cr-thread-reply"
 			return 0
 		fi
 		# Capture _get_state_field rc explicitly — it now returns 2 on
@@ -2721,6 +2755,103 @@ After autofix commits, re-run 'ship-pr-cycle.sh next' to loop back to phase1
 Opt-in to server-side autofix (CR-bot pushes commit instead):
   SHIP_CI_SIDE_AUTOFIX=1 ship-pr-cycle.sh next
 EOF
+		return 0
+		;;
+	cr-thread-reply)
+		# (#2548) The cycle had a stage for FIXING a CR finding and none for
+		# the other three outcomes. A verified-fixed, false-positive or
+		# rejected-by-design thread could only be closed by REPLYING with
+		# evidence and letting CR resolve — and that step was in no stage, so
+		# the cycle stalled at merge-gate with non-zero threads and no defined
+		# next action. Seen on #2540 (5 threads, 1 fixable by code) and #2635.
+		#
+		# Dispatch is mechanical; CLASSIFICATION stays operator-driven. The
+		# stage never invents evidence and never posts a reply on its own —
+		# same contract auto-triage documents.
+		local ctr_pr ctr_err ctr_err_file ctr_rc=0
+		ctr_err_file=$(mktemp -t ship-cycle-crthread-pr.XXXXXX) ||
+			scm_fail "mktemp for cr-thread-reply gh pr view stderr capture failed"
+		ctr_pr=$(gh pr view --json number --jq .number 2>"$ctr_err_file") || ctr_rc=$?
+		[ -s "$ctr_err_file" ] && ctr_err=$(cat "$ctr_err_file")
+		rm -f "$ctr_err_file"
+		if [ "$ctr_rc" -ne 0 ]; then
+			echo "ship-pr-cycle: cr-thread-reply — cannot resolve PR (gh rc=$ctr_rc): ${ctr_err:-not pushed?}" >&2
+			return 2
+		fi
+
+		local ctr_helper ctr_json ctr_jrc=0
+		ctr_helper=$(_shipcycle_resolve scripts/cr/thread-reply.sh) ||
+			scm_fail "cr-thread-reply: cannot resolve scripts/cr/thread-reply.sh"
+		ctr_json=$("$ctr_helper" "$ctr_pr" --json) || ctr_jrc=$?
+		# Fail CLOSED, like auto-triage and cr-autofix: a read error must never
+		# fall through to "nothing unaddressed", which would advance a PR whose
+		# findings were never counted.
+		if [ "$ctr_jrc" -ne 0 ]; then
+			echo "ship-pr-cycle: cr-thread-reply — thread read failed (rc=$ctr_jrc); refusing to advance" >&2
+			return "$ctr_jrc"
+		fi
+
+		local ctr_unaddressed ctr_replied
+		# rc captured rather than swallowed: the helper exiting 0 does not
+		# guarantee its stdout is JSON, and under `set -e` a jq parse failure
+		# killed cmd_next inside the command substitution — BEFORE the guard
+		# right below could name the cause. The unreadable-count refusal exists
+		# precisely for this input; letting `set -e` fire first replaced a
+		# stated reason with a bare nonzero exit.
+		ctr_unaddressed=$(printf '%s' "$ctr_json" | jq -r '.unaddressed // "err"' 2>/dev/null) || ctr_unaddressed="err"
+		ctr_replied=$(printf '%s' "$ctr_json" | jq -r '.replied_awaiting_cr // "err"' 2>/dev/null) || ctr_replied="err"
+		local ctr_stranded
+		ctr_stranded=$(printf '%s' "$ctr_json" | jq -r '.stranded // "err"' 2>/dev/null) || ctr_stranded="err"
+		case "$ctr_unaddressed" in
+		'' | err | null)
+			echo "ship-pr-cycle: cr-thread-reply — unreadable unaddressed count; refusing to advance" >&2
+			return 2
+			;;
+		esac
+		case "$ctr_stranded" in
+		'' | err | null)
+			echo "ship-pr-cycle: cr-thread-reply — unreadable stranded count; refusing to advance" >&2
+			return 2
+			;;
+		esac
+
+		# STRANDED holds the stage too. The helper has always REPORTED it, and
+		# the stage advanced on `unaddressed == 0` alone — but a stranded
+		# thread (isResolved:false + isOutdated:true) is counted by
+		# hooks/_pr-cr-findings.sh, so advancing past it only relocated the
+		# stall to merge-gate, where the remedy is less obvious and the
+		# operator is one step from approving.
+		#
+		# It is a SEPARATE arm because the remedy is the opposite one: these
+		# are the threads where manual resolution IS correct, and a reply is
+		# not. Folding them into the unaddressed count would point the
+		# operator at thread-reply.sh, which refuses them.
+		if [ "$ctr_stranded" != "0" ]; then
+			echo "ship-pr-cycle: cr-thread-reply — $ctr_stranded stranded thread(s) (unresolved + outdated); these are NOT repliable, resolve them:" >&2
+			echo "    scripts/cr/resolve-stranded.sh $ctr_pr" >&2
+		fi
+
+		if [ "$ctr_unaddressed" = "0" ] && [ "$ctr_stranded" = "0" ]; then
+			# Every unresolved thread has been answered (or there are none).
+			# `replied-awaiting-CR` is a distinct NON-blocking state: the
+			# operator did their part and CR has yet to resolve.
+			_set_stage "cr-conflict-check"
+			echo "→ no unaddressed CR threads ($ctr_replied replied-awaiting-CR); advanced to cr-conflict-check"
+			return 0
+		fi
+
+		echo "ship-pr-cycle: cr-thread-reply — $ctr_unaddressed unaddressed thread(s), $ctr_replied awaiting CR, $ctr_stranded stranded" >&2
+		# `|| true` swallowed a listing failure, so the operator got the count
+		# ("3 unaddressed") and then an empty list, with nothing saying the
+		# listing had failed — the shape most likely to be read as "3 threads,
+		# none of them shown, so presumably nothing to do". The stage still
+		# holds either way; what changes is that the failure is named.
+		local _ctr_list_rc=0
+		"$ctr_helper" "$ctr_pr" --list || {
+			_ctr_list_rc=$?
+			echo "ship-pr-cycle: cr-thread-reply — listing the threads failed (rc=$_ctr_list_rc); the $ctr_unaddressed unaddressed thread(s) above are still outstanding" >&2
+		}
+		_emit_stage_directive cr-thread-reply
 		return 0
 		;;
 	cr-conflict-check)
@@ -2875,6 +3006,72 @@ EOF
 					fi
 				fi
 			fi
+		fi
+		# (#2549) Auto-merge when the PR is provably green. The gate is
+		# deliberate, but it fired unconditionally — including when every
+		# signal that DEFINES mergeable was already machine-verified. On
+		# #2540 the operator pressed the button after ~12 rounds in which
+		# every finding had been fixed-and-verified or rejected-with-evidence.
+		#
+		# Arming --auto does not weaken review: GitHub still enforces the
+		# branch ruleset (approving review, self-approval block). It stops
+		# requiring a human AFTER the machine has agreed.
+		# Resolved, not hardcoded: `$SCRIPT_DIR/../_lib/` is the PLUGIN layout
+		# only. In a consumer repo the helper lives under .claude/, where that
+		# path does not exist — the `[ -f ]` guard below then quietly skipped
+		# the arm, so MERGE_GATE_AUTO=1 held the gate with no reason given.
+		# Same resolver as thread-reply.sh, auto-triage.sh and _common.sh.
+		local _ma_lib
+		_ma_lib=$(_shipcycle_resolve _lib/merge-auto-ok.sh)
+		[ -f "$_ma_lib" ] || _ma_lib="$SCRIPT_DIR/../_lib/merge-auto-ok.sh"
+		# Both skip paths below now SAY SO. Holding the gate is the safe
+		# direction, but an operator who set MERGE_GATE_AUTO=1 and got silence
+		# cannot tell an unresolvable helper from a PR that is genuinely not
+		# green — which is the same complaint the comment above records about
+		# the hardcoded path, left half-fixed.
+		if [ -f "$_ma_lib" ]; then
+			# Guarded source: `set -euo pipefail` is active, so a parse error
+			# in the lib would abort cmd_next BEFORE the operator gate below
+			# prints — an unexplained non-zero exit at merge-gate. Same idiom
+			# this file already uses for phase-graduation.sh.
+			local _ma_src_rc=0
+			# shellcheck source=../_lib/merge-auto-ok.sh
+			source "$_ma_lib" || _ma_src_rc=$?
+			if [ "$_ma_src_rc" -ne 0 ]; then
+				scm_warn "merge-gate: could not source $_ma_lib (rc=$_ma_src_rc) — holding the operator gate"
+			fi
+			local _ma_pr _ma_reason _ma_rc=0
+			_ma_pr=$(gh pr view --json number --jq .number 2>/dev/null) || _ma_pr=""
+			if [ -z "$_ma_pr" ] && [ "$_ma_src_rc" -eq 0 ]; then
+				scm_warn "merge-gate: could not resolve the PR number (gh pr view failed) — auto-merge not evaluated, holding the operator gate"
+			fi
+			if [ -n "$_ma_pr" ] && [ "$_ma_src_rc" -eq 0 ]; then
+				_ma_reason=$(merge_auto_ok "$_ma_pr") || _ma_rc=$?
+				if [ "$_ma_rc" -eq 0 ]; then
+					echo "ship-pr-cycle: merge-gate — $_ma_reason"
+					echo "  arming GitHub native auto-merge (MERGE_GATE_AUTO=0 to disable)"
+					local _ma_skill
+					_ma_skill=$(_shipcycle_resolve skills/github-pr-merge/run.sh 2>/dev/null) || _ma_skill=""
+					if [ -n "$_ma_skill" ]; then
+						"$_ma_skill" --pr "$_ma_pr" --auto --yes && return 0
+						scm_warn "merge-gate: --auto arming failed; holding the operator gate"
+					else
+						scm_warn "merge-gate: github-pr-merge skill unresolved; holding the operator gate"
+					fi
+				else
+					# rc 1 = a signal is genuinely not green. rc 2 = a signal
+					# could not be READ, which is NOT the same as not-green and
+					# is worth saying differently — an unreadable signal means
+					# nothing was verified.
+					if [ "$_ma_rc" -eq 2 ]; then
+						echo "ship-pr-cycle: merge-gate — cannot verify auto-merge preconditions: $_ma_reason"
+					else
+						echo "ship-pr-cycle: merge-gate — not auto-mergeable: $_ma_reason"
+					fi
+				fi
+			fi
+		else
+			scm_warn "merge-gate: merge-auto-ok.sh not found (tried '$_ma_lib') — auto-merge not evaluated, holding the operator gate"
 		fi
 		echo "ship-pr-cycle: merge-gate — operator approves here"
 		_emit_stage_directive merge-gate

@@ -1,0 +1,372 @@
+#!/bin/bash
+set -euo pipefail
+# (#2548) Classify unresolved CodeRabbit review threads and REPLY to them.
+#
+# The cycle has a stage for FIXING a CR finding (cr-autofix → coderabbit:autofix)
+# and no stage for the other three outcomes. When a thread is verified-fixed, a
+# false positive, or a deliberate rejection, the standing rule says do NOT
+# resolve it by hand — but nothing said what to do instead, so the cycle stalled
+# at merge-gate with non-zero threads and no defined next action. Observed on
+# PR #2540 (5 threads, only 1 fixable by writing code) and again on #2635, where
+# the operator posted both replies by hand.
+#
+# The gap this closes: the rule says don't resolve; this says reply, with
+# evidence, and let CR resolve.
+#
+#   actionable       → NOT handled here. Back to coderabbit:autofix.
+#   verified-fixed   → reply citing the commit + the line range, GATED on
+#                      `git show HEAD:<path>` actually succeeding.
+#   false-positive   → reply with the disproof (command + output).
+#   rejected-by-design → reply with the rationale + where it is recorded.
+#
+# NEVER fires resolveReviewThread. The reply is the action; CR resolving is the
+# outcome. That is the whole point — see resolve-stranded.sh for the one place
+# manual resolution IS correct (stranded = isResolved:false + isOutdated:true).
+#
+# reply_state is read SERVER-SIDE, not from a local log: a thread counts as
+# `replied-awaiting-CR` when a non-coderabbitai comment follows CR's first one.
+# Server state survives a session reset and cannot drift from the real PR.
+#
+# Usage:
+#   scripts/cr/thread-reply.sh <pr>                    # human-readable table
+#   scripts/cr/thread-reply.sh <pr> --list             # same, explicit
+#   scripts/cr/thread-reply.sh <pr> --count            # unaddressed count only
+#   scripts/cr/thread-reply.sh <pr> --json             # buckets + per-thread
+#   scripts/cr/thread-reply.sh <pr> --thread <node-id> \
+#       --class <verified-fixed|false-positive|rejected-by-design> \
+#       --body <text> [--path <p>]        # --path REQUIRED for verified-fixed
+#   ... --dry-run                                      # read + print, no mutation
+#
+# Exit: 0 ok · 2 usage/precondition · 3 reply refused (evidence gate failed)
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# Both sources are guarded, matching the sibling hooks: an absent lib would
+# otherwise leave the predicate variable empty, and `select( == 0)` is a jq
+# syntax error at runtime — a confusing crash in place of a clear refusal.
+for _dep in "$SCRIPT_DIR/../_common.sh" "$SCRIPT_DIR/../../_lib/cr-thread-state.sh"; do
+	if [ ! -r "$_dep" ]; then
+		echo "thread-reply: required lib not readable: $_dep" >&2
+		exit 2
+	fi
+done
+# shellcheck source=../_common.sh
+source "$SCRIPT_DIR/../_common.sh"
+# (#2548) SSOT for the replied/unaddressed predicate — shared with
+# hooks/_pr-cr-findings.sh so the STAGE and the MERGE GATE cannot disagree
+# about whether a thread has been answered.
+# shellcheck source=../../_lib/cr-thread-state.sh
+source "$SCRIPT_DIR/../../_lib/cr-thread-state.sh"
+
+# skill-bypass-guard permits the gh api calls below for a skill wrapper.
+export SKILL_WRAPPER=1
+
+PR=""
+MODE="list"
+DRY_RUN=0
+THREAD_ID=""
+CLASS=""
+BODY=""
+SUBJECT_PATH=""
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--list)
+		MODE="list"
+		shift
+		;;
+	--count)
+		MODE="count"
+		shift
+		;;
+	--json)
+		MODE="json"
+		shift
+		;;
+	--dry-run)
+		DRY_RUN=1
+		shift
+		;;
+	--thread)
+		[ -n "${2:-}" ] || scm_fail "--thread requires a review-thread node id"
+		THREAD_ID="$2"
+		MODE="reply"
+		shift 2
+		;;
+	--class)
+		[ -n "${2:-}" ] || scm_fail "--class requires a value"
+		CLASS="$2"
+		shift 2
+		;;
+	--body)
+		[ -n "${2:-}" ] || scm_fail "--body requires text"
+		BODY="$2"
+		shift 2
+		;;
+	--path)
+		[ -n "${2:-}" ] || scm_fail "--path requires a repo-relative path"
+		SUBJECT_PATH="$2"
+		shift 2
+		;;
+	-h | --help)
+		grep '^#' "$0" | sed 's/^# \?//'
+		exit 0
+		;;
+	-*)
+		scm_fail "unknown flag: $1"
+		;;
+	*)
+		if [ -z "$PR" ] && [[ $1 =~ ^[0-9]+$ ]]; then
+			PR="$1"
+		else
+			scm_fail "unknown or invalid arg: $1"
+		fi
+		shift
+		;;
+	esac
+done
+
+[ -n "$PR" ] || scm_fail "usage: $0 <pr-num> [--list|--count|--json] [--thread ID --class C --body TEXT]"
+
+# Reply-only options in a read mode are a MISTAKE, not a no-op. `--class
+# verified-fixed --body "..."` without `--thread` silently printed the list
+# and exited 0, which reads as "the reply was posted" — the one outcome this
+# script must never fake. Refuse instead, naming the missing flag.
+if [ "$MODE" != "reply" ]; then
+	_stray=""
+	[ "$DRY_RUN" = "1" ] && _stray="$_stray --dry-run"
+	[ -n "$CLASS" ] && _stray="$_stray --class"
+	[ -n "$BODY" ] && _stray="$_stray --body"
+	[ -n "$SUBJECT_PATH" ] && _stray="$_stray --path"
+	[ -z "$_stray" ] ||
+		scm_fail "reply-only option(s)$_stray given in --$MODE mode; add --thread <id> to post a reply, or drop them to read"
+fi
+
+# Separate stderr so a warning on the success path cannot pollute the value.
+TMPERR=$(mktemp) || scm_fail "mktemp failed"
+trap 'rm -f "$TMPERR"' EXIT
+if ! OWNER_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>"$TMPERR"); then
+	scm_fail "gh repo view failed: $(cat "$TMPERR" 2>/dev/null || echo "")"
+fi
+OWNER="${OWNER_REPO%/*}"
+REPO="${OWNER_REPO#*/}"
+
+# --- read: every review thread, paginated ---------------------------------
+#
+# Paginated rather than first:100 like resolve-stranded.sh, because this
+# feeds the MERGE GATE: a PR whose 101st thread is unaddressed must not read
+# as clean. Truncation here would be a fail-open.
+_fetch_threads() {
+	local cursor="" page all="[]" has_next page_n=0
+	while :; do
+		page_n=$((page_n + 1))
+		local args=(-f "owner=$OWNER" -f "repo=$REPO" -F "pr=$PR")
+		[ -n "$cursor" ] && args+=(-f "cursor=$cursor")
+		if ! page=$(gh api graphql "${args[@]}" -f query='
+query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          comments(first: 100) {
+            nodes { author { login } body }
+          }
+        }
+      }
+    }
+  }
+}' 2>"$TMPERR"); then
+			scm_fail "gh graphql reviewThreads failed: $(cat "$TMPERR" 2>/dev/null || echo "")"
+		fi
+		if printf '%s' "$page" | jq -e '(.errors // []) | length > 0' >/dev/null 2>&1; then
+			scm_fail "graphql returned .errors: $(printf '%s' "$page" | jq -c .errors)"
+		fi
+		# The node list must BE an array before it is merged. A structurally
+		# valid but empty response — `{}` — passes the .errors check above,
+		# and then `$a + null` in jq is the IDENTITY, not an error: the page
+		# merges cleanly, `hasNextPage` reads as null so pagination stops, and
+		# on page 1 the whole function returns []. `--count` prints 0, the
+		# stage advances, and the merge gate is told there is nothing to
+		# answer. That is the fail-open this script exists to prevent, hidden
+		# behind an operator that quietly does nothing.
+		printf '%s' "$page" |
+			jq -e '(.data.repository.pullRequest.reviewThreads.nodes | type) == "array"' >/dev/null 2>&1 ||
+			scm_fail "reviewThreads page $page_n has no .data.repository.pullRequest.reviewThreads.nodes ARRAY — refusing to read that as zero threads"
+		# hasNextPage must be a BOOLEAN, checked here and not merely compared
+		# below. A page whose nodes ARE an array but whose pageInfo is missing
+		# yields null, `[ null = true ]` is false, pagination stops, and an
+		# INCOMPLETE thread set is returned as if it were the whole PR — the
+		# same fail-open as the nodes case, one field over.
+		printf '%s' "$page" |
+			jq -e '(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage | type) == "boolean"' >/dev/null 2>&1 ||
+			scm_fail "reviewThreads page $page_n has no boolean pageInfo.hasNextPage — refusing to end pagination on an unreadable page"
+		all=$(jq -c -n --argjson a "$all" --argjson p "$page" \
+			'$a + $p.data.repository.pullRequest.reviewThreads.nodes') ||
+			scm_fail "jq failed merging a reviewThreads page"
+		has_next=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+		[ "$has_next" = "true" ] || break
+		cursor=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+		if [ -z "$cursor" ] || [ "$cursor" = "null" ]; then
+			scm_fail "hasNextPage=true but endCursor is empty — refusing a partial thread read"
+		fi
+	done
+	printf '%s' "$all"
+}
+
+# Classify: unresolved threads only. `replied-awaiting-CR` when any comment
+# AFTER CR's first is authored by someone other than coderabbitai.
+#
+# WHAT `stranded` IS AND IS NOT, for whoever reads the --json output next:
+# it is a reported reply_state and a top-level count, and it is deliberately
+# NOT part of `unaddressed`. That is a classification boundary, not a
+# statement that stranded threads are harmless — they ARE counted by
+# hooks/_pr-cr-findings.sh (STRANDED_COUNT), and ship-pr-cycle holds the
+# cr-thread-reply stage on a non-zero stranded count in its own arm. They are
+# separate because the REMEDY is opposite: a stranded thread is the one case
+# where manual resolution is correct and a reply is refused. A consumer
+# deciding whether anything blocks must read both counts, never `unaddressed`
+# alone.
+_classify() {
+	jq -c '
+	  [ .[]
+	    | select(.isResolved == false)
+	    # CR-authored threads only, from the SAME shared fragment the MERGE
+	    # GATE uses (hooks/_pr-cr-findings.sh). Without this the stage counted
+	    # human-opened review threads as CR findings, held the cycle on them,
+	    # and told the operator to reply with evidence to their own comment.
+	    | select( '"$CR_THREAD_IS_CR_AUTHORED_JQ"' )
+	    | . as $t
+	    | ($t.comments.nodes // []) as $c
+	    | ( '"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' ) as $human
+	    | {
+		id: $t.id,
+		path: ($t.path // "?"),
+		line: ($t.line // 0),
+		outdated: $t.isOutdated,
+		author: ($c[0].author.login // "unknown"),
+		excerpt: (($c[0].body // "") | gsub("\r"; "") | split("\n")[0] | .[0:90]),
+		reply_state: (
+		  # THREE states, not two. A stranded thread (isResolved=false AND
+		  # isOutdated=true) was bucketed as `unaddressed`, so the stage held
+		  # and told the operator to REPLY to it — while the header above,
+		  # the merge gate, and the gate deny text all say a stranded thread
+		  # is the ONE case where manual resolution IS correct, via
+		  # scripts/cr/resolve-stranded.sh. Wrong remedy, and the same
+		  # stall-with-no-defined-action this stage exists to remove.
+		  # (No apostrophes here: the jq program is single-quoted.)
+		  if $t.isOutdated then "stranded"
+		  elif $human > 0 then "replied-awaiting-CR"
+		  else "unaddressed" end)
+	      }
+	  ]'
+}
+
+if [ "$MODE" != "reply" ]; then
+	THREADS=$(_fetch_threads)
+	RECORDS=$(printf '%s' "$THREADS" | _classify)
+	UNADDRESSED=$(printf '%s' "$RECORDS" | jq '[.[] | select(.reply_state == "unaddressed")] | length')
+	REPLIED=$(printf '%s' "$RECORDS" | jq '[.[] | select(.reply_state == "replied-awaiting-CR")] | length')
+	STRANDED=$(printf '%s' "$RECORDS" | jq '[.[] | select(.reply_state == "stranded")] | length')
+	TOTAL=$(printf '%s' "$RECORDS" | jq 'length')
+
+	case "$MODE" in
+	count)
+		printf '%s\n' "$UNADDRESSED"
+		;;
+	json)
+		jq -n --argjson u "$UNADDRESSED" --argjson r "$REPLIED" \
+			--argjson s "$STRANDED" --argjson t "$TOTAL" --argjson recs "$RECORDS" \
+			'{pr: '"$PR"', unresolved: $t, unaddressed: $u, replied_awaiting_cr: $r, stranded: $s, threads: $recs}'
+		;;
+	list)
+		if [ "$TOTAL" = "0" ]; then
+			echo "✓ PR #$PR: no unresolved review threads"
+			exit 0
+		fi
+		echo "PR #$PR — $TOTAL unresolved: $UNADDRESSED unaddressed, $REPLIED replied-awaiting-CR, $STRANDED stranded"
+		if [ "$STRANDED" -gt 0 ]; then
+			echo "  NOTE: stranded threads are NOT repliable. Resolve them instead:"
+			echo "        scripts/cr/resolve-stranded.sh $PR"
+		fi
+		echo ""
+		printf '%-22s %-42s %s\n' "STATE" "PATH:LINE" "EXCERPT"
+		printf '%s\n' "$RECORDS" | jq -r '.[] | "\(.reply_state)\t\(.path):\(.line)\t\(.excerpt)"' |
+			while IFS=$'\t' read -r st loc ex; do
+				printf '%-22s %-42s %s\n' "$st" "$loc" "$ex"
+			done
+		echo ""
+		echo "Reply to an unaddressed thread (node ids via --json):"
+		echo "  $0 $PR --thread <id> --class verified-fixed --path <p> --body '...'"
+		echo "  $0 $PR --thread <id> --class false-positive --body '...'"
+		echo "  $0 $PR --thread <id> --class rejected-by-design --body '...'"
+		;;
+	esac
+	exit 0
+fi
+
+# --- reply ----------------------------------------------------------------
+[ -n "$CLASS" ] || scm_fail "--thread requires --class"
+[ -n "$BODY" ] || scm_fail "--thread requires --body"
+
+case "$CLASS" in
+actionable)
+	# Deliberately refused. An actionable finding is closed by CHANGING THE
+	# CODE, not by explaining it away. Replying here would let a real defect
+	# leave the cycle with prose attached.
+	echo "thread-reply: class 'actionable' is not repliable — fix it instead." >&2
+	echo "  Route it through the cr-autofix stage (coderabbit:autofix), commit," >&2
+	echo "  and let the delta re-review confirm. Reply classes are for findings" >&2
+	echo "  that need EVIDENCE, not a code change." >&2
+	exit 2
+	;;
+verified-fixed)
+	# The evidence gate, made mechanical. On PR #2540 a commit message
+	# claimed a fix (`pcr_newest_complete`, v0.34.135) that had been lost
+	# from the working tree — CR was right to keep flagging it. "Verify
+	# against the committed file, not memory" has to be a command, not a
+	# habit.
+	[ -n "$SUBJECT_PATH" ] || scm_fail "--class verified-fixed requires --path (the file whose fix is being claimed)"
+	if ! git show "HEAD:$SUBJECT_PATH" >/dev/null 2>"$TMPERR"; then
+		echo "thread-reply: REFUSING the verified-fixed reply." >&2
+		echo "  git show HEAD:$SUBJECT_PATH failed — that path is not in the" >&2
+		echo "  committed tree at HEAD, so the fix being claimed is not there." >&2
+		echo "  $(head -c 300 "$TMPERR" 2>/dev/null || echo "")" >&2
+		exit 3
+	fi
+	;;
+false-positive | rejected-by-design) ;;
+*)
+	scm_fail "--class must be one of: actionable | verified-fixed | false-positive | rejected-by-design"
+	;;
+esac
+
+if [ "$DRY_RUN" = "1" ]; then
+	echo "[dry-run] would reply to thread $THREAD_ID (class=$CLASS) on PR #$PR:"
+	printf '%s\n' "$BODY" | sed 's/^/    /'
+	exit 0
+fi
+
+if ! REPLY=$(gh api graphql -f "threadId=$THREAD_ID" -f "body=$BODY" -f query='
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+    comment { id url }
+  }
+}' 2>"$TMPERR"); then
+	scm_fail "addPullRequestReviewThreadReply failed: $(head -c 400 "$TMPERR" 2>/dev/null || echo "")"
+fi
+if printf '%s' "$REPLY" | jq -e '(.errors // []) | length > 0' >/dev/null 2>&1; then
+	scm_fail "reply mutation returned .errors: $(printf '%s' "$REPLY" | jq -c .errors)"
+fi
+
+URL=$(printf '%s' "$REPLY" | jq -r '.data.addPullRequestReviewThreadReply.comment.url // "?"')
+SHA=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+scm_log cr-thread-reply "$(jq -nc --arg pr "$PR" --arg sha "$SHA" --arg tid "$THREAD_ID" \
+	--arg cls "$CLASS" --arg url "$URL" \
+	'{pr: $pr, sha: $sha, thread_id: $tid, class: $cls, reply_state: "replied-awaiting-CR", url: $url}')"
+echo "✓ replied to thread ($CLASS): $URL"
+echo "  CR resolves it; this script never does."

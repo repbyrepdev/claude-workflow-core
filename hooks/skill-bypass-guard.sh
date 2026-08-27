@@ -106,14 +106,51 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_lib/cmd-anchor.sh"
 # wrappers so the guard is ready when they ship. Distinct from the
 # emergency GH_SKILL_BYPASS_SKIP path because the intent is "this IS
 # the sanctioned skill flow" rather than "override for a meta-PR".
+#
+# SKILL_WRAPPER DOES NOT EXEMPT `coderabbit review` (r1 #2548). The marker is
+# caller-settable — `SKILL_WRAPPER=1 coderabbit review ...` is one prefix away
+# from any prompt — and the coderabbit block below exists precisely because
+# six reviews were spent outside the ledger. Worse, the exemption bought
+# nothing: the sanctioned wrapper (scripts/cr/local-review.sh) runs the CLI as
+# a SUBPROCESS, which no PreToolUse hook observes at all, so the wrapper never
+# needed it. A self-issued pass on the one guard whose whole subject is
+# unledgered spend.
+#
+# GH_SKILL_BYPASS_SKIP still works — that is the documented, operator-facing
+# emergency override, and the deny text names it.
+# WRAPPED_CMD is extracted HERE rather than at its historical position ~90
+# lines below, because this classification runs before the bypass exits and
+# must see the same command the later matcher does. Without it,
+# `SKILL_WRAPPER=1 bash -lc 'coderabbit review ...'` was classified on the
+# OUTER string — which contains no bare `coderabbit` verb — took the bypass,
+# and never reached the matcher that would have caught it. Same for
+# `command coderabbit review`, hence the wrapper-word alternation.
+#
+# (Pure function of CMD, so hoisting it changes nothing else.)
+WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s|.*(bash\|sh\|zsh\|/bin/bash\|/bin/sh\|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*|\3|p" | head -1)
+
+_cr_review_cmd=0
+_cr_wrapper='(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|env|sudo|-E)[[:space:]]+)*'
+for _c in "$CMD" "$WRAPPED_CMD"; do
+	[ -n "$_c" ] || continue
+	# `{` is a command-segment boundary too. Without it,
+	# `bash -lc '{ coderabbit review ...; }'` left WRAPPED_CMD starting with a
+	# brace, the classifier said "not a review", and the SKILL_WRAPPER branch
+	# exited before the raw-review guard — the same brace-grouping evasion
+	# #2396 closed for the other verbs, reintroduced here.
+	printf '%s' "$_c" | grep -qE '(^|[;&|({][[:space:]]*)'"$_cr_wrapper"'coderabbit[[:space:]]' || continue
+	printf '%s' "$_c" | grep -qE '[[:space:]]review([[:space:]]|$)' && _cr_review_cmd=1
+done
+
 bypass_var=""
-if [ "${SKILL_WRAPPER:-0}" = "1" ]; then
+if [ "${SKILL_WRAPPER:-0}" = "1" ] && [ "$_cr_review_cmd" = "0" ]; then
 	bypass_var="SKILL_WRAPPER(env)"
 elif [ "${GH_SKILL_BYPASS_SKIP:-0}" = "1" ]; then
 	bypass_var="GH_SKILL_BYPASS_SKIP(env)"
 elif [ "${PHASE1_GATE_SKIP:-0}" = "1" ]; then
 	bypass_var="PHASE1_GATE_SKIP(env)"
-elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])SKILL_WRAPPER=1([[:space:]]|;|&|$)'; then
+elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])SKILL_WRAPPER=1([[:space:]]|;|&|$)' &&
+	[ "$_cr_review_cmd" = "0" ]; then
 	bypass_var="SKILL_WRAPPER(prefix)"
 elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])GH_SKILL_BYPASS_SKIP=1([[:space:]]|;|&|$)'; then
 	bypass_var="GH_SKILL_BYPASS_SKIP(prefix)"
@@ -199,8 +236,10 @@ fi
 # invocations like `bash -lc 'git commit ...'` or `sh -c 'bats foo.bats'`.
 # Strip the wrapper to get the inner command, then match against the same
 # regexes. WRAPPED_CMD is "" when CMD doesn't have a wrapper.
-# Use `|` as the sed delimiter so `/bin/bash` slashes don't break parsing.
-WRAPPED_CMD=$(printf '%s' "$CMD" | sed -nE "s|.*(bash\|sh\|zsh\|/bin/bash\|/bin/sh\|/bin/zsh)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*['\"]([^'\"]+)['\"].*|\3|p" | head -1)
+#
+# ASSIGNED ABOVE, near the bypass block, which needs the same value to
+# classify a wrapped `coderabbit review` before deciding whether to exit. Left
+# named here because this is where every reader expects to find it.
 
 SKILL=""
 REASON=""
@@ -292,6 +331,77 @@ To proceed (in order of preference):
 
 Emergency override (user-facing — audit-logged): GH_SKILL_BYPASS_SKIP=1 bats <file>"
 	deny "$BATS_DIRECTIVE"
+fi
+
+# coderabbit → scripts/cr/local-review.sh (#2548).
+#
+# This block existed for `git commit`, `gh pr create`, `gh pr merge` and `bats`
+# — and not for `coderabbit`, which is how six Phase-2 reviews on PR #2635 were
+# spent outside the ledger. The raw CLI writes NEITHER of the two records the
+# cycle depends on:
+#
+#   - .claude/logs/cr-local-review.jsonl — the per-SHA ledger that
+#     pre-push-pipeline-gate reads. Without a row, the gate correctly says
+#     "no review has ever run" for a SHA that was in fact reviewed six times.
+#   - the rolling budget log, which scripts/cr/local-review.sh writes INLINE
+#     (see its `LOG=.../cr-budget.jsonl` and the jq append beside it). So
+#     `rate-budget.sh --check` reported 0/10 used while the real spend was ~7
+#     of the prepaid hourly bucket.
+#
+#     NB for whoever edits budget logging next: hooks/cr-log-invocation.sh
+#     looks like the writer and is NOT — nothing executes it; its only
+#     references are comments and docs. An earlier version of this comment
+#     named it, which would have sent you to edit a file that never runs.
+#
+# Neither failure is visible at the time — you get a review, it just does not
+# count. That is exactly the "advisory gate that can be walked past" class
+# epic #2544 exists to close, so it is closed the same way as the others.
+#
+# Only `review` is blocked. Read-only subcommands (--version, auth, --help)
+# spend no budget and write no ledger row, so they stay free.
+#
+# GLOBAL FLAGS BEFORE THE SUBCOMMAND: `coderabbit --plain review` and
+# `coderabbit -c cfg.yaml review` spend exactly the same budget and write
+# exactly the same absent ledger row, and the earlier pattern — which required
+# `review` to sit immediately after the binary — matched neither. A guard that
+# is one flag away from being walked past is the advisory gate this block was
+# written to replace, so the flags are absorbed:
+#
+#   ((-{1,2}[A-Za-z0-9][A-Za-z0-9-]*(=[^[:space:]]+)?|<value>)[[:space:]]+)*
+#
+# A bare value is accepted between flags because a separated option argument
+# (`-c cfg.yaml`) is one, and this hook cannot know which flags take one. The
+# cost of that generosity is that a DIFFERENT subcommand reached past a flag —
+# `coderabbit --plain auth review-something` — could match. That direction is
+# a false BLOCK with a stated override, not a false allow, which is the side a
+# fail-closed gate errs on.
+cr_flag_run='((-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(=[^[:space:]]+)?|[A-Za-z0-9._/-]+)[[:space:]]+)*'
+cr_pattern="${CMD_SEGMENT_ANCHOR}${ENV_PREFIX}coderabbit[[:space:]]+${cr_flag_run}review${CMD_SEGMENT_END}"
+cr_matched=0
+if printf '%s' "$CMD" | grep -qE "$cr_pattern"; then
+	cr_matched=1
+elif [ -n "$WRAPPED_CMD" ] && printf '%s' "$WRAPPED_CMD" | grep -qE "$cr_pattern"; then
+	cr_matched=1
+fi
+# No per-block SKILL_WRAPPER check here, deliberately: the global bypass near
+# the top already exits 0 for both the exported and the command-prefix forms,
+# so a local copy is unreachable. (And the wrapper's own `coderabbit review`
+# is a SUBPROCESS of local-review.sh, which no PreToolUse hook observes at
+# all — the exemption it appeared to provide was for a case that cannot
+# arise.) No sibling block carries one either.
+if [ "$cr_matched" = "1" ]; then
+	CMD_PREVIEW=$(printf '%s' "$CMD" | head -c 120)
+	CR_DIRECTIVE="BLOCKED: raw \`coderabbit review\` — bypasses the per-SHA ledger AND the budget log.
+Command: ${CMD_PREVIEW}...
+Why blocked: the raw CLI writes neither .claude/logs/cr-local-review.jsonl (which pre-push-pipeline-gate reads to confirm Phase 2 ran for this SHA) nor .claude/review-log/cr-budget.jsonl (which scripts/cr/local-review.sh appends to inline, and rate-budget.sh reads). You still get a review — it just does not count, and the spend is invisible. Six reviews were lost this way on PR #2635.
+
+To proceed:
+  1. scripts/cr/local-review.sh [--base main]
+       Budget preflight, Phase-1 convergence check, HEAD-freshness check,
+       then the same review — ledgered and budget-logged.
+
+Emergency override (user-facing — audit-logged): GH_SKILL_BYPASS_SKIP=1 coderabbit review ..."
+	deny "$CR_DIRECTIVE"
 fi
 
 exit 0

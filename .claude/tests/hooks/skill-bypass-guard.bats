@@ -144,3 +144,190 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
+
+@test "raw 'coderabbit review' is blocked (#2548)" {
+	# This guard covered `git commit`, `gh pr create`, `gh pr merge` and `bats`
+	# — and not `coderabbit`. Six Phase-2 reviews on PR #2635 were spent
+	# outside the ledger because of it: the raw CLI writes neither
+	# cr-local-review.jsonl (which pre-push-pipeline-gate reads) nor the
+	# budget log (written only by the wrapper's cr-log-invocation call). You
+	# get a review; it just does not count, and the spend is invisible.
+	_run_guard "coderabbit review --agent -t committed --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
+	case "$output" in
+	*"local-review.sh"*) ;;
+	*)
+		echo "expected the deny to name the wrapper; got: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*ledger* | *"cr-local-review.jsonl"*) ;;
+	*)
+		echo "expected the deny to say WHY (the ledger); got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "the local-review wrapper itself is NOT blocked (#2548)" {
+	# The wrapper runs `coderabbit review` internally. If the guard matched
+	# that, it would block the very command it redirects to — an infinite
+	# redirect with no way through.
+	_run_guard "scripts/cr/local-review.sh --base main"
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "the wrapper was blocked; the guard would have no exit: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "SKILL_WRAPPER=1 does NOT exempt a raw coderabbit review (#2548 r1)" {
+	# The marker is caller-settable, so treating it as proof of the sanctioned
+	# path let any prompt re-open the exact hole this block closes: one prefix
+	# and the raw CLI runs again with no ledger row and no budget entry.
+	#
+	# It also bought nothing. The real wrapper (scripts/cr/local-review.sh)
+	# invokes the CLI as a SUBPROCESS, which no PreToolUse hook observes — so
+	# the wrapper was never relying on this exemption to get through.
+	_run_guard "SKILL_WRAPPER=1 coderabbit review --agent -t committed"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a caller-supplied SKILL_WRAPPER=1 still exempted the raw CLI: $output"
+		return 1
+	}
+	# And the exported form, which is the same claim by another route.
+	run env SKILL_WRAPPER=1 bash -c "printf '%s' '$(jq -nc '{tool_name:"Bash",tool_input:{command:"coderabbit review --base main"}}')' | bash '$GUARD'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "an exported SKILL_WRAPPER=1 still exempted the raw CLI: $output"
+		return 1
+	}
+}
+
+@test "SKILL_WRAPPER=1 does not exempt WRAPPED coderabbit forms (#2548 r2)" {
+	# The classification ran on the OUTER command string, which contains no
+	# bare `coderabbit` verb — so the bypass fired and the invocation never
+	# reached the matcher that would have caught it. Both evasion shapes the
+	# #2396 fix already closed for the other verbs.
+	_run_guard "SKILL_WRAPPER=1 bash -lc 'coderabbit review --base main'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a bash -lc wrapped review took the SKILL_WRAPPER bypass: $output"
+		return 1
+	}
+	_run_guard "SKILL_WRAPPER=1 command coderabbit review --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a command-prefixed review took the SKILL_WRAPPER bypass: $output"
+		return 1
+	}
+	# Brace-grouped INSIDE the wrapper: WRAPPED_CMD then starts with `{`, and
+	# a boundary matcher without it read the whole thing as "not a review".
+	_run_guard "SKILL_WRAPPER=1 bash -lc '{ coderabbit review --base main; }'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a brace-grouped wrapped review took the SKILL_WRAPPER bypass: $output"
+		return 1
+	}
+}
+
+@test "SKILL_WRAPPER=1 still exempts the OTHER guarded verbs (#2548 r1)" {
+	# The narrowing is scoped to coderabbit. Revoking the marker wholesale
+	# would break every skill wrapper that legitimately shells out to gh.
+	_run_guard "SKILL_WRAPPER=1 gh issue create --title x"
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "the narrowing leaked past coderabbit and broke gh wrappers: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "GH_SKILL_BYPASS_SKIP remains the working escape for coderabbit (#2548 r1)" {
+	# The deny text advertises this override. If tightening SKILL_WRAPPER also
+	# killed the documented emergency path, the denial would print a remedy
+	# that does not work.
+	_run_guard "GH_SKILL_BYPASS_SKIP=1 coderabbit review --base main"
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "the documented emergency override no longer works: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "read-only coderabbit subcommands stay free (#2548)" {
+	# --version/auth spend no budget and write no ledger row, so blocking
+	# them would be friction with no protective value.
+	# Status FIRST, then the absence check. An allow test that only looks for
+	# the absence of a deny string passes when the guard crashed and printed
+	# nothing at all — it would report "read-only subcommands stay free" about
+	# a hook that had stopped making any decision whatsoever.
+	_run_guard "coderabbit --version"
+	[ "$status" -eq 0 ] || {
+		echo "guard exited $status on a read-only subcommand: $output"
+		return 1
+	}
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "a read-only subcommand was blocked: $output"
+		return 1
+		;;
+	esac
+	_run_guard "coderabbit auth status"
+	[ "$status" -eq 0 ] || {
+		echo "guard exited $status on auth status: $output"
+		return 1
+	}
+	case "$output" in
+	*'"permissionDecision":"deny"'*)
+		echo "auth status was blocked: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a global flag before the subcommand does not slip the guard (#2548)" {
+	# `coderabbit --plain review` spends exactly the same budget and writes
+	# exactly the same absent ledger row. The pattern used to require `review`
+	# immediately after the binary, so one flag walked past the guard that
+	# exists because six reviews were already lost that way.
+	_run_guard "coderabbit --plain review --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a flag-first invocation slipped the guard: $output"
+		return 1
+	}
+	# Separated option argument: the value sits between the flag and `review`.
+	_run_guard "coderabbit -c cfg.yaml review --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "a separated option argument slipped the guard: $output"
+		return 1
+	}
+	# Still names the ledger, so the operator knows which record went missing
+	# rather than only that something was refused.
+	[[ $output == *"cr-local-review.jsonl"* ]]
+}
+
+@test "coderabbit deny survives wrapper and env prefixes (#2548)" {
+	# Same evasion shapes the #2396 fix closed for the other verbs.
+	_run_guard "{ coderabbit review --base main; }"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "brace-grouped invocation slipped the guard"
+		return 1
+	}
+	_run_guard "bash -lc 'coderabbit review --base main'"
+	[ "$status" -eq 0 ]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || {
+		echo "bash -lc wrapped invocation slipped the guard"
+		return 1
+	}
+}

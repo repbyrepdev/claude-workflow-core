@@ -93,7 +93,34 @@ fi
 # v3.22 CR: cursor-based pagination. Accumulates all pages rather than the
 # previous hard-fail-over-100. Hard cap at 20 pages (2000 threads) as a
 # runaway guard — no realistic PR exceeds that.
+# (#2548) SSOT for the replied/unaddressed predicate — shared with
+# scripts/cr/thread-reply.sh so the MERGE GATE and the cr-thread-reply STAGE
+# cannot disagree about whether a thread has been answered. Written twice they
+# drift, and the failure is silent: the stage advances believing everything is
+# answered while the gate still blocks, or the gate passes a thread nobody was
+# asked to address. Phase 0.5 flagged the duplication on the commit that
+# introduced it.
+_CTS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../_lib" 2>/dev/null && pwd)/cr-thread-state.sh"
+if [ -r "$_CTS_LIB" ]; then
+	# shellcheck source=../_lib/cr-thread-state.sh
+	source "$_CTS_LIB"
+else
+	echo "ERROR: _lib/cr-thread-state.sh not found — cannot classify threads, failing closed" >&2
+	exit 1
+fi
+
+# THREADS are paginated below; COMMENTS WITHIN A THREAD ARE NOT. The query
+# asks for comments(first:100), which is a bounded sample, not an exhaustive
+# result: on a thread longer than that, every comment past the 100th is simply
+# ABSENT from the set the predicate sees. Since the predicate reads the LAST
+# comment of what it was given, a human reply beyond the bound is omitted and
+# the thread reads as unanswered — it blocks a merge it should not.
+# 100 is the GitHub per-page maximum, so lifting it means paginating comments
+# too; no CR thread observed has come within an order of magnitude. Stated
+# here rather than assumed, because the previous value was 1, which made
+# EVERY thread look unanswered and is exactly this bug at its extreme.
 UNRESOLVED="[]"
+REPLIED="[]" # (#2548) answered, awaiting CR — reported, never counted
 CURSOR=""
 PAGE=0
 MAX_PAGES=20
@@ -136,7 +163,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 									id
 									isResolved
 									isOutdated
-									comments(first:1) {
+									comments(first:100) {
 										nodes {
 											author { login }
 											path
@@ -158,10 +185,25 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	PAGE_NODES=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
 		| select(.isResolved == false)
 		| select(.isOutdated == false)
-		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select('"$CR_THREAD_IS_CR_AUTHORED_JQ"')
+		| select('"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' == 0)
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:400])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_NODES" ]; then
 		echo "ERROR: thread-nodes jq-parse failed on page $PAGE" >&2
+		exit 1
+	fi
+	# (#2548) `replied-awaiting-CR`: a human answered with evidence and CR has
+	# not resolved yet. Surfaced at the gate for visibility, but NOT counted —
+	# blocking on it would punish the operator for doing exactly what the
+	# cr-thread-reply stage asks, and there is no further action available.
+	PAGE_REPLIED=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+		| select(.isResolved == false)
+		| select(.isOutdated == false)
+		| select('"$CR_THREAD_IS_CR_AUTHORED_JQ"')
+		| select('"$CR_THREAD_HUMAN_REPLY_COUNT_JQ"' > 0)
+		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id}]' 2>/dev/null || true)
+	if [ -z "$PAGE_REPLIED" ]; then
+		echo "ERROR: replied-thread jq-parse failed on page $PAGE" >&2
 		exit 1
 	fi
 	# v4.0 CR #354: stranded outdated-but-unresolved threads (CR's
@@ -170,7 +212,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	PAGE_STRANDED=$(echo "$RAW" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
 		| select(.isResolved == false)
 		| select(.isOutdated == true)
-		| select(.comments.nodes[0].author.login | test("coderabbit"; "i"))
+		| select('"$CR_THREAD_IS_CR_AUTHORED_JQ"')
 		| {path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), thread_id: .id, body: (.comments.nodes[0].body[0:200])}]' 2>/dev/null || true)
 	if [ -z "$PAGE_STRANDED" ]; then
 		echo "ERROR: stranded-thread jq-parse failed on page $PAGE" >&2
@@ -178,6 +220,7 @@ while [ "$PAGE" -lt "$MAX_PAGES" ]; do
 	fi
 	# Merge this page's nodes into UNRESOLVED + STRANDED
 	UNRESOLVED=$(jq -n --argjson a "$UNRESOLVED" --argjson b "$PAGE_NODES" '$a + $b')
+	REPLIED=$(jq -n --argjson a "$REPLIED" --argjson b "$PAGE_REPLIED" '$a + $b')
 	STRANDED=$(jq -n --argjson a "${STRANDED:-[]}" --argjson b "$PAGE_STRANDED" '$a + $b')
 	HAS_NEXT=$(echo "$RAW" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false')
 	NEXT_CURSOR=$(echo "$RAW" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""')
@@ -353,11 +396,25 @@ if [ "$OUTSIDE_DIFF_COUNT" -gt 0 ]; then
 		awk '/Outside diff range/,/<\/details>\s*$/' | head -60)
 fi
 
+REPLIED_COUNT=$(echo "$REPLIED" | jq 'length' 2>/dev/null || true)
+if [ -z "$REPLIED_COUNT" ]; then
+	echo "ERROR: replied-thread count jq-parse failed" >&2
+	exit 1
+fi
+
+# REPLIED_COUNT is deliberately NOT in this sum. A thread that has been
+# answered with evidence has no further action available to the operator —
+# blocking on it would punish doing exactly what the cr-thread-reply stage
+# asks. It is REPORTED below so the state is visible at the gate. (#2548)
 TOTAL_FINDINGS=$((THREAD_COUNT + STRANDED_COUNT + WALKTHROUGH_FAILURES + OUTSIDE_DIFF_COUNT))
 
 # ---- Report ----
 echo "PR #$PR HEAD: ${HEAD:0:8}"
-echo "Unresolved current threads: $THREAD_COUNT"
+echo "Unresolved current threads: $THREAD_COUNT (unaddressed — these block)"
+if [ "$REPLIED_COUNT" -gt 0 ]; then
+	echo "replied-awaiting-CR: $REPLIED_COUNT (NOT blocking — evidence posted, CR yet to resolve)"
+	echo "$REPLIED" | jq -r '.[] | "  - \(.path):\(.line)  \(.thread_id)"' 2>/dev/null || true
+fi
 echo "Stranded outdated threads: $STRANDED_COUNT (CR missed auto-resolve; run resolveReviewThread)"
 echo "Outside-diff-range findings: $OUTSIDE_DIFF_COUNT (CR can't post inline on untouched lines)"
 echo "CR walkthrough Pre-merge failures: $WALKTHROUGH_FAILURES (warnings: $WALKTHROUGH_WARNINGS)"

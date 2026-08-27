@@ -62,8 +62,10 @@ Per `scripts/ship-pr-cycle.sh` (the `# Stages (state.stage):` header block), the
 - **push** — pre-push pipeline gate + local pr-lint mirror (#119/#127); `github-pr-creation` enforces label gates (#118/#120/#121)
 - **cr-in-ci-wait** — wait for server-side CodeRabbit on the open PR
 - **auto-triage** — classify CR threads via `scripts/cr/auto-triage.sh` (#733); routes by unresolved-thread count
+- **cr-autofix** — apply actionable CR findings via `coderabbit:autofix`, then loop back to phase1 for delta re-review
+- **cr-thread-reply** — reply-with-evidence to verified-fixed / false-positive / rejected threads (#2548); UNADDRESSED and STRANDED threads block, `replied-awaiting-CR` passes through. Stranded (unresolved + outdated) is not repliable — resolve it via `scripts/cr/resolve-stranded.sh`
 - **cr-conflict-check** — route a DIRTY PR through CodeRabbit's resolver before the gate (#190); CLEAN PRs pass straight through
-- **merge-gate** — operator approves here (the only interaction)
+- **merge-gate** — operator approves here — unless `MERGE_GATE_AUTO=1` and the PR is provably green (#2549), which arms native auto-merge instead
 - **merged** — terminal
 
 **Note on upstream chains:** `brainstorm` → `cr-plan` → `github-epic-creation` is a **parallel workflow that runs BEFORE ship-pr-cycle** (per `scripts/ship-pr-cycle.sh:9-14`: "cr-plan is a PARALLEL workflow... No auto-fire from ship-pr-cycle into cr-plan — they are disjoint by design"). As of v0.17.0 (#125), `ship-pr-cycle.sh epic <trigger|parse> <num>` provides a thin single-entrypoint dispatch over `cr-plan trigger` + `cr-plan parse` — no new state machine stages, no auto-fire. The brainstorm step itself stays operator-interactive (operator files a `brainstorm.yml` issue, picks A/B/C), then the dispatch sequences the post-brainstorm chain.

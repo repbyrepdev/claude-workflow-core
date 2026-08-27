@@ -99,6 +99,22 @@ _emit_stage_directive() {
     1. Read the ship-pr-cycle SKILL.md — skills/ship-pr-cycle/SKILL.md in the plugin, or .claude/skills/ship-pr-cycle/SKILL.md in a consumer repo (← reading it clears the block below; see the [phase2] section + 'Phase 2 / CR findings' rule)
   Until you Read it, the next Bash/Edit/Write is BLOCKED (hook-ack pending). Phase 2 invokes the local CR-CLI via the cap from phase1-scaler; the content-hash cache short-circuits re-review of an unchanged surface (don't burn the 10/hr budget). On findings: apply OR reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire — do NOT advance with open findings. Then re-run 'scripts/ship-pr-cycle.sh next'."
 		;;
+	cr-thread-reply)
+		body="CR THREAD REPLY — classify each UNADDRESSED thread, then reply with evidence. The rule is: never resolve a CR thread by hand; reply and let CR resolve. This stage is where that reply happens, and it is the step whose absence stalled #2540 and #2635 at merge-gate with non-zero threads and no defined action.
+  Read the list above, then per thread (node ids via --json):
+    verified-fixed     → scripts/cr/thread-reply.sh <pr> --thread <id> --class verified-fixed --path <p> --body '...'
+                         Cite the commit AND the verified line range. --path is REQUIRED and is checked with
+                         'git show HEAD:<path>' BEFORE the reply posts — on #2540 a commit message claimed a fix
+                         that had been lost from the tree, and CR was right to keep flagging it.
+    false-positive     → --class false-positive --body '...'   Include the command you ran and its output.
+    rejected-by-design → --class rejected-by-design --body '...'  Include the rationale AND where it is recorded in-tree.
+    actionable         → NOT repliable. Fix it: coderabbit:autofix, commit, let the delta re-review confirm.
+  A replied thread becomes 'replied-awaiting-CR' — a distinct, NON-blocking state.
+  UNADDRESSED and STRANDED threads both block. STRANDED (unresolved + outdated) is NOT repliable — replying to
+  every unaddressed thread and re-running will still be refused while one exists. Resolve those instead:
+      scripts/cr/resolve-stranded.sh <pr>
+  Re-run 'scripts/ship-pr-cycle.sh next' once unaddressed AND stranded are both zero."
+		;;
 	*)
 		echo "_emit_stage_directive: unknown label '$label' — no directive emitted" >&2
 		return 0

@@ -5,7 +5,7 @@ description: Drive the local PR review pipeline (Phase 0.5 → Phase 1 → Phase
 
 # ship-pr-cycle
 
-Mechanical driver for the staged local PR review pipeline. Operator interaction goal: ONE gate (approve-to-ship at merge time). Everything else autonomous.
+Mechanical driver for the staged local PR review pipeline. Operator interaction goal: AT MOST ONE gate (approve-to-ship at merge time) — and none at all when `MERGE_GATE_AUTO=1` and the PR is provably green (#2549). Everything else autonomous.
 
 Consumer repos that need domain-specific overlays (e.g. deferring a stage until a dependency lands; adding a post-merge deploy step) declare them in `.claude/skills/ship-pr-cycle/domain-extension.md` next to their `local-overrides.yml`. The plugin's SKILL.md is the SSOT for everything not consumer-specific.
 
@@ -42,10 +42,18 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
     ↓ next (gate-checked: CR-in-CI terminal state)
 [auto-triage]     classify CR threads via scripts/cr/auto-triage.sh (#733); routes by unresolved count
     ↓ next
+[cr-thread-reply]  reply-with-evidence to verified-fixed / false-positive / rejected threads (#2548);
+                   UNADDRESSED and STRANDED threads block — `replied-awaiting-CR` passes through.
+                   Stranded (unresolved + outdated) is NOT repliable: resolve it via
+                   scripts/cr/resolve-stranded.sh. This stage does not see the merge gate's
+                   other sources (walkthrough pre-merge failures, outside-diff findings), so a
+                   clean pass here is not a promise that merge-gate will be clean.
+    ↓ next (gate-checked: unaddressed == 0 AND stranded == 0)
 [cr-conflict-check] route a DIRTY PR through CR's resolver (#190); CLEAN passes straight through
     ↓ next
-[merge-gate]      OPERATOR APPROVES HERE
-    ↓ next (after explicit user "go")
+[merge-gate]      OPERATOR APPROVES HERE — unless MERGE_GATE_AUTO=1 and the PR is
+                  provably green (#2549), in which case native auto-merge is armed
+    ↓ next (after explicit user "go", or automatically when armed)
 [merged]          terminal
 ```
 
@@ -151,6 +159,24 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 
 ## Rules
 
+### Two failure modes that look identical (#2549)
+
+A merge that does not happen has two very different causes, and they are worth
+telling apart before debugging:
+
+1. **A repo/cycle gate refused** — `merge-gate` held, the CR gate denied, the
+   branch ruleset blocked. The remedy is in this repo: address the signal it
+   named.
+2. **The harness permission layer refused** — the Claude Code auto-mode
+   classifier declined the invocation shape (e.g. `APPROVE=1 <script>`, or a
+   repo-settings `PATCH`). Nothing in this plugin can fix that; it needs a
+   Bash permission rule in the operator's settings.
+
+From the cycle's point of view both look like "merge did not happen". Native
+auto-merge also requires `allow_auto_merge` on the repository — if it is off,
+`--auto` fails with `enablePullRequestAutoMerge` and the gate holds.
+
+
 - **NEVER** bypass the convergence gate without auditing — `PIPELINE_GATE_SKIP=1` bypasses the gate (audit-logged); set `PIPELINE_GATE_SKIP_REASON=...` to record the rationale in the bypass log.
 - **ALWAYS** run `phase1-scaler.sh --explain` at start of a long PR cycle; iterate to ROUNDS=N target. Burning 17 rounds when the scaler said 2 is the explicit anti-pattern this orchestrator addresses.
 - **NEVER** advance phase2 → push when CR-CLI returned a malformed `complete` event. The orchestrator now hard-fails this case (return 2) — do not work around.
@@ -165,8 +191,9 @@ The `[ -x ... ] && ... || true` guard intentionally no-ops when the dispatcher i
 
 ## Auto-continue
 
-- **`next` advanced a stage** → re-run `next` to continue; the state machine drives branch-ready → phase0.5 → phase1 → phase2 → push → cr-in-ci-wait → auto-triage → (cr-autofix) → cr-conflict-check → merge-gate.
+- **`next` advanced a stage** → re-run `next` to continue; the state machine drives branch-ready → phase0.5 → phase1 → phase2 → push → cr-in-ci-wait → auto-triage → (cr-autofix) → cr-thread-reply → cr-conflict-check → merge-gate.
 - **phase1 directive emitted** → fire the 5 parallel review agents + semgrep + security-review, log each via `review-log.sh`, then re-run `next`.
 - **phase2 / CR findings** → apply or reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire; do not advance with open findings.
-- **merge-gate reached** → operator approval point; on approval, invoke `github-pr-merge`. This is the one human gate.
+- **cr-thread-reply reached** → classify each UNADDRESSED thread and reply with evidence via `scripts/cr/thread-reply.sh`. Never resolve a thread by hand — the reply is the action, CR resolving is the outcome. `verified-fixed` is gated on `git show HEAD:<path>`; `actionable` is not repliable and goes back to autofix.
+- **merge-gate reached** → operator approval point by default. Auto-merge is **OPT-IN**: with `MERGE_GATE_AUTO=1`, and only if the PR is provably green (every required check green AND `hooks/_pr-cr-findings.sh` clean across all four of its sources AND `mergeStateStatus == CLEAN`), the stage arms GitHub native auto-merge and returns. Otherwise it holds for operator approval. A `needs-operator` label forces the human gate regardless, and drafts are never auto-merged. Fails closed: a signal that cannot be READ holds the gate, and a check that passed WITHOUT running (CR "rate limited" / "review paused", or a SKIPPED required check) is not green. It ships opt-in because the first review of that predicate found four independent ways it returned "green" on a PR that should have held — see `_lib/merge-auto-ok.sh`.
 - **`resume`** → auto-advances until it hits phase1 (needs agents), merge-gate (needs operator), or a terminal state.

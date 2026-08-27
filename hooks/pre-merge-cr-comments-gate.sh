@@ -50,6 +50,14 @@ if [ -f "$LIB_SENTINEL" ]; then
 else
 	hook_inline_sentinel_check() { return 1; }
 fi
+# (#2548) hook-ack, so the merge block cannot be scrolled past by re-phrasing
+# the command. Absent lib degrades to the plain deny — the call site guards on
+# `command -v`, so a missing lib is a weaker gate, never a broken hook.
+LIB_ACK="${HOOK_DIR}/../_lib/hook-ack.sh"
+if [ -f "$LIB_ACK" ]; then
+	# shellcheck source=../_lib/hook-ack.sh
+	source "$LIB_ACK"
+fi
 
 # Read tool-call payload. Fail-closed on stdin/jq failures (matches the
 # rest of the plugin hook chain — silent coercion to {} hid real bugs in
@@ -183,6 +191,37 @@ fi
 # pass through verbatim so the operator sees exactly which class is
 # unresolved).
 if ! "$HELPER" "$PR_NUM" >&2; then
-	hook_deny "pre-merge-cr-comments-gate" "PR #$PR_NUM has unresolved CodeRabbit findings. Address each via (1) fix in code → push, (2) reply with evidence + '@coderabbitai resolve', or (3) fire 'resolveReviewThread' GraphQL on stranded threads. Then retry. Bypass (audit-logged): PRE_MERGE_CR_GATE_SKIP=1 PRE_MERGE_CR_GATE_SKIP_REASON=\"<text>\" gh pr merge ..."
+	# (#2548) Route the block through hook-ack as well as hook_deny. A plain
+	# deny can be scrolled past by re-phrasing the merge command; an ack-
+	# pending cannot — the next Bash/Edit/Write stays blocked until the
+	# operator Reads the diagnostic. The gate that stops a merge over
+	# unaddressed reviewer findings is exactly the one that must not be
+	# walkable, which is the whole of epic #2544.
+	_PMCG_BODY="PR #$PR_NUM has UNADDRESSED CodeRabbit findings — merge refused.
+
+Three resolutions, and only these:
+  1. actionable        → fix it in code, push, let the delta re-review confirm.
+  2. verified-fixed / false-positive / rejected-by-design
+                       → reply WITH EVIDENCE via the cr-thread-reply stage:
+                            scripts/cr/thread-reply.sh $PR_NUM --list
+                            scripts/cr/thread-reply.sh $PR_NUM --thread <id> --class <c> --body '...'
+                          A replied thread becomes 'replied-awaiting-CR', which does NOT block.
+                          NEVER resolve a CR thread by hand — reply, and let CR resolve.
+  3. stranded (isResolved=false + isOutdated=true)
+                       → scripts/cr/resolve-stranded.sh $PR_NUM  (the one place manual resolution IS correct)
+
+The per-bucket breakdown is in the helper output above; 'replied-awaiting-CR'
+threads are listed there too and are NOT part of the blocking count.
+
+Bypass (audit-logged): PRE_MERGE_CR_GATE_SKIP=1 PRE_MERGE_CR_GATE_SKIP_REASON=\"<text>\" gh pr merge ..."
+	# Best-effort: a hook-ack failure must degrade to the plain deny below,
+	# never abort the hook or deadlock the operator.
+	if command -v hook_ack_diagnostic_write >/dev/null 2>&1; then
+		_PMCG_DIAG=$(hook_ack_diagnostic_write "pre-merge-cr-comments-gate" "unaddressed-cr-findings" "$_PMCG_BODY" 2>/dev/null) || _PMCG_DIAG=""
+		[ -n "$_PMCG_DIAG" ] && {
+			hook_ack_append "pre-merge-cr-comments-gate" "unaddressed-cr-findings" "$_PMCG_DIAG" 2>/dev/null || true
+		}
+	fi
+	hook_deny "pre-merge-cr-comments-gate" "$_PMCG_BODY"
 fi
 exit 0
