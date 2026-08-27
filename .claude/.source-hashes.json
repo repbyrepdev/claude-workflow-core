@@ -55,6 +55,7 @@
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
     "_lib/ship-cycle-directives.sh": "dd5835a3e86c8ce143542d008e5c852412155b1f2b6b5ee2b733f7521cc23bb6",
     "_lib/ship-cycle-protocol.sh": "dd166d5322ef4cbfb3a8d9088ce783ebdad3cd2051c241dfd234a1f1ac0c7c27",
+    "_lib/task-queue.sh": "a9a12e0c68482b4431349bb9b8828ba134438c0678ef3aebacbaed6e9341fd48",
     "hooks/_lib.sh": "57ff0032f45b672fc9a501086bb6190ac5a8de99897a10175862a6401fddde44",
     "hooks/_otel-silence.sh": "606246aa6856494e99b2858fc07a230132a51aab2f3e624e52a67427b1d73e2b",
     "hooks/_phase1-collect-logs.sh": "488f2dac255ee29cb946df3e2411855b7d6c7de232318b8a91e3bf1937ca3b1b",
@@ -141,6 +142,7 @@
     "hooks/stale-state-gate.sh": "28ba5ba31cf8dd57d8d3f11387da86f315516db5ae0bdcce4523db3b8a8f1183",
     "hooks/stop-uncommitted-changes.sh": "049cb1a16529c40055d36445b81589a2befc4b93ad6ff99fa0887e2f58050256",
     "hooks/symlink-write-guard.sh": "c7a7bd4a6ad4c37ead9341f0db460ca9bbf8ccd7fc7f46c45e3e48d0be236d29",
+    "hooks/task-queue-track.sh": "cd32d0538d2b5f0d27774ce746e616d1353ba2025ab9624624da9f4a10e3d3f6",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
     "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
     "skills/ship-pr-cycle/run.sh": "7a1e055339ae285ddcf9fd66b77ab2091d461da97ae5af3f48fd38417accec0b"
