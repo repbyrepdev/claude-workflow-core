@@ -421,15 +421,35 @@ if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
 	else
 		# `--repin` is sold as audit-logged; a silent write failure makes that
 		# sentence false exactly when someone is changing a cap on purpose.
-		# Same posture as the symlink guard bypass audit.
-		_repin_log="$REPO_ROOT/.claude/logs/pipeline-skip.jsonl"
-		if mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null &&
-			printf '{"ts":"%s","kind":"phase1-scaler-repin","branch":"%s","reason":"%s","new_rounds":%s}\n' \
-				"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch_slug" \
-				"${PHASE1_REPIN_REASON:-unstated}" "$rounds" \
-				>>"$_repin_log" 2>/dev/null; then
-			:
-		else
+		#
+		# Written through _lib/pipeline-skip.sh, the repo's DESIGNATED single
+		# writer for this log, which escapes via `jq --arg`. The hand-rolled
+		# printf this replaced interpolated PHASE1_REPIN_REASON unescaped: a
+		# reason containing `"}` and a newline appended attacker-authored rows
+		# that `jq -rs` then parsed as genuine records — forged bypass entries
+		# in the durable audit log that session-start-report.sh counts, or an
+		# unbalanced quote that broke the whole-file pass. Verified.
+		_repin_log="${SKIP_LOG:-$REPO_ROOT/.claude/logs/pipeline-skip.jsonl}"
+		_psl_lib="$REPO_ROOT/_lib/pipeline-skip.sh"
+		_repin_logged=0
+		if [ -r "$_psl_lib" ]; then
+			# shellcheck source=../_lib/pipeline-skip.sh
+			# shellcheck disable=SC1090
+			source "$_psl_lib" 2>/dev/null || true
+		fi
+		if command -v pipeline_skip_log >/dev/null 2>&1; then
+			PIPELINE_GATE_SKIP_REASON="${PHASE1_REPIN_REASON:-unstated} (phase1-scaler --repin -> rounds=$rounds)" \
+				pipeline_skip_log "phase1-scaler-repin" && _repin_logged=1
+		elif command -v jq >/dev/null 2>&1 && mkdir -p "$(dirname "$_repin_log")" 2>/dev/null; then
+			# Fallback when the lib is absent — still jq-escaped, never printf.
+			jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+				--arg branch "$branch_slug" \
+				--arg reason "${PHASE1_REPIN_REASON:-unstated}" \
+				--argjson new_rounds "$rounds" \
+				'{ts:$ts, kind:"phase1-scaler-repin", branch:$branch, reason:$reason, new_rounds:$new_rounds}' \
+				>>"$_repin_log" 2>/dev/null && _repin_logged=1
+		fi
+		if [ "$_repin_logged" = "0" ]; then
 			echo "phase1-scaler: WARN: --repin audit row could NOT be written to $_repin_log; the re-pin still happened but is untracked" >&2
 		fi
 		# Tracked SEPARATELY from `tier`. Appending "+repinned" to the tier
@@ -438,6 +458,22 @@ if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
 		# event conflated with the tier field, permanently.
 		repinned=1
 	fi
+fi
+
+# A pin that arrived WITH THE BRANCH is not this machine's decision about how
+# much review the branch needs — it is the branch's own claim about that, and
+# the two are opposites. `.claude/.session-state/` is gitignored, but nothing
+# stops `git add -f`, so a hostile PR could ship `{"rounds":1}` and the
+# reviewer's checked-out pipeline would honour it as both the phase1-before-cr
+# floor and the ship-pr-cycle cap — cutting the review its own diff receives.
+#
+# Tracked pin => ignore and re-resolve locally. Cheap check, and it fails
+# toward MORE review.
+if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ] &&
+	git ls-files --error-unmatch "$PIN_FILE" >/dev/null 2>&1; then
+	pin_state="tracked-ignored"
+	echo "phase1-scaler: WARN: $PIN_FILE is TRACKED BY GIT — a pin that arrives with the branch is the branch's claim about its own review depth, not this machine's. Ignoring it and re-resolving locally; remove it from the index (git rm --cached)." >&2
+	PIN_FILE="$PIN_DIR/${branch_slug}.json.ignored-tracked"
 fi
 
 if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
@@ -539,22 +575,42 @@ elif [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 		# say nothing — and a prune that silently stops working just grows the
 		# directory forever, which is the failure nobody notices until it is
 		# large.
+		# `-name '*-[0-9]*.json'` matches OUR filename shape (slug + cksum
+		# suffix), not every JSON in the directory. PHASE1_SCALER_PIN_DIR is
+		# operator-supplied, and a `-delete` over `*.json` in a directory that
+		# turned out to hold something else is a destructive default for a
+		# hook that runs automatically. Narrow first, delete second.
 		_prune_rc=0
-		_prune_err=$(find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>&1 >/dev/null) || _prune_rc=$?
+		_prune_err=$(find "$PIN_DIR" -maxdepth 1 -name '*-[0-9]*.json' -type f -mtime +30 -delete 2>&1 >/dev/null) || _prune_rc=$?
 		if [ "$_prune_rc" -ne 0 ] || [ -n "$_prune_err" ]; then
 			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR (rc=$_prune_rc${_prune_err:+: $_prune_err}); old branch pins may accumulate" >&2
 		fi
-		_pin_tmp="$PIN_FILE.$$"
-		if printf '{"rounds":%s,"tier":"%s","pinned_at":"%s","base":"%s","cr_at_pin":%s,"p05_at_pin":%s}\n' \
-			"$rounds" "$tier" "$pin_ts" "$BASE" "$cr_count" "$p05_count" \
-			>"$_pin_tmp" 2>/dev/null; then
+		# mktemp, not "$PIN_FILE.$$". The predictable name was opened with a
+		# plain `>`, which FOLLOWS a pre-planted symlink and truncates whatever
+		# it points at — verified. That matters precisely in the shared or
+		# relocated pin directory PHASE1_SCALER_PIN_DIR advertises, and
+		# symlink-write-guard.sh does not see writes made inside a script.
+		_pin_tmp=$(mktemp "$PIN_DIR/.pin.XXXXXX" 2>/dev/null) || _pin_tmp=""
+		# jq builds the JSON, so every interpolated value is ESCAPED. The
+		# printf template this replaced put $BASE — the raw `--base` argument —
+		# unescaped into a JSON string: `--base 'x","rounds":1,"junk":"'`
+		# emitted a syntactically valid pin carrying a SECOND rounds key, which
+		# jq resolves last-wins as 1, and the read-side `^[1-9][0-9]*$` check
+		# accepted it. One crafted invocation durably capped the branch at a
+		# single review round. Verified.
+		if [ -n "$_pin_tmp" ] &&
+			jq -nc --argjson rounds "$rounds" --arg tier "$tier" \
+				--arg pinned_at "$pin_ts" --arg base "$BASE" \
+				--argjson cr_at_pin "$cr_count" --argjson p05_at_pin "$p05_count" \
+				'{rounds:$rounds, tier:$tier, pinned_at:$pinned_at, base:$base, cr_at_pin:$cr_at_pin, p05_at_pin:$p05_at_pin}' \
+				>"$_pin_tmp" 2>/dev/null; then
 			if mv -f "$_pin_tmp" "$PIN_FILE" 2>/dev/null; then
 				_pin_written=1
 			else
 				rm -f "$_pin_tmp" 2>/dev/null || true
 			fi
 		else
-			rm -f "$_pin_tmp" 2>/dev/null || true
+			[ -z "$_pin_tmp" ] || rm -f "$_pin_tmp" 2>/dev/null || true
 		fi
 	fi
 	# An unwritable pin is not fatal: the tier just gets recomputed next call,

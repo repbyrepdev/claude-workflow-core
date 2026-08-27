@@ -78,6 +78,11 @@ _log_cr() { # $1 = findings count for the latest CR entry
 		>>"$WORK/.claude/logs/cr-local-review.jsonl"
 }
 
+# Portable back-date past the 30-day prune window (BSD -v vs GNU -d).
+_backdate_40d() { # $1 = path
+	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$1"
+}
+
 _scaler_pin() { # $1 = extra env words
 	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' ${1:-} bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
 }
@@ -451,7 +456,7 @@ _scaler_pin() { # $1 = extra env words
 	_log_cr 10
 	_scaler_pin
 	[[ $output == *"ROUNDS=3"* ]] || return 1
-	local old="$TEST_TMP/pins/a_long_dead_branch.json"
+	local old="$TEST_TMP/pins/a_long_dead_branch-1234567890.json"
 	printf '{"rounds":5,"tier":"high"}\n' >"$old"
 	# 40 days back — past the 30-day window.
 	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$old"
@@ -591,7 +596,7 @@ _scaler_pin() { # $1 = extra env words
 	# prints the reason to stderr — and exits 0 anyway. That exit status is
 	# why the first version of this warning could never fire, and why the
 	# check reads stderr instead.
-	local old="$TEST_TMP/pins/an_old_branch.json"
+	local old="$TEST_TMP/pins/an_old_branch-1234567890.json"
 	printf '{"rounds":5,"tier":"high"}\n' >"$old"
 	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$old"
 	chmod 500 "$TEST_TMP/pins"
@@ -739,6 +744,124 @@ _scaler_pin() { # $1 = extra env words
 	[ "$status" -eq 0 ]
 	[[ $output =~ ^[1-9][0-9]*$ ]] || {
 		echo "a warning leaked onto the bare-integer channel: [$output]"
+		return 1
+	}
+}
+
+@test "scaler pin: a crafted --base cannot inject a second rounds key" {
+	# The printf template interpolated $BASE unescaped into a JSON string, so
+	# `--base 'x","rounds":1,"junk":"'` emitted a syntactically VALID pin
+	# carrying a second rounds key. jq resolves duplicates last-wins, the
+	# read-side ^[1-9][0-9]*$ check accepted the 1, and one crafted invocation
+	# durably capped the branch at a single review round.
+	_log_cr 10
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base 'x\",\"rounds\":1,\"junk\":\"'"
+	[ "$status" -eq 0 ]
+	local pin
+	pin=$(find "$TEST_TMP/pins" -name '*.json' -type f | head -1)
+	[ -n "$pin" ] || {
+		echo "no pin written"
+		return 1
+	}
+	# The crafted text must survive as DATA in .base, not as structure.
+	[ "$(jq -r '.rounds' "$pin")" = "3" ] || {
+		echo "a crafted --base changed the pinned rounds: $(cat "$pin")"
+		return 1
+	}
+	[ "$(jq -r '.base' "$pin")" = 'x","rounds":1,"junk":"' ] || {
+		echo "the base value was not stored verbatim as data: $(cat "$pin")"
+		return 1
+	}
+	# And the next call reads the honest value.
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || {
+		echo "the poisoned pin was honoured on read: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: a crafted repin reason cannot forge audit rows" {
+	# PHASE1_REPIN_REASON was interpolated unescaped into the JSONL row, so a
+	# reason containing a quote-brace and a newline appended attacker-authored
+	# records that `jq -rs` parsed as genuine. Written through the repo
+	# designated single writer for this log now, which escapes via jq --arg.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	local evil
+	evil='pwn"}
+{"ts":"2020-01-01T00:00:00Z","kind":"phase1-scaler-repin","reason":"FORGED'
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' PHASE1_REPIN_REASON=\"\$1\" bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin" _ "$evil"
+	[ "$status" -eq 0 ]
+	local log="$WORK/.claude/logs/pipeline-skip.jsonl"
+	[ -f "$log" ] || {
+		echo "no audit log written"
+		return 1
+	}
+	# Every line must be valid JSON — an injected newline would leave a
+	# fragment that breaks the whole-file pass session-start-report.sh does.
+	jq -e . "$log" >/dev/null 2>&1 || {
+		echo "the audit log is no longer parseable line-by-line: $(cat "$log")"
+		return 1
+	}
+	# And no FORGED record exists as its own row.
+	! jq -rs '.[] | select(.reason == "FORGED") | .reason' "$log" 2>/dev/null | grep -q FORGED || {
+		echo "a forged audit row was injected: $(cat "$log")"
+		return 1
+	}
+}
+
+@test "scaler pin: a GIT-TRACKED pin is ignored, not honoured" {
+	# .claude/.session-state/ is gitignored, but `git add -f` defeats that. A
+	# pin that arrives WITH the branch is the branch claim about how much
+	# review it should receive — the opposite of this machine deciding. It
+	# must fail toward MORE review.
+	local tracked_dir="$WORK/.claude/.session-state/phase1-scaler"
+	mkdir -p "$tracked_dir"
+	_log_cr 10
+	# Resolve once with the default (in-repo) pin dir so the filename matches
+	# what the script will look for.
+	run bash -c "cd '$WORK' && bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
+	[ "$status" -eq 0 ]
+	local pin
+	pin=$(find "$tracked_dir" -name '*.json' -type f | head -1)
+	[ -n "$pin" ] || {
+		echo "no pin written to the in-repo dir"
+		return 1
+	}
+	# A hostile branch ships rounds:1 and force-adds it.
+	printf '{"rounds":1,"tier":"attacker","pinned_at":"2026-01-01T00:00:00Z"}\n' >"$pin"
+	(cd "$WORK" && git add -f "$pin") || return 1
+	run bash -c "cd '$WORK' && bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
+	[ "$status" -eq 0 ]
+	[[ $output == *"pin=tracked-ignored"* ]] || {
+		echo "a tracked pin was not reported as ignored: $output"
+		return 1
+	}
+	[[ $output != *"ROUNDS=1"* ]] || {
+		echo "a branch-supplied pin cut its own review depth: $output"
+		return 1
+	}
+	[[ $output == *"ROUNDS=3"* ]] || {
+		echo "the tracked pin was ignored but the resolve was wrong: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: the prune only matches this tool own filenames" {
+	# PHASE1_SCALER_PIN_DIR is operator-supplied and the write path runs a
+	# `find ... -delete`. Deleting every *.json older than 30 days from an
+	# arbitrary directory is a destructive default for a hook that runs
+	# automatically; the glob is narrowed to the slug-plus-checksum shape.
+	_log_cr 10
+	mkdir -p "$TEST_TMP/pins"
+	local bystander="$TEST_TMP/pins/important-config.json"
+	printf '{"not":"a pin"}\n' >"$bystander"
+	_backdate_40d "$bystander"
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[ -f "$bystander" ] || {
+		echo "the prune deleted a file that was not one of our pins"
 		return 1
 	}
 }
