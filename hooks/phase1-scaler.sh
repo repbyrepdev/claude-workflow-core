@@ -387,7 +387,8 @@ if [ "$REPIN" = "1" ] && [ -n "$branch_slug" ]; then
 	else
 		echo "phase1-scaler: WARN: --repin audit row could NOT be written to $_repin_log; the re-pin still happened but is untracked" >&2
 	fi
-	rm -f "$PIN_FILE" 2>/dev/null || true
+	rm -f "$PIN_FILE" 2>/dev/null ||
+		echo "phase1-scaler: WARN: --repin could not remove the existing pin at $PIN_FILE; the re-resolved value may not take effect" >&2
 	# Tracked SEPARATELY from `tier`. Appending "+repinned" to the tier string
 	# meant the marker was persisted into the new pin file and every later read
 	# reported `moderate+repinned` forever — a one-off event conflated with the
@@ -401,7 +402,10 @@ if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ]; then
 	pin_ts=$(jq -r '.pinned_at // empty' "$PIN_FILE" 2>/dev/null) || pin_ts=""
 	if [[ $_pin_rounds =~ ^[1-9][0-9]*$ ]]; then
 		rounds="$_pin_rounds"
-		tier="${_pin_tier:-unknown}"
+		# A distinguishable sentinel, not the bare word "unknown" — which
+		# reads like a tier name in REASON output and could be mistaken for
+		# one the table actually produces.
+		tier="${_pin_tier:-<pin-tier-missing>}"
 		pinned=1
 	else
 		# Corrupt or truncated pin: re-resolve rather than abort inside a hook,
@@ -414,16 +418,29 @@ fi
 
 if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	# Tracked explicitly rather than inferred from `[ -f "$PIN_FILE" ]`. The
+	# existence test was WRONG when a stale pin from a prior run was already
+	# there: a failed `mv` left the old file in place, the test passed, no
+	# warning was printed, and the script went on serving a pin it had just
+	# failed to update. That is the one outcome worse than not pinning.
+	_pin_written=0
 	if mkdir -p "$PIN_DIR" 2>/dev/null; then
 		# Prune on write, so merged and deleted branches do not accumulate pins
 		# forever. 30 days is well past any branch this cycle keeps open, and
 		# a wrongly-pruned pin costs one re-resolve, not a wrong cap.
-		find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>/dev/null || true
+		# WARNs on failure like every other path in this block — a prune that
+		# silently stops working just grows the directory forever.
+		find "$PIN_DIR" -maxdepth 1 -name '*.json' -type f -mtime +30 -delete 2>/dev/null ||
+			echo "phase1-scaler: WARN: could not prune stale pins in $PIN_DIR; old branch pins may accumulate" >&2
 		_pin_tmp="$PIN_FILE.$$"
 		if printf '{"rounds":%s,"tier":"%s","pinned_at":"%s","base":"%s","cr_at_pin":%s,"p05_at_pin":%s}\n' \
 			"$rounds" "$tier" "$pin_ts" "$BASE" "$cr_count" "$p05_count" \
 			>"$_pin_tmp" 2>/dev/null; then
-			mv -f "$_pin_tmp" "$PIN_FILE" 2>/dev/null || rm -f "$_pin_tmp" 2>/dev/null || true
+			if mv -f "$_pin_tmp" "$PIN_FILE" 2>/dev/null; then
+				_pin_written=1
+			else
+				rm -f "$_pin_tmp" 2>/dev/null || true
+			fi
 		else
 			rm -f "$_pin_tmp" 2>/dev/null || true
 		fi
@@ -431,8 +448,13 @@ if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
 	# An unwritable pin is not fatal: the tier just gets recomputed next call,
 	# which is the old behaviour. Advisory, because the operator should know
 	# the cap is not actually being held.
-	[ -f "$PIN_FILE" ] ||
+	if [ "$_pin_written" = "0" ]; then
 		echo "phase1-scaler: WARN: could not write the tier pin to $PIN_FILE — the cap will be re-resolved on every call (the pre-#2544 treadmill)" >&2
+		# A pin that could not be replaced must not be READ next call either:
+		# it holds a number this run already decided was out of date.
+		rm -f "$PIN_FILE" 2>/dev/null ||
+			echo "phase1-scaler: WARN: a STALE pin remains at $PIN_FILE and could not be removed; the next call may read an out-of-date cap" >&2
+	fi
 fi
 
 # Sensitive-path floor — compose/crypto/auth edits force min 2 rounds.

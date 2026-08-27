@@ -354,3 +354,95 @@ _scaler_pin() { # $1 = extra env words
 		return 1
 	}
 }
+
+@test "scaler pin: --help still prints Usage after the header grew" {
+	# The defect this PR narrates: --help printed the header by hardcoded LINE
+	# NUMBER, so adding a paragraph pushed Usage out of range and the flag
+	# silently stopped showing how to invoke the script. Without this test the
+	# same edit breaks it again with no signal.
+	run bash "$REPO_ROOT/hooks/phase1-scaler.sh" --help
+	[ "$status" -eq 0 ]
+	[[ $output == *"Usage:"* ]] || {
+		echo "--help no longer prints Usage: $output"
+		return 1
+	}
+	[[ $output == *"--explain"* ]] || {
+		echo "--help does not show the flags: $output"
+		return 1
+	}
+	[[ $output == *"--repin"* ]]
+}
+
+@test "scaler pin: an UNWRITABLE pin dir warns and keeps recomputing" {
+	# Not fatal — the tier just resolves per call, which is the old behaviour.
+	# But the operator has to know the cap is not actually being held.
+	_log_cr 10
+	local ro="$TEST_TMP/readonly"
+	mkdir -p "$ro"
+	chmod 500 "$ro"
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$ro/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main"
+	chmod 700 "$ro"
+	[ "$status" -eq 0 ]
+	[[ $output == *"could not write the tier pin"* ]] || {
+		echo "an unwritable pin dir was silent: $output"
+		return 1
+	}
+	[[ $output == *"pinned=0"* ]]
+}
+
+@test "scaler pin: a STALE pin is removed when the write fails" {
+	# The `[ -f "$PIN_FILE" ]` success test was WRONG with a pin already
+	# present: a failed replace left the old file, the test passed, nothing
+	# warned, and the script served a value it had just failed to update.
+	_log_cr 1
+	_scaler_pin
+	[[ $output == *"ROUNDS=2"* ]] || return 1
+	local pin
+	pin=$(find "$TEST_TMP/pins" -name '*.json' | head -1)
+	[ -n "$pin" ] || return 1
+	# Make the replace fail while leaving the stale pin in place.
+	chmod 500 "$TEST_TMP/pins"
+	printf 'not json\n' >"$pin" 2>/dev/null || true
+	chmod 700 "$TEST_TMP/pins"
+	printf 'not json\n' >"$pin"
+	chmod 500 "$TEST_TMP/pins"
+	_scaler_pin
+	chmod 700 "$TEST_TMP/pins"
+	[ "$status" -eq 0 ]
+	[[ $output == *"could not write the tier pin"* ]] || {
+		echo "the failed write did not warn: $output"
+		return 1
+	}
+}
+
+@test "scaler pin: stale pins are PRUNED on write" {
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	local old="$TEST_TMP/pins/a_long_dead_branch.json"
+	printf '{"rounds":5,"tier":"high"}\n' >"$old"
+	# 40 days back — past the 30-day window.
+	touch -t "$(date -u -v-40d +%Y%m%d0000 2>/dev/null || date -u -d '40 days ago' +%Y%m%d0000)" "$old"
+	(cd "$WORK" && git checkout -qb feat/prune-trigger) || return 1
+	_scaler_pin
+	[ "$status" -eq 0 ]
+	[ ! -f "$old" ] || {
+		echo "a 40-day-old pin survived the prune"
+		return 1
+	}
+}
+
+@test "scaler pin: --repin on an unpinnable branch does not crash" {
+	# Detached HEAD leaves branch_slug empty, so the repin block is skipped
+	# entirely. It must warn and exit cleanly, not fall through to a rm/printf
+	# against an empty path.
+	_log_cr 10
+	(cd "$WORK" && git checkout -q --detach HEAD) || return 1
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	[ "$status" -eq 0 ]
+	[[ $output == *"detached HEAD"* ]] || {
+		echo "--repin on a detached HEAD did not warn: $output"
+		return 1
+	}
+	[[ $output == *"ROUNDS="* ]]
+}
