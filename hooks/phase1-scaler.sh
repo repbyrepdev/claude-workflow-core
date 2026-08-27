@@ -16,8 +16,17 @@ set -euo pipefail
 # Sensitive-path floor: compose/crypto/auth touched → min 2 rounds.
 # Override: PHASE1_ROUNDS=<N> env var wins always.
 #
+# PINNED PER BRANCH (#2544): the tier is resolved ONCE per branch and held.
+# The table above is a pure function of the current finding count, so
+# recomputing it every call let the cap grow as the rounds found things —
+# cap 3 became cap 5 because the round that hit 3/3 returned 13 findings. It
+# only ever rose, cr_count being floored by ancestors. Both phases read this
+# number, so the treadmill was never phase-2-specific. See the pin block for
+# the full account. `--repin` re-resolves deliberately (audit-logged); floors
+# still apply upward over a pin.
+#
 # Usage:
-#   .claude/hooks/phase1-scaler.sh [--base main] [--explain]
+#   .claude/hooks/phase1-scaler.sh [--base main] [--explain] [--repin]
 # Output (stdout): integer (no trailing newline) OR "ROUNDS=<N>\nREASON=..."
 # when --explain is set.
 
@@ -26,8 +35,16 @@ cd "$REPO_ROOT" || exit 2
 
 BASE="main"
 EXPLAIN=0
+REPIN=0
 while [ "$#" -gt 0 ]; do
 	case "$1" in
+	--repin)
+		# Deliberately re-resolve a pinned branch. Audit-logged, same posture
+		# as the other escapes — the pin exists to stop the cap drifting
+		# upward on its own, not to stop an operator changing it on purpose.
+		REPIN=1
+		shift
+		;;
 	--base)
 		[ "$#" -ge 2 ] || {
 			echo "phase1-scaler: --base requires value" >&2
@@ -286,6 +303,102 @@ else
 	tier="high"
 fi
 
+# --- PIN the tier for the branch (#2544) ----------------------------------
+#
+# THE CAP CHASED ITS OWN TAIL. Everything above is a pure function of the
+# CURRENT finding count, recomputed on EVERY call. So the number that bounds
+# how many review rounds a branch may spend grew as those rounds found things:
+#
+#   cap 3 (cr=10, moderate) → the round that hit 3/3 returned 13 findings
+#   → next call: cr=13 → high → cap 5 → "3/3 ENFORCED" became "4/5"
+#
+# Observed live on branch fix/v0.34.184/2548-cr-thread-reply. And it only ever
+# went up: cr_count is deliberately floored by ancestor rows and "must never
+# LOWER" (see the _cr_anc combine above), so this is a ratchet. A branch whose
+# rounds keep finding >= 11 things can never reach its own cap.
+#
+# Both phases read this one number — `_phase1_cap_gate` and the phase-2 cap
+# both call this script — so the treadmill was never phase-2-specific.
+#
+# The SIZING RULE is sound: a messy diff deserves more review. The defect is
+# WHEN it is evaluated. Resolving once per branch keeps the rule and makes the
+# number reachable.
+#
+# Per BRANCH, not per SHA: a fix commit moves HEAD, and re-resolving there
+# would reintroduce the treadmill one commit at a time. Same scoping decision
+# `_phase2_branch_run_count` already makes (#2354).
+#
+# Floors are applied BELOW this block, so a pin can never hold the count under
+# a sensitive-path or PHASE1_MIN_ROUNDS floor — the pin bounds growth, it does
+# not grant permission to review less.
+pinned=0
+pin_ts=""
+if [ -n "${BATS_TEST_NAME:-}" ] && [ -n "${BATS_TEST_TMPDIR:-}" ]; then
+	# Mirrors _lib/hook-ack.sh in intent: tests must never read or write the
+	# operator's real pin. But it keys on BATS_TEST_TMPDIR (per-TEST), not
+	# BATS_RUN_TMPDIR (per-RUN) — the first cut used the latter and every test
+	# in a file shared one pin directory under one fixture branch name, so the
+	# first test to resolve silently capped the next six. A pin that leaks
+	# between tests is the same class of bug as a cap that leaks between
+	# branches, which is what this whole block exists to stop.
+	PIN_DIR="$BATS_TEST_TMPDIR/phase1-scaler"
+elif [ -n "${BATS_TEST_NAME:-}" ] && [ -n "${BATS_RUN_TMPDIR:-}" ]; then
+	# Older bats without BATS_TEST_TMPDIR: still keep it out of the real tree,
+	# and namespace by test name so the isolation survives.
+	PIN_DIR="$BATS_RUN_TMPDIR/phase1-scaler/$(printf '%s' "$BATS_TEST_NAME" | tr -c 'A-Za-z0-9._-' '_')"
+else
+	PIN_DIR="$REPO_ROOT/.claude/.session-state/phase1-scaler"
+fi
+branch_name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+# Slugged so a branch name with slashes cannot escape PIN_DIR.
+branch_slug=$(printf '%s' "$branch_name" | tr -c 'A-Za-z0-9._-' '_')
+PIN_FILE="$PIN_DIR/${branch_slug}.json"
+
+if [ "$REPIN" = "1" ]; then
+	rm -f "$PIN_FILE" 2>/dev/null || true
+	mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
+	printf '{"ts":"%s","kind":"phase1-scaler-repin","branch":"%s","reason":"%s","new_rounds":%s}\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$branch_slug" \
+		"${PHASE1_REPIN_REASON:-unstated}" "$rounds" \
+		>>"$REPO_ROOT/.claude/logs/pipeline-skip.jsonl" 2>/dev/null || true
+	tier="${tier}+repinned"
+fi
+
+if [ -n "$branch_slug" ] && [ -f "$PIN_FILE" ] && command -v jq >/dev/null 2>&1; then
+	_pin_rounds=$(jq -r '.rounds // empty' "$PIN_FILE" 2>/dev/null) || _pin_rounds=""
+	_pin_tier=$(jq -r '.tier // empty' "$PIN_FILE" 2>/dev/null) || _pin_tier=""
+	pin_ts=$(jq -r '.pinned_at // empty' "$PIN_FILE" 2>/dev/null) || pin_ts=""
+	if [[ $_pin_rounds =~ ^[1-9][0-9]*$ ]]; then
+		rounds="$_pin_rounds"
+		tier="${_pin_tier:-unknown}"
+		pinned=1
+	else
+		# Corrupt or truncated pin: re-resolve rather than abort inside a hook,
+		# and SAY so — a silently discarded pin looks identical to a first run.
+		echo "phase1-scaler: WARN: pin file $PIN_FILE is unreadable or has no valid rounds; re-resolving from current signals" >&2
+		rm -f "$PIN_FILE" 2>/dev/null || true
+	fi
+fi
+
+if [ "$pinned" = "0" ] && [ -n "$branch_slug" ]; then
+	pin_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	if mkdir -p "$PIN_DIR" 2>/dev/null; then
+		_pin_tmp="$PIN_FILE.$$"
+		if printf '{"rounds":%s,"tier":"%s","pinned_at":"%s","base":"%s","cr_at_pin":%s,"p05_at_pin":%s}\n' \
+			"$rounds" "$tier" "$pin_ts" "$BASE" "$cr_count" "$p05_count" \
+			>"$_pin_tmp" 2>/dev/null; then
+			mv -f "$_pin_tmp" "$PIN_FILE" 2>/dev/null || rm -f "$_pin_tmp" 2>/dev/null || true
+		else
+			rm -f "$_pin_tmp" 2>/dev/null || true
+		fi
+	fi
+	# An unwritable pin is not fatal: the tier just gets recomputed next call,
+	# which is the old behaviour. Advisory, because the operator should know
+	# the cap is not actually being held.
+	[ -f "$PIN_FILE" ] ||
+		echo "phase1-scaler: WARN: could not write the tier pin to $PIN_FILE — the cap will be re-resolved on every call (the pre-#2544 treadmill)" >&2
+fi
+
 # Sensitive-path floor — compose/crypto/auth edits force min 2 rounds.
 sensitive=0
 changed_files=$(git diff --name-only "${BASE}..HEAD" 2>/dev/null || echo "")
@@ -310,7 +423,10 @@ fi
 
 if [ "$EXPLAIN" = "1" ]; then
 	echo "ROUNDS=$rounds"
-	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive"
+	# `pinned` is reported so the operator can tell a held cap from a freshly
+	# computed one — without it, a pin and a coincidentally-equal recompute
+	# print identically, and the whole point is knowing the number is stable.
+	echo "REASON=tier=$tier phase0.5=$p05_count p05_ran=$p05_ran cr=$cr_count sensitive=$sensitive pinned=$pinned${pin_ts:+ pinned_at=$pin_ts}"
 else
 	printf '%s' "$rounds"
 fi
