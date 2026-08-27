@@ -339,21 +339,20 @@ fi
 pinned=0
 pin_ts=""
 repinned=0
-# ONE injectable seam. The bats short-circuit stays as a backstop because a
-# test that forgets the override must not touch the operator's real pin — but
-# it keys on BATS_TEST_TMPDIR (per-TEST), not BATS_RUN_TMPDIR (per-RUN). The
-# first cut used the latter, so every test in a file shared one pin directory
-# under one fixture branch name and the first test to resolve silently capped
-# the next six. A pin leaking between tests is the same bug as a cap leaking
-# between branches. (bats has set BATS_TEST_TMPDIR since 1.4; this repo runs
-# 1.13, so no older-bats fallback is carried.)
-if [ -n "${PHASE1_SCALER_PIN_DIR:-}" ]; then
-	PIN_DIR="$PHASE1_SCALER_PIN_DIR"
-elif [ -n "${BATS_TEST_NAME:-}" ] && [ -n "${BATS_TEST_TMPDIR:-}" ]; then
-	PIN_DIR="$BATS_TEST_TMPDIR/phase1-scaler"
-else
-	PIN_DIR="$REPO_ROOT/.claude/.session-state/phase1-scaler"
-fi
+# ONE seam, and it is operator-facing rather than test-only: relocating pin
+# state is a legitimate thing to want (a shared checkout, a read-only tree).
+#
+# No bats branch. Two earlier cuts had one, and both were wrong in a way worth
+# recording: the first keyed on BATS_RUN_TMPDIR, which is per-RUN, so every
+# test in a file shared one pin directory under one fixture branch name and
+# the first test to resolve silently capped the next six — a pin leaking
+# between tests being the same bug as a cap leaking between branches. The
+# second keyed on BATS_TEST_TMPDIR, which is correct but put test-harness
+# variables in the control flow of a production gate for no gain: PIN_DIR
+# derives from REPO_ROOT, and a bats fixture that `cd`s into its own scratch
+# repo ALREADY has REPO_ROOT pointed at that scratch repo. The isolation was
+# there before the special case was.
+PIN_DIR="${PHASE1_SCALER_PIN_DIR:-$REPO_ROOT/.claude/.session-state/phase1-scaler}"
 branch_name=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch_name=""
 # Slugged so a branch name with slashes cannot escape PIN_DIR.
 branch_slug=$(printf '%s' "$branch_name" | tr -c 'A-Za-z0-9._-' '_')

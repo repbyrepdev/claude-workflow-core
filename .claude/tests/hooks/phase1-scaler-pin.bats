@@ -446,3 +446,74 @@ _scaler_pin() { # $1 = extra env words
 	}
 	[[ $output == *"ROUNDS="* ]]
 }
+
+@test "scaler pin: --repin WRITES an audit row with branch, reason and rounds" {
+	# The whole claim of `--repin` is that a deliberate cap change is tracked.
+	# Asserting only the stdout text leaves the audit trail — the part that
+	# outlives the terminal — unverified.
+	_log_cr 10
+	_scaler_pin
+	[[ $output == *"ROUNDS=3"* ]] || return 1
+	_log_cr 13
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' PHASE1_REPIN_REASON='widened for the auth rewrite' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	[ "$status" -eq 0 ]
+	local log="$WORK/.claude/logs/pipeline-skip.jsonl"
+	[ -f "$log" ] || {
+		echo "no audit log was written at all"
+		return 1
+	}
+	local row
+	row=$(grep 'phase1-scaler-repin' "$log" | tail -1)
+	[ -n "$row" ] || {
+		echo "no phase1-scaler-repin row in $log"
+		return 1
+	}
+	# The reason is the operator wording — the field exists so a later reader
+	# knows WHY the cap moved, not merely that it did.
+	[ "$(printf '%s' "$row" | jq -r '.reason')" = "widened for the auth rewrite" ] || {
+		echo "PHASE1_REPIN_REASON did not reach the audit row: $row"
+		return 1
+	}
+	[ "$(printf '%s' "$row" | jq -r '.new_rounds')" = "5" ] || {
+		echo "the audit row did not record the re-resolved value: $row"
+		return 1
+	}
+	[ "$(printf '%s' "$row" | jq -r '.branch')" = "feat_test" ] || {
+		echo "the audit row did not record the branch: $row"
+		return 1
+	}
+}
+
+@test "scaler pin: an unstated repin reason is recorded as such" {
+	# The default has to be a value a reader can recognise, not an empty
+	# string that looks like the field was dropped.
+	_log_cr 10
+	_scaler_pin
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	[ "$status" -eq 0 ]
+	local row
+	row=$(grep 'phase1-scaler-repin' "$WORK/.claude/logs/pipeline-skip.jsonl" | tail -1)
+	[ "$(printf '%s' "$row" | jq -r '.reason')" = "unstated" ] || {
+		echo "the default reason is not recognisable: $row"
+		return 1
+	}
+}
+
+@test "scaler pin: a FAILED repin audit write warns instead of proceeding quietly" {
+	# --repin is sold as audit-logged. A silent write failure makes that
+	# sentence false at exactly the moment someone is changing a cap on
+	# purpose, which is when the trail matters most.
+	_log_cr 10
+	_scaler_pin
+	mkdir -p "$WORK/.claude/logs"
+	chmod 500 "$WORK/.claude/logs"
+	run bash -c "cd '$WORK' && PHASE1_SCALER_PIN_DIR='$TEST_TMP/pins' bash '$REPO_ROOT/hooks/phase1-scaler.sh' --explain --base main --repin"
+	chmod 700 "$WORK/.claude/logs"
+	[ "$status" -eq 0 ]
+	[[ $output == *"audit row could NOT be written"* ]] || {
+		echo "a failed audit write was silent: $output"
+		return 1
+	}
+	# It still re-pins — refusing would strand the operator — but says so.
+	[[ $output == *"repinned=1"* ]]
+}
