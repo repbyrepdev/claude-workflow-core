@@ -91,7 +91,7 @@ _run() { run bash -c "cd '$TMP' && HOME='$FAKEHOME' ${1:-} bash '$HOOK' 2>&1"; }
 	_run
 	[ "$status" -eq 0 ]
 	# Positive control proves the scan REACHED the dir (true orphan flagged)...
-	[[ $output == *"zz-orphan-true.sh"* ]]
+	[[ $output == *"zz-orphan-true.sh"* ]] || return 1
 	# ...so the false one's absence is the opt-out skip, not an unscanned dir.
 	[[ $output != *"zz-optout-false.sh"* ]]
 }

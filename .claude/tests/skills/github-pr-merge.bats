@@ -138,7 +138,7 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	FAKE_POST='{"state":"MERGED","armed":false,"queued":false,"head":"abc1234"}'
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
-	[[ $output == *"merged it IMMEDIATELY"* ]]
+	[[ $output == *"merged it IMMEDIATELY"* ]] || return 1
 	[[ $output != *"Auto-merge armed"* ]]
 }
 
@@ -173,10 +173,10 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	FAKE_QUEUE_FAIL=1
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
-	[[ $output == *"queue state UNKNOWN"* ]]
+	[[ $output == *"queue state UNKNOWN"* ]] || return 1
 	# The probe's stderr must surface in the WARN (captured separately, not
 	# discarded and not mixed into the parsed payload).
-	[[ $output == *"Could not resolve to a Repository"* ]]
+	[[ $output == *"Could not resolve to a Repository"* ]] || return 1
 	[[ $output != *"neither merged, armed, nor queued"* ]]
 }
 
@@ -192,7 +192,7 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	FAKE_STDERR_NOISE=1
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
-	[[ $output == *"Auto-merge armed for PR #55"* ]]
+	[[ $output == *"Auto-merge armed for PR #55"* ]] || return 1
 	[[ $output != *"queue state UNKNOWN"* ]]
 }
 
@@ -205,7 +205,7 @@ _state() { # $1=state $2=failed_count $3=mergeable(default MERGEABLE)
 	FAKE_POST_FAIL=1
 	run bash -c "APPROVE=1 bash '$SCRIPT' --pr 55 --auto </dev/null"
 	[ "$status" -eq 0 ]
-	[[ $output == *"outcome verification unavailable"* ]]
+	[[ $output == *"outcome verification unavailable"* ]] || return 1
 	# The failed query's stderr must surface in the WARN (separate capture).
 	[[ $output == *"Unknown JSON field"* ]]
 }

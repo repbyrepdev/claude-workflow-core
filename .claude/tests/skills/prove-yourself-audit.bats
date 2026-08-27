@@ -72,7 +72,7 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "true" 0
 	[ "$status" -eq 0 ]
-	[[ $output == *"Recorded fix"* ]]
+	[[ $output == *"Recorded fix"* ]] || return 1
 	local f
 	f=$(ls .claude/.session-state/prove-yourself/*.json)
 	[ "$(jq -r '.decision_data.retest_verified' "$f")" = "true" ]
@@ -83,8 +83,8 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "false" 0
 	[ "$status" -eq 1 ]
-	[[ $output == *"EVIDENCE MISMATCH"* ]]
-	[[ $output == *"rc=1"* ]]
+	[[ $output == *"EVIDENCE MISMATCH"* ]] || return 1
+	[[ $output == *"rc=1"* ]] || return 1
 	# No state file may exist — a refused record must leave nothing behind.
 	local n
 	n=$(find .claude/.session-state/prove-yourself -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
@@ -107,7 +107,7 @@ _record_fix() {
 	_record_fix "sleep 5" 0
 	unset PROVE_RETEST_TIMEOUT
 	[ "$status" -eq 1 ]
-	[[ $output == *"deadline"* ]]
+	[[ $output == *"deadline"* ]] || return 1
 	[[ $output == *"PROVE_RETEST_TIMEOUT"* ]]
 }
 
@@ -151,7 +151,7 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"cycle-critical"* ]]
+	[[ $output == *"cycle-critical"* ]] || return 1
 	[[ $output == *"hooks/x.sh"* ]]
 }
 
@@ -208,8 +208,8 @@ _record_fix() {
 	export PROVE_RETEST_NO_TIMEOUT=1
 	_record_fix "true" 0
 	[ "$status" -eq 0 ]
-	[[ $output == *"deadline is UNENFORCED"* ]]
-	[[ $output == *"Recorded fix"* ]]
+	[[ $output == *"deadline is UNENFORCED"* ]] || return 1
+	[[ $output == *"Recorded fix"* ]] || return 1
 	run "$SKILL" record-fix --finding-id tf2 --finding-text x2 --fix-summary y \
 		--retest-cmd false --retest-rc 0 --source phase1 --confidence 5
 	unset PROVE_RETEST_NO_TIMEOUT
@@ -237,7 +237,7 @@ _record_fix() {
 		--retest-cmd "true" --retest-rc 0 --cited-files ".claude/hooks/m.sh" \
 		--source phase1 --confidence 5
 	[ "$status" -eq 2 ]
-	[[ $output == *"cycle-critical"* ]]
+	[[ $output == *"cycle-critical"* ]] || return 1
 	# And the SSOT-relative spelling of the entry point satisfies it.
 	run "$SKILL" record-fix --finding-id mir2 --finding-text x2 --fix-summary y \
 		--retest-cmd "bash .claude/hooks/m.sh" --retest-rc 0 --cited-files ".claude/hooks/m.sh" \
@@ -251,7 +251,7 @@ _record_fix() {
 	_record_fix "true" 0
 	unset PROVE_RETEST_TIMEOUT
 	[ "$status" -eq 0 ]
-	[[ $output == *"not a positive integer"* ]]
+	[[ $output == *"not a positive integer"* ]] || return 1
 	[[ $output == *"Recorded fix"* ]]
 }
 
@@ -264,10 +264,10 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "bash hooks/x.sh || true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"SINGLE PIPELINE"* ]]
+	[[ $output == *"SINGLE PIPELINE"* ]] || return 1
 	_record_fix "bash hooks/x.sh; true" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"SINGLE PIPELINE"* ]]
+	[[ $output == *"SINGLE PIPELINE"* ]] || return 1
 	_record_fix "bash hooks/x.sh | cat" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
 	[[ $output == *"rc-swallowing"* ]]
@@ -281,7 +281,7 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "true || bash hooks/x.sh" 0 "hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"SINGLE PIPELINE"* ]]
+	[[ $output == *"SINGLE PIPELINE"* ]] || return 1
 	_record_fix "false && bash hooks/x.sh" 1 "hooks/x.sh"
 	[ "$status" -eq 2 ]
 	[[ $output == *"SINGLE PIPELINE"* ]]
@@ -291,7 +291,7 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "printf x | bash hooks/x.sh" 0 "hooks/x.sh"
 	[ "$status" -eq 0 ]
-	[[ $output == *"Recorded fix"* ]]
+	[[ $output == *"Recorded fix"* ]] || return 1
 	run "$SKILL" record-fix --finding-id rd1 --finding-text xr --fix-summary y \
 		--retest-cmd "bash hooks/x.sh >/dev/null 2>&1" --retest-rc 0 \
 		--cited-files "hooks/x.sh" --source phase1 --confidence 5
@@ -303,7 +303,7 @@ _record_fix() {
 	cd "$TEST_TMP" || return 1
 	_record_fix "true" 0 "./hooks/x.sh"
 	[ "$status" -eq 2 ]
-	[[ $output == *"cycle-critical"* ]]
+	[[ $output == *"cycle-critical"* ]] || return 1
 	_record_fix "bash ./hooks/x.sh" 0 "./hooks/x.sh"
 	[ "$status" -eq 0 ]
 	[[ $output == *"Recorded fix"* ]]
@@ -338,7 +338,7 @@ _record_fix() {
 	done
 	run env PATH="$TEST_TMP/nb" bash -c "cd '$TEST_TMP' && '$SKILL' record-fix --finding-id nt1 --finding-text x --fix-summary y --retest-cmd true --retest-rc 0 --source phase1 --confidence 5"
 	[ "$status" -eq 1 ]
-	[[ $output == *"refusing to run retest evidence UNBOUNDED"* ]]
+	[[ $output == *"refusing to run retest evidence UNBOUNDED"* ]] || return 1
 	[[ $output == *"PROVE_RETEST_NO_TIMEOUT"* ]]
 }
 
@@ -383,6 +383,6 @@ _record_rejection_reason() {
 			echo "anti-pattern NOT blocked (rc $status): $r"
 			return 1
 		}
-		[[ $output == *"anti-pattern"* ]]
+		[[ $output == *"anti-pattern"* ]] || return 1
 	done
 }

@@ -90,7 +90,7 @@ _run_hook() {
 	printf 'ACTIONS_MODE=remote\n' >"$TEST_TMP/.claude/mode.conf"
 	run _run_hook
 	[ "$status" -eq 0 ]
-	[[ $output == *"ACTIONS_MODE=remote"* ]]
+	[[ $output == *"ACTIONS_MODE=remote"* ]] || return 1
 	[[ $output == *"hook no-op"* ]]
 }
 
@@ -117,8 +117,8 @@ _run_hook() {
 	_bump "0.9.6"
 	run _run_hook
 	[ "$status" -eq 0 ]
-	[[ $output == *"0.9.5 → 0.9.6"* ]]
-	[[ $output == *"release.sh spawned"* ]]
+	[[ $output == *"0.9.5 → 0.9.6"* ]] || return 1
+	[[ $output == *"release.sh spawned"* ]] || return 1
 	# JSONL line parses as valid JSON
 	jq -c . <"$TEST_TMP/.claude/logs/release-auto-fire.jsonl" >/dev/null
 	# Field assertions
@@ -141,7 +141,7 @@ _run_hook() {
 	_bump "0.9.7"
 	run _run_hook
 	[ "$status" -eq 2 ]
-	[[ $output == *"cannot fire release"* ]]
+	[[ $output == *"cannot fire release"* ]] || return 1
 	grep -q '"status":"missing-release-sh"' "$TEST_TMP/.claude/logs/release-auto-fire.jsonl"
 }
 
@@ -152,7 +152,7 @@ _run_hook() {
 	_bump "0.9.4"
 	run _run_hook
 	[ "$status" -eq 0 ]
-	[[ $output == *"0.9.5 → 0.9.4"* ]]
+	[[ $output == *"0.9.5 → 0.9.4"* ]] || return 1
 	[[ $output == *"release.sh spawned"* ]]
 }
 
@@ -192,7 +192,7 @@ EOF
 	)
 	run bash -c "cd '$newdir' && bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"first-introduction"* ]]
+	[[ $output == *"first-introduction"* ]] || return 1
 	grep -q '"status":"fired-first-introduction"' "$newdir/.claude/logs/release-auto-fire.jsonl"
 	grep -q '"from":""' "$newdir/.claude/logs/release-auto-fire.jsonl"
 	grep -q '"to":"1.0.0"' "$newdir/.claude/logs/release-auto-fire.jsonl"
@@ -232,7 +232,7 @@ EOF
 	)
 	run _run_hook
 	[ "$status" -eq 2 ]
-	[[ $output == *"not X.Y.Z"* ]]
+	[[ $output == *"not X.Y.Z"* ]] || return 1
 	# Either the file never existed (early exit before mkdir) or every
 	# pre-existing line is still parseable JSON. The hook must NOT
 	# emit a corrupt line for this refused version.

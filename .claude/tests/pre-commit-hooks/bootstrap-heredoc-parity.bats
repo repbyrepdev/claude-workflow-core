@@ -64,7 +64,7 @@ teardown() {
 	run bash -c "cd '$SANDBOX' && bash '$GATE'"
 	[ "$status" -eq 0 ]
 	# Not just exit 0 (CR r3): assert no drift/missing markers leaked to output.
-	[[ $output != *"drift in"* ]]
+	[[ $output != *"drift in"* ]] || return 1
 	[[ $output != *"live file missing"* ]]
 }
 

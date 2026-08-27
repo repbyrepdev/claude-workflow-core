@@ -49,14 +49,14 @@ _run_prompt() {
 @test "'brainstorm <topic>' → explicit trigger reminder" {
 	run _run_prompt "brainstorm the caching layer"
 	[ "$status" -eq 0 ]
-	[[ $output == *"system-reminder"* ]]
+	[[ $output == *"system-reminder"* ]] || return 1
 	[[ $output == *"explicit"* ]]
 }
 
 @test "'/brainstorm' slash form → explicit trigger" {
 	run _run_prompt "/brainstorm"
 	[ "$status" -eq 0 ]
-	[[ $output == *"system-reminder"* ]]
+	[[ $output == *"system-reminder"* ]] || return 1
 	[[ $output == *"explicit"* ]]
 }
 
@@ -71,7 +71,7 @@ _run_prompt() {
 	# explicit branch (which matches " brainstorm " anywhere) wins first.
 	run _run_prompt "let's discuss the rollout plan"
 	[ "$status" -eq 0 ]
-	[[ $output == *"system-reminder"* ]]
+	[[ $output == *"system-reminder"* ]] || return 1
 	[[ $output == *"natural"* ]]
 }
 

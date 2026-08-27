@@ -25,10 +25,10 @@ setup() {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
 	# Exit code documentation must list 0/1/2/3/4 with distinct semantics.
-	[[ $output == *"0  Install/check"* ]]
-	[[ $output == *"1  --check detected DRIFT"* ]]
-	[[ $output == *"2  Usage error"* ]]
-	[[ $output == *"3  Required dependency missing"* ]]
+	[[ $output == *"0  Install/check"* ]] || return 1
+	[[ $output == *"1  --check detected DRIFT"* ]] || return 1
+	[[ $output == *"2  Usage error"* ]] || return 1
+	[[ $output == *"3  Required dependency missing"* ]] || return 1
 	[[ $output == *"4  --check detected ABSENT"* ]]
 }
 
@@ -41,7 +41,7 @@ setup() {
 @test "unknown arg exits 2 with usage" {
 	run "$SCRIPT" --bogus
 	[ "$status" -eq 2 ]
-	[[ $output == *"unknown arg: --bogus"* ]]
+	[[ $output == *"unknown arg: --bogus"* ]] || return 1
 	[[ $output == *"Usage:"* ]]
 }
 

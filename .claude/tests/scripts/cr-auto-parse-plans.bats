@@ -101,7 +101,7 @@ teardown() {
 	# CR #223: assert the OUTPUT channel too (not just the log file) — the epic
 	# is skipped on the `epic` label BEFORE the would-parse stderr line, so the
 	# "WOULD parse" message must be ABSENT from $output (stdout+stderr merged).
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-epic"' "$LOG"
 	[ "$status" -eq 0 ]
 	run grep -q '"event":"would-parse"' "$LOG"
@@ -116,7 +116,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 	# CR #223: the dry-run would-parse path emits a "WOULD parse" stderr line and
 	# never the epic-skip — assert both on the output channel.
-	[[ $output == *"WOULD parse issue #999"* ]]
+	[[ $output == *"WOULD parse issue #999"* ]] || return 1
 	run grep -q '"event":"would-parse"' "$LOG"
 	[ "$status" -eq 0 ]
 	run grep -q '"event":"skip-epic"' "$LOG"
@@ -147,7 +147,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 	# CR #223: assert the parse progress message on the output channel too (not
 	# just the log/gh-edit side effects) so a stderr-message regression is caught.
-	[[ $output == *"parsed issue #777"* ]]
+	[[ $output == *"parsed issue #777"* ]] || return 1
 	run grep -q '"event":"parsed"' "$LOG"
 	[ "$status" -eq 0 ]
 	# CR #478 r2: assert each flag independently (order-/coalescing-agnostic).
@@ -198,7 +198,7 @@ teardown() {
 	# Non-fatal: the script still exits 0 even though the marker-add failed.
 	[ "$status" -eq 0 ]
 	# Operator-facing WARN on the output channel.
-	[[ $output == *"WARN: plan-parsed add failed"* ]]
+	[[ $output == *"WARN: plan-parsed add failed"* ]] || return 1
 	# Structured log records the failure event.
 	run grep -q '"event":"label-add-failed"' "$LOG"
 	[ "$status" -eq 0 ]
@@ -221,7 +221,7 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
 	[ "$status" -eq 0 ]
 }
@@ -232,7 +232,7 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
 	[ "$status" -eq 0 ]
 }
@@ -246,7 +246,7 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-not-open"' "$LOG"
 	[ "$status" -eq 0 ]
 }
@@ -262,7 +262,7 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-auto-scaffolding"' "$LOG"
 	[ "$status" -eq 0 ]
 }
@@ -273,7 +273,7 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-not-open"' "$LOG"
 	[ "$status" -eq 0 ]
 }
@@ -284,7 +284,7 @@ teardown() {
 	cd "$TEST_TMP"
 	run env PATH="$TEST_TMP/bin:$PATH" GH_VIEW_JSON="$j" "$AP" --issue 999 --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output != *"WOULD parse"* ]]
+	[[ $output != *"WOULD parse"* ]] || return 1
 	run grep -q '"event":"skip-not-open"' "$LOG"
 	[ "$status" -eq 0 ]
 }
@@ -391,7 +391,7 @@ teardown() {
 	# p2r2: assert compose's own OUTPUT channel (its wrote-confirmation)
 	# and use non-quiet greps so a failure shows WHAT the composed file
 	# actually contains, not just a bare rc.
-	[[ $output == *"wrote"* ]]
+	[[ $output == *"wrote"* ]] || return 1
 	run grep -F "$m1" "$composed"
 	[ "$status" -eq 0 ] || {
 		echo "freshly COMPOSED config lost producer marker: $m1"

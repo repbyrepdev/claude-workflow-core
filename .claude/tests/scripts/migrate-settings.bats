@@ -50,7 +50,7 @@ _write_legacy_settings() {
 @test "--help shows usage" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"What it does"* ]]
+	[[ $output == *"What it does"* ]] || return 1
 	[[ $output == *"Exit codes"* ]]
 }
 
@@ -175,8 +175,13 @@ _write_legacy_settings() {
 # tmpdir so tests can exercise the sibling-script delegation path with
 # controlled behavior (missing/failing register-hook.sh).
 _install_fake_layout() {
-	local register_behavior=$1    # 'success' | 'fail' | 'missing'
-	local hooks_present=${2:-yes} # 'yes' | 'no' (../hooks/<name>.sh existence)
+	local register_behavior=$1 # 'success' | 'fail' | 'missing'
+	# 'yes'   → hooks dir with three `# auto-register: true` hooks
+	# 'no'    → NO hooks dir at all      → "plugin hooks dir not found"
+	# 'empty' → hooks dir, zero qualifying hooks → "no '# auto-register:
+	#           true' hooks found". These are DIFFERENT branches; test 19
+	#           asserted the second message while driving the first.
+	local hooks_present=${2:-yes}
 	local fakedir="$TEST_TMP/fakerepo/scripts"
 	mkdir -p "$fakedir"
 	cp "$SCRIPT" "$fakedir/migrate-settings.sh"
@@ -210,6 +215,18 @@ echo "stub-hook"
 EOF
 			chmod +x "$TEST_TMP/fakerepo/hooks/$h.sh"
 		done
+	elif [ "$hooks_present" = "empty" ]; then
+		# Dir EXISTS but nothing in it declares `# auto-register: true`, so
+		# discovery finds zero and the script takes its own distinct branch.
+		mkdir -p "$TEST_TMP/fakerepo/hooks"
+		cat >"$TEST_TMP/fakerepo/hooks/not-auto.sh" <<'EOF'
+#!/bin/bash
+# event: PreToolUse
+# matcher: Bash
+# auto-register: false
+echo "stub-hook"
+EOF
+		chmod +x "$TEST_TMP/fakerepo/hooks/not-auto.sh"
 	fi
 	echo "$fakedir/migrate-settings.sh"
 }
@@ -233,8 +250,8 @@ EOF
 	# Stub register-hook.sh was invoked with all 3 hook paths
 	[ -f "$TEST_TMP/register-hook.log" ]
 	log=$(cat "$TEST_TMP/register-hook.log")
-	[[ $log == *"cr-auto-parse-poll"* ]]
-	[[ $log == *"phase1-directive-pending-guard"* ]]
+	[[ $log == *"cr-auto-parse-poll"* ]] || return 1
+	[[ $log == *"phase1-directive-pending-guard"* ]] || return 1
 	[[ $log == *"ship-cycle-director-gate"* ]]
 }
 
@@ -251,8 +268,8 @@ EOF
 	fake=$(_install_fake_layout fail yes)
 	run "$fake" --from 0.8.5 --to 0.8.8
 	[ "$status" -eq 3 ]
-	[[ $output == *"hook registration FAILED"* ]]
-	[[ $output == *"partial-migration state"* ]]
+	[[ $output == *"hook registration FAILED"* ]] || return 1
+	[[ $output == *"partial-migration state"* ]] || return 1
 	# Version bump WAS committed before the failure
 	count_new=$(jq -r '
 		[.. | .command? // empty | select(type == "string")
@@ -269,9 +286,42 @@ EOF
 	# r2 silent-failure-hunter CRITICAL: post-data-driven warning text
 	# changed from "none of the N expected hook files exist" to
 	# "no '# auto-register: true' hooks found".
-	[[ $output == *"no '# auto-register: true' hooks found"* ]]
-	[[ $output == *"plugin layout has changed"* ]]
+	# This fixture omits the hooks DIR entirely, so the script takes its
+	# dir-not-found branch. The two strings previously asserted here —
+	# "no '# auto-register: true' hooks found" and "plugin layout has
+	# changed" — belong to a DIFFERENT branch and could never appear in this
+	# run. Both were mid-test `[[ ]]`, so they never said so. The message
+	# they were guarding is now covered by the sibling test below.
+	case "$output" in *"plugin hooks dir not found"*) ;; *)
+		echo "expected the dir-not-found warning; got: $output"
+		return 1
+		;;
+	esac
+	case "$output" in *"Step 2 skipped"*) ;; *)
+		echo "expected Step 2 to be skipped; got: $output"
+		return 1
+		;;
+	esac
 	# register-hook stub was NOT invoked (no log file)
+	[ ! -f "$TEST_TMP/register-hook.log" ]
+}
+
+@test "hooks dir EXISTS but nothing declares auto-register → its own warning" {
+	# The branch test 19 above was asserting against while driving a
+	# different one. r2 silent-failure-hunter flagged this message as
+	# CRITICAL when it was renamed from "none of the N expected hook files
+	# exist"; nothing has actually covered it since, because the assertion
+	# sat in a test whose fixture could not reach it.
+	_write_legacy_settings
+	fake=$(_install_fake_layout success empty)
+	run "$fake" --from 0.8.5 --to 0.8.8
+	[ "$status" -eq 0 ]
+	case "$output" in *"no '# auto-register: true' hooks found"*) ;; *)
+		echo "expected the zero-qualifying-hooks warning; got: $output"
+		return 1
+		;;
+	esac
+	# Discovery found none, so Step 2 must not have called register-hook.
 	[ ! -f "$TEST_TMP/register-hook.log" ]
 }
 
@@ -317,8 +367,8 @@ EOF
 	fake=$(_install_fake_layout success no) # hooks absent → Step 2 also skipped
 	run "$fake" --to 0.8.8
 	[ "$status" -eq 0 ]
-	[[ $output == *"NOTE: no claude-workflow-core version refs"* ]]
-	[[ $output == *"SKIPPED (no refs found)"* ]]
+	[[ $output == *"NOTE: no claude-workflow-core version refs"* ]] || return 1
+	[[ $output == *"SKIPPED (no refs found)"* ]] || return 1
 	[[ $output == *"Migration complete"* ]]
 }
 
@@ -355,7 +405,7 @@ EOF
 	[ "$status" -eq 0 ]
 	# The real 0.8.5 path got bumped to 0.8.8
 	real=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$CLAUDE_SETTINGS_FILE")
-	[[ $real == */claude-workflow-core/0.8.8/hooks/real.sh ]]
+	[[ $real == */claude-workflow-core/0.8.8/hooks/real.sh ]] || return 1
 	# The decoy 0a8b5 path was NOT touched (regex wildcard would have
 	# matched it under the old gsub).
 	decoy=$(jq -r '.hooks.PreToolUse[0].hooks[1].command' "$CLAUDE_SETTINGS_FILE")

@@ -117,7 +117,7 @@ _mk_record() {
 	_mk_record code-reviewer "$AGENTID" "$OTHER_SHA" 0
 	run bash "$AID" directive code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"SendMessage to=$AGENTID"* ]]
+	[[ $output == *"SendMessage to=$AGENTID"* ]] || return 1
 	[[ $output == *"resume 1/3"* ]]
 }
 
@@ -206,8 +206,8 @@ _mk_record() {
 	# because this test can fail against the old form.
 	PHASE1_RESUME_CAP=5 run bash "$AID" list
 	[ "$status" -eq 0 ]
-	[[ $output == *"code-reviewer"* ]]
-	[[ $output == *"$AGENTID"* ]]
+	[[ $output == *"code-reviewer"* ]] || return 1
+	[[ $output == *"$AGENTID"* ]] || return 1
 	[[ $output == *"resume=1/5"* ]]
 }
 
@@ -240,10 +240,10 @@ _mk_rejection() {
 @test "resume-message build emits delta scope + response schema" {
 	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"DELTA REVIEW"* ]]
-	[[ $output == *"git diff main..$HEAD_SHA"* ]]
-	[[ $output == *"new_findings"* ]]
-	[[ $output == *"refutations"* ]]
+	[[ $output == *"DELTA REVIEW"* ]] || return 1
+	[[ $output == *"git diff main..$HEAD_SHA"* ]] || return 1
+	[[ $output == *"new_findings"* ]] || return 1
+	[[ $output == *"refutations"* ]] || return 1
 	[[ $output == *"accepted_rejections"* ]]
 }
 
@@ -251,15 +251,15 @@ _mk_rejection() {
 	_mk_rejection rej1 "code-reviewer HIGH: unchecked rc on foo" "diagnostic path only; rc captured downstream"
 	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"unchecked rc on foo"* ]]
-	[[ $output == *"diagnostic path only"* ]]
+	[[ $output == *"unchecked rc on foo"* ]] || return 1
+	[[ $output == *"diagnostic path only"* ]] || return 1
 	[[ $output == *"dogfood:"* ]]
 }
 
 @test "resume-message degrades cleanly with no prove-yourself dir" {
 	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"No findings dismissed yet"* ]]
+	[[ $output == *"No findings dismissed yet"* ]] || return 1
 	# schema still present
 	[[ $output == *"new_findings"* ]]
 }
@@ -333,7 +333,7 @@ _mk_corrupt() {
 	printf '{"agent":"code-reviewer","agentId":"","sha":"%s"}\n' "$OTHER_SHA" >"$STORE/code-reviewer.json"
 	run bash "$AID" get code-reviewer
 	[ "$status" -eq 0 ]
-	[[ $output == *"missing/empty .agentId"* ]]
+	[[ $output == *"missing/empty .agentId"* ]] || return 1
 	# stdout (the id itself) must be empty
 	run bash -c "bash '$AID' get code-reviewer 2>/dev/null"
 	[ -z "$output" ]
@@ -344,7 +344,7 @@ _mk_corrupt() {
 	printf '{"agent":"code-reviewer","agentId":"%s","sha":"%s","last_sha":"%s","resume_count":"abc"}\n' "$AGENTID" "$OTHER_SHA" "$OTHER_SHA" >"$STORE/code-reviewer.json"
 	run bash "$AID" directive code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"SendMessage to=$AGENTID"* ]]
+	[[ $output == *"SendMessage to=$AGENTID"* ]] || return 1
 	[[ $output == *"resume 1/3"* ]]
 }
 
@@ -394,13 +394,13 @@ _mk_corrupt() {
 	h3="$(printf 'd%039d' 3 | tr ' ' 0)"
 	h4="$(printf 'e%039d' 4 | tr ' ' 0)"
 	run bash "$AID" directive code-reviewer 2 main "$h1"
-	[[ $output == *"resume 1/3"* ]]
+	[[ $output == *"resume 1/3"* ]] || return 1
 	bash "$AID" resumed code-reviewer "$h1"
 	run bash "$AID" directive code-reviewer 3 main "$h2"
-	[[ $output == *"resume 2/3"* ]]
+	[[ $output == *"resume 2/3"* ]] || return 1
 	bash "$AID" resumed code-reviewer "$h2"
 	run bash "$AID" directive code-reviewer 4 main "$h3"
-	[[ $output == *"resume 3/3"* ]]
+	[[ $output == *"resume 3/3"* ]] || return 1
 	bash "$AID" resumed code-reviewer "$h3"
 	run bash "$AID" directive code-reviewer 5 main "$h4"
 	[ -z "$output" ]
@@ -439,7 +439,7 @@ _mk_corrupt() {
 	for i in $(seq 1 3); do _mk_rejection "rej$i" "finding number $i here" "reason $i"; done
 	PHASE1_RESUME_REJECTION_CAP=abc run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"falling back to 20"* ]]
+	[[ $output == *"falling back to 20"* ]] || return 1
 	count="$(printf '%s\n' "$output" | grep -c 'finding number')"
 	[ "$count" -eq 3 ]
 }
@@ -451,7 +451,7 @@ _mk_corrupt() {
 	_mk_rejection oth "other-branch finding here" "reason oth" "some-other-pr-branch"
 	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"current-branch finding"* ]]
+	[[ $output == *"current-branch finding"* ]] || return 1
 	[[ $output != *"other-branch finding"* ]]
 }
 
@@ -460,7 +460,7 @@ _mk_corrupt() {
 	_mk_rejection fresh "fresh cycle finding here" "reason fresh"
 	run bash "$MSG" build code-reviewer 2 main "$HEAD_SHA"
 	[ "$status" -eq 0 ]
-	[[ $output == *"fresh cycle finding"* ]]
+	[[ $output == *"fresh cycle finding"* ]] || return 1
 	[[ $output != *"legacy finding"* ]]
 }
 

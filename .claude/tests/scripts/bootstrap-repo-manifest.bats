@@ -102,7 +102,7 @@ teardown() {
 	[ -n "$colors" ]
 	while IFS= read -r c; do
 		[ -z "$c" ] && continue
-		[[ $c =~ ^[0-9a-f]{6}$ ]]
+		[[ $c =~ ^[0-9a-f]{6}$ ]] || return 1
 	done <<<"$colors"
 }
 
@@ -111,14 +111,14 @@ teardown() {
 	[ -n "$modes" ]
 	while IFS= read -r m; do
 		[ -z "$m" ] && continue
-		[[ $m =~ ^[0-7]{3,4}$ ]]
+		[[ $m =~ ^[0-7]{3,4}$ ]] || return 1
 	done <<<"$modes"
 }
 
 @test "bootstrap-repo.sh --dry-run exits 0 and writes no files into target" {
 	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target-dry\" --dry-run 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[dry-run] would write"* ]]
+	[[ $output == *"[dry-run] would write"* ]] || return 1
 	# No actual writes inside target
 	[ -z "$(find "$TEST_TMP/target-dry" -type f 2>/dev/null)" ]
 }
@@ -163,7 +163,7 @@ teardown() {
 	chmod +x "$TEST_TMP/sandbox-no-manifest/bootstrap-repo.sh"
 	run bash -c "\"$TEST_TMP/sandbox-no-manifest/bootstrap-repo.sh\" \"$TEST_TMP/target-nomanifest\" --dry-run 2>&1"
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOTE: bootstrap-manifest.yml not found"* ]]
+	[[ $output == *"NOTE: bootstrap-manifest.yml not found"* ]] || return 1
 	[[ $output != *"WARN: manifest"* ]]
 }
 
@@ -185,7 +185,7 @@ teardown() {
 	# Strip yq from PATH by running with a minimal PATH
 	run env PATH="/usr/bin:/bin" bash -c "\"$TEST_TMP/sandbox-no-yq/bootstrap-repo.sh\" \"$TEST_TMP/target-no-yq\" --dry-run 2>&1"
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOTE: yq not on PATH"* ]]
+	[[ $output == *"NOTE: yq not on PATH"* ]] || return 1
 	[[ $output != *"WARN: manifest"* ]]
 }
 

@@ -141,7 +141,7 @@ _run_hook() {
 	count=$(wc -l <"$TEST_TMP/.claude/logs/big.jsonl" | tr -d ' ')
 	[ "$count" -eq 100 ]
 	# WARN should have been emitted about the failed archive.
-	[[ $output == *"pre-trim archive"* ]] || [[ $output == *"WARN"* ]]
+	[[ $output == *"pre-trim archive"* ]] || [[ $output == *"WARN"* ]] || return 1
 	# And NO archive file should exist (the cp genuinely failed).
 	[ -z "$(find "$TEST_TMP/.claude/session-log-archive" -name 'big-pretrim-*.jsonl' 2>/dev/null | head -1)" ]
 }

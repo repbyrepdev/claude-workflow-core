@@ -293,21 +293,70 @@ _mirror_test_drift_gate() {
 	# clean no-match (rc=1). Dedup via `sort -u` (no associative arrays —
 	# bash 3.2, the macOS system bash). `replaced` is non-empty (caller
 	# guard), so the loop never expands an empty array under set -u.
-	local bats_to_run=() covering
+	# The discovery loop below runs inside a process substitution, so nothing
+	# it assigns survives — an earlier fix moved `find` out of a NESTED
+	# subshell but the enclosing one still swallowed the status. Failures
+	# therefore travel as a sentinel LINE in the stream, which is the only
+	# channel that crosses the boundary. Without it an unreadable candidate
+	# or a failed enumeration reached the "nothing to verify" success path
+	# and certified a refreshed mirror whose coverage was never checked.
+	local _UNVERIFIED_MARK="!!drift-gate-coverage-unverified!!"
+	local bats_to_run=() covering _coverage_unverified=0
 	while IFS= read -r covering; do
+		if [ "$covering" = "$_UNVERIFIED_MARK" ]; then
+			_coverage_unverified=1
+			continue
+		fi
 		[ -n "$covering" ] && bats_to_run+=("$covering")
 	done < <(
 		for hook in "${replaced[@]}"; do
 			relpath=${hook#.claude/}
 			esc=${relpath//./\\.}
 			grc=0
-			grep -rlE --include='*.bats' \
-				"^#[[:space:]]*covers:.*(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" \
-				"$tests_dir" 2>/dev/null || grc=$?
-			[ "$grc" -gt 1 ] &&
-				echo "  [drift-gate] WARN: grep failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+			# (#2572) `covers:` ONLY — deliberately not `audits:`. A
+			# repo-wide meta-lint sweeps many files without behaviourally
+			# exercising any of them, so accepting one here would report a
+			# replaced mirror hook as "verified" on the strength of a policy
+			# scan that never ran it. audits: routes in test-touched (the
+			# audit re-runs when its subjects change); it grants no credit.
+			# FIRST covers: line per file only (`grep -m1`), matching every
+			# other consumer of the header — test-touched.sh routing,
+			# test.sh --coverage, bats-gate.sh. `grep -rl` matched ANY line,
+			# so a path on a second covers: line earned drift-gate credit
+			# here while counting nowhere else.
+			# find's status is captured in the PARENT: assigning grc inside a
+			# process substitution sets it in a subshell that dies with the
+			# construct, so a failed enumeration read as "no matches" and the
+			# drift gate silently verified nothing.
+			_bats_list=$(find "$tests_dir" -name '*.bats' -type f 2>/dev/null) || grc=$?
+			if [ "$grc" -gt 0 ]; then
+				echo "  [drift-gate] WARN: find failed (rc=$grc) scanning $tests_dir for $relpath" >&2
+				printf '%s\n' "$_UNVERIFIED_MARK"
+			fi
+			while IFS= read -r _b; do
+				[ -n "$_b" ] || continue
+				# grep rc 1 is "no covers: header", which is normal. rc>1 is
+				# an unreadable file — the header may well name this hook, so
+				# treating it as "no coverage" would quietly drop a suite from
+				# the verification set and let the gate report nothing to do.
+				_hgrc=0
+				_hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$_b" 2>/dev/null) || _hgrc=$?
+				if [ "$_hgrc" -gt 1 ]; then
+					echo "  [drift-gate] WARN: cannot read $_b (grep rc=$_hgrc) — coverage for $relpath is UNVERIFIED" >&2
+					printf '%s\n' "$_UNVERIFIED_MARK"
+					continue
+				fi
+				[ -n "$_hdr" ] || continue
+				printf '%s\n' "$_hdr" |
+					grep -qE "(^|[^[:alnum:]])${esc}(\$|[^[:alnum:]])" &&
+					printf '%s\n' "$_b"
+			done <<<"$_bats_list"
 		done | sort -u
 	)
+	if [ "$_coverage_unverified" = "1" ]; then
+		echo "  [drift-gate] REFUSING: coverage could not be determined for at least one replaced mirror hook — a refreshed mirror must not be certified on an unread header" >&2
+		return 2
+	fi
 	[ "${#bats_to_run[@]}" -gt 0 ] || {
 		echo "  [drift-gate] no consumer bats cover the ${#replaced[@]} replaced mirror hook(s) — nothing to verify" >&2
 		return 0
@@ -566,9 +615,18 @@ _refresh_one_consumer() {
 	# instead of by accident mid-review. Real (non-dry) runs only. The
 	# helper returns 1 on drift; map that to the caller's rc=4 contract.
 	if [ "$DRY_RUN" -eq 0 ] && [ "${#_replaced_sh[@]}" -gt 0 ]; then
-		if ! _mirror_test_drift_gate "$cpath" "$plugin_version" "${_replaced_sh[@]}"; then
-			return 4
-		fi
+		_dg_rc=0
+		_mirror_test_drift_gate "$cpath" "$plugin_version" "${_replaced_sh[@]}" || _dg_rc=$?
+		# Distinguish the two failures. rc 2 is "coverage could not be
+		# DETERMINED" (a candidate suite was unreadable) — a precondition
+		# error, and the caller's documented meaning for 2. Collapsing it into
+		# 4 would report test DRIFT, sending the operator to refresh tests
+		# that were never the problem.
+		case "$_dg_rc" in
+		0) ;;
+		2) return 2 ;;
+		*) return 4 ;;
+		esac
 	fi
 
 	# TODO (deferred to other unshipped subs):

@@ -63,9 +63,9 @@ STUB
 @test "--help shows usage including --notes flag" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"plugin.json"* ]]
-	[[ $output == *"--notes"* ]]
-	[[ $output == *"Exit codes"* ]]
+	[[ $output == *"plugin.json"* ]] || return 1
+	[[ $output == *"--notes"* ]] || return 1
+	[[ $output == *"Exit codes"* ]] || return 1
 	# Verify --help doesn't include code lines (DRY_RUN=0 etc.)
 	[[ $output != *"DRY_RUN=0"* ]]
 }
@@ -157,10 +157,10 @@ STUB
 	_make_fixture_repo 0.1.0
 	run "$SCRIPT" --dry-run --no-github
 	[ "$status" -eq 0 ]
-	[[ $output == *"target v0.1.0"* ]]
-	[[ $output == *"[dry-run] would: git tag -a v0.1.0"* ]]
-	[[ $output == *"[dry-run] would: git push origin v0.1.0"* ]]
-	[[ $output == *"[dry-run] would: git clone"* ]]
+	[[ $output == *"target v0.1.0"* ]] || return 1
+	[[ $output == *"[dry-run] would: git tag -a v0.1.0"* ]] || return 1
+	[[ $output == *"[dry-run] would: git push origin v0.1.0"* ]] || return 1
+	[[ $output == *"[dry-run] would: git clone"* ]] || return 1
 	[[ $output == *"release complete"* ]]
 }
 
@@ -168,7 +168,7 @@ STUB
 	_make_fixture_repo 0.1.0
 	run "$SCRIPT" --dry-run --no-github
 	[ "$status" -eq 0 ]
-	[[ $output == *"--no-github"* ]]
+	[[ $output == *"--no-github"* ]] || return 1
 	# Negative: must NOT contain the gh-release dry-run plan line.
 	[[ $output != *"would: gh release create"* ]]
 }

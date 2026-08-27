@@ -58,13 +58,17 @@ teardown() {
 	fi
 }
 
+# assert_output_contains / assert_output_lacks and WHY they exist:
+# .claude/tests/assert.bash (#2631 — a bare [[ ]] cannot fail on bash 3.2).
+load ../assert
+
 @test "--dry-run reports all version transitions + does not tag" {
 	cd "$TEST_TMP" || return 1
 	run scripts/backfill-tags.sh --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"v0.1.0"* ]]
-	[[ $output == *"v0.2.0"* ]]
-	[[ $output == *"v0.3.0"* ]]
+	[[ $output == *"v0.1.0"* ]] || return 1
+	[[ $output == *"v0.2.0"* ]] || return 1
+	[[ $output == *"v0.3.0"* ]] || return 1
 	# No tags should exist
 	[ -z "$(git tag --list 'v*')" ]
 }
@@ -78,8 +82,8 @@ teardown() {
 	[ "$status" -eq 0 ]
 	# All 3 versions tagged
 	tags=$(git tag --list 'v*' | sort -V | tr '\n' ' ')
-	[[ $tags == *"v0.1.0"* ]]
-	[[ $tags == *"v0.2.0"* ]]
+	[[ $tags == *"v0.1.0"* ]] || return 1
+	[[ $tags == *"v0.2.0"* ]] || return 1
 	[[ $tags == *"v0.3.0"* ]]
 }
 
@@ -95,7 +99,7 @@ teardown() {
 	if [[ $output == *"nothing to do"* ]]; then
 		:
 	else
-		[[ $output == *"created=0"* ]]
+		[[ $output == *"created=0"* ]] || return 1
 	fi
 }
 
@@ -130,7 +134,7 @@ teardown() {
 	cd "$OTHER"
 	run scripts/backfill-tags.sh --dry-run
 	[ "$status" -eq 2 ]
-	[[ $output == *"not in a plugin repo"* ]]
+	[[ $output == *"not in a plugin repo"* ]] || return 1
 	cd /tmp
 	rm -rf "$OTHER"
 }
@@ -146,9 +150,14 @@ teardown() {
 	# assertions per comment-analyzer #139 r1 MED (CR-007 — prior version
 	# had only the positive assertions; a future change that includes
 	# v0.1.0 in the walk would pass silently).
-	[[ $output != *"v0.1.0"* ]]
-	[[ $output == *"v0.2.0"* ]]
-	[[ $output == *"v0.3.0"* ]]
+	# Match the PER-TAG dry-run marker ("  + <tag> at <sha> (dry-run)"), not
+	# the bare version string. The script's own status line says "found N
+	# version transition(s) since v0.1.0", so `$output != *v0.1.0*` was false
+	# by construction — it asserted "the baseline is never mentioned" when it
+	# meant "the baseline is never TAGGED". Green until bash 5 made it fire.
+	assert_output_lacks "+ v0.1.0 at"
+	assert_output_contains "+ v0.2.0 at"
+	assert_output_contains "+ v0.3.0 at"
 }
 
 @test "tags point at the FIRST commit where each version first appeared" {
@@ -202,11 +211,16 @@ teardown() {
 	git commit -aq -m "v0.4.0"
 	run scripts/backfill-tags.sh --skip-push --skip-release
 	[ "$status" -eq 0 ]
-	# Should NOT create vnull
+	# Assert the WARN FIRST, while $output still holds the SCRIPT's output.
+	# The original asserted it AFTER a `run git rev-parse`, which overwrites
+	# $output — so it was checking rev-parse's output and could never have
+	# matched. A mid-test `[[ ]]` is a no-op on bash 3.2, so it never said so.
+	assert_output_contains "missing/null/non-string"
+	# Only then use `run` again — it overwrites $output, which is precisely
+	# how the original assertion ended up checking git rev-parse's output
+	# instead of the script's.
 	run git rev-parse -q --verify refs/tags/vnull
 	[ "$status" -ne 0 ]
-	# But SHOULD have skipped with a WARN to stderr
-	[[ $output == *"missing/null/non-string"* ]]
 	# And v0.4.0 still gets tagged (the null commit doesn't poison the walk)
 	git rev-parse -q --verify refs/tags/v0.4.0 >/dev/null
 }

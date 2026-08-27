@@ -43,7 +43,7 @@ teardown() {
 	run resolve_plugin_helper "$REL"
 	[ "$status" -eq 0 ]
 	[ "$output" = "$LOCAL_COPY" ]
-	[[ $output != *"WARNING"* ]]
+	[[ $output != *"WARNING"* ]] || return 1
 	[[ $output != *"#223"* ]]
 }
 
@@ -57,8 +57,8 @@ teardown() {
 	run resolve_plugin_helper "$REL"
 	[ "$status" -eq 0 ]
 	# stdout (path) is on the first line; the warning is on stderr (merged by run).
-	[[ $output == *"$LOCAL_COPY"* ]]
-	[[ $output == *"#223 possible stale override shadow"* ]]
+	[[ $output == *"$LOCAL_COPY"* ]] || return 1
+	[[ $output == *"#223 possible stale override shadow"* ]] || return 1
 	[[ $output == *"$CANONICAL"* ]] # warning names the canonical
 }
 

@@ -119,3 +119,24 @@ intentionally_unmirrored:
       Pre-commit hook `Preview label-sync --dry-run` runs the same
       yaml→action diff locally on labels.yml edits, but the actual
       apply step is GitHub-side only.
+  - workflow: claude-review.yml
+    reason: |
+      Fresh-context backup approver. Runs a reviewer that has NOT seen the
+      branch's history, which is the entire point — a local mirror would
+      share this session's context and could not be fresh. The local
+      counterpart is the phase-1 agent panel, which is a different thing
+      (it reviews with context, deliberately), not a mirror of this.
+  - workflow: openwiki-update.yml
+    reason: |
+      (#2629) The METERED CI docs lane. Its local counterpart is the
+      in-chat MCP lane, which is deliberately NOT a mirror: it runs on the
+      host agent's own session for free and is meant for the expensive
+      first generation, while this one does cheap scheduled deltas. Same
+      tool, opposite cost model — mirroring them would defeat the split.
+      Ships inert (no schedule trigger) until a repo arms it.
+  - workflow: notify-wiki-hub.yml
+    reason: |
+      (#2629) Fires a repository_dispatch at an external docs hub so it
+      rebuilds. Nothing local to mirror — the whole action is a remote
+      ping, and the job is gated on vars.WIKI_HUB_REPO so an un-opted-in
+      repo never runs it at all.

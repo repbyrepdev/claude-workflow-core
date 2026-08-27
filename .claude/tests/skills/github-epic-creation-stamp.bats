@@ -131,8 +131,8 @@ _run_skill() { # extra args appended
 	[ "$status" -eq 0 ]
 	# p2r3: output channel on the success path too — the stub markers
 	# prove THIS run performed the create + issue calls.
-	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]]
-	[[ $output == *"STUB-ISSUE-CREATE"* ]]
+	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]] || return 1
+	[[ $output == *"STUB-ISSUE-CREATE"* ]] || return 1
 	# ORDER: the ensure-create precedes the first issue create — a
 	# first-ever run would otherwise fail on a nonexistent label
 	# (p1r1 test-analyzer: presence greps were order-blind).
@@ -158,8 +158,8 @@ _run_skill() { # extra args appended
 	cd "$TEST_TMP"
 	_run_skill --ensure-label "auto:cr-plan"
 	[ "$status" -eq 0 ]
-	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]]
-	[[ $output == *"STUB-ISSUE-CREATE"* ]]
+	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]] || return 1
+	[[ $output == *"STUB-ISSUE-CREATE"* ]] || return 1
 	run grep -qE "label create auto:cr-plan --force" "$GH_LOG"
 	[ "$status" -eq 0 ]
 	# Now a genuinely failing create (auth/network): fail closed, zero
@@ -179,8 +179,8 @@ _run_skill() { # extra args appended
 	cd "$TEST_TMP"
 	_run_skill --label "area:infrastructure" --ensure-label "auto:cr-plan"
 	[ "$status" -eq 0 ]
-	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]]
-	[[ $output == *"STUB-ISSUE-CREATE"* ]]
+	[[ $output == *"STUB-LABEL-CREATE:auto:cr-plan"* ]] || return 1
+	[[ $output == *"STUB-ISSUE-CREATE"* ]] || return 1
 	run grep -qE "issue create --title sub one.*--label area:infrastructure.*--label auto:cr-plan|issue create --title sub one.*--label auto:cr-plan.*--label area:infrastructure" "$GH_LOG"
 	[ "$status" -eq 0 ]
 	# And ONLY the ensure-label got a create — plain --label is assumed to exist.

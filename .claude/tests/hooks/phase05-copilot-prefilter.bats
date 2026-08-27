@@ -165,7 +165,7 @@ _last_agent_row() {
 	_run_prefilter
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq 'length')" = "1" ]
-	[[ $stderr == *"dropped 1 non-object element"* ]]
+	[[ $stderr == *"dropped 1 non-object element"* ]] || return 1
 	[ "$(jq -r '.partial' <<<"$(_last_agent_row)")" = "true" ]
 }
 
@@ -176,7 +176,7 @@ _last_agent_row() {
 	chmod +x hooks/phase1-dedup.sh
 	_run_prefilter
 	[ "$status" -eq 1 ]
-	[[ $stderr == *"emit/dedup pipeline failed"* ]]
+	[[ $stderr == *"emit/dedup pipeline failed"* ]] || return 1
 	row=$(jq -sc 'last' "$LOG")
 	[ "$(jq -r '.status' <<<"$row")" = "errored-emit" ]
 	[ "$(jq -r '.emit_rc' <<<"$row")" = "7" ]

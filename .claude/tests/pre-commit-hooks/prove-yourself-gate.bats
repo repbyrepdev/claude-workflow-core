@@ -83,7 +83,7 @@ _run_gate() {
 	run bash -c "cd '$TEST_TMP' && PROVE_YOURSELF_GATE_SKIP=1 PROVE_YOURSELF_GATE_SKIP_REASON='ci hotfix' PROVE_YOURSELF_SKILL='$STUB' '$SCRIPT'"
 	[ "$status" -eq 0 ]
 	# The bypass announces itself on stderr (not a silent pass).
-	[[ $output == *bypass* ]]
+	[[ $output == *bypass* ]] || return 1
 	[ -f "$TEST_TMP/.claude/logs/prove-yourself-gate-skip.jsonl" ]
 	# Key assertion last: the reason reached the audit log.
 	grep -q 'ci hotfix' "$TEST_TMP/.claude/logs/prove-yourself-gate-skip.jsonl"
@@ -94,7 +94,7 @@ _run_gate() {
 	# plan's 'deny without reason' is NOT what the hook does (dogfooded).
 	run bash -c "cd '$TEST_TMP' && PROVE_YOURSELF_GATE_SKIP=1 PROVE_YOURSELF_SKILL='$STUB' '$SCRIPT'"
 	[ "$status" -eq 0 ]
-	[[ $output == *bypass* ]]
+	[[ $output == *bypass* ]] || return 1
 	grep -q 'no-reason' "$TEST_TMP/.claude/logs/prove-yourself-gate-skip.jsonl"
 }
 
@@ -118,7 +118,7 @@ _run_gate() {
 	_run_gate
 	[ "$status" -eq 0 ]
 	# The success path announces graduation on stderr...
-	[[ $output == *graduated* ]]
+	[[ $output == *graduated* ]] || return 1
 	# ...and (key assertions last) the marker exists AND records this round (not
 	# just any stray .json), proving graduation_mark wrote a well-formed marker.
 	marker=$(find "$TEST_TMP/.claude/.session-state/phase-graduation" -name '*.json' 2>/dev/null | head -1)

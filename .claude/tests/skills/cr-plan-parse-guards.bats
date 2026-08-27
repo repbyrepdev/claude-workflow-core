@@ -71,7 +71,7 @@ _run_parse() {
 	cd "$TEST_TMP"
 	_run_parse "$(_issue_json "plan-me" OPEN "Sub-issue auto-created from CodeRabbit plan on epic for #2548.")"
 	[ "$status" -eq 2 ]
-	[[ $output == *"SCAFFOLDING"* ]]
+	[[ $output == *"SCAFFOLDING"* ]] || return 1
 	[[ $output == *"never parse inputs"* ]]
 }
 
@@ -86,7 +86,7 @@ _run_parse() {
 	cd "$TEST_TMP"
 	_run_parse "$(_issue_json "plan-me" CLOSED "ordinary issue body")"
 	[ "$status" -eq 2 ]
-	[[ $output == *"not OPEN"* ]]
+	[[ $output == *"not OPEN"* ]] || return 1
 	[[ $output == *"never decomposed"* ]]
 }
 
@@ -106,8 +106,8 @@ _run_parse() {
 	cd "$TEST_TMP"
 	_run_parse "$(_issue_json "plan-me" OPEN "ordinary hand-written issue body")"
 	[ "$status" -eq 2 ]
-	[[ $output != *"SCAFFOLDING"* ]]
-	[[ $output != *"not OPEN"* ]]
+	[[ $output != *"SCAFFOLDING"* ]] || return 1
+	[[ $output != *"not OPEN"* ]] || return 1
 	[[ $output == *"CR plan structure differs"* ]]
 }
 
@@ -126,7 +126,7 @@ _run_parse() {
 	[ "$status" -eq 0 ]
 	# p2r2: OUTPUT channel too — the stub's stderr marker proves the skill
 	# was actually invoked in THIS run, not that a stale args-log matched.
-	[[ $output == *"EPIC-STUB-INVOKED"* ]]
+	[[ $output == *"EPIC-STUB-INVOKED"* ]] || return 1
 	run grep -q -- "--ensure-label auto:cr-plan" "$TEST_TMP/epic-args.log"
 	[ "$status" -eq 0 ]
 }

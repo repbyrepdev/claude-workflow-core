@@ -46,7 +46,7 @@ teardown() {
 	# merge behavior this test covers. (Injection is covered separately below.)
 	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" "$SCRIPT" --base "$BASE"
 	[ "$status" -eq 0 ]
-	[[ $output == *"# header comment"* ]]
+	[[ $output == *"# header comment"* ]] || return 1
 	# Byte-identical to base.
 	printf '%s\n' "$output" >"$TMP/out.yaml"
 	diff "$BASE" "$TMP/out.yaml"
@@ -108,8 +108,8 @@ EOF
 	# #2254: skip the hook-exclusion injection (see above) to isolate verbatim.
 	run env COMPOSE_CR_HOOKS_DIR="$TMP/empty-hooks" "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
 	[ "$status" -eq 0 ]
-	[[ $output == *"# header comment"* ]]   # base verbatim
-	[[ $output == *"no mapping content"* ]] # NOTE on stderr (captured by run)
+	[[ $output == *"# header comment"* ]] || return 1 # base verbatim
+	[[ $output == *"no mapping content"* ]]           # NOTE on stderr (captured by run)
 }
 
 @test "missing --base → exit 2 (#234)" {
@@ -146,7 +146,7 @@ reviews: "gut-the-map"
 EOF
 	run "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
 	[ "$status" -eq 2 ]
-	[[ $output == *"non-mapping"* ]]
+	[[ $output == *"non-mapping"* ]] || return 1
 	[[ $output == *"reviews"* ]]
 }
 
@@ -159,7 +159,7 @@ reviews:
 EOF
 	run "$SCRIPT" --base "$BASE" --overlay "$TMP/ovl.yaml"
 	[ "$status" -eq 2 ]
-	[[ $output == *"non-mapping"* ]]
+	[[ $output == *"non-mapping"* ]] || return 1
 	[[ $output == *"reviews.auto_review"* ]]
 }
 
@@ -298,7 +298,7 @@ EOF
 	[ -z "$(yq -r '.reviews.auto_review.path_filters[] | select(. == "!.claude/hooks/alpha.sh")' "$TMP/.coderabbit.yaml")" ]
 	# WARNING emitted (not silent). #2427: the message now carries the full
 	# canonical path (dir-disambiguated for hooks vs _lib), so match loosely.
-	[[ $output == *"cmp failed comparing canonical"* ]]
+	[[ $output == *"cmp failed comparing canonical"* ]] || return 1
 	[[ $output == *"alpha.sh"* ]]
 }
 

@@ -48,8 +48,8 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	# (or an already-removed dir) can't mask the assertions below (CR-CLI r6).
 	[ "$status" -eq 2 ]
 	# Pin the missing-target arg-guard specifically (the usage line + the error).
-	[[ $output == *"missing target directory"* ]]
-	[[ $output == *"usage"* ]]
+	[[ $output == *"missing target directory"* ]] || return 1
+	[[ $output == *"usage"* ]] || return 1
 	if [ -d "$tmp" ] && [[ $tmp == */bsr-wrap.* ]]; then rm -rf "$tmp"; fi
 }
 
@@ -124,7 +124,7 @@ _wrapper() { echo "$REPO/skills/$1/run.sh"; }
 	# CLI success-message contract — not just exit status + audit side-effect
 	# (#238 phase2 r2/3, CR minor). Asserted on this first `run` before the jq
 	# `run` below overwrites $output.
-	[[ $output == *"Recorded fix"* ]]
+	[[ $output == *"Recorded fix"* ]] || return 1
 	audit="$repo/.claude/audit/prove-yourself.jsonl"
 	[ -f "$audit" ]
 	run jq -rs '[.[] | select(.finding_id=="t238")] | last | .covers_count' "$audit"

@@ -42,7 +42,7 @@ teardown() {
 	. "$LIB"
 	run phase1_agent_prompt code-reviewer "$PLUGIN" abc1234 1
 	[ "$status" -eq 0 ]
-	[[ $output != *"CANONICAL-EXCLUSION"* ]]
+	[[ $output != *"CANONICAL-EXCLUSION"* ]] || return 1
 	# #3 fix: scope_clause empty must NOT leave consecutive blank lines anywhere.
 	consec=$(printf '%s\n' "$output" | awk 'prev==""&&$0==""{c++} {prev=$0} END{print c+0}')
 	[ "$consec" -eq 0 ]
@@ -63,9 +63,9 @@ teardown() {
 	. "$LIB"
 	run phase1_agent_prompt code-reviewer "$REPO" abc1234 1
 	[ "$status" -eq 0 ]
-	[[ $output == *"CANONICAL-EXCLUSION: review ONLY"* ]]
-	[[ $output == *"  - .pre-commit-config.yaml"* ]]
-	[[ $output != *".claude/hooks/foo.sh"* ]]
+	[[ $output == *"CANONICAL-EXCLUSION: review ONLY"* ]] || return 1
+	[[ $output == *"  - .pre-commit-config.yaml"* ]] || return 1
+	[[ $output != *".claude/hooks/foo.sh"* ]] || return 1
 	# #2240 r1 pr-test-analyzer: exactly ONE listed file (the consumer pin) —
 	# guards a filter regression that spills extra entries.
 	listed=$(printf '%s\n' "$output" | grep -c '^  - ')
@@ -92,8 +92,8 @@ teardown() {
 	. "$LIB"
 	run phase1_agent_prompt code-reviewer "$REPO" abc1234 1
 	[ "$status" -eq 0 ]
-	[[ $output == *"return \`[]\`"* ]]
-	[[ $output != *"review ONLY"* ]]
+	[[ $output == *"return \`[]\`"* ]] || return 1
+	[[ $output != *"review ONLY"* ]] || return 1
 	consec=$(printf '%s\n' "$output" | awk 'prev==""&&$0==""{c++} {prev=$0} END{print c+0}')
 	[ "$consec" -eq 0 ]
 }

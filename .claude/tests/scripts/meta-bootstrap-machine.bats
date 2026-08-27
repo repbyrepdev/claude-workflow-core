@@ -61,7 +61,7 @@ targets:
 YAML
 	run env META_BOOTSTRAP_MANIFEST="$TEST_TMP/manifest.yml" "$SCRIPT" --target machine --verify-only
 	[ "$status" -eq 1 ]
-	[[ $output == *"brew package missing: definitely-not-a-real-package-xyz789"* ]]
+	[[ $output == *"brew package missing: definitely-not-a-real-package-xyz789"* ]] || return 1
 	[[ $output == *"command not on PATH: definitely-not-a-real-command-abc456"* ]]
 }
 
@@ -81,10 +81,10 @@ targets:
 YAML
 	run env META_BOOTSTRAP_MANIFEST="$TEST_TMP/manifest.yml" "$SCRIPT" --target machine --verify-only
 	[ "$status" -eq 1 ]
-	[[ $output == *"brew package missing"* ]]
-	[[ $output == *"command not on PATH"* ]]
-	[[ $output == *"Keychain entry missing"* ]]
-	[[ $output == *"required path missing"* ]]
+	[[ $output == *"brew package missing"* ]] || return 1
+	[[ $output == *"command not on PATH"* ]] || return 1
+	[[ $output == *"Keychain entry missing"* ]] || return 1
+	[[ $output == *"required path missing"* ]] || return 1
 	[[ $output == *"file missing"* ]]
 }
 

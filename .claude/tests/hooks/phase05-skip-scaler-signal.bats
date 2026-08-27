@@ -90,7 +90,7 @@ _assert_status_logged() { # $1 = status string, $2 = cli name
 @test "copilot: helper ABSENT from tree+repo -> graceful skip rc=0, [], logged" {
 	_run_hook phase0.5-copilot-prefilter.sh ""
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	grep -q '"status":"skipped-no-copilot-helper"' "$WORK/.claude/logs/phase0.5-run.jsonl"
 }
 
@@ -109,14 +109,14 @@ _assert_status_logged() { # $1 = status string, $2 = cli name
 	chmod +x "$WORK/.claude/scripts/copilot/try-free.sh"
 	_run_hook phase0.5-copilot-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	grep -q '"status":"skipped-diff-too-large"' "$WORK/.claude/logs/phase0.5-run.jsonl"
 }
 
 @test "codex: CLI absent -> graceful skip rc=0, [], logged with cli field (#2259 parity)" {
 	_run_hook phase0.5-codex-prefilter.sh ""
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	grep -q '"status":"skipped-no-codex-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl"
 	# per-cli attribution: the skip entry carries cli:"codex" like every
 	# other codex log line
@@ -126,7 +126,7 @@ _assert_status_logged() { # $1 = status string, $2 = cli name
 @test "gemini: CLI absent -> graceful skip rc=0, [], logged with cli field (#2259 parity)" {
 	_run_hook phase0.5-gemini-prefilter.sh ""
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	grep -q '"status":"skipped-no-gemini-cli"' "$WORK/.claude/logs/phase0.5-run.jsonl"
 	_assert_status_logged skipped-no-gemini-cli gemini
 }
@@ -165,7 +165,7 @@ _assert_status_logged() { # $1 = status string, $2 = cli name
 	chmod +x "$TREE/hooks/list-phase1-agents.sh"
 	_run_hook phase0.5-gemini-prefilter.sh ""
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	[ -f "$TEST_TMP/gemini-args.txt" ]
 	grep -qx -- "--policy" "$TEST_TMP/gemini-args.txt"
 	grep -q "policy.toml" "$TEST_TMP/gemini-args.txt"
@@ -179,7 +179,7 @@ _assert_status_logged() { # $1 = status string, $2 = cli name
 	printf '# stub codex config\n' >"$WORK/.codex/config.toml"
 	_run_hook phase0.5-codex-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	_assert_status_logged skipped-diff-too-large codex
 }
 
@@ -190,7 +190,7 @@ _assert_status_logged() { # $1 = status string, $2 = cli name
 	printf '# stub deny policy\n' >"$WORK/.gemini/policy.toml"
 	_run_hook phase0.5-gemini-prefilter.sh "PHASE05_DIFF_MAX_BYTES=10"
 	[ "$status" -eq 0 ]
-	[[ $output == *"[]"* ]]
+	[[ $output == *"[]"* ]] || return 1
 	_assert_status_logged skipped-diff-too-large gemini
 }
 
@@ -220,7 +220,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD "<all>" 0 skipped-no-copilot-helper
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"ROUNDS=2"* ]]
+	[[ $output == *"ROUNDS=2"* ]] || return 1
 	[[ $output == *"tier=no-prefilter-signal"* ]]
 }
 
@@ -228,14 +228,14 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD "<all>" 0 ok
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"ROUNDS=1"* ]]
+	[[ $output == *"ROUNDS=1"* ]] || return 1
 	[[ $output == *"tier=all-clean"* ]]
 }
 
 @test "scaler: no phase0.5 log at all -> no signal -> rounds=2" {
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"ROUNDS=2"* ]]
+	[[ $output == *"ROUNDS=2"* ]] || return 1
 	[[ $output == *"tier=no-prefilter-signal"* ]]
 }
 
@@ -248,8 +248,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD comment-analyzer 0 ok
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase0.5=4"* ]]
-	[[ $output == *"ROUNDS=3"* ]]
+	[[ $output == *"phase0.5=4"* ]] || return 1
+	[[ $output == *"ROUNDS=3"* ]] || return 1
 	[[ $output == *"tier=moderate"* ]]
 }
 
@@ -261,7 +261,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 		>>"$WORK/.claude/logs/phase0.5-run.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase0.5=2"* ]]
+	[[ $output == *"phase0.5=2"* ]] || return 1
 	[[ $output == *"p05_ran=1"* ]]
 }
 
@@ -271,7 +271,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD~1 "<all>" 0 ok
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"ROUNDS=2"* ]]
+	[[ $output == *"ROUNDS=2"* ]] || return 1
 	[[ $output == *"tier=no-prefilter-signal"* ]]
 }
 
@@ -283,7 +283,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_cr 15
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"ROUNDS=5"* ]]
+	[[ $output == *"ROUNDS=5"* ]] || return 1
 	[[ $output == *"tier=high"* ]]
 }
 
@@ -295,8 +295,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD "<all>" null ok
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"no numeric findings values"* ]]
-	[[ $output == *"ROUNDS=2"* ]]
+	[[ $output == *"no numeric findings values"* ]] || return 1
+	[[ $output == *"ROUNDS=2"* ]] || return 1
 	[[ $output == *"tier=no-prefilter-signal"* ]]
 }
 
@@ -311,8 +311,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 		>>"$WORK/.claude/logs/phase0.5-run.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase0.5=5"* ]]
-	[[ $output == *"ROUNDS=3"* ]]
+	[[ $output == *"phase0.5=5"* ]] || return 1
+	[[ $output == *"ROUNDS=3"* ]] || return 1
 	[[ $output == *"tier=moderate"* ]]
 }
 
@@ -324,7 +324,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD code-reviewer 1 ok "2026-07-08T00:00:20Z"
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase0.5=1"* ]]
+	[[ $output == *"phase0.5=1"* ]] || return 1
 	[[ $output == *"tier=minimal"* ]]
 }
 
@@ -359,7 +359,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_scaler
 	[ "$status" -eq 0 ]
 	# 9 findings from the sibling must NOT leak in.
-	[[ $output != *"cr=9"* ]]
+	[[ $output != *"cr=9"* ]] || return 1
 	[[ $output == *"cr=0"* ]]
 }
 
@@ -381,8 +381,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"no usable findings values"* ]]
-	[[ $output == *"cr=1"* ]]
+	[[ $output == *"no usable findings values"* ]] || return 1
+	[[ $output == *"cr=1"* ]] || return 1
 	[[ $output != *"cr=0"* ]]
 }
 
@@ -397,7 +397,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_cr 9 # no .sha field → unattributable
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"cr=9"* ]]
+	[[ $output == *"cr=9"* ]] || return 1
 	[[ $output != *"cr=2"* ]]
 }
 
@@ -413,8 +413,8 @@ _log_cr() { # $1=findings count for the latest CR entry
 	} >>"$WORK/.claude/logs/cr-local-review.jsonl"
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"flooring at the minimal tier"* ]]
-	[[ $output == *"cr=1"* ]]
+	[[ $output == *"flooring at the minimal tier"* ]] || return 1
+	[[ $output == *"cr=1"* ]] || return 1
 	[[ $output != *"cr=0"* ]]
 }
 
@@ -437,7 +437,7 @@ _log_cr() { # $1=findings count for the latest CR entry
 	_log_p05 HEAD pr-test-analyzer 4 ok
 	_scaler
 	[ "$status" -eq 0 ]
-	[[ $output == *"phase0.5=4"* ]]
-	[[ $output == *"ROUNDS=3"* ]]
+	[[ $output == *"phase0.5=4"* ]] || return 1
+	[[ $output == *"ROUNDS=3"* ]] || return 1
 	[[ $output == *"tier=moderate"* ]]
 }

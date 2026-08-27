@@ -340,8 +340,8 @@ _stub_coderabbit_lines() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 3 ]
-	[[ $output == *"rate_limit"* ]]
-	[[ $output != *"mark-exhausted failed"* ]]
+	[[ $output == *"rate_limit"* ]] || return 1
+	[[ $output != *"mark-exhausted failed"* ]] || return 1
 	# The decoy leaves a sentinel if executed — it must never run.
 	[ ! -f "$TEST_TMP/decoy-ran.log" ]
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
@@ -356,8 +356,8 @@ _stub_coderabbit_lines() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 3 ]
-	[[ $output == *"text-detect"* ]]
-	[[ $output != *"mark-exhausted failed"* ]]
+	[[ $output == *"text-detect"* ]] || return 1
+	[[ $output != *"mark-exhausted failed"* ]] || return 1
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
 }
 
@@ -372,8 +372,8 @@ _stub_coderabbit_lines() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 3 ]
-	[[ $output == *"rate_limit"* ]]
-	[[ $output != *"mark-exhausted failed"* ]]
+	[[ $output == *"rate_limit"* ]] || return 1
+	[[ $output != *"mark-exhausted failed"* ]] || return 1
 	[ -f "$TEST_TMP/.claude/review-log/cr-budget.jsonl" ]
 	grep -q 'exhausted' "$TEST_TMP/.claude/review-log/cr-budget.jsonl"
 }
@@ -389,7 +389,7 @@ _stub_coderabbit_lines() {
 	PATH="$TEST_TMP/bin:$PATH" run "$LR" --force --base main
 	[ "$status" -eq 0 ]
 	# User-visible success signal, not just the recorded argument (p2 CR).
-	[[ $output == *'"type":"complete"'* ]]
+	[[ $output == *'"type":"complete"'* ]] || return 1
 	[ -f "$TIMEOUT_ARG_OUT" ]
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }
@@ -403,7 +403,7 @@ _stub_coderabbit_lines() {
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=42 run "$LR" --force --base main
 	[ "$status" -eq 0 ]
-	[[ $output == *'"type":"complete"'* ]]
+	[[ $output == *'"type":"complete"'* ]] || return 1
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "42" ]
 }
 
@@ -414,8 +414,8 @@ _stub_coderabbit_lines() {
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=15m run "$LR" --force --base main
 	[ "$status" -eq 0 ]
-	[[ $output == *"not an integer; using 3600"* ]]
-	[[ $output == *'"type":"complete"'* ]]
+	[[ $output == *"not an integer; using 3600"* ]] || return 1
+	[[ $output == *'"type":"complete"'* ]] || return 1
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }
 
@@ -426,7 +426,7 @@ _stub_coderabbit_lines() {
 	export TIMEOUT_ARG_OUT="$TEST_TMP/timeout-arg"
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT="" run "$LR" --force --base main
 	[ "$status" -eq 0 ]
-	[[ $output == *"not an integer; using 3600"* ]]
+	[[ $output == *"not an integer; using 3600"* ]] || return 1
 	[ "$(cat "$TIMEOUT_ARG_OUT")" = "3600" ]
 }
 
@@ -437,7 +437,7 @@ _stub_coderabbit_lines() {
 	cd "$TEST_TMP" || return 1
 	PATH="$TEST_TMP/bin:$PATH" CR_LOCAL_REVIEW_TIMEOUT=0 run "$LR" --force --base main
 	[ "$status" -eq 4 ]
-	[[ $output == *"salvaged 1 finding"* ]]
+	[[ $output == *"salvaged 1 finding"* ]] || return 1
 	local sha
 	sha=$(git rev-parse --short HEAD)
 	grep -q '"fileName":"x.sh"' "$TEST_TMP/.claude/logs/cr-local-review-${sha}-detail.jsonl"

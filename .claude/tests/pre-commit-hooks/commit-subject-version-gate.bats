@@ -50,7 +50,7 @@ _run_with_subject() {
 @test "feat(v0.9.8): scope > manifest 0.9.5 → FAIL" {
 	run _run_with_subject "feat(v0.9.8): new feature"
 	[ "$status" -eq 1 ]
-	[[ $output == *"0.9.8"* ]]
+	[[ $output == *"0.9.8"* ]] || return 1
 	[[ $output == *"0.9.5"* ]]
 }
 
@@ -184,8 +184,8 @@ _run_with_subject() {
 	# inadvertent stripping in future edits.
 	run _run_with_subject "feat(v0.9.8): x"
 	[ "$status" -eq 1 ]
-	[[ $output == *".claude-plugin/plugin.json"* ]]
-	[[ $output == *"Fix:"* ]]
+	[[ $output == *".claude-plugin/plugin.json"* ]] || return 1
+	[[ $output == *"Fix:"* ]] || return 1
 	[[ $output == *"COMMIT_SUBJECT_VERSION_SKIP=1"* ]]
 }
 

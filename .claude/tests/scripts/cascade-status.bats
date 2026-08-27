@@ -81,7 +81,7 @@ teardown() {
 @test "--help does not leak loader frontmatter" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output != *"event: none"* ]]
+	[[ $output != *"event: none"* ]] || return 1
 	[[ $output != *"auto-register: false"* ]]
 }
 
@@ -96,8 +96,8 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/cascade-status.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"alpha"* ]]
-	[[ $output == *"beta"* ]]
+	[[ $output == *"alpha"* ]] || return 1
+	[[ $output == *"beta"* ]] || return 1
 	[[ $output == *"1 consumer(s) behind"* ]]
 }
 
@@ -173,7 +173,7 @@ YAML
 	# r2 silent-failure-hunter LOW: empty registry is operationally valid.
 	run scripts/cascade-status.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"no consumers registered"* ]]
+	[[ $output == *"no consumers registered"* ]] || return 1
 
 	run scripts/cascade-status.sh --json
 	[ "$status" -eq 0 ]

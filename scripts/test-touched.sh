@@ -18,6 +18,14 @@ set -euo pipefail
 #   4. Run only those files via `scripts/test.sh <file1> <file2> …`.
 #   5. Nothing touched → no-op (exit 0 silently).
 #
+# Flags:
+#   --base <ref>   diff against <ref> instead of main (also: BASE= env var)
+#   --list         print the .bats files this change routes to, then stop.
+#                  Makes the covers:/audits: routing rules observable, and
+#                  therefore testable. Exits 0 with empty stdout when nothing
+#                  routes — a list of nothing, not an error.
+#   --help, -h     this header
+#
 # When to use this vs full `scripts/test.sh`:
 #   - Iteration loop, between edits → test-touched.sh (fast)
 #   - Before commit → bats-gate / lint-gate already re-validate as needed
@@ -32,6 +40,14 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
 BASE="${BASE:-}"
+# Initialised here, NOT read as `${LIST_ONLY:-0}` at the use site: an exported
+# LIST_ONLY=1 anywhere upstream would otherwise turn this runner into a lister
+# that prints paths and exits 0 having run nothing, while callers that treat
+# exit 0 as "scoped tests passed" (scripts/cr/autofix-cycle.sh's post-pull
+# re-test gate, hooks/phase1-launcher.sh) stayed satisfied. A flag is not
+# ambient state. The suite covering this had to `env -u LIST_ONLY` around every
+# invocation, which was the smell.
+LIST_ONLY=0
 PASS_ARGS=()
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -43,11 +59,21 @@ while [ "$#" -gt 0 ]; do
 		BASE="$2"
 		shift 2
 		;;
+	--list)
+		# Print the files this change routes to, then stop. Makes the
+		# covers:/audits: routing rules observable — and therefore testable.
+		LIST_ONLY=1
+		shift
+		;;
 	--help | -h)
-		# Range 4-30 ends at the last header comment; lines 31+ are
-		# non-comment code (REPO_ROOT assignment, etc.) and shouldn't
-		# leak into --help output.
-		sed -n '4,30p' "$0"
+		# The header block runs from just after `set -...` to the first
+		# non-comment line. Derived, not a hardcoded `4,30p` range — that
+		# range silently stopped covering the header the moment a flag was
+		# documented in it, so `--list` shipped absent from its own help.
+		# Anchored on `set -` rather than on line 1 because the shebang and
+		# the `# bats-required:` directive precede it and are not help text.
+		awk '/^set -/ { inhdr = 1; next }
+		     inhdr { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"
 		exit 0
 		;;
 	*)
@@ -105,13 +131,55 @@ if [ -n "$TOUCHED_SH" ]; then
 		# first matching `covers:` line contains $sh — works because covers
 		# paths are space-separated on one line.
 		while IFS= read -r -d '' b; do
+			# `|| true` on these greps conflated "no header" (rc 1, the normal
+			# case) with "could not read the file" (rc>1) — and an unreadable
+			# suite silently stops routing, which is the same silent drop the
+			# audits: header exists to prevent. Read the file once and check.
+			if [ ! -r "$b" ]; then
+				echo "test-touched: WARNING: cannot read $b — it will not route" >&2
+				continue
+			fi
 			hdr=$(grep -m1 -E '^#[[:space:]]*covers:' "$b" 2>/dev/null | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' || true)
+			# (#2572) `# audits:` — a repo-wide meta-lint's SUBJECTS. It
+			# routes exactly like covers: here (the audit must re-run when
+			# something it polices changes) but grants NO behavioural
+			# coverage credit, which is the whole point: an audit that
+			# claims covers: on 40 hooks it never executes makes the
+			# coverage report and the mirror-drift gate both lie.
+			aud=$(grep -m1 -E '^#[[:space:]]*audits:' "$b" 2>/dev/null | sed -E 's/^#[[:space:]]*audits:[[:space:]]*//' || true)
+			# `set -f` for the split: without it the shell PATHNAME-expands
+			# the header before `case` ever sees a pattern, so `hooks/*.sh`
+			# becomes 87 literal filenames — and a touched-but-DELETED subject
+			# (still listed by `git diff --name-only`) matches none of them and
+			# silently stops routing to its auditor. That silent drop is the
+			# exact failure `audits:` was added to prevent.
+			set -f
+			matched=""
+			# `covers:` is an exact path in every other consumer (test.sh
+			# --coverage, bats-gate.sh, the drift gate). Glob-matching it only
+			# here would let an entry route without earning coverage credit or
+			# satisfying the commit gate — a partial behaviour nothing rejects.
 			for p in $hdr; do
-				if [ "$p" = "$sh" ]; then
-					MATCHED_BATS="${MATCHED_BATS}${b}"$'\n'
+				if [ "$sh" = "$p" ]; then
+					matched=1
 					break
 				fi
 			done
+			if [ -z "$matched" ]; then
+				for p in $aud; do
+					# shellcheck disable=SC2254 # $p is an intentional pattern
+					case "$sh" in
+					$p)
+						matched=1
+						break
+						;;
+					esac
+				done
+			fi
+			set +f
+			if [ -n "$matched" ]; then
+				MATCHED_BATS="${MATCHED_BATS}${b}"$'\n'
+			fi
 		done < <(find .claude/tests -name '*.bats' -print0 2>/dev/null)
 	done <<<"$TOUCHED_SH"
 fi
@@ -130,6 +198,21 @@ TEST_TARGETS=$(
 		while IFS= read -r p; do if [ -f "$p" ]; then printf '%s\n' "$p"; fi; done
 )
 
+# (#2572) --list: print the routing decision and stop. Without it the only
+# way to observe which files a change routes to is to RUN them, which makes
+# the `covers:`/`audits:` routing rules untestable — and untestable routing
+# is how an audit silently drops out of change-triggered runs.
+#
+# Ahead of the no-coverage branch below on purpose: `--list` asks what this
+# change routes to, and "nothing" is a valid answer that must still come back
+# as an empty list on stdout rather than as an advisory on stderr.
+if [ "$LIST_ONLY" = "1" ]; then
+	if [ -n "$TEST_TARGETS" ]; then
+		printf '%s\n' "$TEST_TARGETS"
+	fi
+	exit 0
+fi
+
 if [ -z "$TEST_TARGETS" ]; then
 	echo "test-touched: $(printf '%s\n' "$TOUCHED_RAW" | wc -l | tr -d ' ') file(s) touched but none have .bats coverage — no-op" >&2
 	echo "  (consider: scripts/test.sh --coverage)" >&2
@@ -137,6 +220,7 @@ if [ -z "$TEST_TARGETS" ]; then
 fi
 
 count=$(printf '%s\n' "$TEST_TARGETS" | wc -l | tr -d ' ')
+
 echo "test-touched: running $count bats file(s) covering touched files (vs $BASE)" >&2
 # Pass each target to scripts/test.sh. scripts/test.sh takes ONE path per
 # invocation, so loop. Accumulate failures.

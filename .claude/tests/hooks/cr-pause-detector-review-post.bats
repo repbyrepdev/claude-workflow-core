@@ -91,7 +91,7 @@ _comments_pause_at() {
 	_comments_pause_at "2026-08-24T11:00:00Z"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
-	[[ $output == *"resume + review"* ]]
+	[[ $output == *"resume + review"* ]] || return 1
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 	grep -q '"review_posted":true' .claude/logs/cr-resume-fired.jsonl
@@ -103,7 +103,7 @@ _comments_pause_at() {
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
 	# $output is checked BEFORE any `run !` below — run resets it.
-	[[ $output == *"resume ONLY"* ]]
+	[[ $output == *"resume ONLY"* ]] || return 1
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 	grep -q '"review_posted":false' .claude/logs/cr-resume-fired.jsonl
@@ -114,7 +114,7 @@ _comments_pause_at() {
 	_comments_pause_at "2026-08-24T11:00:00Z" "2026-08-24T11:30:00Z"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
-	[[ $output == *"resume ONLY"* ]]
+	[[ $output == *"resume ONLY"* ]] || return 1
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 	grep -q '"review_posted":false' .claude/logs/cr-resume-fired.jsonl
@@ -126,7 +126,7 @@ _comments_pause_at() {
 		>"$COMMENTS_FIXTURE"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
-	[[ $output != *"auto-posted"* ]]
+	[[ $output != *"auto-posted"* ]] || return 1
 	run ! grep -q "pr comment" "$GH_ARGS_LOG"
 }
 
@@ -146,8 +146,8 @@ _comments_pause_at() {
 		>"$COMMENTS_FIXTURE"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
-	[[ $output == *"not parseable by date"* ]]
-	[[ $output == *"resume ONLY"* ]]
+	[[ $output == *"not parseable by date"* ]] || return 1
+	[[ $output == *"resume ONLY"* ]] || return 1
 	grep -q "pr comment 42 --body @coderabbitai resume" "$GH_ARGS_LOG"
 	run ! grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 }
@@ -157,7 +157,7 @@ _comments_pause_at() {
 	_comments_pause_at "2026-08-24T11:00:00Z"
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
-	[[ $output == *"resume + review"* ]]
+	[[ $output == *"resume + review"* ]] || return 1
 	grep -q "pr comment 42 --body @coderabbitai review" "$GH_ARGS_LOG"
 }
 
@@ -168,7 +168,7 @@ _comments_pause_at() {
 	run "$HOOK" --pr 42
 	[ "$status" -eq 0 ]
 	# CI r2: the failure DIAGNOSTIC is load-bearing, not just the rc.
-	[[ $output == *"gh pr comment failed"* ]]
+	[[ $output == *"gh pr comment failed"* ]] || return 1
 	grep -q '"review_posted":false' .claude/logs/cr-resume-fired.jsonl
 	grep -q '"status":"errored-review-post-failed"' .claude/logs/cr-resume-fired.jsonl
 }

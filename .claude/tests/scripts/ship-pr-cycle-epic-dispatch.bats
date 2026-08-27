@@ -42,8 +42,8 @@ teardown() {
 @test "epic with no args exits 2 + writes usage to stderr" {
 	run "$SCRIPT" epic
 	[ "$status" -eq 2 ]
-	[[ $output == *"Usage: ship-pr-cycle.sh epic"* ]]
-	[[ $output == *"trigger <num>"* ]]
+	[[ $output == *"Usage: ship-pr-cycle.sh epic"* ]] || return 1
+	[[ $output == *"trigger <num>"* ]] || return 1
 	[[ $output == *"parse <num>"* ]]
 }
 
@@ -63,7 +63,7 @@ teardown() {
 	run "$SCRIPT" epic --help
 	[ "$status" -eq 0 ]
 	# Workflow rooted in operator-driven brainstorm (not auto-fired into ship cycle)
-	[[ $output == *"brainstorm.yml"* ]]
+	[[ $output == *"brainstorm.yml"* ]] || return 1
 	# Gate matches cr-plan's APPROVE=1 requirement (parse step)
 	[[ $output == *"APPROVE=1"* ]]
 }
@@ -77,7 +77,7 @@ teardown() {
 @test "epic appears in top-level _usage subcommand listing" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"epic"* ]]
+	[[ $output == *"epic"* ]] || return 1
 	[[ $output == *"cr-plan a brainstorm artifact"* ]]
 }
 
@@ -109,7 +109,7 @@ STUB
 	chmod +x .claude/skills/cr-plan/run.sh
 	run "$SCRIPT" epic trigger 12345 extra-arg
 	[ "$status" -eq 0 ]
-	[[ $output == *"STUB-CR-PLAN-ARGS:trigger 12345 extra-arg"* ]]
+	[[ $output == *"STUB-CR-PLAN-ARGS:trigger 12345 extra-arg"* ]] || return 1
 	# The stub MUST have been the one invoked, not the live plugin's cr-plan.
 	# Match on `.claude/skills/cr-plan/run.sh` suffix — the LIVE plugin lives
 	# at `<plugin>/skills/cr-plan/run.sh` (no `.claude/` prefix), so this

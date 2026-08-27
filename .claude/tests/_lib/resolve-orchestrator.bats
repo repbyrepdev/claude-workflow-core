@@ -69,7 +69,7 @@ teardown() {
 	[ "$status" -eq 2 ]
 	# the SPECIFIC error fired (not just any rc 2): missing pin lib. `run` merges
 	# stderr into $output, so the diagnostic is assertable.
-	[[ $output == *"resolve-plugin-pin.sh"* ]]
+	[[ $output == *"resolve-plugin-pin.sh"* ]] || return 1
 	[[ $output == *"missing"* ]]
 }
 

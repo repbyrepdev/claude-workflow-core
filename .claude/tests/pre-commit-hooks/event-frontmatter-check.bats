@@ -92,7 +92,7 @@ EOF
 	_write_hook_no_frontmatter "hooks/bad.sh"
 	run _run_from_tmp hooks/bad.sh
 	[ "$status" -eq 1 ]
-	[[ $output == *"lack required frontmatter"* ]]
+	[[ $output == *"lack required frontmatter"* ]] || return 1
 	[[ $output == *"hooks/bad.sh"* ]]
 }
 
@@ -177,7 +177,7 @@ EOF
 	# valid in-repo file for normalization.
 	run _run_from_tmp "$TEST_TMP/hooks/abs.sh"
 	[ "$status" -eq 1 ]
-	[[ $output == *"lack required frontmatter"* ]]
+	[[ $output == *"lack required frontmatter"* ]] || return 1
 	[[ $output == *"hooks/abs.sh"* ]]
 }
 
@@ -274,7 +274,7 @@ _write_ptu_hook() {
 		echo "narrow bypass disabled the event rule too (rc=$status). output: $output"
 		return 1
 	}
-	[[ $output == *"lack required frontmatter"* ]]
+	[[ $output == *"lack required frontmatter"* ]] || return 1
 	[[ $output != *"enforce-vs-inform"* ]] || {
 		echo "classification still enforced under its own bypass. output: $output"
 		return 1

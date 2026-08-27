@@ -74,8 +74,8 @@ teardown() {
 	git commit -qm more
 	run bash "$HOOK"
 	[ "$status" -eq 0 ]
-	[[ $output != *"invalidated stale graduation marker"* ]] # no noisy invalidation on a non-amend
-	[ -f "$marker" ]                                         # still present — only amends invalidate
+	[[ $output != *"invalidated stale graduation marker"* ]] || return 1 # no noisy invalidation on a non-amend
+	[ -f "$marker" ]                                                     # still present — only amends invalidate
 }
 
 @test "hook FAILS LOUD (exit 1 + ERROR) outside a git repository (#2483)" {
@@ -87,7 +87,7 @@ teardown() {
 	run bash -c "cd '$NOGIT' && bash '$HOOK'"
 	rm -rf "$NOGIT"
 	[ "$status" -eq 1 ]
-	[[ $output == *"ERROR"* ]]
+	[[ $output == *"ERROR"* ]] || return 1
 	[[ $output == *"not inside a git repository"* ]]
 }
 
@@ -123,9 +123,9 @@ _make_git_shim() {
 	c2p=$(git rev-parse HEAD)
 	_make_git_shim abbrev-ref
 	run bash -c "PATH='$TMP/bin':\$PATH bash '$HOOK'"
-	[ "$status" -eq 1 ]                                    # fail-loud rc
-	[[ $output == *"cannot resolve the current branch"* ]] # the ERROR surfaced
-	[ -f ".claude/review-log/${c2p}.jsonl" ]               # migration STILL ran
+	[ "$status" -eq 1 ]                                                # fail-loud rc
+	[[ $output == *"cannot resolve the current branch"* ]] || return 1 # the ERROR surfaced
+	[ -f ".claude/review-log/${c2p}.jsonl" ]                           # migration STILL ran
 	run jq -r '.sha' ".claude/review-log/${c2p}.jsonl"
 	[[ $output == "$c2p" ]] # sha rewritten to the amended commit
 }
@@ -138,7 +138,7 @@ _make_git_shim() {
 	_make_git_shim reflog
 	run bash -c "PATH='$TMP/bin':\$PATH bash '$HOOK'"
 	[ "$status" -eq 1 ]
-	[[ $output == *"ERROR"* ]]
+	[[ $output == *"ERROR"* ]] || return 1
 	[[ $output == *"cannot read the reflog"* ]]
 }
 
@@ -151,7 +151,7 @@ _make_git_shim() {
 	_make_git_shim revparse-head
 	run bash -c "PATH='$TMP/bin':\$PATH bash '$HOOK'"
 	[ "$status" -eq 1 ]
-	[[ $output == *"ERROR"* ]]
+	[[ $output == *"ERROR"* ]] || return 1
 	[[ $output == *"cannot resolve HEAD"* ]]
 }
 
@@ -167,13 +167,13 @@ _make_git_shim() {
 	# (B) no marker dir → silent (no WARN), rc 0
 	run bash "$TMP/hooks/migrate-review-log-on-amend.sh"
 	[ "$status" -eq 0 ]
-	[[ $output != *"graduation lib unreadable"* ]]
+	[[ $output != *"graduation lib unreadable"* ]] || return 1
 	# (A) marker evidence present → WARN fires, rc 0
 	mkdir -p .claude/.session-state/phase-graduation
 	printf '{"branch":"other","graduated_sha":"deadbeef","phase1_round":1}\n' >.claude/.session-state/phase-graduation/other-12345678.json
 	git commit -q --amend -m "work amended again"
 	run bash "$TMP/hooks/migrate-review-log-on-amend.sh"
 	[ "$status" -eq 0 ]
-	[[ $output == *"graduation lib unreadable"* ]]
+	[[ $output == *"graduation lib unreadable"* ]] || return 1
 	[[ $output == *"ancestry check"* ]] # message cites the real backstop
 }

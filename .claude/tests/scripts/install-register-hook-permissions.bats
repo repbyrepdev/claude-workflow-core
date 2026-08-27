@@ -47,8 +47,8 @@ _write_full_allowlist() {
 @test "--help shows usage" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"WHY this script exists"* ]]
-	[[ $output == *"--check"* ]]
+	[[ $output == *"WHY this script exists"* ]] || return 1
+	[[ $output == *"--check"* ]] || return 1
 	[[ $output == *"Exit codes"* ]]
 }
 
@@ -78,7 +78,7 @@ _write_full_allowlist() {
 	echo "not valid json {{{" >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT"
 	[ "$status" -eq 3 ]
-	[[ $output == *"malformed JSON"* ]]
+	[[ $output == *"malformed JSON"* ]] || return 1
 	# jq error detail is surfaced so the operator knows WHERE the parse failed.
 	[[ $output == *"jq:"* ]]
 }
@@ -110,11 +110,11 @@ _write_full_allowlist() {
 	echo '{}' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT"
 	[ "$status" -eq 1 ]
-	[[ $output == *"NOT installed"* ]]
-	[[ $output == *"register-hook.sh --check"* ]]
-	[[ $output == *"register-hook.sh --check-permissions"* ]]
-	[[ $output == *"register-hook.sh --all-auto-register"* ]]
-	[[ $output == *"install-register-hook-permissions.sh --check"* ]]
+	[[ $output == *"NOT installed"* ]] || return 1
+	[[ $output == *"register-hook.sh --check"* ]] || return 1
+	[[ $output == *"register-hook.sh --check-permissions"* ]] || return 1
+	[[ $output == *"register-hook.sh --all-auto-register"* ]] || return 1
+	[[ $output == *"install-register-hook-permissions.sh --check"* ]] || return 1
 	[[ $output == *"install-register-hook-permissions.sh --json"* ]]
 }
 
@@ -126,9 +126,9 @@ _write_full_allowlist() {
 	]}}' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT"
 	[ "$status" -eq 1 ]
-	[[ $output == *"NOT installed"* ]]
+	[[ $output == *"NOT installed"* ]] || return 1
 	# install-side patterns should NOT appear in the missing list
-	[[ $output != *"- Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh --check)"* ]]
+	[[ $output != *"- Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh --check)"* ]] || return 1
 	# register-hook patterns SHOULD appear in the missing list
 	[[ $output == *"- Bash(*/claude-workflow-core/*scripts/register-hook.sh --check)"* ]]
 }
@@ -144,8 +144,8 @@ _write_full_allowlist() {
 	]}}' >"$CLAUDE_SETTINGS_FILE"
 	run "$SCRIPT"
 	[ "$status" -eq 1 ]
-	[[ $output == *"NOT installed"* ]]
-	[[ $output != *"- Bash(*/claude-workflow-core/*scripts/register-hook.sh --check)"* ]]
+	[[ $output == *"NOT installed"* ]] || return 1
+	[[ $output != *"- Bash(*/claude-workflow-core/*scripts/register-hook.sh --check)"* ]] || return 1
 	[[ $output == *"- Bash(*/claude-workflow-core/*scripts/install-register-hook-permissions.sh --check)"* ]]
 }
 
@@ -249,7 +249,7 @@ _write_full_allowlist() {
 	run "$REGSCRIPT" --check-permissions
 	[ "$status" -eq 1 ]
 	# Output must be from the installer, not register-hook.sh itself.
-	[[ $output == *"install-register-hook-permissions.sh"* ]]
+	[[ $output == *"install-register-hook-permissions.sh"* ]] || return 1
 	[[ $output == *"pattern(s) missing"* ]]
 }
 

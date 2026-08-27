@@ -70,7 +70,7 @@ teardown() {
 	# Coverage: N/A and exit 0.
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 0"* ]]
+	[[ $output == *"Shell scripts in scope: 0"* ]] || return 1
 	[[ $output == *"Coverage: N/A"* ]]
 }
 
@@ -93,9 +93,9 @@ teardown() {
 	EOF
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"TEST_REPO_ROOT override active"* ]]
-	[[ $output == *"Shell scripts in scope: 1"* ]]
-	[[ $output == *"Bats test files:"*"1"* ]]
+	[[ $output == *"TEST_REPO_ROOT override active"* ]] || return 1
+	[[ $output == *"Shell scripts in scope: 1"* ]] || return 1
+	[[ $output == *"Bats test files:"*"1"* ]] || return 1
 	[[ $output == *"Coverage: 100%"* ]]
 }
 
@@ -114,7 +114,7 @@ teardown() {
 	EOF
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 2"* ]]
+	[[ $output == *"Shell scripts in scope: 2"* ]] || return 1
 	[[ $output == *"Coverage: 50%"* ]]
 }
 
@@ -124,9 +124,9 @@ teardown() {
 	mkdir -p "$TEST_TMP/scripts"
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 0"* ]]
-	[[ $output == *"Covered"*"0"* ]]
-	[[ $output == *"Uncovered:"*"0"* ]]
+	[[ $output == *"Shell scripts in scope: 0"* ]] || return 1
+	[[ $output == *"Covered"*"0"* ]] || return 1
+	[[ $output == *"Uncovered:"*"0"* ]] || return 1
 	[[ $output == *"Coverage: N/A"* ]]
 }
 
@@ -137,7 +137,7 @@ teardown() {
 	chmod +x "$TEST_TMP/scripts/foo.sh"
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Bats test files:"*"0"* ]]
+	[[ $output == *"Bats test files:"*"0"* ]] || return 1
 	[[ $output == *"Coverage: 0%"* ]]
 }
 
@@ -155,7 +155,7 @@ teardown() {
 	echo '@test "x" { true; }' >"$TEST_TMP/.claude/tests/sample.bats"
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
-	[[ $output == *"Shell scripts in scope: 5"* ]]
+	[[ $output == *"Shell scripts in scope: 5"* ]] || return 1
 	# Locks in that the script reached the end of the coverage block
 	# without aborting (the COVERED_PATHS pipeline runs successfully here
 	# because no .bats has a `# covers:` header).
@@ -188,7 +188,171 @@ teardown() {
 	EOF
 	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/fail.bats"
 	[ "$status" -eq 1 ]
-	[[ $output == *"=== Summary ==="* ]]
-	[[ $output == *"✗ "*"fail.bats"* ]]
+	[[ $output == *"=== Summary ==="* ]] || return 1
+	[[ $output == *"✗ "*"fail.bats"* ]] || return 1
 	[[ $output == *"FAILURE DETAILS"* ]]
+}
+
+# --- #2631 follow-up: harness trust -------------------------------------
+#
+# Three defects found by the phase-1 panel on the branch that added --shell.
+# Each is locked in below, because each made the runner REPORT something it
+# had not done — the one failure mode a test runner must never have.
+
+@test "a non-bash TEST_BASH is REFUSED, not run as a green suite of zero tests" {
+	# `TEST_BASH=/usr/bin/true scripts/test.sh <file>` printed
+	# '✓ file (0 passed)', exited 0, and appended {"status":"pass"} to
+	# bats-run.jsonl — which pre-commit bats-gate.sh and the pre-push
+	# pipeline gate both read as "this file's tests ran and held". Zero tests
+	# executed. TEST_BASH is not matched by the skip-approval hook's `*_SKIP`
+	# pattern, so it needed no operator approval either.
+	mkdir -p "$TEST_TMP/.claude/tests"
+	printf '#!/usr/bin/env bats\n@test "t" { true; }\n' >"$TEST_TMP/.claude/tests/ok.bats"
+	TEST_BASH=/usr/bin/true run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/ok.bats"
+	[ "$status" -eq 2 ] || {
+		echo "expected refusal (2), got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*BASH_VERSION*) ;;
+	*)
+		echo "expected the refusal to name why; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a run that executes ZERO tests cannot report pass" {
+	# Belt and braces behind the check above: whatever the cause, rc=0 with
+	# nothing executed must not reach the log as 'pass'. One verdict feeds the
+	# console line, the exit code and the JSONL entry, so they cannot diverge.
+	mkdir -p "$TEST_TMP/.claude/tests"
+	printf '#!/usr/bin/env bats\n# no tests here\n' >"$TEST_TMP/.claude/tests/empty.bats"
+	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/empty.bats"
+	[ "$status" -ne 0 ] || {
+		echo "a zero-test file reported success: $output"
+		return 1
+	}
+	case "$output" in
+	*"no tests executed"*) ;;
+	*)
+		echo "expected the reason in the output; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "--shell selects the shell the TEST BODY runs under, not just the front-end" {
+	# `bats` re-execs bats-exec-test and friends, each `#!/usr/bin/env bash`,
+	# so `<shell> $(command -v bats)` overrode only the front-end and the
+	# assertions still ran under whatever PATH resolved. An acceptance run
+	# reported 'bash 3.2' and executed under 5. The fixture below asserts the
+	# major version it actually sees, so it can only pass if --shell reached
+	# the test body.
+	# Two bashes of DIFFERENT major versions, discovered by asking each
+	# candidate rather than assuming /bin/bash is 3.x — true on macOS, false
+	# on Linux runners, where /bin/bash is 5 and this test would have been
+	# comparing a shell against itself and passing vacuously.
+	local cand maj a="" a_maj="" b="" b_maj=""
+	for cand in /bin/bash /usr/bin/bash /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash 2>/dev/null)"; do
+		[ -n "$cand" ] && [ -x "$cand" ] || continue
+		maj=$("$cand" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null) || continue
+		[ -n "$maj" ] || continue
+		if [ -z "$a" ]; then
+			a=$cand
+			a_maj=$maj
+		elif [ "$maj" != "$a_maj" ]; then
+			b=$cand
+			b_maj=$maj
+			break
+		fi
+	done
+	[ -n "$a" ] || skip "no usable bash found"
+	[ -n "$b" ] || skip "only one bash major version available ($a_maj) — nothing to contrast"
+
+	mkdir -p "$TEST_TMP/.claude/tests"
+	cat >"$TEST_TMP/.claude/tests/probe.bats" <<-'PROBE'
+		#!/usr/bin/env bats
+		@test "the body sees the requested bash" {
+			[ "${BASH_VERSINFO[0]}" = "$WANT_MAJOR" ]
+		}
+	PROBE
+	# Positive: ask for A's major, run under A.
+	WANT_MAJOR="$a_maj" run "$SCRIPT" --no-log --shell "$a" "$TEST_TMP/.claude/tests/probe.bats"
+	[ "$status" -eq 0 ] || {
+		echo "--shell $a ($a_maj) did not reach the test body: $output"
+		return 1
+	}
+	# Negative control: ask for A's major while running B. This must FAIL —
+	# it is what proves the assertion above is load-bearing rather than
+	# passing because the probe never ran.
+	WANT_MAJOR="$a_maj" run "$SCRIPT" --no-log --shell "$b" "$TEST_TMP/.claude/tests/probe.bats"
+	[ "$status" -ne 0 ] || {
+		echo "--shell $b ($b_maj) still reported major $a_maj — the shim is not selecting"
+		return 1
+	}
+}
+
+@test "--shell is parsed BEFORE the gate that advertises it as the remedy" {
+	# The gate exited before the option loop that sets TEST_BASH, so the flag
+	# printed in its own error message could not lift it. --help was likewise
+	# unreachable. Ordering, not logic — and nothing exercised --shell at all.
+	run "$SCRIPT" --shell /nonexistent/bash --no-log
+	[ "$status" -eq 2 ]
+	case "$output" in
+	*"not executable"*) ;;
+	*)
+		echo "expected a validated --shell path; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "--shell reaches the test body even where only ONE bash exists" {
+	# The two-major test above skips on a standard Linux runner, where
+	# /bin/bash, /usr/bin/bash and `command -v bash` all resolve to the same
+	# bash 5 — so the invariant went unverified precisely in CI, which is
+	# where the regression would land. This checks the same property without
+	# needing a second bash: --shell points at a WRAPPER that execs the real
+	# bash after setting a marker. If the shim reaches the test body, the
+	# marker is visible inside it; if bats re-execs some other `bash` from
+	# PATH — the original defect — it is not.
+	mkdir -p "$TEST_TMP/wrap" "$TEST_TMP/.claude/tests"
+	# NOT `|| skip`. bats itself runs under bash, so "no bash on PATH" is not
+	# a missing optional tool — it is a broken environment, and skipping would
+	# turn the one CI-observable check of this invariant into a silent pass.
+	local real
+	real=$(command -v bash) || {
+		echo "no bash on PATH — bats cannot have run without one; environment is broken"
+		return 1
+	}
+	cat >"$TEST_TMP/wrap/bash" <<-WRAP
+		#!/bin/sh
+		SHELL_SHIM_MARKER=reached-the-body
+		export SHELL_SHIM_MARKER
+		exec "$real" "\$@"
+	WRAP
+	chmod +x "$TEST_TMP/wrap/bash"
+
+	cat >"$TEST_TMP/.claude/tests/marker.bats" <<-'PROBE'
+		#!/usr/bin/env bats
+		@test "the body was interpreted by the requested shell" {
+			[ "${SHELL_SHIM_MARKER:-}" = "reached-the-body" ]
+		}
+	PROBE
+
+	run "$SCRIPT" --no-log --shell "$TEST_TMP/wrap/bash" "$TEST_TMP/.claude/tests/marker.bats"
+	[ "$status" -eq 0 ] || {
+		echo "--shell did not reach the test body: $output"
+		return 1
+	}
+
+	# Negative control: without --shell the marker must be absent, which is
+	# what proves the assertion above is load-bearing rather than passing
+	# because the variable leaked in from this process.
+	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/marker.bats"
+	[ "$status" -ne 0 ] || {
+		echo "the marker was set without --shell — the probe proves nothing"
+		return 1
+	}
 }

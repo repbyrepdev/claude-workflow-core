@@ -1,5 +1,19 @@
 #!/usr/bin/env bats
 # covers: _lib/event-frontmatter.sh
+# audits: hooks/*.sh
+#
+# (#2572) FIRST USER of the `# audits:` header. `covers:` names what this file
+# BEHAVIOURALLY exercises — the lib's accessors, which it calls directly.
+# `audits:` names what it SWEEPS: every hook in hooks/, checked against the
+# classification policy without any of them being executed.
+#
+# The split matters because three consumers read these headers. test-touched
+# routes on BOTH (an audit must re-run when a hook it polices changes), while
+# the coverage report and the refresh-from-source drift gate count `covers:`
+# ONLY. Before the split, this file's single covers: line either under-routed
+# (hook edits did not re-run the audit) or, had it listed the hooks, would
+# have told the drift gate that 40-odd mirror hooks were verified by a policy
+# scan that never ran one of them.
 #
 # #2547 LIVE-TREE AUDIT + accessor unit tests. The commit-time GATE lives in
 # event-frontmatter-check.sh (its unit tests in .claude/tests/pre-commit-

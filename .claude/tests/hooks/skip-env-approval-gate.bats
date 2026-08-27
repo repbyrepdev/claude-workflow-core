@@ -110,7 +110,7 @@ _run_hook() {
 	jq -nc --arg c "LINT_GATE_SKIP=1 echo hi" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
 	run env -i PATH="$nojq" HOME="$HOME" bash -c "cd '$TEST_TMP' && bash '$HOOK' < '$TEST_TMP/payload.json'"
 	[ "$status" -eq 2 ]
-	[[ $output == *"jq missing"* ]]
+	[[ $output == *"jq missing"* ]] || return 1
 	# Confirm it refused via the jq-missing branch, NOT the normal no-approval
 	# deny — so rc 2 alone (shared by both) can't false-pass this test.
 	[[ $output != *"BLOCKED by skip-env-approval-gate"* ]]

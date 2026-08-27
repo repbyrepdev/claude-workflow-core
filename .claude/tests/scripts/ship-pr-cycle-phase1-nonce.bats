@@ -47,7 +47,7 @@ _source_orchestrator() {
 	[ -f "$STATE_DIR/$SHA.phase1-directive.txt" ]
 	# Line 1 must be a UUID-shaped string (8-4-4-4-12 hex).
 	line1=$(head -1 "$STATE_DIR/$SHA.phase1-directive.txt")
-	[[ $line1 =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+	[[ $line1 =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
 	# Line 2 must be the directive text.
 	line2=$(sed -n '2p' "$STATE_DIR/$SHA.phase1-directive.txt")
 	[ "$line2" = "fire phase 1 directive" ]
@@ -58,7 +58,7 @@ _source_orchestrator() {
 	_write_phase1_directive_marker "$SHA" "directive"
 	state_nonce=$(jq -r '.phase1_directive_nonce // ""' "$STATE_DIR/$SHA.json")
 	[ -n "$state_nonce" ]
-	[[ $state_nonce =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+	[[ $state_nonce =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
 	# Same nonce as sentinel line 1.
 	sentinel_nonce=$(head -1 "$STATE_DIR/$SHA.phase1-directive.txt")
 	[ "$state_nonce" = "$sentinel_nonce" ]

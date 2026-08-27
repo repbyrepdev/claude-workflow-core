@@ -105,7 +105,7 @@ _set_state_protocol() {
 	echo '{"stage":""}' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"corrupt JSON"* ]]
 }
 
@@ -114,7 +114,7 @@ _set_state_protocol() {
 	echo '{"branch":"feat/v/x"}' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"corrupt JSON"* ]]
 }
 
@@ -125,7 +125,7 @@ _set_state_protocol() {
 	echo 'not valid {{ json' >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.json"
 	run _run_guard "$(_payload_bash 'gh pr merge 91')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"corrupt JSON"* ]]
 }
 
@@ -141,15 +141,15 @@ _set_state_protocol() {
 @test "blocks raw 'coderabbit review'" {
 	run _run_guard "$(_payload_bash 'coderabbit review --base main')"
 	[ "$status" -eq 0 ] # JSON deny exits 0
-	[[ $output == *"permissionDecision\":\"deny"* ]]
-	[[ $output == *"coderabbit review"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
+	[[ $output == *"coderabbit review"* ]] || return 1
 	[[ $output == *"local-review.sh"* ]]
 }
 
 @test "blocks raw 'gh pr merge'" {
 	run _run_guard "$(_payload_bash 'gh pr merge 91 --squash')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"github-pr-merge"* ]]
 }
 
@@ -164,7 +164,7 @@ _set_state_protocol() {
 @test "blocks raw pr-review-toolkit Agent call (no directive sentinel)" {
 	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"pr-review-toolkit"* ]]
 }
 
@@ -202,14 +202,14 @@ _set_state_protocol() {
 	payload=$(_payload_bash 'gh pr merge 91')
 	run bash -c "cd '$TEST_TMP' && export SHIP_PR_CYCLE_BYPASS=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output != *"permissionDecision\":\"deny"* ]]
+	[[ $output != *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"audit logged"* ]]
 }
 
 @test "SHIP_PR_CYCLE_BYPASS=1 inline-prefix bypasses for Bash" {
 	run _run_guard "$(_payload_bash 'SHIP_PR_CYCLE_BYPASS=1 gh pr merge 91')"
 	[ "$status" -eq 0 ]
-	[[ $output != *"permissionDecision\":\"deny"* ]]
+	[[ $output != *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"inline prefix"* ]]
 }
 
@@ -241,8 +241,8 @@ _set_state_protocol() {
 	payload=$(_payload_bash 'gh pr merge 91')
 	run bash -c "cd '$TEST_TMP' && export SKILL_WRAPPER=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output != *"permissionDecision\":\"deny"* ]]
-	[[ $output == *"SKILL_WRAPPER=1"* ]]
+	[[ $output != *"permissionDecision\":\"deny"* ]] || return 1
+	[[ $output == *"SKILL_WRAPPER=1"* ]] || return 1
 	[[ $output == *"passing through"* ]]
 }
 
@@ -269,7 +269,7 @@ _set_state_protocol() {
 	payload=$(_payload_bash '\gh pr merge 91')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"gh pr merge"* ]]
 }
 
@@ -323,7 +323,7 @@ _set_state_protocol() {
 	payload=$(_payload_bash '"coderabbit" review')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"coderabbit review"* ]]
 }
 
@@ -342,7 +342,7 @@ _set_state_protocol() {
 	payload=$(_payload_bash 'gh pr merge "91')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"tokenization failed"* ]]
 }
 
@@ -364,7 +364,7 @@ _set_state_protocol() {
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"sentinel empty"* ]] || [[ $output == *"nonce mismatch"* ]] || [[ $output == *"no phase1_directive_nonce"* ]]
 }
 
@@ -393,7 +393,7 @@ _set_state_protocol() {
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"nonce mismatch"* ]]
 }
 
@@ -406,7 +406,7 @@ _set_state_protocol() {
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run _run_guard "$payload"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"no phase1_directive_nonce"* ]] || [[ $output == *"phase1_directive_nonce"* ]]
 }
 
@@ -464,8 +464,8 @@ _set_state_protocol() {
 	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
-	[[ $output == *"STALE"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
+	[[ $output == *"STALE"* ]] || return 1
 	[[ $output == *"refresh-from-source"* ]]
 }
 
@@ -477,7 +477,7 @@ _set_state_protocol() {
 	printf '%s\ndirective\n' "$nonce" >"$TEST_TMP/.claude/.session-state/ship-cycle/$SHA.phase1-directive.txt"
 	run _run_guard "$(_payload_agent 'pr-review-toolkit:code-reviewer')"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"PROTOCOL SKEW"* ]]
 }
 
@@ -507,6 +507,6 @@ _set_state_protocol() {
 	payload=$(_payload_agent 'pr-review-toolkit:code-reviewer')
 	run bash -c "cd '$TEST_TMP' && printf '%s' '$payload' | bash '$TEST_TMP/hooks/ship-cycle-guard.sh' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"failed to load"* ]]
 }

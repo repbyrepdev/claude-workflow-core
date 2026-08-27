@@ -81,7 +81,7 @@ EOF
 		cd "$TEST_TMP" || exit 1
 		run "$TEST_TMP/scripts/install-hooks.sh"
 		[ "$status" -eq 0 ]
-		[[ $output == *"+x restored on"* ]] || [[ $output == *"scanned"* ]]
+		[[ $output == *"+x restored on"* ]] || [[ $output == *"scanned"* ]] || return 1
 		mode=$(stat -f '%Mp%Lp' "$TEST_TMP/hooks/test-hook.sh" 2>/dev/null || stat -c '%a' "$TEST_TMP/hooks/test-hook.sh")
 		[ "$mode" = "755" ] || [ "$mode" = "0755" ]
 	)

@@ -1,0 +1,648 @@
+#!/usr/bin/env bats
+# covers: pre-commit-hooks/bats-assertion-gate.sh _lib/bats-assertion-check.sh
+# audits: .claude/tests/**/*.bats
+#
+# (#2631 follow-up) The gate that stops bats assertions which cannot fail.
+# bats reports failure through an ERR trap, and on bash 3.2 — what macOS
+# ships at /bin/bash, frozen since 2007 over the GPLv3 relicensing in bash
+# 4.0 — a failing `[[ ]]` fires neither that trap nor `set -e`. So a bare
+# `[[ ]]` only fails a test when it happens to be the block's LAST command.
+# 749 such no-ops existed when this was found.
+#
+# These tests are written entirely in `[ ]` / `case` forms, for the obvious
+# reason: a suite guarding this property must not depend on the property
+# being fixed first.
+
+setup() {
+	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	LIB="$REPO_ROOT/_lib/bats-assertion-check.sh"
+	[ -r "$LIB" ]
+	GATE="$REPO_ROOT/pre-commit-hooks/bats-assertion-gate.sh"
+	[ -r "$GATE" ]
+	TEST_TMP=$(mktemp -d -t bats-assert-gate.XXXXXX) || {
+		echo "FATAL: mktemp failed" >&2
+		return 1
+	}
+}
+
+teardown() {
+	case "${TEST_TMP:-}" in
+	*/bats-assert-gate.*) rm -rf "$TEST_TMP" ;;
+	esac
+}
+
+# $output becomes the hit count. The subshell must exit 0 for the count to be
+# trustworthy, so the pipeline's own rc is checked separately from the
+# detector's — an earlier form ended `|| true`, which pinned status to 0 and
+# made the `[ "$status" -eq 0 ]` below unfalsifiable.
+_scan() { # $1 = file contents; echoes the detector's hit count
+	printf '%s' "$1" >"$TEST_TMP/probe.bats"
+	run bash -c '
+		. "$1"
+		out=$(bats_assertion_scan "$2") || rc=$?
+		case "${rc:-0}" in
+		0 | 1) ;;
+		*) exit 9 ;;
+		esac
+		printf "%s\n" "$out" | grep -c . || true
+	' _ "$LIB" "$TEST_TMP/probe.bats"
+	[ "$status" -eq 0 ] || {
+		echo "scan errored (status $status): $output"
+		return 1
+	}
+}
+
+# The scanner reports `line:text` per finding, so a test can assert WHICH
+# line was named rather than only how many were. Used by the lexical
+# regressions below, where "1 finding" alone would not prove the right line
+# was blamed.
+# $status becomes the SCANNER's own rc (0 clean, 1 findings) and $output its
+# report, so a caller can assert both. The earlier form asserted the wrapper's
+# status instead, which was 0 either way — it could not tell a clean verdict
+# from a findings verdict, only read the text.
+_scan_raw() { # $1 = file contents
+	printf '%s' "$1" >"$TEST_TMP/raw.bats"
+	run bash -c '
+		. "$1"
+		out=$(bats_assertion_scan "$2") || rc=$?
+		printf "%s\n" "$out"
+		exit "${rc:-0}"
+	' _ "$LIB" "$TEST_TMP/raw.bats"
+	# Anything but 0/1 is a scan error the caller cannot interpret.
+	case "$status" in
+	0 | 1) ;;
+	*)
+		echo "scan errored (status $status): $output"
+		return 1
+		;;
+	esac
+}
+
+# A miniature repo with the gate and lib in place, one .bats file STAGED.
+_staged_repo() { # $1 = dir name, $2 = .bats contents
+	local work="$TEST_TMP/$1"
+	mkdir -p "$work/.claude/tests" "$work/_lib" "$work/pre-commit-hooks"
+	cp "$LIB" "$work/_lib/"
+	cp "$GATE" "$work/pre-commit-hooks/"
+	printf '%s' "$2" >"$work/.claude/tests/new.bats"
+	(
+		cd "$work" || exit 1
+		git init -q
+		git add -A
+	) || return 1
+	echo "$work"
+}
+
+@test "a bare mid-test [[ ]] is reported" {
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]]\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "the LAST command in a block is exempt — its status IS the test status" {
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]]\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "forms that DO fail are not reported" {
+	# Each of these fails the test wherever it sits, so none is a finding.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\t[[ $output == *"hi"* ]] || return 1\n\tcase "$output" in *hi*) ;; *) return 1 ;; esac\n\tassert_output_contains "hi"\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "&& is NOT a guard — it fires on no bash, and is reported" {
+	# `[[ a ]] && cmd` puts the failing conditional in non-last position of an
+	# AND-list, where neither the ERR trap nor `set -e` fires. It reads like a
+	# guard. The gate shipped accepting it; one real assertion hid behind it.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] && true\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "a guard inside a trailing COMMENT is not a guard" {
+	# The shape 31 assertions shipped in:
+	#     [[ $output == *"x"* ]]   # what this checks || return 1
+	# The `||` is inside the comment, so nothing guards the assertion — and a
+	# detector that scanned the whole line for `||` called it clean. The bug
+	# concealed itself. Anchoring on the closing `]]` is what fixes it.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]   # checked || return 1\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "a real guard followed by a comment IS accepted" {
+	# The correct shape, and the counterpart to the test above: anchoring must
+	# not swing the other way and reject a guard that has a comment after it.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]] || return 1   # what this checks\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a # inside a quoted pattern does not hide a real guard" {
+	# Only text after the FINAL `]]` is comment-stripped, so a `#` inside the
+	# match pattern cannot swallow the guard that follows it.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"a # b"* ]] || return 1\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "comments and blank lines do not occupy the last-command slot" {
+	# A trailing comment must not make the real final assertion look mid-test.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]]\n\t# trailing comment\n\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "multiple offenders in one block are all reported" {
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"a"* ]]\n\t[[ $output == *"b"* ]]\n\t[[ $output == *"c"* ]]\n\ttrue\n}\n')"
+	[ "$output" -eq 3 ]
+}
+
+@test "each @test block is scored independently" {
+	_scan "$(printf '@test "one" {\n\trun echo hi\n\t[[ $output == *"a"* ]]\n\ttrue\n}\n\n@test "two" {\n\trun echo hi\n\t[[ $output == *"b"* ]]\n}\n')"
+	# One offender in the first block; the second block ends on its assertion.
+	[ "$output" -eq 1 ]
+}
+
+@test "the gate REFUSES a staged file with an assertion that cannot fail" {
+	local work
+	work=$(_staged_repo repo1 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
+	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
+	# 1, not 2: the gate RAN and found something. 2 means it could not run.
+	[ "$status" -eq 1 ]
+	case "$output" in
+	*"cannot fail"*) ;;
+	*)
+		echo "expected the gate to name the problem; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "the gate PASSES a file that is clean" {
+	local work
+	work=$(_staged_repo repo2 "$(printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n')") || return 1
+	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 0 ]
+	# Silent, too. A clean staged run that emitted a warning or a skip notice
+	# would still exit 0, so status alone cannot distinguish "gate ran and
+	# found nothing" from "gate bailed out early and said so".
+	[ -z "$output" ] || {
+		echo "expected no output on a clean run; got: $output"
+		return 1
+	}
+}
+
+@test "the gate scans the STAGED blob, not the worktree" {
+	# Staging bad content and then cleaning the worktree copy must not pass:
+	# the commit records the index, so the index is what has to be gated. The
+	# `pre-commit` framework stashes unstaged changes and hides this, but a
+	# raw .git/hooks install — what consumers get — does not.
+	local work
+	work=$(_staged_repo repo3 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
+	# Worktree now looks innocent; the index still holds the bare assertion.
+	printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n' \
+		>"$work/.claude/tests/new.bats"
+	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 1 ] || {
+		echo "gate read the worktree, not the index — staged content was not gated"
+		echo "output: $output"
+		return 1
+	}
+}
+
+@test "the whole suite is clean — zero assertions that cannot fail" {
+	# The invariant is absolute, so it is asserted directly rather than
+	# through a baseline file. The baseline this shipped with lived at a
+	# gitignored path: it read as empty on every machine but the author's,
+	# which made the debt gate inert exactly where it mattered while looking
+	# active. Zero needs no file.
+	cd "$REPO_ROOT" || return 1
+	run ./pre-commit-hooks/bats-assertion-gate.sh --all
+	[ "$status" -eq 0 ] || {
+		echo "assertions that cannot fail on bash 3.2 are present:"
+		echo "$output"
+		return 1
+	}
+	# Status alone cannot confirm the sweep happened — a skip or an early
+	# bail also exits 0. `--all` reports how many files it scanned, so assert
+	# that summary: it is the difference between "found nothing" and "looked
+	# at nothing". (Silence is the right assertion for the STAGED mode, which
+	# prints nothing on success; that test asserts it separately.)
+	case "$output" in
+	*"file(s) clean"*) ;;
+	*)
+		echo "no sweep summary — the scan may not have run: $output"
+		return 1
+		;;
+	esac
+	# `: 0 file(s)`, not `0 file(s)` — the unanchored form matches the
+	# trailing zero of "140 file(s) clean" and fails on a healthy sweep.
+	case "$output" in
+	*": 0 file(s) clean"*)
+		echo "the sweep scanned zero files"
+		return 1
+		;;
+	esac
+}
+
+@test "an unreadable file is an ERROR (rc 2), never a clean bill of health" {
+	# It returned 0 — "no problems found" — for a missing path, an unreadable
+	# path and an empty argument alike. A detector whose failure mode is a
+	# green light is worse than no detector: the caller commits on it.
+	run bash -c '. "$1"; bats_assertion_scan "$2"' _ "$LIB" "$TEST_TMP/does-not-exist.bats"
+	[ "$status" -eq 2 ] || {
+		echo "expected rc 2 for an unreadable file, got $status"
+		return 1
+	}
+	run bash -c '. "$1"; bats_assertion_scan ""' _ "$LIB"
+	[ "$status" -eq 2 ] || {
+		echo "expected rc 2 for an empty argument, got $status"
+		return 1
+	}
+}
+
+@test "rc distinguishes clean (0) from findings (1)" {
+	# Documented as `rc 0 = clean, 1 = found` from the start, but a trailing
+	# `|| true` made it unconditionally 0, so every caller had to re-derive
+	# the verdict from whether stdout was empty.
+	printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n' >"$TEST_TMP/clean.bats"
+	run bash -c '. "$1"; bats_assertion_scan "$2"' _ "$LIB" "$TEST_TMP/clean.bats"
+	[ "$status" -eq 0 ] || {
+		echo "clean file should be rc 0, got $status"
+		return 1
+	}
+	printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]]\n\ttrue\n}\n' >"$TEST_TMP/dirty.bats"
+	run bash -c '. "$1"; bats_assertion_scan "$2"' _ "$LIB" "$TEST_TMP/dirty.bats"
+	[ "$status" -eq 1 ] || {
+		echo "file with findings should be rc 1, got $status"
+		return 1
+	}
+}
+
+@test "helper functions, setup and teardown are scanned too" {
+	# Only `@test` blocks were examined, so a bare `[[ ]]` in a helper — which
+	# runs in the test's context and is a no-op for exactly the same reason —
+	# was invisible. This suite's own teardown carried one.
+	_scan "$(printf 'teardown() {\n\t[[ $TEST_TMP == */x.* ]]\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ] || {
+		echo "teardown was not scanned"
+		return 1
+	}
+	_scan "$(printf '_helper() {\n\t[[ $1 == a ]]\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ] || {
+		echo "a file-local helper was not scanned"
+		return 1
+	}
+}
+
+@test "&& CONTROL FLOW is allowed; && used as an assertion is not" {
+	# The distinction is intent, and it is visible in the right-hand side.
+	# `&& return 0` early-exits a search loop and behaves identically on every
+	# bash. `&& [ ... ]` reads as "both must hold" and enforces neither.
+	_scan "$(printf '_find() {\n\tlocal p\n\tfor p in "$@"; do\n\t\t[[ $1 == $p ]] && return 0\n\tdone\n\treturn 1\n}\n')"
+	[ "$output" -eq 0 ] || {
+		echo "control-flow && was reported as an assertion"
+		return 1
+	}
+	_scan "$(printf '@test "x" {\n\trun echo 5\n\t[[ $output =~ ^[0-9]+$ ]] && [ "$output" -ge 1 ]\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ] || {
+		echo "&& used as an assertion was not reported"
+		return 1
+	}
+}
+
+@test "a block that never closes is an ERROR, not a pass" {
+	# The scan ends a block on `}` at column 0 — deliberately narrow, because
+	# `^[ \t]*}` would also match the closing brace of the very common inline
+	# `... || { echo ...; return 1; }`. The cost of the narrow rule is a block
+	# that never terminates, and that must not report clean.
+	# Built with a single-line printf, per the lib's stated limitation: a
+	# multi-line heredoc would put a literal `[[ ` at the start of a real line
+	# in THIS file and the repo-wide sweep would count it as a finding here.
+	printf '@test "never closed" {\n\trun echo hi\n\t[ -n "$output" ]\n' \
+		>"$TEST_TMP/unterminated.bats"
+	run bash -c '. "$1"; bats_assertion_scan "$2"' _ "$LIB" "$TEST_TMP/unterminated.bats"
+	[ "$status" -eq 2 ] || {
+		echo "an unterminated block reported rc $status; expected 2"
+		return 1
+	}
+}
+
+@test "the common inline || { ... } block does not end the scan early" {
+	# The counterpart to the test above: this shape is everywhere in this
+	# repo, and its indented closing brace must NOT be read as the end of the
+	# @test block — that would hide every assertion after it.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ] || {\n\t\techo "boom"\n\t\treturn 1\n\t}\n\t[[ $output == *"hi"* ]]\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ] || {
+		echo "an assertion after an inline || { } block was missed"
+		return 1
+	}
+}
+
+@test "|| with a fallback that SUCCEEDS is not a guard" {
+	# The subtle one. It looks like a guard and prints on failure, but the
+	# echo succeeds, so the OR-list returns 0 and — being non-last — its
+	# status is discarded anyway. Verified directly:
+	#   bash -c 'set -eET; trap "echo TRAP" ERR;
+	#            t(){ [[ a == b ]] || echo warn; echo REACHED; }; t'
+	#   -> warn / REACHED   (no TRAP, on 3.2 AND 5)
+	# Accepting any `||` let this through; the operator is not what matters,
+	# whether the right-hand side ENDS the block is.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || echo warn\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "|| { ... return 1; } across lines IS a guard" {
+	# The commonest guard shape in this repo. The terminator is inside the
+	# brace group, on a later physical line, so a line-at-a-time rule cannot
+	# see it — the detector defers the verdict and resolves it at the closing
+	# brace. Getting this wrong reported 82 false positives in one sweep.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "|| { ... } with NO terminator inside is still reported" {
+	# Same shape, but the block only prints. Nothing fails the test, so the
+	# deferred verdict must come back as a finding.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "just noise"\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+}
+
+@test "a nested brace group does not close the outer guard early" {
+	# Depth counting: an inner `{ }` inside the guard body must not be read
+	# as the outer group's close, which would resolve the verdict before the
+	# terminator is reached.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\tif true; then { echo a; }; fi\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "|| return 0 is not a guard; && return 0 is" {
+	# `|| return 0` fires exactly when the condition FAILED, and hands back
+	# success — the same hole as `|| echo warn`, wearing a terminator. But
+	# `&& return 0` reaches its zero only when the condition HELD, which is
+	# ordinary early-exit control flow. The operator decides which zero is
+	# legitimate, so the rule cannot key on `return` alone.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || return 0\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] && return 0\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || return 1\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a bare [ ] DOES fail a real bats test — the helper forms need no guard" {
+	# Locked in because CR-CLI asked four times for `|| return 1` on bare
+	# single-bracket assertions. It is not needed, and this asserts it against
+	# the real harness rather than a simulation: `[` is an ordinary simple
+	# command, so errexit and the ERR trap apply to it in any position. Only
+	# `[[ ]]`, a shell conditional expression, is special-cased — which is the
+	# entire premise of this gate.
+	mkdir -p "$TEST_TMP/real"
+	printf '#!/usr/bin/env bats\n@test "t" {\n\t[ 1 -eq 2 ]\n\techo REACHED_PAST_IT\n\ttrue\n}\n' \
+		>"$TEST_TMP/real/probe.bats"
+	run bats --tap "$TEST_TMP/real/probe.bats"
+	[ "$status" -ne 0 ] || {
+		echo "a bare [ ] did NOT fail the test — the premise of this gate is wrong"
+		return 1
+	}
+	case "$output" in
+	*REACHED_PAST_IT*)
+		echo "execution continued past a failed [ ] — it is not enforcing"
+		return 1
+		;;
+	esac
+}
+
+@test "the bypass records an audit row — and refuses when it cannot" {
+	# The bypass is the one path where the gate exits 0 having scanned
+	# nothing, so the audit row is its entire justification. This PR made the
+	# write fail-closed; nothing exercised it, so a regression back to
+	# `|| true` would have passed the suite.
+	local work
+	work=$(_staged_repo bypass1 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
+	# Without the bypass the staged file is refused — and the refusal must say
+	# WHY. Status alone would also be satisfied by a silent rejection path
+	# that never identified the offending file.
+	run bash -c "cd '$work' && ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 1 ]
+	case "$output" in
+	*"cannot fail"*) ;;
+	*)
+		echo "the refusal did not name the violation: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*new.bats*) ;;
+	*)
+		echo "the refusal did not name the offending file: $output"
+		return 1
+		;;
+	esac
+	# With it, the gate passes AND writes the row.
+	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='under test' ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 0 ] || {
+		echo "bypass did not pass: $output"
+		return 1
+	}
+	local log="$work/.claude/logs/pipeline-skip.jsonl"
+	[ -s "$log" ] || {
+		echo "bypass wrote no audit row"
+		return 1
+	}
+	run grep -c 'bats-assertion-gate-skip' "$log"
+	[ "$output" -ge 1 ] || return 1
+	run grep -c 'under test' "$log"
+	[ "$output" -ge 1 ] || {
+		echo "the reason was not recorded"
+		return 1
+	}
+}
+
+@test "a bypass whose audit row cannot be written is REFUSED" {
+	# "Skipping is available but never invisible" is only true if an
+	# unwritable log stops the skip. Make .claude/logs a FILE so mkdir -p
+	# fails, and the bypass must refuse rather than proceed unrecorded.
+	local work
+	work=$(_staged_repo bypass2 "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')") || return 1
+	rm -rf "$work/.claude/logs"
+	printf 'not a directory\n' >"$work/.claude/logs"
+	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='cannot record' ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 2 ] || {
+		echo "expected refusal (2) when the audit row cannot be written; got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*"record the skip"* | *"pipeline-skip"*) ;;
+	*)
+		echo "expected the refusal to name the audit failure; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a reason containing quotes and newlines stays valid JSON" {
+	# The reason is interpolated into a JSON row. Unescaped, a quote or a
+	# newline produces a malformed line that breaks every later reader.
+	local work
+	work=$(_staged_repo bypass3 "$(printf '@test "x" {\n\trun echo hi\n\t[ "$status" -eq 0 ]\n\ttrue\n}\n')") || return 1
+	run bash -c "cd '$work' && BATS_ASSERTION_GATE_SKIP=1 BATS_ASSERTION_GATE_SKIP_REASON='he said \"stop\" \\ then
+a newline' ./pre-commit-hooks/bats-assertion-gate.sh"
+	[ "$status" -eq 0 ] || return 1
+	# Every row must parse. `jq -e .` fails on malformed JSON.
+	run bash -c "cd '$work' && jq -e . .claude/logs/pipeline-skip.jsonl >/dev/null"
+	[ "$status" -eq 0 ] || {
+		echo "the audit row is not valid JSON: $output"
+		return 1
+	}
+}
+
+@test "a MESSAGE containing a terminator word is not a terminator" {
+	# Found by the backup reviewer on #2635. The brace-group body check
+	# matched the raw line, so the word `fail` inside an echo argument
+	# satisfied it — and a guard body that only PRINTS was certified as real
+	# while nothing terminated. This repo writes exactly those messages, so
+	# it was a matter of time. Same bug class as the 31 comment-hidden
+	# guards, reintroduced through the mechanism built to catch them.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "guard should fail here"\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 1 ]
+	# ...and the same body WITH a real terminator still passes, so the fix
+	# did not simply reject every brace group.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "this will fail loudly"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a literal ]] inside a trailing comment does not move the anchor" {
+	# The other half of the same finding, failing in the safe direction:
+	# guard_pos took the LAST `]]` on the line, so a comment mentioning
+	# `[[ ]]` moved the anchor past the real close and the genuine
+	# `|| return 1` became invisible — over-flagging a correct assertion.
+	# Strings are blanked and the comment cut before the search now.
+	_scan "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"hi"* ]] || return 1  # see [[ ]] docs\n\ttrue\n}\n')"
+	[ "$output" -eq 0 ]
+}
+
+@test "a terminator word inside the COMPARED string is not a guard either" {
+	# Symmetric case: the assertion tests output for the word `return`, with
+	# no guard at all. Blanking strings must not let the pattern text stand
+	# in for command position.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"return 1"* ]]\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
+	# Exactly one finding, AND it names the right line. A count alone would
+	# also hold if the scanner blamed the wrong line; the line alone would not
+	# catch a spurious second finding.
+	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+	case "$output" in
+	3:*'"return 1"'*) ;;
+	*)
+		echo "expected line 3 (the bare assertion) to be named; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a semicolon-separated terminator in a guard body still counts" {
+	# Blanking strings must not break the legitimate one-line body, where the
+	# terminator follows a `;` rather than starting the line.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "why"; return 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
+	# Silence, not a zero count: a scanner that emitted a diagnostic while
+	# reporting nothing would still satisfy a count check.
+	[ -z "$output" ] || {
+		echo "a valid one-line guard body produced a diagnostic: $output"
+		return 1
+	}
+}
+
+@test "an ESCAPED quote does not re-expose a terminator word" {
+	# `echo "he said \"fail\" loudly"` — without backslash handling the quote
+	# pairing breaks, the tail of the line reads as code, and `fail` sets
+	# pending_ok. That silently re-opened the exact hole the string-blanking
+	# was added to close.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "he said \\"fail\\" loudly"\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
+	case "$output" in
+	*'[[ $output == *"nope"* ]] || {'*) ;;
+	*)
+		echo "expected the unguarded assertion to be named; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "an unquoted # inside a pattern does not truncate the line" {
+	# bash treats `*#tag*` as literal — `#` opens a comment only at the start
+	# of a word. Cutting at the first `#` regardless dropped the closing `]]`
+	# with it, so a correctly guarded assertion was reported.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *#tag* ]] || return 1\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ] || {
+		echo "a guarded assertion with a # in its pattern was reported: $output"
+		return 1
+	}
+}
+
+@test "a brace inside a string does not close the guard group early" {
+	# Braces were counted on the raw line, so `echo "}"` in a guard body
+	# resolved the deferred verdict before the terminator was reached — and
+	# the assertion was reported despite being correctly guarded.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo "}"\n\t\treturn 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ] || {
+		echo "a guarded assertion was reported because of a brace in a string: $output"
+		return 1
+	}
+}
+
+@test "the reported line NUMBER points at the offending assertion" {
+	# The output contract is `line:text`. Nothing asserted the number before,
+	# so an off-by-one in the recording would have gone unnoticed.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]]\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
+	case "$output" in
+	3:*) ;;
+	*)
+		echo "expected the finding on line 3; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a terminator COMMENTED OUT after a ; does not count" {
+	# bash opens a comment at any word boundary, not only after whitespace —
+	# `;`, `&`, `|`, `(`, `)`, `<`, `>` all end the preceding word. Checking
+	# space/tab alone left `echo ignored;# return 1` visible, so a
+	# commented-out terminator satisfied the brace-group check and a group
+	# that can never fail was accepted.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo ignored;# return 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+	case "$output" in
+	3:*) ;;
+	*)
+		echo "expected the unguarded assertion on line 3; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a REAL terminator after a ; still counts" {
+	# The counterpart: word-boundary detection must not swallow live code.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]] || {\n\t\techo why; return 1\n\t}\n\ttrue\n}\n')"
+	[ "$status" -eq 0 ]
+	[ -z "$output" ] || {
+		echo "a valid guard body was reported: $output"
+		return 1
+	}
+}
+
+@test "a guard commented out after ; on the assertion line is not a guard" {
+	# Same rule applied to guard_pos rather than the brace-group body:
+	# `[[ ... ]];# || return 1` has no live guard at all.
+	_scan_raw "$(printf '@test "x" {\n\trun echo hi\n\t[[ $output == *"nope"* ]];# || return 1\n\ttrue\n}\n')"
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+	# The LINE, not merely "one line of something".
+	case "$output" in
+	3:*) ;;
+	*)
+		echo "expected the dead-guard assertion on line 3; got: $output"
+		return 1
+		;;
+	esac
+}

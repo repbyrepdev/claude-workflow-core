@@ -80,7 +80,7 @@ _seed() {
 @test "--help shows usage and exit codes" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"Usage:"* ]]
+	[[ $output == *"Usage:"* ]] || return 1
 	[[ $output == *"Exit codes:"* ]]
 }
 
@@ -121,10 +121,10 @@ _seed() {
 	_seed
 	run "$SCRIPT" --old area:infra --new area:infrastructure --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"dry-run"* ]]
-	[[ $output == *"labels.yml: rename name"* ]]
-	[[ $output == *"labeler.yml: rename key"* ]]
-	[[ $output == *"overlay: rename labeling_instructions"* ]]
+	[[ $output == *"dry-run"* ]] || return 1
+	[[ $output == *"labels.yml: rename name"* ]] || return 1
+	[[ $output == *"labeler.yml: rename key"* ]] || return 1
+	[[ $output == *"overlay: rename labeling_instructions"* ]] || return 1
 	# Files untouched.
 	[ "$(yq -r '.[0].name' .github/labels.yml)" = "area:infra" ]
 	yq -e '.["area:infra"]' .github/labeler.yml >/dev/null
@@ -139,8 +139,8 @@ _seed() {
 	run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
 	run yq -r '.[].name' .github/labels.yml
-	[[ $output == *"area:infrastructure"* ]]
-	[[ $output == *"type:bug"* ]] # sibling entry untouched
+	[[ $output == *"area:infrastructure"* ]] || return 1
+	[[ $output == *"type:bug"* ]] || return 1 # sibling entry untouched
 	# Key assertion last: area:infra must be fully gone (exact-match).
 	run yq -e '.[] | select(.name == "area:infra")' .github/labels.yml
 	[ "$status" -ne 0 ]
@@ -174,8 +174,8 @@ _seed() {
 	"$SCRIPT" --old area:infra --new area:infrastructure
 	run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
-	[[ $output == *"labels.yml: area:infra absent — skip"* ]]
-	[[ $output == *"labeler.yml: area:infra absent — skip"* ]]
+	[[ $output == *"labels.yml: area:infra absent — skip"* ]] || return 1
+	[[ $output == *"labeler.yml: area:infra absent — skip"* ]] || return 1
 	[[ $output == *"overlay: area:infra absent — skip"* ]]
 }
 
@@ -187,9 +187,9 @@ _seed() {
 	printf -- 'reviews:\n  labeling_instructions:\n    - label: "area:infrastructure"\n      instructions: x\n' >.coderabbit.overlay.yaml
 	run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
-	[[ $output == *"labels.yml: rename name"* ]]
-	[[ $output == *"labeler.yml: area:infra absent — skip"* ]]
-	[[ $output == *"overlay: area:infra absent — skip"* ]]
+	[[ $output == *"labels.yml: rename name"* ]] || return 1
+	[[ $output == *"labeler.yml: area:infra absent — skip"* ]] || return 1
+	[[ $output == *"overlay: area:infra absent — skip"* ]] || return 1
 	run yq -e '.[] | select(.name == "area:infra")' .github/labels.yml
 	[ "$status" -ne 0 ]
 }
@@ -202,7 +202,7 @@ _seed() {
 	printf 'area:infra\ntype:bug\n' >"$TEST_TMP/labels.txt"
 	GH_LABELS="$TEST_TMP/labels.txt" run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
-	[[ $output == *"gh label: edit area:infra --name area:infrastructure"* ]]
+	[[ $output == *"gh label: edit area:infra --name area:infrastructure"* ]] || return 1
 	grep -qx "edit area:infra --name area:infrastructure" "$GH_LOG"
 }
 
@@ -212,7 +212,7 @@ _seed() {
 	printf 'area:infra\narea:infrastructure\n' >"$TEST_TMP/labels.txt"
 	GH_LABELS="$TEST_TMP/labels.txt" run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
-	[[ $output == *"area:infrastructure already exists"* ]]
+	[[ $output == *"area:infrastructure already exists"* ]] || return 1
 	[ ! -s "$GH_LOG" ]
 }
 
@@ -222,7 +222,7 @@ _seed() {
 	printf 'area:infra\n' >"$TEST_TMP/labels.txt"
 	GH_LABELS="$TEST_TMP/labels.txt" run "$SCRIPT" --old area:infra --new area:infrastructure --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"would: gh label: edit area:infra"* ]]
+	[[ $output == *"would: gh label: edit area:infra"* ]] || return 1
 	[ ! -s "$GH_LOG" ]
 }
 
@@ -232,7 +232,7 @@ _seed() {
 	printf 'type:bug\nsomething-else\n' >"$TEST_TMP/labels.txt" # no area:infra
 	GH_LABELS="$TEST_TMP/labels.txt" run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
-	[[ $output == *"area:infra not a GitHub label — skip"* ]]
+	[[ $output == *"area:infra not a GitHub label — skip"* ]] || return 1
 	[ ! -s "$GH_LOG" ]
 }
 
@@ -241,7 +241,7 @@ _seed() {
 	_seed
 	GH_FAIL=1 run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 2 ]
-	[[ $output == *"gh label list failed"* ]]
+	[[ $output == *"gh label list failed"* ]] || return 1
 	[ ! -s "$GH_LOG" ]
 }
 
@@ -268,8 +268,8 @@ _seed() {
 	run "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.labeling_instructions[].label' .coderabbit.overlay.yaml
-	[[ $output == *"area:infrastructure"* ]]
-	[[ $output == *"type:bug"* ]] # non-matching entry untouched
+	[[ $output == *"area:infrastructure"* ]] || return 1
+	[[ $output == *"type:bug"* ]] || return 1 # non-matching entry untouched
 	# Key assertion last: the matched label is renamed, no stale area:infra left.
 	run yq -e '.reviews.labeling_instructions[] | select(.label == "area:infra")' .coderabbit.overlay.yaml
 	[ "$status" -ne 0 ]
@@ -302,7 +302,7 @@ _seed() {
 	done
 	run env PATH="$TEST_TMP/nogh" "$SCRIPT" --old area:infra --new area:infrastructure
 	[ "$status" -eq 0 ]
-	[[ $output == *"gh not installed — skip API rename"* ]]
+	[[ $output == *"gh not installed — skip API rename"* ]] || return 1
 	# File edits still applied despite no gh.
 	yq -e '.[] | select(.name == "area:infrastructure")' .github/labels.yml >/dev/null
 }

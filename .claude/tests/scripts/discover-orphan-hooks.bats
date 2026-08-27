@@ -102,20 +102,20 @@ teardown() {
 @test "--help does not leak loader frontmatter" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output != *"event: none"* ]]
+	[[ $output != *"event: none"* ]] || return 1
 	[[ $output != *"auto-register: false"* ]]
 }
 
 @test "text default reports 2 orphans (orphan-a, orphan-b); skips helper + cli-tool + opt-out + registered" {
 	run "$SCRIPT" --hooks-dir "$TEST_TMP/hooks" --settings "$TEST_TMP/.claude/settings.json"
 	[ "$status" -eq 0 ]
-	[[ $output == *"(2)"* ]]
-	[[ $output == *"orphan-a.sh"* ]]
-	[[ $output == *"orphan-b.sh"* ]]
+	[[ $output == *"(2)"* ]] || return 1
+	[[ $output == *"orphan-a.sh"* ]] || return 1
+	[[ $output == *"orphan-b.sh"* ]] || return 1
 	# Should NOT mention these
-	[[ $output != *"registered.sh"* ]]
-	[[ $output != *"_helper.sh"* ]]
-	[[ $output != *"cli-tool.sh"* ]]
+	[[ $output != *"registered.sh"* ]] || return 1
+	[[ $output != *"_helper.sh"* ]] || return 1
+	[[ $output != *"cli-tool.sh"* ]] || return 1
 	[[ $output != *"opt-out.sh"* ]]
 }
 
@@ -155,7 +155,7 @@ JSON
 	DISCOVERY_OUT_DIR="$TEST_TMP/discovery" run "$SCRIPT" --register-missing \
 		--hooks-dir "$TEST_TMP/hooks" --settings "$TEST_TMP/.claude/settings.json"
 	[ "$status" -eq 0 ]
-	[[ $output == *"Stub written"* ]]
+	[[ $output == *"Stub written"* ]] || return 1
 	stub=$(find "$TEST_TMP/discovery" -name "orphans-*.yml" 2>/dev/null | head -1)
 	[ -n "$stub" ]
 	[ -f "$stub" ]

@@ -118,7 +118,7 @@ _cur_stage() {
 	cd "$TEST_TMP" || return 1
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"no unresolved CR threads (resolved without a commit)"* ]]
+	[[ $output == *"no unresolved CR threads (resolved without a commit)"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -131,7 +131,7 @@ _cur_stage() {
 	export STUB_API_RC=2
 	run "$SCRIPT" next
 	[ "$status" -ne 0 ]
-	[[ $output == *"thread count query failed"* ]]
+	[[ $output == *"thread count query failed"* ]] || return 1
 	[ "$(_cur_stage)" = cr-autofix ]
 }
 
@@ -142,7 +142,7 @@ _cur_stage() {
 	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE STUB_HEAD="$SHA"
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"advanced to merge-gate"* ]]
+	[[ $output == *"advanced to merge-gate"* ]] || return 1
 	[ "$(_cur_stage)" = merge-gate ]
 }
 
@@ -155,10 +155,10 @@ _cur_stage() {
 	# Directive names the cr-resolve-conflict skill wrapper (resolved path,
 	# env-dependent prefix) + the PR number, the opt-out env, and the manual
 	# rebase fallback — the operator's full escape-hatch set.
-	[[ $output == *"cr-resolve-conflict/run.sh --pr 123"* ]]
-	[[ $output == *"merge conflict"* ]]
-	[[ $output == *"CR_RESOLVE_CONFLICT_DISABLED=1"* ]]
-	[[ $output == *"git rebase origin/"* ]]
+	[[ $output == *"cr-resolve-conflict/run.sh --pr 123"* ]] || return 1
+	[[ $output == *"merge conflict"* ]] || return 1
+	[[ $output == *"CR_RESOLVE_CONFLICT_DISABLED=1"* ]] || return 1
+	[[ $output == *"git rebase origin/"* ]] || return 1
 	# Stage MUST NOT advance — operator resolves, then HEAD moves.
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
@@ -169,7 +169,7 @@ _cur_stage() {
 	export STUB_MERGE=UNKNOWN STUB_MERGEABLE=UNKNOWN
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"still computing"* ]]
+	[[ $output == *"still computing"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -181,7 +181,7 @@ _cur_stage() {
 	export STUB_MERGE=DIRTY STUB_MERGEABLE=MERGEABLE STUB_HEAD="$SHA"
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"advanced to merge-gate"* ]]
+	[[ $output == *"advanced to merge-gate"* ]] || return 1
 	[ "$(_cur_stage)" = merge-gate ]
 }
 
@@ -196,8 +196,8 @@ _cur_stage() {
 	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"differs from local HEAD"* ]]
-	[[ $output == *"pull --ff-only"* ]]
+	[[ $output == *"differs from local HEAD"* ]] || return 1
+	[[ $output == *"pull --ff-only"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -211,7 +211,7 @@ _cur_stage() {
 	export STUB_MERGE=BLOCKED STUB_MERGEABLE=CONFLICTING STUB_HEAD="$SHA"
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"not MERGEABLE"* ]]
+	[[ $output == *"not MERGEABLE"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -224,7 +224,7 @@ _cur_stage() {
 	export STUB_MERGE="" STUB_MERGEABLE=""
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"empty merge fields"* ]]
+	[[ $output == *"empty merge fields"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -237,7 +237,7 @@ _cur_stage() {
 	export STUB_MERGE=CLEAN STUB_MERGEABLE=MERGEABLE STUB_HEAD=""
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"empty merge fields"* ]]
+	[[ $output == *"empty merge fields"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -247,7 +247,7 @@ _cur_stage() {
 	export STUB_GH_RC=1
 	run "$SCRIPT" next
 	[ "$status" -eq 2 ]
-	[[ $output == *"cannot resolve PR"* ]]
+	[[ $output == *"cannot resolve PR"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }
 
@@ -264,6 +264,6 @@ AT
 	chmod +x .claude/scripts/cr/auto-triage.sh
 	run "$SCRIPT" next
 	[ "$status" -eq 0 ]
-	[[ $output == *"advanced to cr-conflict-check"* ]]
+	[[ $output == *"advanced to cr-conflict-check"* ]] || return 1
 	[ "$(_cur_stage)" = cr-conflict-check ]
 }

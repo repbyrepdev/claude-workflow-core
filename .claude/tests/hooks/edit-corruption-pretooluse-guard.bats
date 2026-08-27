@@ -80,21 +80,21 @@ _run_guard() {
 	# Real hook_deny: deny-JSON on stdout + exit 0; assert the decision AND that
 	# the reason names the corruption signature (not just any deny).
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *corruption* ]]
 }
 
 @test "Edit new_string with the signature → DENIED" {
 	run _run_guard "$(_payload_edit Edit "$CORRUPT")"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *corruption* ]]
 }
 
 @test "MultiEdit edits[].new_string with the signature → DENIED" {
 	run _run_guard "$(_payload_multiedit "$CORRUPT")"
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *corruption* ]]
 }
 
@@ -116,7 +116,7 @@ _run_guard() {
 	# A malformed payload must NOT fail open: the tool_name parse fails and the
 	# hook denies. Assert the decision AND the fail-closed reason.
 	[ "$status" -eq 0 ]
-	[[ $output == *deny* ]]
+	[[ $output == *deny* ]] || return 1
 	[[ $output == *"failing closed"* ]]
 }
 
@@ -124,8 +124,8 @@ _run_guard() {
 	run _run_guard "$(_payload_write Write "$CORRUPT")" COMMIT_CORRUPT_GUARD_SKIP=1
 	[ "$status" -eq 0 ]
 	# Bypass announces itself AND records the audit (jq present → audit-logged).
-	[[ $output == *bypassing* ]]
-	[[ $output == *audit-logged* ]]
+	[[ $output == *bypassing* ]] || return 1
+	[[ $output == *audit-logged* ]] || return 1
 	[ -f "$TEST_TMP/.claude/logs/edit-corrupt-guard-skip.jsonl" ]
 }
 

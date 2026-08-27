@@ -156,7 +156,7 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=8 FAKE_CR_REQUIRED=no \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
 	[ "$status" -eq 0 ]
-	[[ $output == *"CodeRabbit: pass"* ]]
+	[[ $output == *"CodeRabbit: pass"* ]] || return 1
 	[[ $output != *"gh pr checks failed"* ]]
 }
 
@@ -168,7 +168,7 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=no \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
 	[ "$status" -eq 1 ]
-	[[ $output == *"CodeRabbit: fail"* ]]
+	[[ $output == *"CodeRabbit: fail"* ]] || return 1
 	[[ $output != *"gh pr checks failed"* ]]
 }
 
@@ -179,7 +179,7 @@ EOF
 	run env FAKE_CHECKS="" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=no \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 30
 	[ "$status" -eq 2 ]
-	[[ $output == *"gh pr checks failed"* ]]
+	[[ $output == *"gh pr checks failed"* ]] || return 1
 	[[ $output == *"no output"* ]]
 }
 
@@ -206,7 +206,7 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=1 FAKE_CR_REQUIRED=yes \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
 	[ "$status" -eq 2 ]
-	[[ $output == *"timeout reached"* ]]
+	[[ $output == *"timeout reached"* ]] || return 1
 	# CR #2371: assert the warn fires EXACTLY once (the SIBLING_FAIL_WARNED
 	# one-shot). Presence-only passed even when the warn was UNREACHABLE — the
 	# count is the real contract. Kept LAST so bats enforces it.
@@ -234,6 +234,6 @@ EOF
 	run env FAKE_CHECKS="$checks" FAKE_CHECKS_RC=8 FAKE_CR_REQUIRED=yes \
 		PATH="$TEST_TMP/fakebin:$PATH" bash "$SCRIPT" 999 --interval 1 --timeout 3
 	[ "$status" -eq 2 ]
-	[[ $output == *"timeout reached"* ]]
+	[[ $output == *"timeout reached"* ]] || return 1
 	[[ $output != *"gh pr checks failed"* ]]
 }

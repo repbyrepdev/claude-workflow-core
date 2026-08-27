@@ -178,14 +178,14 @@ teardown() {
 @test "--help emits usage" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"Usage"* ]]
+	[[ $output == *"Usage"* ]] || return 1
 	[[ $output == *"--dry-run"* ]]
 }
 
 @test "--help does not leak loader frontmatter directives" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output != *"event: post-release"* ]]
+	[[ $output != *"event: post-release"* ]] || return 1
 	[[ $output != *"auto-register: false"* ]]
 }
 
@@ -212,9 +212,9 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/cascade-to-consumers.sh --dry-run --version 1.2.3
 	[ "$status" -eq 0 ]
-	[[ $output == *"[DRY-RUN] alpha"* ]]
-	[[ $output == *"[CURRENT] beta"* ]]
-	[[ $output == *"created:         0"* ]]
+	[[ $output == *"[DRY-RUN] alpha"* ]] || return 1
+	[[ $output == *"[CURRENT] beta"* ]] || return 1
+	[[ $output == *"created:         0"* ]] || return 1
 	[[ $output == *"skipped current: 1"* ]]
 }
 
@@ -222,8 +222,8 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"[CREATED] alpha"* ]]
-	[[ $output == *"issue #777"* ]]
+	[[ $output == *"[CREATED] alpha"* ]] || return 1
+	[[ $output == *"issue #777"* ]] || return 1
 	# Audit log should contain a JSON record with action=created
 	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
 	run jq -r '.action' "$TEST_TMP/plugin/.claude/logs/cascade.jsonl"
@@ -237,7 +237,7 @@ teardown() {
 		GH_STUB_EXISTING_TITLE_org_alpha="feat: refresh from plugin v1.2.3 (was v1.0.0)" \
 		run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"[EXISTS] alpha"* ]]
+	[[ $output == *"[EXISTS] alpha"* ]] || return 1
 	[[ $output == *"#555"* ]]
 }
 
@@ -245,8 +245,8 @@ teardown() {
 	cd "$TEST_TMP/plugin" || return 1
 	GH_STUB_FAIL_LABEL=1 run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 3 ]
-	[[ $output == *"failed to ensure"* ]]
-	[[ $output == *"failed:          1"* ]]
+	[[ $output == *"failed to ensure"* ]] || return 1
+	[[ $output == *"failed:          1"* ]] || return 1
 	# r3 code-reviewer LOW: also verify the JSONL audit log carries the
 	# fail-label-create action (whole-point-of-the-audit-log).
 	[ -f "$TEST_TMP/plugin/.claude/logs/cascade.jsonl" ]
@@ -277,8 +277,8 @@ YAML
 	cd "$TEST_TMP/plugin" || return 1
 	run scripts/cascade-to-consumers.sh --version 2.0.0
 	[ "$status" -eq 0 ]
-	[[ $output == *"[CREATED] alpha"* ]]
-	[[ $output == *"[CREATED] beta"* ]]
+	[[ $output == *"[CREATED] alpha"* ]] || return 1
+	[[ $output == *"[CREATED] beta"* ]] || return 1
 	[[ $output == *"created:         2"* ]]
 }
 
@@ -286,7 +286,7 @@ YAML
 	cd "$TEST_TMP/plugin" || return 1
 	GH_STUB_FAIL_CREATE=1 run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 3 ]
-	[[ $output == *"[FAIL] alpha"* ]]
+	[[ $output == *"[FAIL] alpha"* ]] || return 1
 	[[ $output == *"failed:          1"* ]]
 }
 
@@ -336,9 +336,9 @@ YAML
 	# Stub: org/alpha has prior open cascade #555 (different version)
 	GH_STUB_PRIOR_org_alpha="555" run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"[CREATED] alpha"* ]]
-	[[ $output == *"[SUPERSEDED] alpha"* ]]
-	[[ $output == *"#555"* ]]
+	[[ $output == *"[CREATED] alpha"* ]] || return 1
+	[[ $output == *"[SUPERSEDED] alpha"* ]] || return 1
+	[[ $output == *"#555"* ]] || return 1
 	# Verify the close call landed
 	[ -f "$TEST_TMP/gh-stub-close.log" ]
 	grep -Fxq "555" "$TEST_TMP/gh-stub-close.log"
@@ -348,7 +348,7 @@ YAML
 	cd "$TEST_TMP/plugin" || return 1
 	GH_STUB_PRIOR_org_alpha="100,200,300" run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"[CREATED] alpha"* ]]
+	[[ $output == *"[CREATED] alpha"* ]] || return 1
 	# All 3 priors closed
 	[ -f "$TEST_TMP/gh-stub-close.log" ]
 	grep -Fxq "100" "$TEST_TMP/gh-stub-close.log"
@@ -361,8 +361,8 @@ YAML
 	# Default state: no GH_STUB_PRIOR set
 	run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"[CREATED] alpha"* ]]
-	[[ $output != *"[SUPERSEDED]"* ]]
+	[[ $output == *"[CREATED] alpha"* ]] || return 1
+	[[ $output != *"[SUPERSEDED]"* ]] || return 1
 	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || [ ! -s "$TEST_TMP/gh-stub-close.log" ]
 }
 
@@ -370,9 +370,9 @@ YAML
 	cd "$TEST_TMP/plugin" || return 1
 	GH_STUB_PRIOR_org_alpha="500" run scripts/cascade-to-consumers.sh --consumer alpha --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"[DRY-RUN] alpha"* ]]
-	[[ $output == *"[DRY-RUN-supersede] alpha"* ]]
-	[[ $output == *"#500"* ]]
+	[[ $output == *"[DRY-RUN] alpha"* ]] || return 1
+	[[ $output == *"[DRY-RUN-supersede] alpha"* ]] || return 1
+	[[ $output == *"#500"* ]] || return 1
 	# No close calls actually fired
 	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || [ ! -s "$TEST_TMP/gh-stub-close.log" ]
 }
@@ -386,7 +386,7 @@ YAML
 		GH_STUB_PRIOR_org_alpha="100" \
 		run scripts/cascade-to-consumers.sh --consumer alpha
 	[ "$status" -eq 0 ]
-	[[ $output == *"[EXISTS] alpha"* ]]
+	[[ $output == *"[EXISTS] alpha"* ]] || return 1
 	# Should NOT have closed #100 (we hit EXISTS, not CREATED)
 	[ ! -f "$TEST_TMP/gh-stub-close.log" ] || ! grep -Fxq "100" "$TEST_TMP/gh-stub-close.log"
 }
@@ -396,8 +396,8 @@ YAML
 	GH_STUB_PRIOR_org_alpha="999" GH_STUB_FAIL_CLOSE=1 run scripts/cascade-to-consumers.sh --consumer alpha
 	# Primary cascade succeeded → exit 0 even with supersede failures
 	[ "$status" -eq 0 ]
-	[[ $output == *"[CREATED] alpha"* ]]
-	[[ $output == *"[supersede-fail] alpha"* ]]
+	[[ $output == *"[CREATED] alpha"* ]] || return 1
+	[[ $output == *"[supersede-fail] alpha"* ]] || return 1
 	# r2 code-reviewer CRITICAL: fail-supersede-close audit MUST capture
 	# BOTH the prior issue number AND the gh-close stderr (was dropping
 	# detail when issue_num was set under the old mutually-exclusive _log).
@@ -416,7 +416,7 @@ YAML
 	# r2 silent-failure-hunter HIGH: feature must be visible in summary
 	# (was: superseded counter only in audit log; operator at-a-glance
 	# couldn't see whether dedup actually fired).
-	[[ $output == *"superseded:      3"* ]]
+	[[ $output == *"superseded:      3"* ]] || return 1
 	[[ $output == *"supersede fails: 0"* ]]
 }
 
@@ -440,8 +440,8 @@ YAML
 	# proving $PLUGIN_NAME / $PLUGIN_REPO_URL interpolation — not a hardcode.
 	[ -f "$TEST_TMP/gh-issue-body.txt" ]
 	run cat "$TEST_TMP/gh-issue-body.txt"
-	[[ $output == *"test has released"* ]]
-	[[ $output == *"~/test/scripts/refresh-from-source.sh"* ]]
+	[[ $output == *"test has released"* ]] || return 1
+	[[ $output == *"~/test/scripts/refresh-from-source.sh"* ]] || return 1
 	# Key assertion LAST: the release-notes link is built from $PLUGIN_REPO_URL.
 	[[ $output == *"https://github.com/test-org/test/releases/tag/v"* ]]
 }

@@ -318,8 +318,8 @@ _build_broken_plugin_farm() {
 
 	# Fails CLOSED, and says which of the two lockfile paths it took.
 	[ "$status" -eq 2 ]
-	[[ $output == *"lockfile not readable"* ]]
-	[[ $output == *"OpenWiki lockfile MISSING"* ]]
+	[[ $output == *"lockfile not readable"* ]] || return 1
+	[[ $output == *"OpenWiki lockfile MISSING"* ]] || return 1
 	# ci-r2: BOTH deferred failures report in ONE run. The refresh handler
 	# runs FIRST and used to exit in place, which would have hidden every
 	# lockfile line above — so seeing both remediation blocks together is the
@@ -356,11 +356,11 @@ _build_broken_plugin_farm() {
 	[ "$status" -eq 2 ]
 	# Names the ABSENT case specifically, so an operator can tell it from the
 	# refresher-errored case, which fails closed with a different message.
-	[[ $output == *"refresh-from-source.sh not found"* ]]
-	[[ $output == *"SEED FILES ONLY"* ]]
-	[[ $output == *"Full SSOT sync did NOT complete"* ]]
+	[[ $output == *"refresh-from-source.sh not found"* ]] || return 1
+	[[ $output == *"SEED FILES ONLY"* ]] || return 1
+	[[ $output == *"Full SSOT sync did NOT complete"* ]] || return 1
 	# The false success is gone.
-	[[ $output != *"dry-run complete"* ]]
+	[[ $output != *"dry-run complete"* ]] || return 1
 	# Still a preview: nothing was written into the target.
 	[ ! -e "$target/.github/workflows/openwiki-update.yml" ]
 }

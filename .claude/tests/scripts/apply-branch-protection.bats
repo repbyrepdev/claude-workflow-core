@@ -109,7 +109,7 @@ EOF
 	_install_stubs "$TEST_TMP"
 	GH_FAIL_FETCH=1 PATH="$TEST_TMP/bin:$PATH" run "$TEST_TMP/scripts/apply-branch-protection.sh" --check
 	[ "$status" -eq 1 ]
-	[[ $output == *"DRIFT"* ]]
+	[[ $output == *"DRIFT"* ]] || return 1
 	[[ $output == *"branch not protected"* ]]
 }
 
@@ -136,7 +136,7 @@ EOF
 	_install_stubs "$TEST_TMP"
 	GH_FAIL_FETCH=1 PATH="$TEST_TMP/bin:$PATH" run "$TEST_TMP/scripts/apply-branch-protection.sh" --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"DRY RUN"* ]]
-	[[ $output == *"CodeRabbit"* ]]
+	[[ $output == *"DRY RUN"* ]] || return 1
+	[[ $output == *"CodeRabbit"* ]] || return 1
 	[[ $output == *"gitleaks"* ]]
 }

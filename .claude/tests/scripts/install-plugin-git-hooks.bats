@@ -57,7 +57,7 @@ teardown() {
 	sleep 1 # allow mtime resolution
 	run scripts/install-plugin-git-hooks.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"already installed"* ]]
+	[[ $output == *"already installed"* ]] || return 1
 	mtime_after=$(stat -f '%m' .git/hooks/post-merge 2>/dev/null || stat -c '%Y' .git/hooks/post-merge)
 	[ "$mtime_before" = "$mtime_after" ]
 }
@@ -106,7 +106,7 @@ teardown() {
 	cd "$OTHER"
 	run scripts/install-plugin-git-hooks.sh
 	[ "$status" -eq 2 ]
-	[[ $output == *"not inside the plugin repo"* ]]
+	[[ $output == *"not inside the plugin repo"* ]] || return 1
 	cd /tmp
 	rm -rf "$OTHER"
 }
@@ -121,7 +121,7 @@ OLD
 	chmod +x .git/hooks/post-merge
 	run scripts/install-plugin-git-hooks.sh
 	[ "$status" -eq 0 ]
-	[[ $output == *"backed up"* ]]
+	[[ $output == *"backed up"* ]] || return 1
 	# Backup file with timestamp suffix exists with the old content.
 	# Pattern: post-merge.bak.YYYYMMDDTHHMMSSZ
 	shopt -s nullglob

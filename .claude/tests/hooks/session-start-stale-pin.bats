@@ -107,8 +107,8 @@ EOF
 	mkdir -p "$CACHE_DIR/0.9.7"
 	run bash "$SCRIPT" 2>&1
 	[ "$status" -eq 0 ]
-	[[ $output == *"inverse plugin-cache drift"* ]]
-	[[ $output == *"v0.10.0"* ]]
+	[[ $output == *"inverse plugin-cache drift"* ]] || return 1
+	[[ $output == *"v0.10.0"* ]] || return 1
 	[[ $output == *"v0.9.7"* ]]
 }
 
@@ -118,8 +118,8 @@ EOF
 	mkdir -p "$CACHE_DIR/0.9.5" "$CACHE_DIR/0.10.0"
 	run bash "$SCRIPT" 2>&1
 	[ "$status" -eq 0 ]
-	[[ $output == *"v0.9.5"* ]]
-	[[ $output == *"v0.10.0"* ]]
+	[[ $output == *"v0.9.5"* ]] || return 1
+	[[ $output == *"v0.10.0"* ]] || return 1
 	[[ $output == *"drift"* ]]
 }
 

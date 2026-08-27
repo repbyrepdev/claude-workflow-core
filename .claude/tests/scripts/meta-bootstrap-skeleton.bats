@@ -19,9 +19,9 @@ setup() {
 @test "--help prints usage with all 4 targets + exits 0" {
 	run "$SCRIPT" --help
 	[ "$status" -eq 0 ]
-	[[ $output == *"machine"* ]]
-	[[ $output == *"repo"* ]]
-	[[ $output == *"plugin"* ]]
+	[[ $output == *"machine"* ]] || return 1
+	[[ $output == *"repo"* ]] || return 1
+	[[ $output == *"plugin"* ]] || return 1
 	[[ $output == *"feature-branch"* ]]
 }
 
@@ -55,8 +55,8 @@ setup() {
 	# trigger an actual brew install.
 	run "$SCRIPT" --target machine --verify-only
 	[ "$status" -eq 0 ]
-	[[ $output != *"not yet implemented"* ]]
-	[[ $output != *"not yet wired"* ]]
+	[[ $output != *"not yet implemented"* ]] || return 1
+	[[ $output != *"not yet wired"* ]] || return 1
 	[[ $output == *"running target: machine"* ]]
 }
 
@@ -74,7 +74,7 @@ setup() {
 	# two-step verify shape against silent collapse to one step.
 	run "$SCRIPT" --target plugin --verify-only
 	[ "$status" -eq 0 ]
-	[[ $output == *"plugin manifest fields"* ]]
+	[[ $output == *"plugin manifest fields"* ]] || return 1
 	[[ $output == *"bootstrap-manifest.yml"* ]]
 }
 
@@ -84,13 +84,13 @@ setup() {
 	for t in machine plugin; do
 		run "$SCRIPT" --target "$t" --verify-only
 		[ "$status" -eq 0 ]
-		[[ $output != *"not yet wired"* ]]
+		[[ $output != *"not yet wired"* ]] || return 1
 	done
 	# feature-branch: env-coupled (git state, gh labels) — pin wiring
 	# only, not the success rc. Detailed coverage in feature-branch.bats.
 	run "$SCRIPT" --target feature-branch --verify-only
 	[ "$status" -ne 69 ]
-	[[ $output != *"not yet wired"* ]]
+	[[ $output != *"not yet wired"* ]] || return 1
 	# repo: --verify-only without target-dir is rc=2 (argparse), NOT 69.
 	run "$SCRIPT" --target repo --verify-only
 	[ "$status" -eq 2 ]
@@ -121,7 +121,7 @@ setup() {
 	# dispatcher is wired correctly).
 	run "$SCRIPT" --target feature-branch
 	[ "$status" -ne 69 ]
-	[[ $output != *"not yet implemented"* ]]
+	[[ $output != *"not yet implemented"* ]] || return 1
 	[[ $output != *"not yet wired"* ]]
 }
 
@@ -146,7 +146,7 @@ setup() {
 	# (not argparse), which is signalled by "running target: machine".
 	run "$SCRIPT" --target machine -- --foo bar
 	[ "$status" -eq 2 ]
-	[[ $output == *"running target: machine"* ]]
+	[[ $output == *"running target: machine"* ]] || return 1
 	[[ $output == *"accepts no positional arguments"* ]]
 }
 

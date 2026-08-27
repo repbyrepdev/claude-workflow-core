@@ -44,7 +44,7 @@ _run_with_cmd() {
 @test "blocks 'until grep -q complete; do sleep 5; done'" {
 	run _run_with_cmd 'until grep -q complete .output; do sleep 5; done'
 	[ "$status" -eq 0 ]
-	[[ $output == *"permissionDecision\":\"deny"* ]]
+	[[ $output == *"permissionDecision\":\"deny"* ]] || return 1
 	[[ $output == *"run_in_background"* ]]
 }
 
@@ -121,7 +121,7 @@ done"
 	payload=$(jq -nc --arg c 'until grep -q done; do sleep 5; done' '{tool_name:"Monitor",tool_input:{command:$c}}')
 	run bash -c "cd '$TEST_TMP' && export MONITOR_MISUSE_SKIP=1 && printf '%s' '$payload' | bash '$SCRIPT' 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output != *"permissionDecision\":\"deny"* ]]
+	[[ $output != *"permissionDecision\":\"deny"* ]] || return 1
 	[ -f "$TEST_TMP/.claude/logs/monitor-misuse-bypass.jsonl" ]
 	got=$(jq -r '.event' "$TEST_TMP/.claude/logs/monitor-misuse-bypass.jsonl")
 	[ "$got" = "monitor_misuse_skip" ]

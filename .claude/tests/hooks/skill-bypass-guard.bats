@@ -51,9 +51,9 @@ _run_guard() {
 	# r2 (pr-test-analyzer): assert a real deny FIRST so the negative checks below
 	# can't pass vacuously on an error path that emitted no directive.
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
-	[[ $output != *"Sanctioned skill-wrapper"* ]]
-	[[ $output != *"SKILL_WRAPPER=1 <your-command>"* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
+	[[ $output != *"Sanctioned skill-wrapper"* ]] || return 1
+	[[ $output != *"SKILL_WRAPPER=1 <your-command>"* ]] || return 1
 	# the legitimate emergency escape is still offered
 	[[ $output == *"GH_SKILL_BYPASS_SKIP"* ]]
 }
@@ -61,9 +61,9 @@ _run_guard() {
 @test "bats deny directive does NOT advertise SKILL_WRAPPER bypass (#224)" {
 	_run_guard "bats foo.bats"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
-	[[ $output != *"Sanctioned wrapper path"* ]]
-	[[ $output != *"SKILL_WRAPPER=1 bats"* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
+	[[ $output != *"Sanctioned wrapper path"* ]] || return 1
+	[[ $output != *"SKILL_WRAPPER=1 bats"* ]] || return 1
 	[[ $output == *"GH_SKILL_BYPASS_SKIP"* ]]
 }
 
@@ -80,16 +80,16 @@ _run_guard() {
 	# (plus env assignments), so grouping/wrapper prefixes hid the verb.
 	_run_guard "{ gh issue create --title x; }"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	_run_guard "(gh pr create --title x)"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	_run_guard "command gh release create v1.0.0"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	_run_guard "sudo -E gh pr merge 5"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	_run_guard "env X=1 bats foo.bats"
 	[ "$status" -eq 0 ]
 	[[ $output == *'"permissionDecision":"deny"'* ]]
@@ -125,7 +125,7 @@ EOF
 	jq -nc --arg c "gh issue create --title x" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
 	run bash -c "cd '$TEST_TMP' && bash '$TEST_TMP/.claude/hooks/skill-bypass-guard.sh' < '$TEST_TMP/payload.json'"
 	[ "$status" -eq 0 ]
-	[[ $output == *'"permissionDecision":"deny"'* ]]
+	[[ $output == *'"permissionDecision":"deny"'* ]] || return 1
 	jq -nc --arg c "FOO=bar gh pr merge 5" '{tool_input:{command:$c}}' >"$TEST_TMP/payload.json"
 	run bash -c "cd '$TEST_TMP' && bash '$TEST_TMP/.claude/hooks/skill-bypass-guard.sh' < '$TEST_TMP/payload.json'"
 	[ "$status" -eq 0 ]

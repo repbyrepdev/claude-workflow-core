@@ -52,7 +52,17 @@ EOF
 	# base labeling_instructions makes base_n empty->0 and the append->1 pass
 	# spuriously; an unchecked yq error masks the cause. Require a positive
 	# integer so a regressed/empty base fails LOUD here, not as a count mismatch.
-	[[ $base_n =~ ^[0-9]+$ ]] && [ "$base_n" -ge 1 ]
+	# Written as `[[ ]] && [ ]`, this asserted nothing on ANY bash: a failing
+	# non-last member of an AND-list fires neither the ERR trap nor `set -e`.
+	# A guard added to "fail LOUD" that was itself silent — found by the
+	# detector in _lib/bats-assertion-check.sh (#2631 follow-up).
+	case "$base_n" in
+	'' | *[!0-9]*)
+		echo "base labeling_instructions count is not an integer: '$base_n'" >&2
+		return 1
+		;;
+	esac
+	[ "$base_n" -ge 1 ]
 	[ "$(yq -r '.reviews.labeling_instructions | length' "$TMP/target/.coderabbit.yaml")" -eq "$((base_n + 1))" ]
 	[ "$(yq -r '.reviews.labeling_instructions[-1].label' "$TMP/target/.coderabbit.yaml")" = "area:coalesce" ]
 }
@@ -73,10 +83,10 @@ EOF
 	mkdir -p "$TMP/target"
 	run bash "$SCRIPT" "$TMP/target" --dry-run
 	[ "$status" -eq 0 ]
-	[[ $output == *"would compose .coderabbit.yaml"* ]]
+	[[ $output == *"would compose .coderabbit.yaml"* ]] || return 1
 	# Regression guard for the pre-r1 ordering bug (base-check before dry-run
 	# guard) that emitted "absent — skipping" on a fresh dry-run.
-	[[ $output != *"absent in target — skipping"* ]]
+	[[ $output != *"absent in target — skipping"* ]] || return 1
 	# Dry-run mutates nothing.
 	[ ! -f "$TMP/target/.coderabbit.base.yaml" ]
 	[ ! -f "$TMP/target/.coderabbit.yaml" ]
@@ -89,7 +99,7 @@ EOF
 	before=$(shasum -a 256 "$TMP/target/.coderabbit.yaml" | awk '{print $1}')
 	run bash "$SCRIPT" "$TMP/target"
 	[ "$status" -eq 0 ]
-	[[ $output == *".coderabbit.yaml exists — skipping compose"* ]]
+	[[ $output == *".coderabbit.yaml exists — skipping compose"* ]] || return 1
 	after=$(shasum -a 256 "$TMP/target/.coderabbit.yaml" | awk '{print $1}')
 	[ "$before" = "$after" ]
 }
@@ -104,8 +114,8 @@ reviews: "gut-the-map"
 EOF
 	run bash "$SCRIPT" "$TMP/target"
 	[ "$status" -eq 0 ]
-	[[ $output == *"NOT composed"* ]]
-	[[ $output == *"fall back to"* ]] # the summary reminder fired
+	[[ $output == *"NOT composed"* ]] || return 1
+	[[ $output == *"fall back to"* ]] || return 1 # the summary reminder fired
 	# base still written; .coderabbit.yaml not produced (compose failed).
 	[ -f "$TMP/target/.coderabbit.base.yaml" ]
 	[ ! -f "$TMP/target/.coderabbit.yaml" ]
@@ -140,7 +150,7 @@ _run_compose_fixture() {
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output == *'!.claude/hooks/beta.sh'* ]]
 }
 
@@ -151,7 +161,7 @@ _run_compose_fixture() {
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output != *'!.claude/hooks/beta.sh'* ]]
 }
 
@@ -161,7 +171,7 @@ _run_compose_fixture() {
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output == *'!.claude/hooks/beta.sh'* ]]
 }
 
@@ -178,11 +188,11 @@ _run_compose_fixture() {
 	fi
 	_run_compose_fixture
 	[ "$status" -eq 0 ]
-	[[ $output == *"WARNING: cmp failed"* ]]
-	[[ $output == *"beta.sh"* ]]
+	[[ $output == *"WARNING: cmp failed"* ]] || return 1
+	[[ $output == *"beta.sh"* ]] || return 1
 	chmod 644 "$TMP/consumer/beta.sh"
 	run yq -r '.reviews.auto_review.path_filters[]' "$TMP/composed.yaml"
-	[[ $output == *'!.claude/hooks/alpha.sh'* ]]
+	[[ $output == *'!.claude/hooks/alpha.sh'* ]] || return 1
 	[[ $output != *'!.claude/hooks/beta.sh'* ]]
 }
 

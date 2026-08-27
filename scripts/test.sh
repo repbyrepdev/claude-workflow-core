@@ -43,6 +43,46 @@ if ! command -v bats >/dev/null 2>&1; then
 	exit 2
 fi
 
+# --- harness trust (#2631 follow-up) -------------------------------------
+#
+# bats reports a failed test through an ERR trap. On bash 3.2 — the 2007
+# build macOS ships at /bin/bash and can never update, because bash 4.0
+# relicensed to GPLv3 — a failing `[[ ]]` fires NEITHER that trap NOR
+# `set -e`, so the script simply continues and the test PASSES. Demonstrate
+# it in one line:
+#
+#   /bin/bash -c 'set -eET; trap "echo TRAP" ERR; [[ a == b ]]; echo REACHED'
+#   → REACHED        (with bash 5: TRAP, and the script stops)
+#
+# Consequence: every `[[ ]]` assertion that is not a test's LAST command is
+# a silent no-op. Measured at 749 across 96 files when this was found — a
+# green run under 3.2 proved only that the `[ ]` assertions held, which is
+# not what "green" is read to mean.
+#
+# The fix was to make the SUITE portable rather than to constrain the
+# environment: every assertion is now written in a form that fails on 3.2 as
+# well as 4/5 (`[ ]`, `case`, `|| return 1`, `assert_*`), and
+# pre-commit-hooks/bats-assertion-gate.sh keeps it that way. Refusing to run
+# on 3.2 would only have moved the problem — GitHub's macOS runners ship 3.2,
+# so a refusal there stops CI rather than testing anything.
+#
+# NEITHER shell's green run implies the other's. They check different things:
+#
+#   bash 3.2  proves no bash-4-only syntax; proves nothing about enforcement,
+#             since the no-op assertion forms pass there
+#   bash 5    proves every assertion can actually fail; proves nothing about
+#             whether the suite even parses on 3.2 (`declare -A`, `${v^^}`)
+#
+# So run both. This started out claiming green on 3.2 implied green on 5 —
+# backwards for enforcement — and the correction then over-swung to claiming
+# the reverse, which is equally untrue. Two shells, two properties.
+#
+# `--shell` is what makes checking both possible: it builds a shim dir and
+# VERIFIES the shell took effect, because `bats` re-execs
+# `#!/usr/bin/env bash` helpers and a naive `<shell> <bats>` reaches only the
+# front-end. A run that reported 3.2 and executed under 5 is exactly what
+# phase-1 review caught here.
+
 LOG_FILE="${BATS_LOG:-$REPO_ROOT/.claude/logs/bats-run.jsonl}"
 mkdir -p "$(dirname "$LOG_FILE")"
 
@@ -55,6 +95,19 @@ while [ "$#" -gt 0 ]; do
 	--no-log)
 		DO_LOG=0
 		shift
+		;;
+	--shell)
+		# (#2572) Run bats under a SPECIFIC bash. The suite is portable, so
+		# the honest acceptance test is "same verdict on the oldest and the
+		# newest shell we support" — and that is only checkable if the shell
+		# is selectable. Read above by TEST_BASH, which this sets.
+		if [ -z "${2:-}" ]; then
+			echo "error: --shell requires a path to a bash binary" >&2
+			exit 2
+		fi
+		TEST_BASH="$2"
+		export TEST_BASH
+		shift 2
 		;;
 	--coverage)
 		MODE="coverage"
@@ -86,6 +139,64 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+# --- resolve and VERIFY the shell the tests will run under ----------------
+#
+# After the parse loop, so `--shell` is visible here — the gate that used to
+# sit above it exited before its own advertised remedy could be parsed.
+#
+# `bats` re-execs several `#!/usr/bin/env bash` helpers, so invoking it as
+# `<shell> <bats-path>` overrides only the front-end and the test bodies still
+# get whatever `bash` PATH resolves to. The fix is a shim dir on PATH; the
+# verification is what makes "this ran under 3.2" checkable rather than
+# asserted. Phase-1 review caught a run that reported 3.2 and executed under 5.
+#
+# TEST_BASH is honoured from the environment as well as from `--shell`, so it
+# is validated the same way either way: a non-bash there would otherwise sail
+# through as a green run of zero tests.
+SHELL_SHIM_DIR=""
+_cleanup_shell_shim() {
+	# `return 0` is load-bearing: an EXIT trap whose last command fails
+	# REPLACES the script's exit status with that failure. Written as
+	# `[ -n "$X" ] && rm -rf "$X"` it turned every clean run into exit 1 —
+	# including `--coverage` and the refusals below, which then reported the
+	# wrong code while printing the right message.
+	if [ -n "$SHELL_SHIM_DIR" ]; then
+		rm -rf "$SHELL_SHIM_DIR"
+	fi
+	return 0
+}
+trap _cleanup_shell_shim EXIT
+
+if [ -n "${TEST_BASH:-}" ]; then
+	if [ ! -x "$TEST_BASH" ]; then
+		echo "ERROR: --shell/TEST_BASH '$TEST_BASH' is not executable" >&2
+		exit 2
+	fi
+	_want_ver=$("$TEST_BASH" -c 'echo "${BASH_VERSION:-}"' 2>/dev/null || echo "")
+	if [ -z "$_want_ver" ]; then
+		echo "ERROR: --shell/TEST_BASH '$TEST_BASH' reports no \$BASH_VERSION." >&2
+		echo "  It is not a bash, so it cannot run the suite. Refusing rather" >&2
+		echo "  than logging a green run of zero tests." >&2
+		exit 2
+	fi
+	# Absolute path before the symlink: the shim lives in a temp dir, so a
+	# relative `--shell ./bash-3.2` would link to a path that does not exist
+	# from there. The version check below would catch it, but as a confusing
+	# "did not take effect" rather than the real cause.
+	case "$TEST_BASH" in
+	/*) ;;
+	*) TEST_BASH=$(cd "$(dirname "$TEST_BASH")" && pwd)/$(basename "$TEST_BASH") || exit 2 ;;
+	esac
+	SHELL_SHIM_DIR=$(mktemp -d -t bats-shell.XXXXXX) || exit 2
+	ln -s "$TEST_BASH" "$SHELL_SHIM_DIR/bash" || exit 2
+	_got_ver=$(PATH="$SHELL_SHIM_DIR:$PATH" /usr/bin/env bash -c 'echo "${BASH_VERSION:-}"' 2>/dev/null || echo "")
+	if [ "$_want_ver" != "$_got_ver" ]; then
+		echo "ERROR: --shell '$TEST_BASH' ($_want_ver) did not take effect;" >&2
+		echo "  \`env bash\` still resolves to '${_got_ver:-nothing}'." >&2
+		exit 2
+	fi
+fi
+
 cd "$REPO_ROOT" || exit 2
 
 # --coverage: inventory mode, doesn't run tests.
@@ -116,7 +227,13 @@ if [ "$MODE" = "coverage" ]; then
 		# remains in case a future refactor swaps to `find -exec ... +`
 		# (aggregated grep) or `find | xargs grep` / `find | grep`, where
 		# grep's rc=1 on no-match WOULD propagate under set -o pipefail.
-		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u || true)
+		# -m1: FIRST covers: line per file, matching every other consumer
+		# (test-touched.sh routing, bats-gate.sh, the mirror-drift gate — all
+		# `grep -m1`). Without it a second covers: line earned coverage credit
+		# here while being silently ignored everywhere else, so a path could
+		# read as covered and still not route or satisfy the commit gate.
+		# `-exec ... \;` already runs one grep per file, so -m1 is per-file.
+		COVERED_PATHS=$(find .claude/tests -name "*.bats" -exec grep -m1 -hE '^#[[:space:]]*covers:' {} \; | sed -E 's/^#[[:space:]]*covers:[[:space:]]*//' | tr ' ' '\n' | sort -u || true)
 	else
 		bats_count=0
 		COVERED_PATHS=""
@@ -265,8 +382,16 @@ _tested_files_json() {
 
 log_one() {
 	local file=$1 rc=$2 passed=$3 failed=$4 status
-	if [ "$rc" -eq 0 ]; then
+	if [ "$rc" -eq 0 ] && [ "$passed" -gt 0 ]; then
 		status="pass"
+	elif [ "$rc" -eq 0 ]; then
+		# rc=0 with nothing executed. Every consumer of this log — bats-gate,
+		# the pre-push pipeline gate, the content-hash cache — reads `pass` as
+		# "this file's tests ran and held". A run that executed zero tests
+		# proves nothing, so it must never be able to say `pass`. This is the
+		# shape a non-bash TEST_BASH produced before the gate above rejected
+		# it (`✓ file (0 passed)`, exit 0, logged pass); belt and braces.
+		status="error"
 	elif [ "$rc" -eq 1 ]; then
 		status="fail"
 	else
@@ -333,12 +458,32 @@ FAIL_FILES=0
 for f in "${FILES[@]}"; do
 	TOTAL_FILES=$((TOTAL_FILES + 1))
 	rc=0
-	out=$(bats --tap "$f" 2>&1) || rc=$?
+	# (#2572) --shell/TEST_BASH: run bats UNDER a chosen bash, via the shim
+	# dir built and VERIFIED above. PATH — not `<shell> <bats-path>` — is what
+	# reaches the test bodies: bats re-execs `bats-exec-test` and friends,
+	# each `#!/usr/bin/env bash`, so only PATH decides what interprets an
+	# assertion. Unset (the normal case) keeps the plain invocation.
+	if [ -n "$SHELL_SHIM_DIR" ]; then
+		out=$(PATH="$SHELL_SHIM_DIR:$PATH" bats --tap "$f" 2>&1) || rc=$?
+	else
+		out=$(bats --tap "$f" 2>&1) || rc=$?
+	fi
 	passed=$(printf '%s\n' "$out" | grep -cE '^ok ' || true)
 	failed=$(printf '%s\n' "$out" | grep -cE '^not ok ' || true)
 	TOTAL_PASS=$((TOTAL_PASS + passed))
 	TOTAL_FAIL=$((TOTAL_FAIL + failed))
-	[ "$rc" -ne 0 ] && FAIL_FILES=$((FAIL_FILES + 1))
+	# rc=0 with nothing executed is a failure, not a pass. Reassigning rc here
+	# keeps ONE verdict feeding the console line, the exit code and the JSONL
+	# entry, so they cannot disagree. (No suite in .claude/tests has zero
+	# @test, so this only ever fires on a broken harness.)
+	if [ "$rc" -eq 0 ] && [ "$passed" -eq 0 ]; then
+		rc=66
+		out="${out}
+# no tests executed — refusing to report this file as passing"
+	fi
+	if [ "$rc" -ne 0 ]; then
+		FAIL_FILES=$((FAIL_FILES + 1))
+	fi
 	log_one "$f" "$rc" "$passed" "$failed"
 	if [ "$rc" -eq 0 ]; then
 		echo "✓ $f ($passed passed)"

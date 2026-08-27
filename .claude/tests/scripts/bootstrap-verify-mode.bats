@@ -114,7 +114,7 @@ teardown() {
 	done
 	run bash -c "\"$SCRIPT\" \"$TEST_TMP/target\" --verify --scope plugin 2>&1"
 	[ "$status" -eq 0 ]
-	[[ $output == *"mode mismatch"* ]]
+	[[ $output == *"mode mismatch"* ]] || return 1
 	[[ $output == *"non-blocking"* ]]
 }
 
