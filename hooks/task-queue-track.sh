@@ -72,4 +72,66 @@ _next=$((_n + 1))
 
 _state=$(printf '%s' "$_prev" | jq -c --argjson n "$_next" '.calls_since_update = $n' 2>/dev/null) || exit 0
 task_queue_state_write "$SESSION_ID" "$_state" || exit 0
+
+# --- staleness (#2555) ----------------------------------------------------
+#
+# An item marked in_progress that has seen no status update across N tool
+# calls is the second half of the stall #2551 records: items sit in_progress
+# long after they are done, and work discovered mid-flight never gets added.
+# The list stops describing reality, and every later decision is then made
+# from fiction.
+#
+# THRESHOLD, not zero: nudging the moment the counter moves would fire during
+# ordinary work on the item itself. 40 tool calls is long enough that the
+# operator has plainly moved on without saying so.
+_THRESH=${TASK_STALE_AFTER_CALLS:-40}
+[[ $_THRESH =~ ^[1-9][0-9]*$ ]] || _THRESH=40
+[ "$_next" -ge "$_THRESH" ] || exit 0
+
+_inprog=$(printf '%s' "$_state" | jq -r '
+    [ .items[]? | select(.status == "in_progress") ] | first | .content // ""' 2>/dev/null) || exit 0
+[ -n "$_inprog" ] || exit 0
+
+# ARM ONCE per item. Without this the nudge re-fires on every subsequent tool
+# call — the sentinel thrashes, the operator acknowledges the same directive
+# repeatedly, and a mechanism meant to be noticed becomes one to be dismissed.
+# Re-arms only when the next status update resets the clock, which also
+# rewrites nudged_for to "".
+_nudged=$(printf '%s' "$_state" | jq -r '.nudged_for // ""' 2>/dev/null) || _nudged=""
+[ "$_nudged" = "$_inprog" ] && exit 0
+
+_ACK_LIB="$_HOOK_DIR/../_lib/hook-ack.sh"
+[ -r "$_ACK_LIB" ] || exit 0
+# shellcheck source=../_lib/hook-ack.sh
+source "$_ACK_LIB" 2>/dev/null || exit 0
+
+_SHORT=$(printf '%s' "$_inprog" | head -c 160)
+_BODY="This task has been in_progress for $_next tool calls with no status update:
+
+    $_SHORT
+
+Either it is done and the list has not caught up, or it grew into something
+larger than one item. Both are the drift #2551 records — a list that
+disagrees with reality, which every later decision is then made from.
+
+RECONCILE by doing ONE of:
+  - mark it completed, if it is
+  - split it, if the work turned out to be several items
+  - update its status or wording, if the scope changed
+  - mark it blocked, if it cannot proceed — blocked items are skipped
+
+This fires once per item, not once per tool call. It will not fire again for
+this item until the task list is next updated.
+
+Threshold: TASK_STALE_AFTER_CALLS (default 40).
+Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
+
+_DIAG=$(hook_ack_diagnostic_write "task-queue-track" "task-stale" "$_BODY" 2>/dev/null) || _DIAG=""
+hook_ack_append "task-queue-track" "task-stale" "$_DIAG" 2>/dev/null || true
+
+# Record that this item has been nudged for, so the next tool call does not
+# repeat it. Best-effort: a failed write costs a duplicate nudge, never a
+# blocked operator.
+_state=$(printf '%s' "$_state" | jq -c --arg n "$_inprog" '.nudged_for = $n' 2>/dev/null) || exit 0
+task_queue_state_write "$SESSION_ID" "$_state" || exit 0
 exit 0
