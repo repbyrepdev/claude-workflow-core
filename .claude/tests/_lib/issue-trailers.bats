@@ -213,12 +213,43 @@ _ecc_fixture() { # builds a lib dir; $1 = "with-lib" | "without-lib"
 	printf '%s' "$root"
 }
 
+# A gh stub that answers the OWNER lookup and fails the BODY fetch.
+#
+# Without it the function never gets past its usage guard: `gh repo view`
+# fails outside a repo, `owner_repo` comes back empty, and it returns 2 with
+# the usage message — before reaching the library check or the fetch. The
+# foreign-cwd test passed on exactly that for one revision, asserting only
+# that a message was ABSENT while the function died two checks earlier.
+# Adding the positive assertion is what exposed it.
+_ecc_gh_stub() {
+	mkdir -p "$TEST_TMP/bin"
+	cat >"$TEST_TMP/bin/gh" <<'SHIM'
+#!/bin/bash
+case "$1 $2" in
+"repo view") printf 'testowner/testrepo
+' ;;
+"pr view")
+	# Empty body: the function refuses with "empty/missing PR body", which
+	# is the downstream failure these tests use as proof that everything
+	# before it succeeded.
+	printf '
+'
+	;;
+*) exit 0 ;;
+esac
+SHIM
+	chmod +x "$TEST_TMP/bin/gh"
+	PATH="$TEST_TMP/bin:$PATH"
+	export PATH
+}
+
 @test "epic-completeness: a MISSING issue-trailers.sh fails closed with a named reason" {
 	# return 2, not a silent 0 and not a crash. This function gates a merge,
 	# so an unreadable dependency has to refuse rather than report "nothing
 	# to check" — which is what an empty closed_ids means and would be
 	# indistinguishable from success.
 	local root
+	_ecc_gh_stub
 	root=$(_ecc_fixture without-lib)
 	[ ! -f "$root/issue-trailers.sh" ] || {
 		echo "fixture failed: the library is present"
@@ -272,12 +303,23 @@ _ecc_fixture() { # builds a lib dir; $1 = "with-lib" | "without-lib"
 	# which fails in this fixture. Getting the BODY error rather than the
 	# LIBRARY error is the proof that resolution succeeded.
 	local root
+	_ecc_gh_stub
 	root=$(_ecc_fixture with-lib)
 	mkdir -p "$TEST_TMP/elsewhere"
 	run bash -c "cd '$TEST_TMP/elsewhere' && source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
 	case "$output" in
 	*"issue-trailers.sh missing"*)
 		echo "the extractor was not resolvable from a foreign cwd: $output"
+		return 1
+		;;
+	esac
+	# POSITIVE half. Asserting only the ABSENCE of one message would pass if
+	# the function died for some third reason before reaching either — the
+	# same shape of hole as a test that checks a command "did not fail".
+	case "$output" in
+	*"empty/missing PR body"*) ;;
+	*)
+		echo "did not reach the expected downstream failure; got: $output"
 		return 1
 		;;
 	esac

@@ -63,8 +63,10 @@ epic_completeness_check() {
 		return 2
 	fi
 
-	# Through the shared extractor, resolved and sourced at the TOP of this
-	# function — see the block above the usage check.
+	# Through the shared extractor, resolved and sourced further up — the
+	# block immediately AFTER the usage guard and before the gh fetch.
+	# (Written as "above the usage check" one commit ago, in the commit that
+	# fixed a comment contradicting its code. Same mistake, same file.)
 	closed_ids=$(issue_trailers_extract "$body")
 	if [ -z "$closed_ids" ]; then
 		# No closing refs — nothing to check.

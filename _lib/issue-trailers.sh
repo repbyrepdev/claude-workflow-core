@@ -40,8 +40,18 @@ ISSUE_TRAILER_RE='(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+'
 # squash-commit bug survived.
 issue_trailers_extract() { # $@ = text blocks to scan
 	[ "$#" -gt 0 ] || return 0
-	printf '%s\n' "$@" |
-		grep -oiE "$ISSUE_TRAILER_RE" |
-		grep -oE '[0-9]+' |
-		sort -u -n || true
+	# `|| true` ONLY absorbs grep's rc 1, which means "no match" and is the
+	# ordinary case — a PR that closes nothing. A blanket `|| true` on the
+	# whole pipeline would also swallow rc 2, which is grep reporting a real
+	# error (an unreadable pattern, a broken locale), and this file exists
+	# because a silently-empty result was indistinguishable from a working
+	# one. So the first grep's status is inspected rather than discarded.
+	local matched rc=0
+	matched=$(printf '%s\n' "$@" | grep -oiE "$ISSUE_TRAILER_RE") || rc=$?
+	if [ "$rc" -gt 1 ]; then
+		echo "issue_trailers_extract: grep failed (rc=$rc) — trailer extraction is UNRELIABLE for this input" >&2
+		return "$rc"
+	fi
+	[ -n "$matched" ] || return 0
+	printf '%s\n' "$matched" | grep -oE '[0-9]+' | sort -u -n
 }
