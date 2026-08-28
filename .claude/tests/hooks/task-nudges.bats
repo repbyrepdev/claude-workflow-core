@@ -1,0 +1,492 @@
+#!/usr/bin/env bats
+# covers: hooks/next-task-stop-nudge.sh hooks/task-issue-reconcile.sh hooks/task-queue-track.sh
+#
+# (#2555) The three mechanical nudges. Each writes a hook-ack diagnostic and
+# registers a sentinel, so `stale-state-gate.sh` denies the next tool call
+# until it is Read — the difference between documenting an intent and making
+# it happen, which is what epic #2544 is about.
+#
+# `next-step-advisor.sh` already existed and was advisory-only: exit 0, output
+# that scrolls past exactly like the lint failures #2547 fixed. So the
+# property under test is not "did it print something" but "did it register a
+# diagnostic", and the assertions are on the FILE, not on stdout.
+#
+# The other property that matters is the BOUNDS. A nudge that fires wrongly
+# gets switched off and then protects nothing, so every negative case here —
+# conversational turn, empty queue, loop guard, toggle — is as load-bearing as
+# the positive one.
+
+setup() {
+	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
+	STOP_HOOK="$REPO_ROOT/hooks/next-task-stop-nudge.sh"
+	TRACK_HOOK="$REPO_ROOT/hooks/task-queue-track.sh"
+	[ -x "$STOP_HOOK" ]
+	[ -x "$TRACK_HOOK" ]
+	command -v jq >/dev/null
+	TEST_TMP=$(mktemp -d -t tasknudge.XXXXXX) || {
+		echo "FATAL: mktemp failed" >&2
+		return 1
+	}
+	STATE_DIR="$TEST_TMP/state"
+	# hook_ack_diagnostic_write resolves its directory from the git toplevel,
+	# so a scratch repo keeps every diagnostic out of the real tree. The suite
+	# asserts on files, and writing them into the operator's own hook-ack dir
+	# would block their next tool call for a test fixture.
+	WORK="$TEST_TMP/work"
+	mkdir -p "$WORK"
+	(cd "$WORK" && git init -q -b main &&
+		git config user.email t@t.t && git config user.name t) || {
+		echo "FATAL: fixture repo init failed" >&2
+		return 1
+	}
+	DIAG_ROOT="$WORK/.claude/.session-state/hook-ack"
+}
+
+teardown() {
+	cd /tmp || return 0
+	case "${TEST_TMP:-}" in
+	*/tasknudge.*)
+		chmod -R u+w "$TEST_TMP" 2>/dev/null || true
+		rm -rf "$TEST_TMP"
+		;;
+	esac
+	return 0
+}
+
+# A transcript whose last tool_use is a TodoWrite with the given items.
+_transcript() { # $@ = "content:status" pairs
+	local f="$TEST_TMP/transcript.jsonl" out="[" first=1 pair c s
+	for pair in "$@"; do
+		c=${pair%%:*}
+		s=${pair##*:}
+		[ "$first" = "1" ] || out="$out,"
+		first=0
+		out="$out{\"content\":\"$c\",\"status\":\"$s\"}"
+	done
+	out="$out]"
+	jq -nc --argjson todos "$out" \
+		'{type:"assistant",message:{content:[{type:"tool_use",name:"TodoWrite",input:{todos:$todos}}]}}' >"$f"
+	printf '%s' "$f"
+}
+
+_conversational_transcript() {
+	local f="$TEST_TMP/conv.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"text",text:"just discussing"}]}}' >"$f"
+	printf '%s' "$f"
+}
+
+_run_stop() { # $1 = transcript path, $2 = stop_hook_active (default false), $3 = extra env
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | ${3:-} bash '$STOP_HOOK'" _ \
+		"$(jq -nc --arg t "$1" --argjson a "${2:-false}" \
+			'{transcript_path:$t, stop_hook_active:$a, session_id:"sess-1"}')"
+}
+
+_diag_count() { # $1 = hook dir name
+	find "$DIAG_ROOT/${1:-}" -type f -name '*.txt' 2>/dev/null | wc -l | tr -d ' '
+}
+
+_diag_body() { # $1 = hook dir name
+	local f
+	f=$(find "$DIAG_ROOT/${1:-}" -type f -name '*.txt' 2>/dev/null | head -1)
+	[ -n "$f" ] || return 1
+	cat "$f"
+}
+
+# ---- the Stop nudge: positive case ---------------------------------------
+
+@test "stop-nudge: open work REGISTERS a diagnostic, not just a message" {
+	# The whole point. next-step-advisor.sh already printed advice that
+	# scrolled past; what makes this mechanical is the hook-ack file.
+	_run_stop "$(_transcript "write the thing:pending" "done bit:completed")"
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count next-task-stop-nudge)" = "1" ] || {
+		echo "no diagnostic registered: $output"
+		return 1
+	}
+	local body
+	body=$(_diag_body next-task-stop-nudge) || return 1
+	case "$body" in
+	*"write the thing"*) ;;
+	*)
+		echo "the diagnostic does not name the next item: $body"
+		return 1
+		;;
+	esac
+}
+
+@test "stop-nudge: it also emits a systemMessage for immediate visibility" {
+	_run_stop "$(_transcript "urgent item:pending")"
+	[ "$status" -eq 0 ]
+	[[ $output == *systemMessage* ]] || {
+		echo "no systemMessage emitted: $output"
+		return 1
+	}
+	[[ $output == *"urgent item"* ]]
+}
+
+@test "stop-nudge: it RESUMES in_progress rather than naming a pending item" {
+	_run_stop "$(_transcript "not started:pending" "half done:in_progress")"
+	local body
+	body=$(_diag_body next-task-stop-nudge) || return 1
+	case "$body" in
+	*"half done"*) ;;
+	*)
+		echo "the nudge pointed past the in-progress item: $body"
+		return 1
+		;;
+	esac
+}
+
+# ---- the Stop nudge: the bounds ------------------------------------------
+
+@test "stop-nudge: a CONVERSATIONAL turn is silent" {
+	# The bound the issue states outright. A queue that was never created is
+	# 'absent', not 'empty' — collapsing those is what makes a reminder fire
+	# on every chat turn and then get switched off.
+	_run_stop "$(_conversational_transcript)"
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count next-task-stop-nudge)" = "0" ] || {
+		echo "a conversational turn was nudged"
+		return 1
+	}
+	[ -z "$output" ] || {
+		echo "a conversational turn produced output: $output"
+		return 1
+	}
+}
+
+@test "stop-nudge: an ALL-COMPLETED queue is silent" {
+	_run_stop "$(_transcript "one:completed" "two:completed")"
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count next-task-stop-nudge)" = "0" ] || {
+		echo "a finished queue was nudged"
+		return 1
+	}
+}
+
+@test "stop-nudge: stop_hook_active TRUE exits before anything else" {
+	# Loop guard. A Stop hook firing during its own Stop handling re-enters
+	# forever and re-registers its block each time.
+	_run_stop "$(_transcript "open item:pending")" true
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count next-task-stop-nudge)" = "0" ] || {
+		echo "the loop guard did not hold"
+		return 1
+	}
+}
+
+@test "stop-nudge: TASK_NUDGE_SKIP=1 disables it" {
+	_run_stop "$(_transcript "open item:pending")" false "TASK_NUDGE_SKIP=1"
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count next-task-stop-nudge)" = "0" ] || {
+		echo "the operator toggle was ignored"
+		return 1
+	}
+}
+
+@test "stop-nudge: a missing transcript FAILS OPEN and blocks nothing" {
+	_run_stop "$TEST_TMP/nope.jsonl"
+	[ "$status" -eq 0 ] || {
+		echo "an unreadable transcript made the Stop hook fail: $output"
+		return 1
+	}
+	[ "$(_diag_count next-task-stop-nudge)" = "0" ]
+}
+
+@test "stop-nudge: a malformed payload FAILS OPEN" {
+	run bash -c "cd '$WORK' && printf 'not json' | bash '$STOP_HOOK'"
+	[ "$status" -eq 0 ] || {
+		echo "a malformed Stop payload failed: $output"
+		return 1
+	}
+}
+
+@test "stop-nudge: a BLOCKED-only queue does not name an unreachable item" {
+	# Nudging toward work that cannot proceed trains the operator to dismiss.
+	local f="$TEST_TMP/blocked.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"TodoWrite",input:{todos:[{content:"stuck",status:"pending",blocked:true}]}}]}}' >"$f"
+	_run_stop "$f"
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count next-task-stop-nudge)" = "0" ] || {
+		echo "a blocked-only queue produced a nudge: $(_diag_body next-task-stop-nudge)"
+		return 1
+	}
+}
+
+# ---- the staleness nudge (in task-queue-track.sh) ------------------------
+
+_track() { # $1 = tool_name, $2 = tool_input, $3 = extra env
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' ${3:-} bash '$TRACK_HOOK'" _ \
+		"$(jq -nc --arg t "$1" --argjson i "$2" '{tool_name:$t, session_id:"sess-1", tool_input:$i}')"
+}
+
+_tick() { # $1 = how many, $2 = threshold
+	local n=0
+	while [ "$n" -lt "${1:-1}" ]; do
+		_track Bash '{}' "TASK_STALE_AFTER_CALLS=${2:-3}"
+		n=$((n + 1))
+	done
+}
+
+@test "stale-nudge: an in_progress item past the threshold registers ONCE" {
+	# The re-arm guard is the difference between a mechanism that gets
+	# noticed and one that gets dismissed: without it the sentinel thrashes
+	# on every subsequent tool call.
+	_track TodoWrite "$(jq -nc '{todos:[{content:"long one",status:"in_progress"}]}')"
+	_tick 3 3
+	[ "$(_diag_count task-queue-track)" = "1" ] || {
+		echo "the staleness nudge did not fire at threshold"
+		return 1
+	}
+	_tick 8 3
+	[ "$(_diag_count task-queue-track)" = "1" ] || {
+		echo "the nudge re-fired instead of arming once: $(_diag_count task-queue-track)"
+		return 1
+	}
+}
+
+@test "stale-nudge: it does NOT fire below the threshold" {
+	_track TodoWrite "$(jq -nc '{todos:[{content:"recent",status:"in_progress"}]}')"
+	_tick 2 5
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "the nudge fired during ordinary work on the item"
+		return 1
+	}
+}
+
+@test "stale-nudge: a status update RE-ARMS it" {
+	# Re-arming is what makes it a staleness detector rather than a one-shot.
+	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
+	_tick 3 3
+	[ "$(_diag_count task-queue-track)" = "1" ]
+	local first
+	first=$(find "$DIAG_ROOT/task-queue-track" -type f -name '*.txt' | head -1)
+	[ -n "$first" ] || {
+		echo "no diagnostic from the first nudge"
+		return 1
+	}
+	# The SAME item, re-stated. Using a different one ("item B") made the
+	# re-fire explainable by the content differing from nudged_for, so the
+	# test passed against a hook that never cleared the field — mutation-
+	# verified. Re-stating item A is what pins the reset itself.
+	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
+	_tick 3 3
+	# ASSERTED AS "A FILE THAT IS NOT THE FIRST ONE EXISTS", not as a count
+	# and not as `head -1` differing.
+	#
+	# The count stopped meaning "it re-armed" once superseded diagnostics
+	# began being pruned. Then `head -1` stopped meaning it either, once the
+	# prune gained its age guard — it spares anything younger than a minute,
+	# so within a test both files survive and `head -1` can return the older
+	# one, failing a hook that re-armed perfectly well. Two assertions in a
+	# row that tracked an implementation detail instead of the property.
+	#
+	# The property is: a second nudge writes a diagnostic the first one did
+	# not. Any file that is not `$first` is that file, since the first nudge
+	# produced exactly one.
+	local newfile
+	newfile=$(find "$DIAG_ROOT/task-queue-track" -type f -name '*.txt' | grep -Fxv "$first" | head -1)
+	[ -n "$newfile" ] || {
+		echo "the nudge did not re-arm after a status update on the SAME item"
+		return 1
+	}
+	[ -f "$first" ] || {
+		echo "the prune deleted a diagnostic younger than its age guard"
+		return 1
+	}
+}
+
+@test "stale-nudge: a PENDING-only queue is not stale" {
+	# Staleness is about work claimed to be underway. A pending item nobody
+	# started is the Stop nudge's business, not this one's.
+	_track TodoWrite "$(jq -nc '{todos:[{content:"never started",status:"pending"}]}')"
+	_tick 6 3
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "a pending item was reported as stale"
+		return 1
+	}
+}
+
+@test "stale-nudge: TASK_NUDGE_SKIP=1 disables it" {
+	_track TodoWrite "$(jq -nc '{todos:[{content:"x",status:"in_progress"}]}')"
+	local n=0
+	while [ "$n" -lt 5 ]; do
+		_track Bash '{}' "TASK_STALE_AFTER_CALLS=2 TASK_NUDGE_SKIP=1"
+		n=$((n + 1))
+	done
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "the operator toggle was ignored by the staleness nudge"
+		return 1
+	}
+}
+
+@test "stale-nudge: a non-numeric threshold falls back to 40, not to 0" {
+	# Asserting only `status -eq 0` proved nothing: the hook exits 0 whether it
+	# nudges or not, so removing the validation entirely passed, and so did a
+	# fallback of 0 — which fires on the very FIRST tool call, i.e. the
+	# thrashing the threshold exists to prevent.
+	_track TodoWrite "$(jq -nc '{todos:[{content:"y",status:"in_progress"}]}')"
+	_track Bash '{}' "TASK_STALE_AFTER_CALLS=banana"
+	[ "$status" -eq 0 ] || {
+		echo "a junk threshold broke the hook: $output"
+		return 1
+	}
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "a junk threshold fell back to something that fires immediately"
+		return 1
+	}
+	# Well past a small threshold but well short of 40: still silent, which is
+	# what shows 40 rather than 1 or 2 is actually in force.
+	local n=0
+	while [ "$n" -lt 10 ]; do
+		_track Bash '{}' "TASK_STALE_AFTER_CALLS=banana"
+		n=$((n + 1))
+	done
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "the fallback threshold is far below the documented 40"
+		return 1
+	}
+}
+
+# ---- ENFORCEMENT: the sentinel, not just the diagnostic ------------------
+#
+# `hook_ack_append` short-circuits to `return 0` under bats
+# (_hook_ack_in_bats_context), and bats-core exports BATS_TEST_NAME and
+# BATS_RUN_TMPDIR into every `run bash -c` child — so nothing above this line
+# ever wrote `.claude/.session-state/hook-output-pending.txt`, the file
+# `stale-state-gate.sh` reads to DENY the next tool call.
+#
+# Mutation-proven consequence: deleting the `hook_ack_append` call outright
+# left every "REGISTERS a diagnostic" test passing. The whole claim of this
+# feature — mechanical rather than advisory — was unpinned, in a PR whose
+# stated point is that advisory output scrolls past.
+#
+# `HOOK_ACK_BATS_SKIP=0` forces the real path, which is what
+# .claude/tests/hooks/lint-dispatch.bats already does. The pattern existed;
+# these suites just did not use it.
+
+_sentinel() {
+	printf '%s' "$WORK/.claude/.session-state/hook-output-pending.txt"
+}
+
+@test "stop-nudge ENFORCES: it writes the hook-ack sentinel, not just a file" {
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | HOOK_ACK_BATS_SKIP=0 bash '$STOP_HOOK'" _ \
+		"$(jq -nc --arg t "$(_transcript "blocking item:pending")" \
+			'{transcript_path:$t, stop_hook_active:false, session_id:"sess-1"}')"
+	[ "$status" -eq 0 ]
+	[ -s "$(_sentinel)" ] || {
+		echo "no sentinel written — nothing will block the next tool call"
+		return 1
+	}
+	grep -q 'next-open-task' "$(_sentinel)" || {
+		echo "the sentinel does not carry this hook's reason: $(cat "$(_sentinel)")"
+		return 1
+	}
+	# And it names a REAL diagnostic path. An entry with an empty file_path
+	# cannot be cleared by Read — hook-ack-clear.sh preserves those rows — so
+	# it would block every subsequent tool call with no way out.
+	local fp
+	fp=$(awk -F'\t' '/next-open-task/{print $4; exit}' "$(_sentinel)")
+	[ -n "$fp" ] || {
+		echo "the sentinel has an EMPTY file_path — that entry is unclearable"
+		return 1
+	}
+	[ -f "$fp" ] || {
+		echo "the sentinel points at a file that does not exist: $fp"
+		return 1
+	}
+}
+
+@test "stop-nudge ENFORCES: a silent queue writes NO sentinel" {
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | HOOK_ACK_BATS_SKIP=0 bash '$STOP_HOOK'" _ \
+		"$(jq -nc --arg t "$(_conversational_transcript)" \
+			'{transcript_path:$t, stop_hook_active:false, session_id:"sess-1"}')"
+	[ "$status" -eq 0 ]
+	[ ! -s "$(_sentinel)" ] || {
+		echo "a conversational turn registered a BLOCKING sentinel: $(cat "$(_sentinel)")"
+		return 1
+	}
+}
+
+@test "stale-nudge ENFORCES: the threshold write reaches the sentinel" {
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+		"$(jq -nc '{tool_name:"TodoWrite", session_id:"sess-1", tool_input:{todos:[{content:"slow one",status:"in_progress"}]}}')"
+	local n=0
+	while [ "$n" -lt 3 ]; do
+		run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' TASK_STALE_AFTER_CALLS=3 HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+			"$(jq -nc '{tool_name:"Bash", session_id:"sess-1", tool_input:{}}')"
+		[ "$status" -eq 0 ]
+		n=$((n + 1))
+	done
+	[ -s "$(_sentinel)" ] || {
+		echo "the staleness nudge wrote a diagnostic but registered no block"
+		return 1
+	}
+	grep -q 'task-stale' "$(_sentinel)" || {
+		echo "the sentinel does not carry the task-stale reason: $(cat "$(_sentinel)")"
+		return 1
+	}
+	# On SUCCESS the item is armed OFF. This is the counterpart to the
+	# failed-append test below, and it is what stops that one being vacuous:
+	# without this, "nudged_for is empty after a failure" would also pass if
+	# nudged_for were never written on any path at all.
+	local sf armed
+	sf=$(find "$STATE_DIR" -name '*.json' -type f | head -1)
+	[ -n "$sf" ] || {
+		echo "no session state was written"
+		return 1
+	}
+	armed=$(jq -r '.nudged_for // ""' "$sf")
+	[ -n "$armed" ] || {
+		echo "a SUCCESSFUL nudge did not arm the item off — it will re-fire every call"
+		return 1
+	}
+}
+
+@test "stale-nudge RECOVERS: a failed append leaves the item armed for a retry" {
+	# `nudged_for` used to be recorded unconditionally, so a FAILED append
+	# still suppressed the item for the rest of the session: the arm-once
+	# guard reads that field and exits, and it re-arms only when a todo call
+	# rewrites it. hook_ack_append returns 1 on ordinary lock contention, so
+	# a transient failure became permanent silence — a nudge that reported
+	# itself as fired while blocking nothing.
+	#
+	# The failure is injected by making the sentinel path a DIRECTORY: the
+	# append cannot write to it, while hook_ack_diagnostic_write (a different
+	# path entirely) still succeeds. That split is the point — it exercises
+	# the "diagnostic written, registration failed" state specifically, not a
+	# general unwritable-state-dir failure that would take out both.
+	mkdir -p "$WORK/.claude/.session-state"
+	mkdir -p "$WORK/.claude/.session-state/hook-output-pending.txt"
+
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+		"$(jq -nc '{tool_name:"TodoWrite", session_id:"sess-1", tool_input:{todos:[{content:"slow one",status:"in_progress"}]}}')"
+	local n=0
+	while [ "$n" -lt 3 ]; do
+		run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' TASK_STALE_AFTER_CALLS=3 HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+			"$(jq -nc '{tool_name:"Bash", session_id:"sess-1", tool_input:{}}')"
+		[ "$status" -eq 0 ] || {
+			echo "a failed append broke the tool call (rc=$status): $output"
+			return 1
+		}
+		n=$((n + 1))
+	done
+	# It must have SAID so — a silent failure here is the whole defect.
+	[[ $output == *"nothing will block on it"* ]] || {
+		echo "the failed registration was silent: $output"
+		return 1
+	}
+	# And the item must still be armed: nudged_for empty, so the next call
+	# retries rather than treating the item as already nudged.
+	local sf armed
+	sf=$(find "$STATE_DIR" -name '*.json' -type f | head -1)
+	[ -n "$sf" ] || {
+		echo "no session state was written at all"
+		return 1
+	}
+	armed=$(jq -r '.nudged_for // ""' "$sf")
+	[ -z "$armed" ] || {
+		echo "a FAILED append still armed the item off (nudged_for='$armed') — it will never retry"
+		return 1
+	}
+}

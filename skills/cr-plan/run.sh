@@ -238,11 +238,23 @@ parse)
 	# raw_count below detects oversized plans; truncation to PHASE_MAX is
 	# applied unconditionally and warns when the raw count exceeds it.
 	PHASE_MAX="${PHASE_MAX:-10}"
+	# `phase_form` records WHICH heading shape matched, so the body splitter
+	# below can use the same one. Applying both unconditionally split on
+	# numbered lines INSIDE a phase body — a plan whose tasks read "1. Run
+	# …" produced phantom phases after the real ones.
+	phase_form="heading"
+	# The strip below uses `[:[:space:]]*` — a RUN of colons and spaces, not
+	# `:?[[:space:]]*`. With the single optional colon, `### Phase 1: :`
+	# reduced to a title of ":" — non-empty, so the loop advanced its index —
+	# while the awk splitter refused the line outright. Desync again, one
+	# character wide. The two sides now agree that a heading whose title is
+	# nothing but punctuation is not a phase.
 	phase_titles_raw=$({ echo "$phases_section" | grep -oE '^(###+|[*]{2})[[:space:]]*Phase[[:space:]]+[0-9]+:?[[:space:]]*[^*#]+' |
-		sed -E 's/^[#*[:space:]]+Phase[[:space:]]+[0-9]+:?[[:space:]]*//' |
+		sed -E 's/^[#*[:space:]]+Phase[[:space:]]+[0-9]+[:[:space:]]*//' |
 		sed -E 's/[*[:space:]]+$//'; } || true)
 	if [ -z "$phase_titles_raw" ]; then
 		# Fallback: `1. Foo\n2. Bar` numbered-list form.
+		phase_form="numbered"
 		phase_titles_raw=$({ echo "$phases_section" | grep -oE '^[0-9]+\.[[:space:]]+[^[:space:]].*' |
 			sed -E 's/^[0-9]+\.[[:space:]]+//'; } || true)
 	fi
@@ -256,6 +268,68 @@ parse)
 	fi
 	raw_count=$(echo "$phase_titles_raw" | wc -l | tr -d ' ')
 	phase_titles=$(echo "$phase_titles_raw" | head -n "$PHASE_MAX")
+
+	# The phase BODY, not just its heading (#2556). Every sub-issue used to
+	# carry only the phase title plus "see the parent's CR plan comment" —
+	# so #2556 was titled "Registration, operator toggle, tests, and docs",
+	# four deliverables, and its body described none of them. A tracker entry
+	# you cannot work from, review for completeness, or judge done against
+	# without opening a different issue's comment thread.
+	#
+	# The CR plan comment stays the authority and is still cited; this copies
+	# the per-phase task list ALONGSIDE that citation so the sub-issue stands
+	# on its own. Written to a temp dir, one file per phase, indexed to match
+	# the title order.
+	phase_bodies_dir=$(mktemp -d -t cr-plan-bodies.XXXXXX) || {
+		echo "cr-plan: ERROR: mktemp for phase bodies failed" >&2
+		exit 2
+	}
+	# Join the combined EXIT trap. Left out, every parse leaves the extracted
+	# plan text in /tmp indefinitely — user-private at 0700, but unbounded.
+	trap '[ -n "${tmpdir:-}" ] && rm -rf "${tmpdir}"; [ -n "${phase_bodies_dir:-}" ] && rm -rf "${phase_bodies_dir}"; rm -f "${issue_err:-}" "${comments_err:-}"' EXIT
+	printf '%s\n' "$phases_section" | awk -v outdir="$phase_bodies_dir" -v form="$phase_form" '
+		# Splits on the SAME heading shape the titles came from. Matching both
+		# forms at once split on numbered lines INSIDE a phase body, inventing
+		# phases after the real ones — verified against the #2551 plan, whose
+		# task lists contain numbered steps.
+		# The heading test must accept EXACTLY what the title grep above
+		# accepted. It used to be looser — it took a bare `### Phase 2`
+		# where the grep requires trailing title text (`[^*#]+`) — so on a
+		# plan containing one untitled phase the awk index advanced where
+		# the title list did not, and EVERY LATER BODY was copied into the
+		# wrong sub-issue. Not an empty body: the WRONG phase body, under a
+		# title that does not describe it. Two regexes that must agree, in
+		# two languages, is the standing hazard here.
+		# The trailing class excludes the COLON as well as * and #. The first
+		# attempt at this fix used [^*#[:space:]] and was still wrong, because
+		# `:?` can match nothing and let the colon ITSELF satisfy the class —
+		# so `### Phase 1: **Library**` counted as a heading here while the
+		# title side reduced it to an empty string and skipped it. One
+		# untitled bold phase and every later body shifted by one. Found by
+		# the test, not by reading the regex.
+		# (No apostrophes in this block: it lives inside a single-quoted
+		# awk program, and one would terminate it.)
+		{
+			is_head = (form == "heading") \
+				? ($0 ~ /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+[:[:space:]]*[^*#:[:space:]]/) \
+				: ($0 ~ /^[0-9]+\.[[:space:]]+[^[:space:]]/)
+		}
+		is_head { idx++; file = sprintf("%s/%02d.md", outdir, idx); next }
+		# A Phase marker the heading test REJECTED still ends the phase above
+		# it. Leaving file unchanged meant an untitled `### Phase 2` and every
+		# task under it were appended to Phase 1 — so the first sub-issue
+		# carried a stray heading and a second phase worth of tasks, which is
+		# the same misattribution as the index desync wearing a different hat.
+		# Clearing file drops that span instead: it belongs to a phase with no
+		# title, and there is no sub-issue for it to go to.
+		# GATED ON form == "heading". Unqualified, this rule also ran for
+		# numbered-form plans, where a literal `### Phase 2` inside a task
+		# body is just text — it would clear file and silently drop the rest
+		# of that body until the next numbered item. The reset only makes
+		# sense for the form whose phases these markers actually delimit.
+		form == "heading" && /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+/ { file = ""; next }
+		idx > 0 && file != "" { print >> file }
+	' 2>/dev/null || true
 	if [ "$raw_count" -gt "$PHASE_MAX" ]; then
 		echo "cr-plan: WARN: CR plan has $raw_count phase(s); truncated to first $PHASE_MAX." >&2
 		echo "  Manually split the epic into multiple sets if needed (phases ${PHASE_MAX}+ dropped)." >&2
@@ -354,11 +428,31 @@ area:infrastructure (default; operator: adjust if scope differs — not auto-inh
 
 Phase: **$ptitle**
 
-Implements this phase of the CodeRabbit plan for #$issue. See parent epic + CR plan comment (\`gh issue view $issue --comments\`) for the WHY and acceptance specifics.
+Implements this phase of the CodeRabbit plan for #$issue.
+
+$(
+			_pb="$phase_bodies_dir/$(printf '%02d' "$idx").md"
+			if [ -s "$_pb" ]; then
+				printf '### Tasks (copied from the CR plan)\n\n'
+				# `@name` is wrapped in backticks on the way through. The
+				# plan is CR-authored but CR generates it FROM the source
+				# issue text, so an @mention written by whoever filed that
+				# issue would otherwise be replayed here — notifying that
+				# person once per sub-issue this skill creates, from an
+				# issue they never opened. Backticks keep the text readable
+				# and stop GitHub resolving it. No shell risk either way:
+				# bash does not re-scan substitution output (verified), so
+				# this is about GitHub's parser, not the shell.
+				sed -E 's/(^|[^A-Za-z0-9`_-])@([A-Za-z0-9][A-Za-z0-9-]*)/\1`@\2`/g' "$_pb"
+				printf '\nThe CR plan comment on #%s remains the authority — `gh issue view %s --comments`. This copy exists so the sub-issue can be worked from, reviewed for completeness, and judged done without opening another thread.\n' "$issue" "$issue"
+			else
+				printf 'See parent epic + CR plan comment (`gh issue view %s --comments`) for the WHY and acceptance specifics.\n\n_(The per-phase task list could not be extracted from the plan; the comment is the only source.)_\n' "$issue"
+			fi
+		)
 
 ## Context
 
-Auto-generated by \`cr-plan parse $issue\`. Refer to parent epic for sequencing + the CR plan for implementation details.
+Auto-generated by \`cr-plan parse $issue\`. Refer to parent epic for sequencing.
 SUBEOF
 		skill_args+=(--sub-title "$ptitle" --sub-body-file "$sub_body_file")
 	done <<<"$phase_titles"

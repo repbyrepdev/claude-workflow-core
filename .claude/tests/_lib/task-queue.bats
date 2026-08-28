@@ -1,0 +1,878 @@
+#!/usr/bin/env bats
+# covers: _lib/task-queue.sh hooks/task-queue-track.sh
+#
+# SC2030/SC2031: the concurrency test deliberately exports the state-dir
+# override INSIDE background subshells — that is the point of the test, since
+# each subshell stands in for a separate hook process. The warning is about
+# the change not escaping, which is exactly what is wanted here.
+# shellcheck disable=SC2030,SC2031
+#
+# (#2554) The SSOT the #2555 nudge hooks read: what is open, which item is
+# next, and how many tool calls have passed since the operator last said
+# anything about the queue.
+#
+# The property that matters most here is the THREE-state classification.
+# "No todo tool was ever used" and "the list exists and is empty" look
+# identical to a boolean and mean opposite things to a nudge — firing on a
+# conversational turn is the failure the issue explicitly bounds against, and
+# it is the one a two-state answer produces.
+#
+# State is redirected via TASK_QUEUE_STATE_DIR, a plain env override, and
+# NOT via bats-variable detection. #2544 shipped that pattern and it was
+# wrong twice: BATS_RUN_TMPDIR is per-RUN so state leaked between tests in
+# one file, and the branch was unnecessary anyway because a fixture that cds
+# into its own scratch repo already has REPO_ROOT pointed there.
+
+setup() {
+	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
+	LIB="$REPO_ROOT/_lib/task-queue.sh"
+	HOOK="$REPO_ROOT/hooks/task-queue-track.sh"
+	[ -r "$LIB" ]
+	[ -x "$HOOK" ]
+	command -v jq >/dev/null
+	TEST_TMP=$(mktemp -d -t taskqueue.XXXXXX) || {
+		echo "FATAL: mktemp failed" >&2
+		return 1
+	}
+	STATE_DIR="$TEST_TMP/state"
+	# shellcheck source=../../../_lib/task-queue.sh
+	source "$LIB"
+}
+
+teardown() {
+	case "${TEST_TMP:-}" in
+	*/taskqueue.*)
+		chmod -R u+w "$TEST_TMP" 2>/dev/null || true
+		rm -rf "$TEST_TMP"
+		;;
+	esac
+	return 0
+}
+
+_items_from() { # $1 = tool_input JSON
+	task_queue_from_tool_input "$1"
+}
+
+# One TodoWrite-shaped payload.
+_todo_input() { # $@ = "content:status" pairs
+	local out="[" first=1 pair c s
+	for pair in "$@"; do
+		c=${pair%%:*}
+		s=${pair##*:}
+		[ "$first" = "1" ] || out="$out,"
+		first=0
+		out="$out{\"content\":\"$c\",\"status\":\"$s\"}"
+	done
+	printf '{"todos":%s]}' "$out"
+}
+
+_track() { # $1 = tool_name, $2 = tool_input JSON, $3 = session id
+	run bash -c "printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' bash '$HOOK'" _ \
+		"$(jq -nc --arg t "$1" --arg s "${3:-sess-1}" --argjson i "$2" \
+			'{tool_name:$t, session_id:$s, tool_input:$i}')"
+}
+
+_state_json() { # $1 = session id
+	local p
+	p=$(find "$STATE_DIR" -name '*.json' -type f 2>/dev/null | head -1)
+	[ -n "$p" ] || return 1
+	cat "$p"
+}
+
+# ---- classification: three states, not two -------------------------------
+
+@test "task-queue: NO todo tool ever seen is 'absent', never 'empty'" {
+	# The bound the issue states: never fire on a conversational turn. A
+	# two-state answer collapses this into "empty" and every such turn gets a
+	# nudge, which is how a reminder becomes noise and gets switched off.
+	[ "$(task_queue_classify "")" = "absent" ]
+}
+
+@test "task-queue: an all-completed list is 'empty', not 'open'" {
+	local items
+	items=$(_items_from "$(_todo_input "one:completed" "two:completed")")
+	[ "$(task_queue_classify "$items")" = "empty" ] || {
+		echo "an all-completed list did not read as empty: $items"
+		return 1
+	}
+}
+
+@test "task-queue: a pending item makes the queue 'open'" {
+	local items
+	items=$(_items_from "$(_todo_input "one:completed" "two:pending")")
+	[ "$(task_queue_classify "$items")" = "open" ]
+}
+
+@test "task-queue: UNPARSEABLE input is 'absent' — detection fails open" {
+	# Not "empty" and not an error. The caller must not nudge on data it could
+	# not read, and must not crash the operator's tool call either.
+	[ "$(task_queue_classify "not json at all")" = "absent" ] || {
+		echo "unreadable items did not fail open to absent"
+		return 1
+	}
+}
+
+@test "task-queue: an item with NO status counts as open, not done" {
+	# Defaulting a missing status to completed would silently retire real
+	# work. The default is pending for the same reason every other gate in
+	# this repo fails toward more attention, not less.
+	local items
+	items=$(task_queue_from_tool_input '{"todos":[{"content":"nostatus"}]}')
+	[ "$(task_queue_classify "$items")" = "open" ] || {
+		echo "a status-less item was not treated as open: $items"
+		return 1
+	}
+}
+
+# ---- selection -----------------------------------------------------------
+
+@test "task-queue: RESUMES the in_progress item before starting a pending one" {
+	# Pointing at fresh work while something sits half-done is how a queue
+	# grows a tail of started-but-abandoned entries.
+	local items
+	items=$(_items_from "$(_todo_input "first:pending" "second:in_progress")")
+	[ "$(task_queue_next_actionable "$items")" = "second" ] || {
+		echo "did not prefer the in_progress item: $items"
+		return 1
+	}
+}
+
+@test "task-queue: otherwise takes the FIRST pending in array order" {
+	# Array order is the order the operator wrote, which carries their intent
+	# about sequence. Nothing here is entitled to re-rank it.
+	local items
+	items=$(_items_from "$(_todo_input "alpha:pending" "beta:pending")")
+	[ "$(task_queue_next_actionable "$items")" = "alpha" ]
+}
+
+@test "task-queue: a BLOCKED item is skipped" {
+	# Nudging toward work that cannot proceed trains the operator to dismiss
+	# the nudge, which costs more than the silence would have.
+	local items
+	items=$(task_queue_from_tool_input '{"todos":[{"content":"stuck","status":"pending","blocked":true},{"content":"doable","status":"pending"}]}')
+	[ "$(task_queue_next_actionable "$items")" = "doable" ] || {
+		echo "a blocked item was selected: $items"
+		return 1
+	}
+}
+
+@test "task-queue: no candidate returns non-zero rather than empty success" {
+	local items
+	items=$(_items_from "$(_todo_input "done:completed")")
+	run task_queue_next_actionable "$items"
+	[ "$status" -ne 0 ] || {
+		echo "an all-completed list yielded a 'next' item: $output"
+		return 1
+	}
+}
+
+# ---- transcript parsing --------------------------------------------------
+
+@test "task-queue: the LAST todo call in a transcript wins" {
+	# The list is running state, not an append log: an earlier call's items
+	# are superseded. Merging them would resurrect completed work.
+	local t="$TEST_TMP/transcript.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"TodoWrite",input:{todos:[{content:"old",status:"pending"}]}}]}}' >"$t"
+	jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"TodoWrite",input:{todos:[{content:"new",status:"pending"}]}}]}}' >>"$t"
+	local items
+	items=$(task_queue_from_transcript "$t") || {
+		echo "transcript parse failed"
+		return 1
+	}
+	[ "$(task_queue_next_actionable "$items")" = "new" ] || {
+		echo "an earlier todo call won: $items"
+		return 1
+	}
+}
+
+@test "task-queue: TaskCreate/TaskUpdate are recognised, not just TodoWrite" {
+	# A consumer that knew only the legacy name would report 'absent' on a
+	# real queue — which reads exactly like a conversational turn and
+	# suppresses every nudge silently.
+	local t="$TEST_TMP/transcript.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"TaskUpdate",input:{tasks:[{description:"via TaskUpdate",state:"pending"}]}}]}}' >"$t"
+	local items
+	items=$(task_queue_from_transcript "$t") || {
+		echo "TaskUpdate was not parsed"
+		return 1
+	}
+	[ "$(task_queue_classify "$items")" = "open" ] || {
+		echo "TaskUpdate items did not register as open: $items"
+		return 1
+	}
+}
+
+@test "task-queue: a transcript with no todo tool is ABSENT, not empty" {
+	local t="$TEST_TMP/transcript.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"text",text:"just talking"}]}}' >"$t"
+	local items rc=0
+	items=$(task_queue_from_transcript "$t") || rc=$?
+	# ASSERTED EXACTLY, and on the right thing. The previous form was a
+	# disjunction that only ruled out "open", so it passed while the code
+	# actually returned rc 0 with `[]` — classifying as EMPTY, the opposite of
+	# what this test is named for. `last // []` collapsed the two states and
+	# the weakened assertion hid it, so the distinction the suite header calls
+	# the property that matters most was pinned for the empty-STRING input
+	# only, never on the transcript path the Stop hook actually takes.
+	[ "$rc" -ne 0 ] || {
+		echo "a conversational transcript did not report ABSENT (rc 0, items=$items)"
+		return 1
+	}
+	[ "$(task_queue_classify "$items")" = "absent" ] || {
+		echo "the absent path did not classify as absent: $items"
+		return 1
+	}
+}
+
+@test "task-queue: an EMPTY todo list is 'empty', distinctly from 'absent'" {
+	# The other side of the same distinction: a todo tool WAS used and the
+	# list has nothing in it. Both suppress a nudge, but for different
+	# reasons, and a regression collapsing them must fail something.
+	local t="$TEST_TMP/emptylist.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"TodoWrite",input:{todos:[]}}]}}' >"$t"
+	local items rc=0
+	items=$(task_queue_from_transcript "$t") || rc=$?
+	[ "$rc" -eq 0 ] || {
+		echo "an explicitly empty list was reported as unreadable"
+		return 1
+	}
+	[ "$(task_queue_classify "$items")" = "empty" ] || {
+		echo "an explicitly empty list did not classify as empty: $items"
+		return 1
+	}
+}
+
+@test "task-queue: an unreadable transcript returns non-zero, not an empty list" {
+	run task_queue_from_transcript "$TEST_TMP/does-not-exist.jsonl"
+	[ "$status" -ne 0 ] || {
+		echo "a missing transcript reported success: $output"
+		return 1
+	}
+}
+
+# ---- session state -------------------------------------------------------
+
+@test "task-queue: colliding session ids do NOT share a state file" {
+	# The slug is many-to-one, which put two branches on one pin file in
+	# #2544. Session ids come from a hook payload, so the same hazard applies.
+	local a b
+	a=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "sess/one")
+	b=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "sess_one")
+	[ "$a" != "$b" ] || {
+		echo "two distinct session ids mapped to one state file: $a"
+		return 1
+	}
+}
+
+@test "task-queue: a MISSING state file reads as {} — a first call is not an error" {
+	[ "$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_read "never-seen")" = "{}" ]
+}
+
+@test "task-queue: a CORRUPT state file reads as {} rather than propagating" {
+	local p
+	p=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "sess-x")
+	mkdir -p "$(dirname "$p")"
+	printf 'not json\n' >"$p"
+	[ "$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_read "sess-x")" = "{}" ] || {
+		echo "a corrupt state file was not recovered from"
+		return 1
+	}
+}
+
+@test "task-queue: state is written via jq, so a crafted value cannot inject a key" {
+	# #2544 shipped a printf-templated JSON state file whose unescaped
+	# interpolation let a crafted value add a second key that jq resolved
+	# last-wins. Session ids and item text come from tool payloads — the same
+	# trust level.
+	local evil state
+	evil='x","calls_since_update":999,"junk":"'
+	state=$(jq -nc --arg ids "$evil" '{open_ids:$ids, calls_since_update:0}')
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "sess-inj" "$state" || {
+		echo "write failed"
+		return 1
+	}
+	local got
+	got=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_read "sess-inj")
+	[ "$(printf '%s' "$got" | jq -r '.calls_since_update')" = "0" ] || {
+		echo "a crafted value overrode the counter: $got"
+		return 1
+	}
+	[ "$(printf '%s' "$got" | jq -r '.open_ids')" = "$evil" ] || {
+		echo "the crafted value was not stored verbatim as data: $got"
+		return 1
+	}
+}
+
+@test "task-queue: a non-JSON state body is REFUSED, not written" {
+	run bash -c "TASK_QUEUE_STATE_DIR='$STATE_DIR' bash -c 'source \"$LIB\"; task_queue_state_write sess-bad \"not json\"'"
+	[ "$status" -ne 0 ] || {
+		echo "a non-JSON state body was accepted"
+		return 1
+	}
+}
+
+# ---- the tracking hook ---------------------------------------------------
+
+@test "track: a todo call snapshots the queue and ZEROES the clock" {
+	_track TodoWrite "$(jq -nc '{todos:[{content:"a",status:"pending"}]}')"
+	[ "$status" -eq 0 ]
+	local s
+	s=$(_state_json) || {
+		echo "no state written"
+		return 1
+	}
+	[ "$(printf '%s' "$s" | jq -r '.calls_since_update')" = "0" ] || {
+		echo "the clock was not reset by a todo call: $s"
+		return 1
+	}
+	[ "$(printf '%s' "$s" | jq -r '.items | length')" = "1" ] || {
+		echo "the item snapshot is missing: $s"
+		return 1
+	}
+}
+
+@test "track: other tools TICK the clock" {
+	_track TodoWrite "$(jq -nc '{todos:[{content:"a",status:"pending"}]}')"
+	local n=0
+	while [ "$n" -lt 3 ]; do
+		_track Bash '{}'
+		[ "$status" -eq 0 ]
+		n=$((n + 1))
+	done
+	local s
+	s=$(_state_json) || return 1
+	[ "$(printf '%s' "$s" | jq -r '.calls_since_update')" = "3" ] || {
+		echo "the clock did not advance once per tool call: $s"
+		return 1
+	}
+}
+
+@test "track: a later todo call RE-zeroes the clock" {
+	_track TodoWrite "$(jq -nc '{todos:[{content:"a",status:"pending"}]}')"
+	_track Bash '{}'
+	_track Bash '{}'
+	_track TodoWrite "$(jq -nc '{todos:[{content:"a",status:"in_progress"}]}')"
+	local s
+	s=$(_state_json) || return 1
+	[ "$(printf '%s' "$s" | jq -r '.calls_since_update')" = "0" ] || {
+		echo "a status update did not reset the staleness clock: $s"
+		return 1
+	}
+}
+
+@test "track: NO state is created before a queue has ever been seen" {
+	# A counter with no queue behind it would make the first todo call look
+	# instantly stale.
+	_track Bash '{}'
+	[ "$status" -eq 0 ]
+	run _state_json
+	[ "$status" -ne 0 ] || {
+		echo "a bare tool call created queue state: $output"
+		return 1
+	}
+}
+
+@test "track: TASK_NUDGE_SKIP=1 disables it entirely" {
+	run bash -c "printf '%s' \"\$1\" | TASK_NUDGE_SKIP=1 TASK_QUEUE_STATE_DIR='$STATE_DIR' bash '$HOOK'" _ \
+		"$(jq -nc '{tool_name:"TodoWrite",session_id:"s",tool_input:{todos:[{content:"a",status:"pending"}]}}')"
+	[ "$status" -eq 0 ]
+	run _state_json
+	[ "$status" -ne 0 ] || {
+		echo "the toggle did not prevent state writes: $output"
+		return 1
+	}
+}
+
+@test "track: a malformed payload FAILS OPEN and blocks nothing" {
+	# This runs after EVERY tool call. A fault here would be a fault in every
+	# action the operator takes, and what it protects is a reminder.
+	run bash -c "printf 'not json' | TASK_QUEUE_STATE_DIR='$STATE_DIR' bash '$HOOK'"
+	[ "$status" -eq 0 ] || {
+		echo "a malformed payload made the hook fail: $output"
+		return 1
+	}
+	run bash -c "printf '' | TASK_QUEUE_STATE_DIR='$STATE_DIR' bash '$HOOK'"
+	[ "$status" -eq 0 ]
+}
+
+@test "track: a payload with NO session_id is ignored, not guessed at" {
+	run bash -c "printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' bash '$HOOK'" _ \
+		"$(jq -nc '{tool_name:"TodoWrite",tool_input:{todos:[{content:"a",status:"pending"}]}}')"
+	[ "$status" -eq 0 ]
+	run _state_json
+	[ "$status" -ne 0 ] || {
+		echo "state was written under a guessed session: $output"
+		return 1
+	}
+}
+
+@test "track: two sessions keep SEPARATE clocks" {
+	_track TodoWrite "$(jq -nc '{todos:[{content:"a",status:"pending"}]}')" "sess-A"
+	_track TodoWrite "$(jq -nc '{todos:[{content:"b",status:"pending"}]}')" "sess-B"
+	_track Bash '{}' "sess-A"
+	_track Bash '{}' "sess-A"
+	local pa pb
+	pa=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "sess-A")
+	pb=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "sess-B")
+	[ "$(jq -r '.calls_since_update' "$pa")" = "2" ] || {
+		echo "session A clock wrong: $(cat "$pa")"
+		return 1
+	}
+	[ "$(jq -r '.calls_since_update' "$pb")" = "0" ] || {
+		echo "session B inherited A's ticks: $(cat "$pb")"
+		return 1
+	}
+}
+
+@test "task-queue: stale session state is PRUNED, live state is not" {
+	# Real data-loss risk with zero coverage: a prune whose -mtime predicate
+	# is lost or inverted deletes every session's state, silently resetting
+	# every staleness clock — strictly worse than not pruning at all.
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" \
+		'{"open_ids":"x","calls_since_update":0}' || return 1
+	mkdir -p "$STATE_DIR"
+	# The dead session is written THROUGH THE LIBRARY and then aged, rather
+	# than hand-authored. A hand-authored `{"open_ids":"gone"}` was missing
+	# `calls_since_update`, so once the prune began checking ownership by
+	# content this fixture stopped looking like session state at all — the
+	# test failed on a file production never writes. Going through the real
+	# writer means the fixture cannot drift from the production shape again.
+	local old
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "dead_session" \
+		'{"open_ids":"gone","calls_since_update":7}' || return 1
+	old=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "dead_session")
+	[ -f "$old" ] || {
+		echo "fixture: the dead session was never written"
+		return 1
+	}
+	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$old"
+	# A second write is what triggers the prune. Production-shaped, like the
+	# dead-session fixture above: the "live state survived" assertion is only
+	# meaningful if the keeper would have been a prune CANDIDATE on content —
+	# a keeper missing calls_since_update fails the ownership predicate and is
+	# spared for the wrong reason, proving nothing about the -mtime guard.
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" \
+		'{"open_ids":"y","calls_since_update":1}' || return 1
+	[ ! -f "$old" ] || {
+		echo "a 14-day-old session file survived the prune"
+		return 1
+	}
+	local keep
+	keep=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "keeper")
+	[ -f "$keep" ] || {
+		echo "the prune deleted LIVE session state"
+		return 1
+	}
+}
+
+@test "task-queue: the prune spares bystanders that MATCH the glob" {
+	# TASK_QUEUE_STATE_DIR is operator-settable and the write path deletes.
+	# Harvesting every old .json from a relocated directory is a destructive
+	# default.
+	#
+	# This test used to use `notes.json` as its only decoy — a name with no
+	# hyphen-digit, so `*-[0-9]*.json` never matched it and the test passed
+	# no matter how broad the glob was. It certified an ownership check that
+	# did not exist. The security review found the real shape by fuzzing the
+	# glob directly: `tsconfig-1.json` and friends were being deleted.
+	#
+	# Every decoy below MATCHES the glob and must survive on CONTENT.
+	mkdir -p "$STATE_DIR"
+	local old
+	old="$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)"
+	local decoys=(
+		"tsconfig-1.json"
+		"report-2023-final.json"
+		"credentials-2.json"
+		"openapi-3.json"
+		"backup-1.json"
+	)
+	local d
+	for d in "${decoys[@]}"; do
+		printf '{"not":"session state"}\n' >"$STATE_DIR/$d"
+		touch -t "$old" "$STATE_DIR/$d"
+	done
+	# Also: a file that is ours by NAME but unreadable. Unreadable is not the
+	# same as foreign, and the safe response to both is to leave it alone.
+	printf 'not json at all\n' >"$STATE_DIR/garbled-9.json"
+	touch -t "$old" "$STATE_DIR/garbled-9.json"
+
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "sess-p" '{"open_ids":"z"}' || return 1
+
+	for d in "${decoys[@]}" "garbled-9.json"; do
+		[ -f "$STATE_DIR/$d" ] || {
+			echo "the prune deleted $d, which is not session state"
+			return 1
+		}
+	done
+}
+
+@test "task-queue: the prune DOES still collect real stale state (not vacuously safe)" {
+	# The content check above could be made trivially safe by never deleting
+	# anything. This is the other half: a file that IS ours, old, and gone.
+	mkdir -p "$STATE_DIR"
+	local mine="$STATE_DIR/oldsess-778899.json"
+	printf '{"open_ids":"a","calls_since_update":3}\n' >"$mine"
+	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$mine"
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "sess-q" '{"open_ids":"z"}' || return 1
+	[ ! -f "$mine" ] || {
+		echo "real stale session state survived — the prune has stopped working"
+		return 1
+	}
+}
+
+@test "task-queue: with NO override the state dir is repo-scoped" {
+	# Every other test sets TASK_QUEUE_STATE_DIR, so the default branch — the
+	# one that actually runs in production — was never exercised. The #2637
+	# lesson: a fixture that reproduces the inputs but not the real
+	# configuration certifies a path nothing takes.
+	local got
+	got=$(
+		cd "$TEST_TMP" && git init -q -b main 2>/dev/null
+		cd "$TEST_TMP" && TASK_QUEUE_STATE_DIR="" bash -c "source '$LIB'; _task_queue_state_dir"
+	)
+	case "$got" in
+	*/.claude/.session-state/task-queue) ;;
+	*)
+		echo "the default state dir is not repo-scoped: $got"
+		return 1
+		;;
+	esac
+}
+
+@test "task-queue: alternative content field names are read" {
+	# The normaliser falls through .content / .description / .title / .prompt
+	# because Task* carries different keys by version. An unread key means an
+	# item with empty content, which the selector then cannot name.
+	local items
+	items=$(task_queue_from_tool_input '{"tasks":[{"description":"via description","state":"pending"}]}')
+	[ "$(task_queue_next_actionable "$items")" = "via description" ] || {
+		echo ".description was not read: $items"
+		return 1
+	}
+	items=$(task_queue_from_tool_input '{"items":[{"title":"via title","status":"pending"}]}')
+	[ "$(task_queue_next_actionable "$items")" = "via title" ] || {
+		echo ".title was not read: $items"
+		return 1
+	}
+}
+
+@test "task-queue: a BLOCKED item does not count toward the open-id hash" {
+	# open_ids and next_actionable must agree on what 'open' means. They did
+	# not: a blocked item counted toward the hash while being unselectable, so
+	# a queue whose only remaining work was blocked reported movement that
+	# could never happen.
+	local all_blocked only_completed
+	all_blocked=$(task_queue_from_tool_input '{"todos":[{"content":"stuck","status":"pending","blocked":true}]}')
+	only_completed=$(task_queue_from_tool_input '{"todos":[{"content":"done","status":"completed"}]}')
+	[ "$(task_queue_open_ids "$all_blocked")" = "$(task_queue_open_ids "$only_completed")" ] || {
+		echo "a blocked-only queue hashed differently from an empty one"
+		return 1
+	}
+}
+
+@test "task-queue: a malformed input does NOT outvote a valid earlier queue" {
+	# `last` picks the final candidate. The first cut of the .input object
+	# guard emitted [] for a malformed tool_use, which then JOINED the
+	# candidate list — so a valid TodoWrite followed by a TaskUpdate with a
+	# non-object .input classified as `empty` and suppressed the nudge with
+	# work still open. Failing open per item means the item leaves the list,
+	# not that it becomes an empty queue that outvotes the good ones.
+	local t="$TEST_TMP/mixed.jsonl"
+	{
+		jq -nc '{message:{content:[{type:"tool_use",name:"TodoWrite",
+			input:{todos:[{content:"real work",status:"in_progress"}]}}]}}'
+		jq -nc '{message:{content:[{type:"tool_use",name:"TaskUpdate",
+			input:"not an object"}]}}'
+	} >"$t"
+	local items state
+	items=$(task_queue_from_transcript "$t") || {
+		echo "a malformed trailing input aborted the whole parse"
+		return 1
+	}
+	state=$(task_queue_classify "$items")
+	[ "$state" = "open" ] || {
+		echo "classified as '$state' rather than open; the malformed input won: $items"
+		return 1
+	}
+}
+
+@test "task-queue: the sanitiser strips control chars and KEEPS non-ASCII" {
+	# `tr -cd '[:print:]'` was byte-based, so every UTF-8 continuation byte
+	# fell outside [:print:] in the C locale: em dashes, accents and
+	# non-Latin script were mangled or deleted outright. The injection
+	# defence is the CONTROL-character removal; printable text in any
+	# language is content, not an attack.
+	local got
+	got=$(task_queue_sanitise_line "$(printf 'refactor \xe2\x80\x94 caf\xc3\xa9 \xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\rINJECTED\there')" 160)
+	case "$got" in
+	*$'\r'* | *$'\t'*)
+		echo "a control character survived: $got"
+		return 1
+		;;
+	esac
+	case "$got" in
+	*"café"*) ;;
+	*)
+		echo "an accented word was destroyed: $got"
+		return 1
+		;;
+	esac
+	case "$got" in
+	*"—"*) ;;
+	*)
+		echo "an em dash was destroyed: $got"
+		return 1
+		;;
+	esac
+	case "$got" in
+	*"テスト"*) ;;
+	*)
+		echo "non-Latin script was destroyed: $got"
+		return 1
+		;;
+	esac
+	# And the injected text is still on ONE line, which is the actual point.
+	case "$got" in
+	*"INJECTED"*) ;;
+	*)
+		echo "flattening deleted content instead of flattening it: $got"
+		return 1
+		;;
+	esac
+}
+
+@test "task-queue: concurrent read-modify-write loses NO increment" {
+	# The race: task-queue-track.sh and task-issue-reconcile.sh both match
+	# PostToolUse, both fire on the same `git commit`, and both
+	# read-modify-write this one file. The mv is atomic so the file never
+	# tears; the loser read before the winner wrote, so it writes back a
+	# stale object and the winner's change is gone.
+	#
+	# ASSERTED ON THE INCREMENT COUNT, NOT ON KEY PRESENCE. The first version
+	# of this test checked that ids_at_last_commit and calls_since_update
+	# were still there — which the seed guarantees, because every writer
+	# jq-edits the WHOLE object it read, so even a losing writer writes both
+	# keys back. It named the invariant "keeps BOTH fields" and asserted
+	# something the seed made unfalsifiable: deleting the lock left it green.
+	#
+	# A lost update, by contrast, is exactly what an unserialised
+	# read-modify-write produces and nothing else does. N increments must
+	# yield N.
+	local n=8
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "racer" \
+		'{"open_ids":"seed","calls_since_update":0,"ids_at_last_commit":"base"}' || return 1
+
+	# ACQUISITION FAILURES ARE RECORDED SEPARATELY. `task_queue_state_lock`
+	# returns non-zero after its budget and `|| true` proceeds unlocked by
+	# design — so a stale overwrite caused by a TIMEOUT would be reported
+	# here as "lost update", blaming the serialisation for a contention
+	# problem. Two different defects, two different fixes; the test has to
+	# say which one it saw.
+	local failfile="$TEST_TMP/lockfail"
+	: >"$failfile"
+	local i=0
+	while [ "$i" -lt "$n" ]; do
+		(
+			export TASK_QUEUE_STATE_DIR="$STATE_DIR"
+			task_queue_state_lock "racer" || echo x >>"$failfile"
+			s=$(task_queue_state_read "racer")
+			# The sleep WIDENS the window deliberately. Without it the
+			# read-modify-write is fast enough that an unlocked run can pass
+			# by luck, and a concurrency test that passes by luck is the same
+			# defect as one that passes by construction.
+			#
+			# 10ms x 8 writers is well inside the 2s lock budget, so the
+			# serialised total cannot itself provoke the timeout this test
+			# needs to keep distinct from a lost update.
+			sleep 0.01
+			s=$(printf '%s' "$s" | jq -c '.calls_since_update += 1')
+			task_queue_state_write "racer" "$s"
+			task_queue_state_unlock "racer"
+		) &
+		i=$((i + 1))
+	done
+	wait
+
+	local nfail
+	nfail=$(wc -l <"$failfile" | tr -d ' ')
+	[ "$nfail" = "0" ] || {
+		echo "$nfail writer(s) timed out acquiring the lock — contention exceeded the budget, so this run cannot speak to lost updates"
+		return 1
+	}
+
+	local sf calls
+	sf=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "racer")
+	jq -e . "$sf" >/dev/null 2>&1 || {
+		echo "concurrent writes produced invalid JSON"
+		return 1
+	}
+	calls=$(jq -r '.calls_since_update // "MISSING"' "$sf")
+	[ "$calls" = "$n" ] || {
+		echo "lost update: $n writers incremented, final value is $calls"
+		return 1
+	}
+}
+
+@test "task-queue: a hook that never ACQUIRED the lock does not release it" {
+	# The lock had no ownership tracking, and both hooks arm the EXIT trap
+	# unconditionally. So a hook that timed out — proceeding unlocked, which
+	# is the intended fail-open — went on to rmdir the lockdir the OTHER hook
+	# was still holding. The holder then finished outside the critical
+	# section and the lost-update race returned, in exactly the contention
+	# window the lock was added for. A lock released by whoever loses the
+	# race is worse than no lock: it looks like protection.
+	local dir="$STATE_DIR/lockowner"
+	mkdir -p "$dir"
+	local ld="$dir/held.lockdir"
+	mkdir "$ld" || return 1
+
+	# This shell never called _task_queue_lock for $ld, so it owns nothing.
+	_task_queue_unlock "$ld"
+	[ -d "$ld" ] || {
+		echo "a non-owner released a lock it never acquired"
+		return 1
+	}
+
+	# And the real owner still can.
+	_TQ_LOCKS_HELD="$_TQ_LOCKS_HELD:$ld"
+	_task_queue_unlock "$ld"
+	[ ! -d "$ld" ] || {
+		echo "the owner could not release its own lock"
+		return 1
+	}
+}
+
+@test "task-queue: a STALE lockdir is reclaimed, not waited on forever" {
+	# A hook killed mid-critical-section leaves the directory behind, and
+	# every later hook in the session then pays the full budget and warns
+	# about a process that is long gone.
+	local dir="$STATE_DIR/stale"
+	mkdir -p "$dir"
+	local ld="$dir/old.lockdir"
+	mkdir "$ld" || return 1
+	# Age it well past the reclaim threshold.
+	# NOT `date -u`: touch -t interprets its argument as LOCAL time, so a UTC
+	# stamp lands in the FUTURE outside UTC and `find -mmin +1` never matches
+	# it. The reclaim looked broken; the fixture was dating the corpse wrong.
+	touch -t "$(date -v-1H +%Y%m%d%H%M 2>/dev/null || date -d '1 hour ago' +%Y%m%d%H%M)" "$ld"
+
+	run _task_queue_lock "$ld"
+	[ "$status" -eq 0 ] || {
+		echo "a stale lock was never reclaimed: $output"
+		return 1
+	}
+	case "$output" in
+	*reclaiming*) ;;
+	*)
+		echo "the reclaim was silent — an operator cannot tell this happened: $output"
+		return 1
+		;;
+	esac
+	_task_queue_unlock "$ld"
+}
+
+@test "task-queue: a FRESH lockdir is NOT reclaimed" {
+	# The other half. Reclaiming an actively-held lock would be the same
+	# defect as releasing one you never took, arriving by a different route.
+	local dir="$STATE_DIR/fresh"
+	mkdir -p "$dir"
+	local ld="$dir/live.lockdir"
+	mkdir "$ld" || return 1
+
+	run _task_queue_lock "$ld"
+	[ "$status" -ne 0 ] || {
+		echo "a freshly-held lock was stolen from its holder"
+		return 1
+	}
+	[ -d "$ld" ] || {
+		echo "a freshly-held lockdir was removed"
+		return 1
+	}
+	rmdir "$ld"
+}
+
+@test "task-queue: truncation lands on a CHARACTER boundary" {
+	# `cut -b` was the first truncation and it reintroduced the problem the
+	# control-only filter had just fixed: byte N can fall inside a multibyte
+	# sequence, so the result ends in a partial character — invalid UTF-8,
+	# emitted into both the diagnostic and the systemMessage.
+	# RUN UNDER LC_ALL=C. The function used to default with `${LC_ALL:-…}`,
+	# which PRESERVES a caller's C locale — and under C, bash indexes bytes,
+	# so the substring split multibyte sequences exactly as `cut -b` had. A
+	# test run in the ambient UTF-8 locale could never see that.
+	local got
+	# Ten 3-byte characters; a 5-character cut is byte 15, and any byte-wise
+	# truncation to 5 bytes would split the second character.
+	got=$(LC_ALL=C LANG=C task_queue_sanitise_line "ありがとうございます" 5)
+
+	# VALIDITY is asserted with iconv, which is locale-independent. The
+	# length is asserted in BYTES via `wc -c`, not characters via `wc -m`:
+	# wc -m itself counts by the current locale, so it would report the
+	# byte count under C and the character count elsewhere — an assertion
+	# that changes meaning with the environment cannot pin a boundary.
+	printf '%s' "$got" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || {
+		echo "truncation produced invalid UTF-8: $(printf '%s' "$got" | od -c | head -2)"
+		return 1
+	}
+	# Whole characters only: the result must be a byte-length divisible by 3
+	# (these are all 3-byte characters) and non-empty.
+	local nbytes
+	nbytes=$(printf '%s' "$got" | wc -c | tr -d ' ')
+	[ "$nbytes" -gt 0 ] || {
+		echo "truncation destroyed the string entirely"
+		return 1
+	}
+	[ $((nbytes % 3)) -eq 0 ] || {
+		echo "truncation landed mid-character: $nbytes bytes is not a whole number of 3-byte characters"
+		return 1
+	}
+	[ "$nbytes" -le 15 ] || {
+		echo "truncation did not bound the result: $nbytes bytes"
+		return 1
+	}
+}
+
+@test "task-queue: superseded diagnostics are pruned, the live one is kept" {
+	# hook_ack_append dedupes rows by (hook, reason);
+	# hook_ack_diagnostic_write mints a unique filename per call. So the row
+	# points at the newest file and every earlier one is orphaned forever.
+	local root="$TEST_TMP/prunerepo"
+	mkdir -p "$root"
+	(cd "$root" && git init -q -b main) || return 1
+	local dir="$root/.claude/.session-state/hook-ack/some-hook"
+	mkdir -p "$dir"
+	printf 'old\n' >"$dir/20260101T000000Z-a-reason-aaaaaa.txt"
+	printf 'older\n' >"$dir/20260102T000000Z-a-reason-bbbbbb.txt"
+	printf 'keep\n' >"$dir/20260103T000000Z-a-reason-cccccc.txt"
+	# A different reason in the same directory must be untouched.
+	printf 'other\n' >"$dir/20260101T000000Z-other-reason-dddddd.txt"
+	# AGE the superseded ones. The prune deliberately spares anything younger
+	# than a minute: a concurrent process that has written its diagnostic but
+	# not yet appended its sentinel row has no reference protecting it, and
+	# that window is exactly what the age guard covers.
+	touch -t "$(date -v-1H +%Y%m%d%H%M 2>/dev/null || date -d '1 hour ago' +%Y%m%d%H%M)" \
+		"$dir/20260101T000000Z-a-reason-aaaaaa.txt" \
+		"$dir/20260102T000000Z-a-reason-bbbbbb.txt" \
+		"$dir/20260101T000000Z-other-reason-dddddd.txt"
+
+	(cd "$root" && task_queue_prune_superseded_diags "some-hook" "a-reason" \
+		"$dir/20260103T000000Z-a-reason-cccccc.txt")
+
+	[ -f "$dir/20260103T000000Z-a-reason-cccccc.txt" ] || {
+		echo "the LIVE diagnostic was deleted — its sentinel row is now unclearable"
+		return 1
+	}
+	[ ! -f "$dir/20260101T000000Z-a-reason-aaaaaa.txt" ] || {
+		echo "a superseded diagnostic survived"
+		return 1
+	}
+	[ ! -f "$dir/20260102T000000Z-a-reason-bbbbbb.txt" ] || {
+		echo "a superseded diagnostic survived"
+		return 1
+	}
+	[ -f "$dir/20260101T000000Z-other-reason-dddddd.txt" ] || {
+		echo "a DIFFERENT reason was pruned — that row is now unclearable"
+		return 1
+	}
+}
