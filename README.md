@@ -84,11 +84,35 @@ Server-side workflow gates (`.github/workflows/pr-lint.yml`, `pr-labeler.yml`) h
 | PR creation | `github-pr-creation/run.sh` (#121 auto-create missing milestone) | (none; manual UI step) |
 | PR creation | `github-pr-creation/run.sh` (#122 calls feature-branch verify) | (none; manual) |
 | Pre-push | `hooks/pre-push-pipeline-gate.sh` (Phase 0.5/1/2 evidence) | (none; advisory) |
+| Turn end | `hooks/next-task-stop-nudge.sh` (#2555 next open task) | (none; session-local) |
+| Every tool call | `hooks/task-queue-track.sh` (#2555 stale `in_progress` item) | (none; session-local) |
+| Post-commit | `hooks/task-issue-reconcile.sh` (#2555 commit vs task list) | (none; session-local) |
+
+### Task-queue nudges (#2551)
+
+Three hooks keep the task list honest, each routed through `hook-ack` so the
+next tool call is denied until the diagnostic is Read — the same mechanism the
+lint and pipeline gates use, rather than advisory output that scrolls past:
+
+- **next open task** — a turn ended with work still open. Names the next
+  actionable item, resuming an `in_progress` one before starting a `pending`.
+- **stale item** — something has been `in_progress` for `TASK_STALE_AFTER_CALLS`
+  tool calls (default 40) with no status update. Fires once per item and
+  re-arms only after the next update.
+- **commit vs task list** — a commit referencing `#NNN` landed and the open-item
+  set is unchanged since the previous commit.
+
+They never fire on a conversational turn, an empty queue, or a `blocked` item.
+Detection fails open (a parse error is silent); enforcement is the shared gate
+and fails closed.
 
 **Override paths** (all `=1` to bypass, audit-logged to `.claude/logs/dogfood-gate-skip.jsonl`):
 - `ISSUE_LABELS_REQUIRED_SKIP=1`
 - `PR_BRANCH_VERIFY_SKIP=1`
 - `PR_MILESTONE_AUTO_CREATE_SKIP=1`
+- `TASK_NUDGE_SKIP=1` — disables all three task-queue nudges above. Each hook
+  emits an audit line to stderr while it is set, so a toggle left on weeks ago
+  still says why the nudges went quiet.
 
 ## Installation
 

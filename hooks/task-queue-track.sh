@@ -22,7 +22,14 @@ set -uo pipefail
 #
 # Toggle: TASK_NUDGE_SKIP=1 disables the whole task-nudge family.
 
-[ "${TASK_NUDGE_SKIP:-0}" = "1" ] && exit 0
+if [ "${TASK_NUDGE_SKIP:-0}" = "1" ]; then
+	# Audited to stderr, not silent: an operator who set this weeks ago and
+	# forgot needs to see WHY the nudges stopped. skip-env-approval-gate.sh
+	# already gates SETTING it; this is the other half — the standing reminder
+	# that it is still set.
+	echo "task-queue-track: TASK_NUDGE_SKIP=1 — task nudges disabled by operator toggle" >&2
+	exit 0
+fi
 
 command -v jq >/dev/null 2>&1 || exit 0
 

@@ -208,3 +208,17 @@ auto-merge also requires `allow_auto_merge` on the repository — if it is off,
 - **cr-thread-reply reached** → classify each UNADDRESSED thread and reply with evidence via `scripts/cr/thread-reply.sh`. Never resolve a thread by hand — the reply is the action, CR resolving is the outcome. `verified-fixed` is gated on `git show HEAD:<path>`; `actionable` is not repliable and goes back to autofix.
 - **merge-gate reached** → operator approval point by default. Auto-merge is **OPT-IN**: with `MERGE_GATE_AUTO=1`, and only if the PR is provably green (every required check green AND `hooks/_pr-cr-findings.sh` clean across all four of its sources AND `mergeStateStatus == CLEAN`), the stage arms GitHub native auto-merge and returns. Otherwise it holds for operator approval. A `needs-operator` label forces the human gate regardless, and drafts are never auto-merged. Fails closed: a signal that cannot be READ holds the gate, and a check that passed WITHOUT running (CR "rate limited" / "review paused", or a SKIPPED required check) is not green. It ships opt-in because the first review of that predicate found four independent ways it returned "green" on a PR that should have held — see `_lib/merge-auto-ok.sh`.
 - **`resume`** → auto-advances until it hits phase1 (needs agents), merge-gate (needs operator), or a terminal state.
+
+## Task-queue nudges are NOT this pipeline (#2551)
+
+`hooks/next-task-stop-nudge.sh`, the staleness check in
+`hooks/task-queue-track.sh`, and `hooks/task-issue-reconcile.sh` advance the
+WORK QUEUE. This skill advances the PIPELINE. They are separate mechanisms and
+the stall #2551 records happens in the gap between them: `next` mechanically
+moves a PR from stage to stage, and nothing mechanically moved the agent from
+one sub-task to the next — so it finished an item, wrote a status report, and
+waited to be told "continue".
+
+Both now enforce the same way: a hook-ack sentinel that denies the next tool
+call until the diagnostic is Read. `TASK_NUDGE_SKIP=1` disables the task-queue
+family only; it has no effect on this pipeline's gates.

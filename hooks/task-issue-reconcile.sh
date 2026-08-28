@@ -24,13 +24,15 @@ set -uo pipefail
 #
 # Toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family.
 
-[ "${TASK_NUDGE_SKIP:-0}" = "1" ] && exit 0
+if [ "${TASK_NUDGE_SKIP:-0}" = "1" ]; then
+	# Audited to stderr, not silent: an operator who set this weeks ago and
+	# forgot needs to see WHY the nudges stopped. skip-env-approval-gate.sh
+	# already gates SETTING it; this is the other half — the standing reminder
+	# that it is still set.
+	echo "task-issue-reconcile: TASK_NUDGE_SKIP=1 — task nudges disabled by operator toggle" >&2
+	exit 0
+fi
 command -v jq >/dev/null 2>&1 || exit 0
-
-PAYLOAD=$(cat 2>/dev/null) || exit 0
-[ -n "$PAYLOAD" ] || exit 0
-SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
-[ -n "$SESSION_ID" ] || exit 0
 
 _HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 0
 _PCD_LIB="$_HOOK_DIR/../_lib/post-commit-detect.sh"
@@ -38,9 +40,22 @@ _PCD_LIB="$_HOOK_DIR/../_lib/post-commit-detect.sh"
 # shellcheck source=../_lib/post-commit-detect.sh
 source "$_PCD_LIB" 2>/dev/null || exit 0
 
-# Runs ONLY after a successful commit. Without this the hook would fire on
-# every Bash call and read whatever HEAD happened to be.
+# post_commit_detect_init READS STDIN ITSELF and exports $PAYLOAD.
+#
+# So it must be called BEFORE anything else touches stdin. An earlier version
+# of this hook did its own `PAYLOAD=$(cat)` first for the session id; the lib
+# then read an already-drained stdin, fell back to `{}`, found no command, and
+# returned 1 — so this hook exited 0 on every single invocation and could
+# never have fired in production. Caught by its own tests, which is the
+# argument for writing them against the real call sequence.
+#
+# Gates on a SUCCESSFUL `git commit` (direct or through the skill wrapper).
+# Without it the hook would fire on every Bash call and read whatever HEAD
+# happened to be.
 post_commit_detect_init || exit 0
+
+SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
+[ -n "$SESSION_ID" ] || exit 0
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -n "$REPO_ROOT" ] || exit 0
