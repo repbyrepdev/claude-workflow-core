@@ -300,6 +300,42 @@ EOF
 	}
 }
 
+@test "phase bodies: bold and whitespace-only headings keep titles and bodies aligned" {
+	# The two patterns that must agree are written in two languages (ERE in
+	# grep, ERE in awk) against the same lines, so the interesting cases are
+	# the ones where they could disagree WITHOUT either looking wrong:
+	#   `### Phase 1: **Library**` — grep's `[^*#]+` stops at the asterisk,
+	#     awk's `[^*#[:space:]]` refuses it. Both skip. Agreement by luck is
+	#     still agreement, but only a test keeps it that way.
+	#   `### Phase 2 ` — trailing whitespace and no title. grep's `[^*#]+`
+	#     matches the SPACE, so the title survives grep and is then emptied
+	#     by the trailing-space sed and dropped by the `[ -z ]` guard without
+	#     advancing idx. awk refuses it outright.
+	# If either side ever stops skipping one of these, the indices desync and
+	# the last phase gets someone elses body — silently.
+	cd "$TEST_TMP"
+	_run_parse "$(printf '## Phases\n\n### Phase 1: **Library**\n\n- bold heading work\n\n### Phase 2 \n\n- whitespace heading work\n\n### Phase 3: Docs\n\n- write the docs\n')"
+	[ "$status" -eq 0 ] || {
+		echo "parse failed: $output"
+		return 1
+	}
+	# Only "Docs" is a usable title, so exactly one sub-issue.
+	[ "$(_captured)" = "1" ] || {
+		echo "expected 1 usable title, got $(_captured) sub-bodies"
+		return 1
+	}
+	local b1
+	b1=$(_body 1)
+	[[ $b1 == *"write the docs"* ]] || {
+		echo "the Docs sub-issue did not receive the Docs tasks: $b1"
+		return 1
+	}
+	[[ $b1 != *"bold heading work"* ]] || {
+		echo "the Docs sub-issue received the bold phase's tasks: $b1"
+		return 1
+	}
+}
+
 @test "phase bodies: an @mention in plan text does not notify from the new issue" {
 	# CR writes the plan, but it writes it FROM the source issue's text —
 	# so an @mention typed by whoever filed that issue rides along and would

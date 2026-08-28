@@ -294,11 +294,18 @@ parse)
 		# wrong sub-issue. Not an empty body: the WRONG phase body, under a
 		# title that does not describe it. Two regexes that must agree, in
 		# two languages, is the standing hazard here.
+		# The trailing class excludes the COLON as well as * and #. The first
+		# attempt at this fix used [^*#[:space:]] and was still wrong, because
+		# `:?` can match nothing and let the colon ITSELF satisfy the class —
+		# so `### Phase 1: **Library**` counted as a heading here while the
+		# title side reduced it to an empty string and skipped it. One
+		# untitled bold phase and every later body shifted by one. Found by
+		# the test, not by reading the regex.
 		# (No apostrophes in this block: it lives inside a single-quoted
 		# awk program, and one would terminate it.)
 		{
 			is_head = (form == "heading") \
-				? ($0 ~ /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+:?[[:space:]]*[^*#[:space:]]/) \
+				? ($0 ~ /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+[:[:space:]]*[^*#:[:space:]]/) \
 				: ($0 ~ /^[0-9]+\.[[:space:]]+[^[:space:]]/)
 		}
 		is_head { idx++; file = sprintf("%s/%02d.md", outdir, idx); next }

@@ -183,8 +183,25 @@ _diag_body() {
 		return 1
 	}
 	rm -f "$DIAG_ROOT/task-issue-reconcile"/*.txt
-	# Now the queue goes away entirely while the baseline survives.
-	rm -f "$STATE_DIR"/*.json
+	# CLEAR THE QUEUE, KEEP THE BASELINE. `rm -f "$STATE_DIR"/*.json` was
+	# wrong for the same reason the comment above warns about: the baseline
+	# `ids_at_last_commit` lives in that SAME file, so deleting it sent the
+	# hook back out through the `[ -n "$_LAST_COMMIT_IDS" ]` guard — the one
+	# the setup above exists to get past — and the queue guard under test was
+	# never reached. The test passed either way. Second time this exact
+	# fixture has certified the wrong guard; hence the surgical edit.
+	local sf
+	sf=$(find "$STATE_DIR" -name '*.json' -type f | head -1)
+	[ -n "$sf" ] || {
+		echo "fixture: no session state to clear"
+		return 1
+	}
+	jq -c '.open_ids = "" | .items = []' "$sf" >"$sf.new" && mv -f "$sf.new" "$sf"
+	# Prove the baseline SURVIVED the edit, or this is the old bug again.
+	[ -n "$(jq -r '.ids_at_last_commit // ""' "$sf")" ] || {
+		echo "fixture: the baseline was destroyed — the queue guard is not what is under test"
+		return 1
+	}
 	_commit "feat(z): still on #55"
 	_run_hook
 	[ "$status" -eq 0 ]

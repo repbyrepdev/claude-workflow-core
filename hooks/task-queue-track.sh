@@ -52,8 +52,18 @@ PAYLOAD=$(cat 2>/dev/null) || exit 0
 
 # Cheap early-exit funnel, following hooks/phase1-post-agent-nudge.sh: pull
 # only the three fields this hook uses, and leave on any parse failure.
-TOOL_NAME=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // ""' 2>/dev/null) || exit 0
-SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
+# ONE jq, not two. This hook runs on EVERY PostToolUse — the highest-frequency
+# hook in the tree — so a second interpreter start-up here is paid on every
+# tool call in every session.
+#
+# The delimiter is 0x1f (unit separator), not a tab, and the split is
+# parameter expansion, not `read`. Tab is IFS-whitespace: `IFS=$'\t' read -r a
+# b` collapses consecutive tabs and strips leading ones, so an empty
+# .tool_name would silently shift session_id into TOOL_NAME. Same reason
+# task_queue_open_ids joins on 0x1f.
+_FIELDS=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_name // "") + "\u001f" + (.session_id // "")' 2>/dev/null) || exit 0
+TOOL_NAME=${_FIELDS%%$'\x1f'*}
+SESSION_ID=${_FIELDS#*$'\x1f'}
 [ -n "$SESSION_ID" ] || exit 0
 
 _HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 0
