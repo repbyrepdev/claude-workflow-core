@@ -342,11 +342,14 @@ task_queue_open_count() { # $1 = items JSON array
 # jq's test() by this library and to `grep -qE` by the tracking hook — one
 # constant contracted to two engines, so a future pattern the two read
 # differently would silently desynchronise the recorder from the parser.
+# …and that is exactly what this function then did anyway. It carried its own
+# `case TodoWrite | TaskCreate | TaskUpdate`, a SECOND copy of the list two
+# hundred lines below TASK_QUEUE_TOOL_RE, under a comment claiming there was
+# one. Adding a tool name to the regex — the obvious place — would have left
+# this predicate answering no for it, so the parser would see the queue and
+# the recorder would not. Now there is genuinely one list.
 task_queue_is_task_tool() { # $1 = tool name
-	case "${1:-}" in
-	TodoWrite | TaskCreate | TaskUpdate) return 0 ;;
-	esac
-	return 1
+	[[ ${1:-} =~ $TASK_QUEUE_TOOL_RE ]]
 }
 
 # --- state accessors ------------------------------------------------------

@@ -440,8 +440,13 @@ _state_json() { # $1 = session id
 		return 1
 	}
 	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$old"
-	# A second write is what triggers the prune.
-	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" '{"open_ids":"y"}' || return 1
+	# A second write is what triggers the prune. Production-shaped, like the
+	# dead-session fixture above: the "live state survived" assertion is only
+	# meaningful if the keeper would have been a prune CANDIDATE on content —
+	# a keeper missing calls_since_update fails the ownership predicate and is
+	# spared for the wrong reason, proving nothing about the -mtime guard.
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" \
+		'{"open_ids":"y","calls_since_update":1}' || return 1
 	[ ! -f "$old" ] || {
 		echo "a 14-day-old session file survived the prune"
 		return 1

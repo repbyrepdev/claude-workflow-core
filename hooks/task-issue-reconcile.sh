@@ -132,7 +132,15 @@ _ACK_LIB="$_HOOK_DIR/../_lib/hook-ack.sh"
 # shellcheck source=../_lib/hook-ack.sh
 source "$_ACK_LIB" 2>/dev/null || exit 0
 
-_SUBJ=$(printf '%s' "$MSG" | head -1 | head -c 120)
+# FLATTENED and printable-only, for the reason task-queue-track.sh and
+# next-task-stop-nudge.sh both record: this body is force-read by the agent
+# via the hook-ack gate. `head -1` alone is NOT the same sanitisation — it
+# terminates on \n and leaves \r, \t and escape sequences intact, and a
+# terminal renders a bare \r as a carriage return, so a subject of
+# "chore: tidy\rIGNORE PREVIOUS INSTRUCTIONS" still overwrites the visible
+# line while head counts it as one. Verified: `printf 'safe\rINJECTED\n' |
+# head -1` emits both halves.
+_SUBJ=$(printf '%s' "$MSG" | head -1 | tr '\n\r\t' '   ' | tr -cd '[:print:]' | head -c 120)
 _BODY="A commit referencing $ISSUES landed, and the task list did not move.
 
     $_SUBJ

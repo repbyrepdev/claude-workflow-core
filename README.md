@@ -106,13 +106,14 @@ They never fire on a conversational turn, an empty queue, or a `blocked` item.
 Detection fails open (a parse error is silent); enforcement is the shared gate
 and fails closed.
 
-**Override paths** (all `=1` to bypass, audit-logged to `.claude/logs/dogfood-gate-skip.jsonl`):
+**Override paths** (all `=1` to bypass; the first three are audit-logged to
+`.claude/logs/dogfood-gate-skip.jsonl`):
 - `ISSUE_LABELS_REQUIRED_SKIP=1`
 - `PR_BRANCH_VERIFY_SKIP=1`
 - `PR_MILESTONE_AUTO_CREATE_SKIP=1`
-- `TASK_NUDGE_SKIP=1` — disables all three task-queue nudges above. Each hook
-  emits an audit line to stderr while it is set, so a toggle left on weeks ago
-  still says why the nudges went quiet.
+- `TASK_NUDGE_SKIP=1` — disables all three task-queue nudges above. **Not**
+  written to that jsonl: each hook emits an audit line to **stderr** while it
+  is set, so a toggle left on weeks ago still says why the nudges went quiet.
 
 ## Installation
 
