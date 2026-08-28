@@ -954,3 +954,43 @@ EOF
 	[ "$status" -eq 0 ]
 	assert_output_contains "APPROVED bot review at final head"
 }
+
+@test "a standing CHANGES_REQUESTED refusal posts NO nudge and does not poll" {
+	# The refusal was correct and still routed into the nudge path, because
+	# it returned rc 1 — the same code as "no APPROVED record yet", which
+	# the caller answers by posting `@coderabbitai approve` and polling for
+	# nudge_timeout_seconds.
+	#
+	# That is not merely slow. It would command an approval onto a head a
+	# policy approver has explicitly requested changes on, which this gate's
+	# own header forbids: "commanding an approval onto an unreviewed or
+	# findings-bearing head would launder the exact state the gate exists to
+	# block." A refusal that then asks to be overridden is not a refusal.
+	#
+	# The fixture is the PR #2638 shape, with findings clean and a head
+	# witness present — i.e. every precondition the nudge path needs, so the
+	# ONLY thing stopping it is the terminal return.
+	_install_gh_shim
+	_write_policy 180
+	_write_findings 0
+	_comments_with_head_witness
+	_reviews '[
+		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""}
+	]'
+	_run_gate
+	[ "$status" -eq 2 ]
+	assert_output_contains "STANDING CHANGES_REQUESTED"
+	# THE POINT: no public comment was posted.
+	[ ! -f "$NUDGE_MARKER" ] || {
+		echo "the refusal posted a nudge asking for approval on a head with a standing request"
+		return 1
+	}
+	# And nothing in the gh log is a comment post.
+	if [ -f "$GH_ARGS_LOG" ]; then
+		! grep -q "pr comment" "$GH_ARGS_LOG" || {
+			echo "gh pr comment was invoked: $(grep 'pr comment' "$GH_ARGS_LOG")"
+			return 1
+		}
+	fi
+}
