@@ -468,10 +468,48 @@ if [ -x "$AUTO_CLOSE" ]; then
 		# on the fetch so a gh outage degrades to the commit-only
 		# behaviour instead of aborting the wrapper — this block is
 		# warn-only and must never block a merge that already happened.
-		pr_body=$(gh pr view "$PR" --json body --jq '.body' 2>/dev/null || true)
-		closed_nums=$(printf '%s\n%s\n' "$commit_body" "$pr_body" |
-			grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' |
-			grep -oE '[0-9]+' | sort -u || true)
+		# WARNS on failure rather than swallowing it. `2>/dev/null || true`
+		# turned an auth error, a rate limit or an outage into an empty body
+		# and silent commit-only parsing — the operator would then read the
+		# "no trailers found" line below and conclude the PR closed nothing,
+		# when the source that carries them was never read at all. Same
+		# silent-degradation shape as the bug this stanza exists to fix.
+		#
+		# stderr goes to its own file rather than being merged into the
+		# value: gh prints update notices and auth warnings on stderr even
+		# when it succeeds, and 2>&1 would splice those into the body text
+		# the extractor then scans.
+		pr_body=""
+		pb_err=$(mktemp "${TMPDIR:-/tmp}/pr-body-err.XXXXXX") || pb_err=""
+		if ! pr_body=$(gh pr view "$PR" --json body --jq '.body' 2>"${pb_err:-/dev/null}"); then
+			echo "⚠ could not read PR #$PR body for the epic rollup: $([ -n "$pb_err" ] && cat "$pb_err")" >&2
+			echo "  Falling back to the merge-commit message alone. On a SQUASH merge that" >&2
+			echo "  message carries no Closes/Fixes/Resolves trailers, so a parent epic may" >&2
+			echo "  not auto-close — check it manually." >&2
+			pr_body=""
+		fi
+		[ -n "$pb_err" ] && rm -f "$pb_err"
+
+		# Through the SHARED extractor, not a second copy of the regex. The
+		# pattern already lived in _lib/epic-completeness-check.sh; adding
+		# another here is precisely the drift this repo keeps paying for.
+		closed_nums=""
+		_it_lib=""
+		for _cand in "$REPO_ROOT/.claude/_lib/issue-trailers.sh" \
+			"$SCRIPT_DIR/../../_lib/issue-trailers.sh"; do
+			[ -r "$_cand" ] && {
+				_it_lib="$_cand"
+				break
+			}
+		done
+		if [ -n "$_it_lib" ]; then
+			# shellcheck source=../../_lib/issue-trailers.sh
+			. "$_it_lib"
+			closed_nums=$(issue_trailers_extract "$commit_body" "$pr_body")
+		else
+			echo "⚠ _lib/issue-trailers.sh not found — skipping the epic rollup entirely." >&2
+			echo "  Parent epics will NOT auto-close for this merge; check them manually." >&2
+		fi
 		if [ -z "$closed_nums" ]; then
 			# LOUD, because silence here is what hid the bug. A PR that
 			# genuinely closes nothing is common and fine; the operator

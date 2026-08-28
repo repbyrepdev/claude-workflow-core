@@ -259,3 +259,140 @@ Closes #909" && git push -q origin main) || return 1
 		return 1
 	}
 }
+
+@test "autoclose: the COUNT message matches the deduped total" {
+	# The stanza announces "for N closed sub-issue(s)". If the union ever
+	# double-counts, that N is the only place it shows — the rollup itself is
+	# idempotent, so a duplicate would otherwise be invisible and the log
+	# would simply lie about how much work happened.
+	_install_gh_shim
+	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
+
+Closes #501
+Closes #502" && git push -q origin main) || return 1
+	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+	# #502 appears in BOTH sources; #503 only in the body. Deduped total: 3.
+	export FAKE_PR_BODY="Closes #502
+Closes #503"
+	_run_merge
+	case "$output" in
+	*"for 3 closed sub-issue(s)"*) ;;
+	*)
+		echo "count message wrong (expected 3 after dedup): $output"
+		return 1
+		;;
+	esac
+	local lines
+	lines=$(grep -c . "$AC_LOG")
+	[ "$lines" = "3" ] || {
+		echo "rollup called $lines times, expected 3: $(cat "$AC_LOG")"
+		return 1
+	}
+}
+
+@test "autoclose: body-fetch failure AND no commit trailers still announces" {
+	# The two degradations compose. The existing failure test has a trailer
+	# in the commit to fall back on; this one has nothing anywhere, which is
+	# the state where the operator most needs to be told — the epic will not
+	# roll up and the reason is not visible from the merge output otherwise.
+	_install_gh_shim
+	cat >"$TEST_TMP/bin/gh" <<'SHIM'
+#!/bin/bash
+case "$1 $2" in
+"pr view")
+	case "$*" in
+	*mergeCommit*) printf '%s\n' "$FAKE_MERGE_SHA" ;;
+	*--json\ body*)
+		echo "gh: API is down (HTTP 503)" >&2
+		exit 1
+		;;
+	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
+	*) echo "{}" ;;
+	esac
+	;;
+"pr merge") exit 0 ;;
+"repo view")
+	case "$*" in
+	*nameWithOwner*) printf 'testowner/testrepo\n' ;;
+	*) printf 'false\n' ;;
+	esac
+	;;
+*) exit 0 ;;
+esac
+SHIM
+	chmod +x "$TEST_TMP/bin/gh"
+	_run_merge
+	[ ! -s "$AC_LOG" ] || {
+		echo "rollup ran with no trailers anywhere: $(cat "$AC_LOG")"
+		return 1
+	}
+	# BOTH messages: the fetch failed AND nothing was found. Either alone
+	# leaves the operator with half the picture.
+	case "$output" in
+	*"could not read PR"*) ;;
+	*)
+		echo "a body-fetch failure was silent: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"no Closes/Fixes/Resolves trailers found"*) ;;
+	*)
+		echo "an empty trailer set was silent: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "autoclose: gh exits 0 but emits a MALFORMED body" {
+	# Distinct from the exit-1 case: gh can succeed at the transport level
+	# and still hand back something --jq turns into junk (a proxy error page,
+	# a truncated response). The stanza must not treat that as trailers, must
+	# not crash the wrapper, and must still fall back to the commit message.
+	_install_gh_shim
+	cat >"$TEST_TMP/bin/gh" <<'SHIM'
+#!/bin/bash
+case "$1 $2" in
+"pr view")
+	case "$*" in
+	*mergeCommit*) printf '%s\n' "$FAKE_MERGE_SHA" ;;
+	*--json\ body*)
+		printf '<html><body>502 Bad Gateway</body></html>\n'
+		exit 0
+		;;
+	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
+	*) echo "{}" ;;
+	esac
+	;;
+"pr merge") exit 0 ;;
+"repo view")
+	case "$*" in
+	*nameWithOwner*) printf 'testowner/testrepo\n' ;;
+	*) printf 'false\n' ;;
+	esac
+	;;
+*) exit 0 ;;
+esac
+SHIM
+	chmod +x "$TEST_TMP/bin/gh"
+	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
+
+Closes #606" && git push -q origin main) || return 1
+	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+	_run_merge
+	[ "$status" -eq 0 ] || {
+		echo "a malformed body aborted the wrapper (rc=$status): $output"
+		return 1
+	}
+	_called_with 606 || {
+		echo "the commit trailer was lost when the body came back malformed: $(cat "$AC_LOG")"
+		return 1
+	}
+	# Junk must not manufacture issue numbers.
+	local lines
+	lines=$(grep -c . "$AC_LOG")
+	[ "$lines" = "1" ] || {
+		echo "malformed body produced extra rollup calls: $(cat "$AC_LOG")"
+		return 1
+	}
+}

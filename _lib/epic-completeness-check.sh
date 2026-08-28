@@ -41,8 +41,19 @@ epic_completeness_check() {
 		return 2
 	fi
 
-	# Match: (?i)(close[ds]?|fix(es|ed)?|resolve[ds]?)\s+#(\d+)
-	closed_ids=$(printf '%s\n' "$body" | grep -iEo '(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
+	# Through the shared extractor. This pattern was written here first and
+	# then written AGAIN in skills/github-pr-merge/run.sh — two copies of
+	# GitHub's closing-trailer contract, equivalent by luck rather than by
+	# design, with nothing tying them together. One definition now.
+	local _it_lib
+	_it_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/issue-trailers.sh
+	if [ ! -r "$_it_lib" ]; then
+		echo "epic_completeness_check: _lib/issue-trailers.sh missing — cannot parse closing trailers" >&2
+		return 2
+	fi
+	# shellcheck source=./issue-trailers.sh
+	. "$_it_lib"
+	closed_ids=$(issue_trailers_extract "$body")
 	if [ -z "$closed_ids" ]; then
 		# No closing refs — nothing to check.
 		return 0
