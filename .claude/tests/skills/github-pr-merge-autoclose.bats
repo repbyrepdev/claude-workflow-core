@@ -396,3 +396,80 @@ Closes #606" && git push -q origin main) || return 1
 		return 1
 	}
 }
+
+@test "autoclose: a MISSING shared library is announced, not silently skipped" {
+	# The `_lib/issue-trailers.sh not found` branch had no coverage. It is
+	# the branch that fires in a half-installed consumer repo, and skipping
+	# the rollup quietly there would reproduce the original bug exactly:
+	# sub-issues closed by GitHub, epic left open, nothing said.
+	#
+	# The library is hidden by pointing the wrapper at a copy of the skill
+	# whose ../../_lib has no issue-trailers.sh — the real resolution rule,
+	# exercised as the wrapper actually runs it.
+	_install_gh_shim
+	local half_installed="$TEST_TMP/half-installed-plugin"
+	mkdir -p "$half_installed/skills/github-pr-merge" "$half_installed/_lib" "$half_installed/skills/_lib"
+	cp "${REPO_ROOT}/skills/github-pr-merge/"*.sh "$half_installed/skills/github-pr-merge/"
+	# skills/_lib/ too — the wrapper sources skill-common.sh from there
+	# before it ever reaches the lookup under test, and a fixture that dies
+	# earlier would "pass" this test for the wrong reason.
+	cp "${REPO_ROOT}/skills/_lib/"*.sh "$half_installed/skills/_lib/" 2>/dev/null || true
+	# Every sibling lib EXCEPT the one under test, so the wrapper gets far
+	# enough to reach the lookup rather than failing earlier for a different
+	# reason.
+	for f in "${REPO_ROOT}/_lib/"*.sh; do
+		case "${f##*/}" in
+		issue-trailers.sh) continue ;;
+		esac
+		cp "$f" "$half_installed/_lib/" 2>/dev/null || true
+	done
+	[ ! -f "$half_installed/_lib/issue-trailers.sh" ] || {
+		echo "fixture failed: the library is still present"
+		return 1
+	}
+	export FAKE_PR_BODY="Closes #808"
+	export FAKE_MERGE_SHA="$MERGE_SHA"
+	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":"'"$MERGE_SHA"'","checks":[]}'
+	run bash -c "cd '$WORK' && APPROVE=1 AC_LOG='$AC_LOG' bash '$half_installed/skills/github-pr-merge/run.sh' --pr 2638 --squash --yes </dev/null"
+	case "$output" in
+	*"issue-trailers.sh not found"*) ;;
+	*)
+		echo "a missing shared library was silent: $output"
+		return 1
+		;;
+	esac
+	# And it must say what that COSTS, not just that a file is absent.
+	case "$output" in
+	*"will NOT auto-close"*) ;;
+	*)
+		echo "the consequence of skipping the rollup was not stated: $output"
+		return 1
+		;;
+	esac
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup ran without the library: $(cat "$AC_LOG")"
+		return 1
+	}
+}
+
+@test "autoclose: the lookup uses ONE rule, not a candidate list" {
+	# The previous commit removed two copies of one regex and, in the same
+	# change, introduced two different ways to LOCATE the library that
+	# replaced it — a candidate list here, BASH_SOURCE-relative in
+	# _lib/epic-completeness-check.sh. Phase 0.5 caught it.
+	#
+	# Both files now resolve relative to their own location. Asserted on the
+	# source because the behaviour is identical either way until a layout
+	# diverges, at which point it is a debugging session rather than a test
+	# failure.
+	local runsh="${REPO_ROOT}/skills/github-pr-merge/run.sh"
+	grep -q '_it_lib="\$SCRIPT_DIR/\.\./\.\./_lib/issue-trailers\.sh"' "$runsh" || {
+		echo "run.sh no longer resolves the library relative to SCRIPT_DIR"
+		return 1
+	}
+	grep -q 'for _cand in' "$runsh" && {
+		echo "run.sh still carries a candidate-path list for the library"
+		return 1
+	}
+	return 0
+}

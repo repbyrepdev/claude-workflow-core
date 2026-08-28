@@ -464,10 +464,10 @@ if [ -x "$AUTO_CLOSE" ]; then
 		#
 		# Both sources are unioned rather than one replacing the other:
 		# --merge keeps the body in the commit, individual commits may
-		# carry their own trailers, and a squash needs the body. `|| true`
-		# on the fetch so a gh outage degrades to the commit-only
-		# behaviour instead of aborting the wrapper — this block is
-		# warn-only and must never block a merge that already happened.
+		# carry their own trailers, and a squash needs the body. A gh
+		# outage degrades to commit-only rather than aborting — this block
+		# is warn-only and must never block a merge that already happened —
+		# but it degrades LOUDLY; see the fetch below.
 		# WARNS on failure rather than swallowing it. `2>/dev/null || true`
 		# turned an auth error, a rate limit or an outage into an empty body
 		# and silent commit-only parsing — the operator would then read the
@@ -493,16 +493,20 @@ if [ -x "$AUTO_CLOSE" ]; then
 		# Through the SHARED extractor, not a second copy of the regex. The
 		# pattern already lived in _lib/epic-completeness-check.sh; adding
 		# another here is precisely the drift this repo keeps paying for.
+		# ONE resolution rule, the same one _lib/epic-completeness-check.sh
+		# uses: relative to the resolving file's OWN location.
+		#
+		# This was a two-candidate list — $REPO_ROOT/.claude/_lib first,
+		# then SCRIPT_DIR-relative — which meant the repo had two different
+		# ways to find one library, in the very commit that removed two
+		# different copies of one regex. Phase 0.5 caught it. The candidate
+		# list was also unnecessary: both layouts resolve correctly from
+		# SCRIPT_DIR alone, because a consumer's copy lives at
+		# .claude/skills/github-pr-merge/run.sh and ../../_lib is then
+		# .claude/_lib.
 		closed_nums=""
-		_it_lib=""
-		for _cand in "$REPO_ROOT/.claude/_lib/issue-trailers.sh" \
-			"$SCRIPT_DIR/../../_lib/issue-trailers.sh"; do
-			[ -r "$_cand" ] && {
-				_it_lib="$_cand"
-				break
-			}
-		done
-		if [ -n "$_it_lib" ]; then
+		_it_lib="$SCRIPT_DIR/../../_lib/issue-trailers.sh"
+		if [ -r "$_it_lib" ]; then
 			# shellcheck source=../../_lib/issue-trailers.sh
 			. "$_it_lib"
 			closed_nums=$(issue_trailers_extract "$commit_body" "$pr_body")
