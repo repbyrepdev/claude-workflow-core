@@ -69,8 +69,12 @@ STATE=$(task_queue_classify "$ITEMS")
 NEXT=$(task_queue_next_actionable "$ITEMS") || exit 0
 [ -n "$NEXT" ] || exit 0
 
-OPEN_N=$(printf '%s' "$ITEMS" | jq -r '
-    [ .[]? | select(.status == "pending" or .status == "in_progress") ] | length' 2>/dev/null) || OPEN_N="?"
+# Through the library. This was an inline jq copy of classify's filter, which
+# COUNTED blocked items while the selector two lines up excludes them — so a
+# queue of three pending items, two blocked, announced "3 open task(s) remain"
+# and then named the one reachable one. The library exists to stop exactly
+# that, and the drift had simply moved into a consumer.
+OPEN_N=$(task_queue_open_count "$ITEMS") || OPEN_N="?"
 
 # The item's own words, truncated. Prose from a payload goes in a diagnostic
 # file rather than a shell string, and nothing here interpolates it into a
@@ -100,11 +104,28 @@ Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
 # (once to write, once to capture) would leave two diagnostics for one nudge,
 # and the operator would Read one and still be blocked by the other.
 _DIAG=$(hook_ack_diagnostic_write "next-task-stop-nudge" "next-open-task" "$BODY" 2>/dev/null) || _DIAG=""
-# The append is what ENFORCES; the systemMessage below only makes it visible
-# now, and scrolls past exactly like next-step-advisor.sh did. A swallowed
-# failure here means the nudge reports itself as fired while blocking nothing.
-hook_ack_append "next-task-stop-nudge" "next-open-task" "$_DIAG" 2>/dev/null ||
-	echo "next-task-stop-nudge: WARN: could not register the next-open-task sentinel — nothing will block on it" >&2
+# NEVER register a sentinel with an EMPTY file_path.
+#
+# hook_ack_append succeeds on one, and the resulting entry CANNOT BE CLEARED:
+# hook-ack-clear.sh preserves every row whose path is empty, and
+# stale-state-gate.sh says so outright. So a detection-side failure — a
+# read-only .claude/.session-state, a full disk — would hard-block the
+# operator's next tool call with no way out but HOOK_ACK_CLEAR=1, and no
+# message explaining why, because the write's own errors went to /dev/null.
+#
+# That is the self-referential deadlock _lib/hook-ack.sh's header records
+# hook_ack_diagnostic_write as having been introduced to remove. Reintroducing
+# it in a nudge would also invert this file's stated contract in the worst
+# direction: detection is supposed to fail OPEN, and this would make a
+# detection failure the most closed state the ack system has.
+if [ -n "$_DIAG" ]; then
+	# The append is what ENFORCES; the systemMessage below only makes it
+	# visible now, and scrolls past exactly like next-step-advisor.sh did.
+	hook_ack_append "next-task-stop-nudge" "next-open-task" "$_DIAG" 2>/dev/null ||
+		echo "next-task-stop-nudge: WARN: could not register the next-open-task sentinel — the diagnostic is at $_DIAG but nothing will block on it" >&2
+else
+	echo "next-task-stop-nudge: WARN: could not write the nudge diagnostic (is .claude/.session-state writable?) — NOT registering a sentinel, because one with no file path cannot be acknowledged and would block every subsequent tool call" >&2
+fi
 
 # Also surface it immediately, following hooks/stop-uncommitted-changes.sh.
 # The sentinel is what makes it stick; this is what makes it visible NOW.

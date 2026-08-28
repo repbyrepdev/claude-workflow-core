@@ -87,6 +87,19 @@ _IDS=$(task_queue_state_open_ids "$_STATE") || exit 0
 # conversational-turn failure in a different costume.
 [ -n "$_IDS" ] || exit 0
 
+# ...and NOTHING OPEN is the same case. `[ -n "$_IDS" ]` does not catch it:
+# open_ids is a CHECKSUM, and the checksum of an empty set is the perfectly
+# ordinary value 4294967295 — non-empty, and identical at every commit. So an
+# all-completed or blocked-only queue passed the guard, compared equal
+# forever, and fired on every issue-referencing commit. Verified end to end.
+#
+# It also made the README's "never fires on an empty queue" false, and the
+# emitted diagnostic said "the open items are byte-identical to what they were
+# at the previous commit" about zero open items.
+_OPEN_ITEMS=$(printf '%s' "$_STATE" | jq -c '.items // []' 2>/dev/null) || exit 0
+_OPEN_N=$(task_queue_open_count "$_OPEN_ITEMS") || exit 0
+[ "$_OPEN_N" -gt 0 ] || exit 0
+
 # THE TEST: did the open set change since the last commit this hook saw?
 #
 # `open_ids` is a hash of the open items' content, rewritten by every todo
@@ -145,8 +158,16 @@ fires once per commit, not repeatedly.
 Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
 
 _DIAG=$(hook_ack_diagnostic_write "task-issue-reconcile" "commit-no-task-transition" "$_BODY" 2>/dev/null) || _DIAG=""
-# The append is what ENFORCES. Swallowing its failure meant the drift was
-# detected and then silently dropped.
-hook_ack_append "task-issue-reconcile" "commit-no-task-transition" "$_DIAG" 2>/dev/null ||
-	echo "task-issue-reconcile: WARN: could not register the drift sentinel — nothing will block on it" >&2
+# NEVER register a sentinel with an EMPTY file_path: hook_ack_append accepts
+# one, and hook-ack-clear.sh preserves every row whose path is empty, so the
+# entry can only be escaped with HOOK_ACK_CLEAR=1. A detection-side write
+# failure would hard-block every subsequent tool call with no message.
+if [ -n "$_DIAG" ]; then
+	# The append is what ENFORCES. Swallowing its failure meant the drift was
+	# detected and then silently dropped.
+	hook_ack_append "task-issue-reconcile" "commit-no-task-transition" "$_DIAG" 2>/dev/null ||
+		echo "task-issue-reconcile: WARN: could not register the drift sentinel — the diagnostic is at $_DIAG but nothing will block on it" >&2
+else
+	echo "task-issue-reconcile: WARN: could not write the drift diagnostic (is .claude/.session-state writable?) — NOT registering a sentinel, because one with no file path cannot be acknowledged and would block every subsequent tool call" >&2
+fi
 exit 0

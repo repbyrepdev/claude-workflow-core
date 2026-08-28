@@ -166,13 +166,49 @@ _diag_body() {
 @test "reconcile: a session with NO task queue is silent" {
 	# Firing here would demand a task list from an operator who never made
 	# one — the conversational-turn failure in a different costume.
+	#
+	# A BASELINE IS ESTABLISHED FIRST, deliberately. Without one the
+	# `[ -n "$_LAST_COMMIT_IDS" ]` guard exits before the queue check is ever
+	# reached, so the test passed even with the queue guard deleted —
+	# mutation-verified. Seeding a queue, committing twice to set the
+	# baseline, then clearing the queue makes the guard under test the only
+	# thing left that can suppress the nudge.
+	_seed_queue "temporary:in_progress"
 	_commit "feat(z): work on #55"
 	_run_hook
 	_commit "feat(z): more on #55"
 	_run_hook
+	[ "$(_diag_count)" = "1" ] || {
+		echo "setup did not reach the drift path: nothing to disprove"
+		return 1
+	}
+	rm -f "$DIAG_ROOT/task-issue-reconcile"/*.txt
+	# Now the queue goes away entirely while the baseline survives.
+	rm -f "$STATE_DIR"/*.json
+	_commit "feat(z): still on #55"
+	_run_hook
 	[ "$status" -eq 0 ]
 	[ "$(_diag_count)" = "0" ] || {
 		echo "a queue-less session was nudged"
+		return 1
+	}
+}
+
+@test "reconcile: an ALL-COMPLETED queue is silent" {
+	# open_ids is a CHECKSUM, and the checksum of an empty set is the
+	# perfectly ordinary 4294967295 — non-empty, and identical at every
+	# commit. So the `[ -n "$_IDS" ]` guard passed, the comparison matched
+	# forever, and this fired on every issue commit with a finished list,
+	# announcing "the open items are byte-identical" about zero open items.
+	# It also made the README's "never fires on an empty queue" false.
+	_seed_queue "all done:completed"
+	_commit "feat(q): for #61"
+	_run_hook
+	_commit "feat(q): more for #61"
+	_run_hook
+	[ "$status" -eq 0 ]
+	[ "$(_diag_count)" = "0" ] || {
+		echo "a finished queue was nudged for drift: $(_diag_body)"
 		return 1
 	}
 }

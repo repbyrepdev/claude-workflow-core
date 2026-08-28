@@ -201,10 +201,37 @@ _state_json() { # $1 = session id
 	jq -nc '{type:"assistant",message:{content:[{type:"text",text:"just talking"}]}}' >"$t"
 	local items rc=0
 	items=$(task_queue_from_transcript "$t") || rc=$?
-	# Either a hard rc or an empty array — both must classify as absent, and
-	# neither may classify as empty.
-	[ "$rc" -ne 0 ] || [ "$(task_queue_classify "$items")" != "open" ] || {
-		echo "a conversational transcript produced an open queue: $items"
+	# ASSERTED EXACTLY, and on the right thing. The previous form was a
+	# disjunction that only ruled out "open", so it passed while the code
+	# actually returned rc 0 with `[]` — classifying as EMPTY, the opposite of
+	# what this test is named for. `last // []` collapsed the two states and
+	# the weakened assertion hid it, so the distinction the suite header calls
+	# the property that matters most was pinned for the empty-STRING input
+	# only, never on the transcript path the Stop hook actually takes.
+	[ "$rc" -ne 0 ] || {
+		echo "a conversational transcript did not report ABSENT (rc 0, items=$items)"
+		return 1
+	}
+	[ "$(task_queue_classify "$items")" = "absent" ] || {
+		echo "the absent path did not classify as absent: $items"
+		return 1
+	}
+}
+
+@test "task-queue: an EMPTY todo list is 'empty', distinctly from 'absent'" {
+	# The other side of the same distinction: a todo tool WAS used and the
+	# list has nothing in it. Both suppress a nudge, but for different
+	# reasons, and a regression collapsing them must fail something.
+	local t="$TEST_TMP/emptylist.jsonl"
+	jq -nc '{type:"assistant",message:{content:[{type:"tool_use",name:"TodoWrite",input:{todos:[]}}]}}' >"$t"
+	local items rc=0
+	items=$(task_queue_from_transcript "$t") || rc=$?
+	[ "$rc" -eq 0 ] || {
+		echo "an explicitly empty list was reported as unreadable"
+		return 1
+	}
+	[ "$(task_queue_classify "$items")" = "empty" ] || {
+		echo "an explicitly empty list did not classify as empty: $items"
 		return 1
 	}
 }

@@ -260,11 +260,14 @@ _tick() { # $1 = how many, $2 = threshold
 	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
 	_tick 3 3
 	[ "$(_diag_count task-queue-track)" = "1" ]
-	# The operator reconciles, then goes quiet again on a NEW item.
-	_track TodoWrite "$(jq -nc '{todos:[{content:"item B",status:"in_progress"}]}')"
+	# The SAME item, re-stated. Using a different one ("item B") made the
+	# re-fire explainable by the content differing from nudged_for, so the
+	# test passed against a hook that never cleared the field — mutation-
+	# verified. Re-stating item A is what pins the reset itself.
+	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
 	_tick 3 3
 	[ "$(_diag_count task-queue-track)" = "2" ] || {
-		echo "the nudge did not re-arm after a status update"
+		echo "the nudge did not re-arm after a status update on the SAME item"
 		return 1
 	}
 }
@@ -293,11 +296,110 @@ _tick() { # $1 = how many, $2 = threshold
 	}
 }
 
-@test "stale-nudge: a non-numeric threshold falls back, it does not crash" {
+@test "stale-nudge: a non-numeric threshold falls back to 40, not to 0" {
+	# Asserting only `status -eq 0` proved nothing: the hook exits 0 whether it
+	# nudges or not, so removing the validation entirely passed, and so did a
+	# fallback of 0 — which fires on the very FIRST tool call, i.e. the
+	# thrashing the threshold exists to prevent.
 	_track TodoWrite "$(jq -nc '{todos:[{content:"y",status:"in_progress"}]}')"
 	_track Bash '{}' "TASK_STALE_AFTER_CALLS=banana"
 	[ "$status" -eq 0 ] || {
 		echo "a junk threshold broke the hook: $output"
+		return 1
+	}
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "a junk threshold fell back to something that fires immediately"
+		return 1
+	}
+	# Well past a small threshold but well short of 40: still silent, which is
+	# what shows 40 rather than 1 or 2 is actually in force.
+	local n=0
+	while [ "$n" -lt 10 ]; do
+		_track Bash '{}' "TASK_STALE_AFTER_CALLS=banana"
+		n=$((n + 1))
+	done
+	[ "$(_diag_count task-queue-track)" = "0" ] || {
+		echo "the fallback threshold is far below the documented 40"
+		return 1
+	}
+}
+
+# ---- ENFORCEMENT: the sentinel, not just the diagnostic ------------------
+#
+# `hook_ack_append` short-circuits to `return 0` under bats
+# (_hook_ack_in_bats_context), and bats-core exports BATS_TEST_NAME and
+# BATS_RUN_TMPDIR into every `run bash -c` child — so nothing above this line
+# ever wrote `.claude/.session-state/hook-output-pending.txt`, the file
+# `stale-state-gate.sh` reads to DENY the next tool call.
+#
+# Mutation-proven consequence: deleting the `hook_ack_append` call outright
+# left every "REGISTERS a diagnostic" test passing. The whole claim of this
+# feature — mechanical rather than advisory — was unpinned, in a PR whose
+# stated point is that advisory output scrolls past.
+#
+# `HOOK_ACK_BATS_SKIP=0` forces the real path, which is what
+# .claude/tests/hooks/lint-dispatch.bats already does. The pattern existed;
+# these suites just did not use it.
+
+_sentinel() {
+	printf '%s' "$WORK/.claude/.session-state/hook-output-pending.txt"
+}
+
+@test "stop-nudge ENFORCES: it writes the hook-ack sentinel, not just a file" {
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | HOOK_ACK_BATS_SKIP=0 bash '$STOP_HOOK'" _ \
+		"$(jq -nc --arg t "$(_transcript "blocking item:pending")" \
+			'{transcript_path:$t, stop_hook_active:false, session_id:"sess-1"}')"
+	[ "$status" -eq 0 ]
+	[ -s "$(_sentinel)" ] || {
+		echo "no sentinel written — nothing will block the next tool call"
+		return 1
+	}
+	grep -q 'next-open-task' "$(_sentinel)" || {
+		echo "the sentinel does not carry this hook's reason: $(cat "$(_sentinel)")"
+		return 1
+	}
+	# And it names a REAL diagnostic path. An entry with an empty file_path
+	# cannot be cleared by Read — hook-ack-clear.sh preserves those rows — so
+	# it would block every subsequent tool call with no way out.
+	local fp
+	fp=$(awk -F'\t' '/next-open-task/{print $4; exit}' "$(_sentinel)")
+	[ -n "$fp" ] || {
+		echo "the sentinel has an EMPTY file_path — that entry is unclearable"
+		return 1
+	}
+	[ -f "$fp" ] || {
+		echo "the sentinel points at a file that does not exist: $fp"
+		return 1
+	}
+}
+
+@test "stop-nudge ENFORCES: a silent queue writes NO sentinel" {
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | HOOK_ACK_BATS_SKIP=0 bash '$STOP_HOOK'" _ \
+		"$(jq -nc --arg t "$(_conversational_transcript)" \
+			'{transcript_path:$t, stop_hook_active:false, session_id:"sess-1"}')"
+	[ "$status" -eq 0 ]
+	[ ! -s "$(_sentinel)" ] || {
+		echo "a conversational turn registered a BLOCKING sentinel: $(cat "$(_sentinel)")"
+		return 1
+	}
+}
+
+@test "stale-nudge ENFORCES: the threshold write reaches the sentinel" {
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+		"$(jq -nc '{tool_name:"TodoWrite", session_id:"sess-1", tool_input:{todos:[{content:"slow one",status:"in_progress"}]}}')"
+	local n=0
+	while [ "$n" -lt 3 ]; do
+		run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' TASK_STALE_AFTER_CALLS=3 HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+			"$(jq -nc '{tool_name:"Bash", session_id:"sess-1", tool_input:{}}')"
+		[ "$status" -eq 0 ]
+		n=$((n + 1))
+	done
+	[ -s "$(_sentinel)" ] || {
+		echo "the staleness nudge wrote a diagnostic but registered no block"
+		return 1
+	}
+	grep -q 'task-stale' "$(_sentinel)" || {
+		echo "the sentinel does not carry the task-stale reason: $(cat "$(_sentinel)")"
 		return 1
 	}
 }

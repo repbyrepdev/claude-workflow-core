@@ -1,10 +1,20 @@
 #!/bin/bash
 set -u
-# NB: sourced lib → `set -u` (nounset) ONLY. Sourcing scripts keep their own
-# option discipline, and — learned the hard way in #2544 — a sourced function
-# runs under the CALLER's options regardless of what this file sets. Every
-# command substitution below therefore captures its own rc rather than
-# assuming a bare `set -e` will not fire mid-pipeline.
+# NB: `set -u` here is NOT private to this file. A `set` at the top level of a
+# sourced script runs in the CALLER's shell and persists after the source
+# returns — so this turns nounset on for every hook that sources it. Harmless
+# today, because all three already set it themselves, but stated correctly
+# because an earlier version of this line said the opposite ("sourcing scripts
+# keep their own option discipline"), which is the sort of assertion the next
+# author relies on.
+#
+# The related and separately-true fact, learned in #2544: a sourced FUNCTION
+# runs under the caller's options regardless of what this file sets. So the
+# command substitutions below that matter — every one whose command can
+# realistically fail — capture their own rc rather than assuming a bare
+# `set -e` will not fire mid-pipeline. (Not literally every one: a few `tr`
+# and `dirname` calls are left bare, because a failure there is not a case
+# worth branching on.)
 #
 # auto-register: false
 # (#2554) SSOT for two questions the nudge hooks in #2555 both need answered:
@@ -61,16 +71,25 @@ task_queue_from_transcript() { # $1 = transcript path
 	[ -n "$transcript" ] && [ -r "$transcript" ] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
 	local out rc=0
-	out=$(jq -rs --arg re "$TASK_QUEUE_TOOL_RE" '
+	# `last` with NO default, and an explicit rc when there was no todo call at
+	# all. `last // []` collapsed "no todo tool was ever used" into "the list
+	# is empty" — so a conversational transcript returned [] and classified as
+	# `empty`, not `absent`, and the documented three-state distinction was
+	# two states wearing three names. The bound still held (both exit), but
+	# the absent branch was unreachable in production and the tests asserting
+	# it passed only because their assertion had been weakened.
+	out=$(jq -cs --arg re "$TASK_QUEUE_TOOL_RE" '
 	    [ .[]
 	      | .message.content[]?
 	      | select(.type == "tool_use")
 	      | select(.name | test($re))
 	      | (.input.todos // .input.tasks // .input.items // [])
-	    ] | last // []
-	    | '"$TASK_QUEUE_NORMALISE_JQ" "$transcript" 2>/dev/null) || rc=$?
+	    ] | if length == 0 then "__TQ_ABSENT__"
+	        else (last | '"$TASK_QUEUE_NORMALISE_JQ"') end' "$transcript" 2>/dev/null) || rc=$?
 	[ "$rc" -eq 0 ] || return 1
 	[ -n "$out" ] || return 1
+	# rc 1 means ABSENT, which the caller must not treat as empty.
+	[ "$out" = '"__TQ_ABSENT__"' ] && return 1
 	printf '%s' "$out"
 }
 
@@ -112,9 +131,13 @@ task_queue_classify() { # $1 = items JSON array (or empty/absent)
 		printf 'absent'
 		return 0
 	}
+	# Derived from task_queue_open_count, so classify cannot disagree with the
+	# selector about what "open" means. It had its own inline filter that
+	# counted BLOCKED items — a third definition alongside the two already
+	# reconciled, which is why the previous fix's claim of "one definition,
+	# used by every consumer" was only two-thirds true.
 	local n rc=0
-	n=$(printf '%s' "$items" | jq -r '
-	    [ .[]? | select(.status == "pending" or .status == "in_progress") ] | length' 2>/dev/null) || rc=$?
+	n=$(task_queue_open_count "$items") || rc=$?
 	if [ "$rc" -ne 0 ] || ! [[ $n =~ ^[0-9]+$ ]]; then
 		# Unparseable is ABSENT, not empty: detection fails open, and the
 		# caller must not nudge on data it could not read.
@@ -264,18 +287,46 @@ task_queue_open_ids() { # $1 = items JSON array
 	[ -n "$items" ] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
 	local out rc=0
-	# BLOCKED items are excluded, matching task_queue_next_actionable. They
-	# were not, and the inconsistency was real: a blocked item counted toward
-	# "is anything open" while being unselectable, so a queue whose only
-	# remaining work was blocked reported movement that could never happen.
-	# One definition of open, used by every consumer — the same reason this
-	# file exists at all.
+	# DELIMITED with a unit separator, not a bare concatenation. Joining
+	# bare contents is ambiguous: ["ab","c"] and ["a","bc"] both render "abc",
+	# so two genuinely different open sets hash identically and the reconcile
+	# hook's "did the set move" test silently answers no. U+001F cannot appear
+	# in task prose.
 	out=$(printf '%s' "$items" | jq -r '
 	    [ .[]? | select(.blocked | not)
 	           | select(.status == "pending" or .status == "in_progress") | .content ]
-	    | sort | join("")' 2>/dev/null) || rc=$?
+	    | sort | join("\u001f")' 2>/dev/null) || rc=$?
 	[ "$rc" -eq 0 ] || return 1
 	printf '%s' "$out" | cksum | cut -d' ' -f1
+}
+
+# THE definition of "how many items are open", so consumers do not each write
+# their own. next-task-stop-nudge.sh counted with its own jq that included
+# BLOCKED items while naming an unblocked one — announcing "3 open task(s)"
+# and then pointing at the only reachable one. That is the two-definitions
+# drift this file exists to prevent, in a consumer rather than in the library.
+task_queue_open_count() { # $1 = items JSON array
+	local items=${1:-}
+	[ -n "$items" ] || return 1
+	command -v jq >/dev/null 2>&1 || return 1
+	local out rc=0
+	out=$(printf '%s' "$items" | jq -r '
+	    [ .[]? | select(.blocked | not)
+	           | select(.status == "pending" or .status == "in_progress") ] | length' 2>/dev/null) || rc=$?
+	[ "$rc" -eq 0 ] || return 1
+	[[ $out =~ ^[0-9]+$ ]] || return 1
+	printf '%s' "$out"
+}
+
+# ONE engine for tool-name matching. The regex was exported raw and fed to
+# jq's test() by this library and to `grep -qE` by the tracking hook — one
+# constant contracted to two engines, so a future pattern the two read
+# differently would silently desynchronise the recorder from the parser.
+task_queue_is_task_tool() { # $1 = tool name
+	case "${1:-}" in
+	TodoWrite | TaskCreate | TaskUpdate) return 0 ;;
+	esac
+	return 1
 }
 
 # --- state accessors ------------------------------------------------------

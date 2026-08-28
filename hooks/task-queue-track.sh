@@ -62,19 +62,40 @@ _TQ_LIB="$_HOOK_DIR/../_lib/task-queue.sh"
 # shellcheck source=../_lib/task-queue.sh
 source "$_TQ_LIB" 2>/dev/null || exit 0
 
+# Read ONCE, used by both branches. Review flagged this as a dead read on the
+# todo branch, which it was — until that branch started carrying
+# ids_at_last_commit forward rather than rebuilding the object from scratch.
+# It now has a real use on both paths.
 _prev=$(task_queue_state_read "$SESSION_ID")
 
-if printf '%s' "$TOOL_NAME" | grep -qE "$TASK_QUEUE_TOOL_RE"; then
+# Via the library predicate, not a grep fork. This is the hottest path in the
+# repo — it runs after every tool call — and the regex was exported raw and
+# fed to jq's test() in the lib and to `grep -qE` here, two engines for one
+# constant. One place, one engine, no fork.
+if task_queue_is_task_tool "$TOOL_NAME"; then
 	# A todo-tool call IS the status update. Snapshot what is open and put the
 	# clock back to zero — the counter measures calls since the operator last
 	# said anything about the queue, so the saying is the reset.
 	TOOL_INPUT=$(printf '%s' "$PAYLOAD" | jq -c '.tool_input // {}' 2>/dev/null) || exit 0
 	_items=$(task_queue_from_tool_input "$TOOL_INPUT") || exit 0
 	_ids=$(task_queue_open_ids "$_items") || _ids=""
-	_state=$(jq -nc --arg ids "$_ids" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-		--argjson items "$_items" \
-		'{open_ids: $ids, calls_since_update: 0, updated_at: $ts, items: $items, nudged_for: ""}' 2>/dev/null) || exit 0
-	task_queue_state_write "$SESSION_ID" "$_state" || exit 0
+	# CARRIES FORWARD ids_at_last_commit. Rebuilding the object from scratch
+	# dropped it on every todo call — and that field is the entire basis of
+	# task-issue-reconcile.sh's comparison, so a task-list update silently
+	# reset its baseline and cost it a commit. Built from _prev rather than
+	# jq -n for exactly that reason.
+	_state=$(printf '%s' "$_prev" | jq -c --arg ids "$_ids" \
+		--arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson items "$_items" \
+		'{ids_at_last_commit: (.ids_at_last_commit // ""),
+		  open_ids: $ids, calls_since_update: 0, updated_at: $ts,
+		  items: $items, nudged_for: ""}' 2>/dev/null) || exit 0
+	# WARNs. This is the write whose failure disables the whole mechanism —
+	# no snapshot means every later call finds no queue and exits — while the
+	# 7-day prune inside the same function, whose worst outcome is a reset
+	# counter, was the one that spoke up. The instrument was on the wrong
+	# failure.
+	task_queue_state_write "$SESSION_ID" "$_state" ||
+		echo "task-queue-track: WARN: could not record the task-queue snapshot; staleness tracking is inactive for this session" >&2
 	exit 0
 fi
 
@@ -147,17 +168,37 @@ Threshold: TASK_STALE_AFTER_CALLS (default 40).
 Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
 
 # The append is what ENFORCES — the diagnostic file alone is just a file that
-# nobody is required to read. Swallowing its failure meant the nudge could
-# report itself as fired while blocking nothing, which is the shape this whole
-# epic exists to remove. Still non-fatal (this must never break a tool call),
-# but LOUD.
+# nobody is required to read. Still non-fatal (this must never break a tool
+# call), but LOUD, and its result decides whether the item is armed off.
 _DIAG=$(hook_ack_diagnostic_write "task-queue-track" "task-stale" "$_BODY" 2>/dev/null) || _DIAG=""
-hook_ack_append "task-queue-track" "task-stale" "$_DIAG" 2>/dev/null ||
-	echo "task-queue-track: WARN: could not register the task-stale sentinel — the diagnostic was written to ${_DIAG:-<unwritten>} but nothing will block on it" >&2
 
-# Record that this item has been nudged for, so the next tool call does not
-# repeat it. Best-effort: a failed write costs a duplicate nudge, never a
-# blocked operator.
+# NEVER register a sentinel with an EMPTY file_path: hook_ack_append accepts
+# one, and hook-ack-clear.sh preserves every row whose path is empty, so the
+# entry can only be escaped with HOOK_ACK_CLEAR=1. A detection-side write
+# failure would then hard-block every subsequent tool call — the most closed
+# state the ack system has, produced by the failure of a reminder.
+_armed=0
+if [ -n "$_DIAG" ]; then
+	if hook_ack_append "task-queue-track" "task-stale" "$_DIAG" 2>/dev/null; then
+		_armed=1
+	else
+		echo "task-queue-track: WARN: could not register the task-stale sentinel — the diagnostic is at $_DIAG but nothing will block on it; will retry on the next tool call" >&2
+	fi
+else
+	echo "task-queue-track: WARN: could not write the stale-task diagnostic (is .claude/.session-state writable?) — NOT registering a sentinel, because one with no file path cannot be acknowledged and would block every subsequent tool call" >&2
+fi
+
+# ARM OFF ONLY ON SUCCESS. Recording nudged_for unconditionally meant a FAILED
+# append still suppressed the item for the rest of the session — the arm-once
+# guard reads this field and exits, and it re-arms only when a todo call
+# rewrites it. hook_ack_append returns 1 on ordinary contention (a 2s lock
+# timeout), so a transient failure became permanent silence: exactly "a nudge
+# that reported itself as fired while blocking nothing", which the comment
+# above claims to have removed. The WARN made the failure visible; this makes
+# it recoverable.
+[ "$_armed" = "1" ] || exit 0
+
 _state=$(printf '%s' "$_state" | jq -c --arg n "$_inprog" '.nudged_for = $n' 2>/dev/null) || exit 0
-task_queue_state_write "$SESSION_ID" "$_state" || exit 0
+task_queue_state_write "$SESSION_ID" "$_state" ||
+	echo "task-queue-track: WARN: could not record the arm-once marker; the stale nudge for this item may repeat on the next tool call" >&2
 exit 0
