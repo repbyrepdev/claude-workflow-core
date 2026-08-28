@@ -401,13 +401,74 @@ EOF
 }
 
 @test "latest-per-bot ordering: APPROVED superseded by CHANGES_REQUESTED does not pass" {
+	# The REASON TEXT changed, deliberately, and the behaviour did not.
+	#
+	# The fixture is a request-for-changes ON THE HEAD, so the at-head check
+	# now refuses before the convergence check is ever reached, and names the
+	# reviewer instead of reporting the downstream "NOT verified clean". That
+	# is strictly more specific and arrives earlier: the block is a review on
+	# this commit, not a findings count.
+	#
+	# The properties this test exists for are unchanged and still asserted —
+	# refuses (exit 2), and posts NO nudge. "NOT verified clean" remains
+	# asserted by seven other tests covering the paths where it is still the
+	# right answer, so no coverage is lost here.
 	_install_gh_shim
 	_reviews '[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T15:00:00Z","body":""},{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-24T16:00:00Z","body":""}]'
 	_write_findings 1
 	_run_gate
 	[ "$status" -eq 2 ]
-	[[ $output == *"NOT verified clean"* ]] || return 1
+	assert_output_contains "requested changes ON THIS HEAD"
+	assert_output_contains "coderabbitai[bot]"
 	[ ! -f "$NUDGE_MARKER" ]
+}
+
+@test "an at-head CHANGES_REQUESTED is terminal even with NO approval at head" {
+	# The gap the backup reviewer found: the standing-review check sat behind
+	# `[ "$ok" = "true" ]`, so it ran ONLY on the already-approved fast path.
+	# With no APPROVED at head and a policy approver blocking, the function
+	# returned the ordinary "no record yet" rc 1 and the caller nudged.
+	#
+	# Every earlier fixture for the blocking check carried an APPROVED at
+	# head, so `ok` was always true wherever `blocking` was exercised and
+	# this combination was untested — the same shape of hole as the
+	# enforcement paths elsewhere in this PR.
+	#
+	# Convergence is made to look VERIFIED (findings clean, head witness
+	# present) so the nudge path is fully armed and the terminal return is
+	# the only thing that can stop it.
+	_install_gh_shim
+	_write_policy 180
+	_write_findings 0
+	_comments_with_head_witness
+	_reviews '[{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T16:00:00Z","body":""}]'
+	_run_gate
+	[ "$status" -eq 2 ]
+	assert_output_contains "requested changes ON THIS HEAD"
+	[ ! -f "$NUDGE_MARKER" ] || {
+		echo "nudged a reviewer to approve the very commit it just rejected"
+		return 1
+	}
+}
+
+@test "a STALE CHANGES_REQUESTED on an older commit still reaches the nudge" {
+	# The other side of that line, and the reason "always return 3" was the
+	# wrong fix — it failed 15 tests encoding this design. The file header is
+	# explicit that CodeRabbit sometimes "leaves a stale CHANGES_REQUESTED
+	# standing" on a head that is otherwise converged, and that nudging is
+	# the designed remedy. Only an AT-HEAD request is unnudgeable.
+	_install_gh_shim
+	_write_policy 1
+	_write_findings 0
+	_comments_with_head_witness
+	_reviews_stale_cr
+	_run_gate
+	# The nudge IS posted here — that is the designed behaviour.
+	[ -f "$NUDGE_MARKER" ] || {
+		echo "a stale request on a converged head did not reach the nudge: $output"
+		return 1
+	}
+	assert_output_lacks "requested changes ON THIS HEAD"
 }
 
 @test "ordering is by submitted_at, not array position (reverse-chronological payload)" {

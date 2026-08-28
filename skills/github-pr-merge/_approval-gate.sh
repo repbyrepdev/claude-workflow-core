@@ -245,6 +245,51 @@ _approved_at_head() {
 		echo "  Payload head: $(head -c 300 "$AG_TMP/reviews.json")" >&2
 		return 2
 	}
+	# A blocking review ON THE CURRENT HEAD is terminal REGARDLESS of `ok`,
+	# so this is asked before the approval question and not behind it.
+	#
+	# The backup reviewer found that the standing-review check sat behind
+	# `[ "$ok" = "true" ] || return 1` and therefore ran only on the
+	# already-approved fast path: with no APPROVED at head yet and a policy
+	# approver blocking, the function returned the ordinary "no record yet"
+	# rc 1 and the caller went on to nudge.
+	#
+	# But the fix cannot be "compute blocking unconditionally and always
+	# return 3" — that breaks what this gate is FOR. The header is explicit
+	# that CodeRabbit sometimes "leaves a stale CHANGES_REQUESTED standing"
+	# on a head that is otherwise converged, and that nudging is the designed
+	# remedy for exactly that. Making every standing request terminal failed
+	# 15 existing tests, all of them encoding that design.
+	#
+	# The line that actually matters is WHICH COMMIT the request sits on:
+	#
+	#   at the CURRENT head  — never nudge. Asking a reviewer to approve the
+	#                          very commit it just rejected is the laundering
+	#                          the header forbids, converged or not.
+	#   on an OLDER commit   — the stale-record case. Convergence is verified
+	#                          two ways downstream before anything is posted,
+	#                          and that is the gate working as designed.
+	local blocking_at_head
+	blocking_at_head=$(jq -rs --argjson bots "$APPROVERS_JSON" --arg head "$HEAD_SHA" '
+		add // []
+		| [.[] | select(.user.login as $l | $bots | index($l))
+			| select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
+		| group_by(.user.login)
+		| map(sort_by(.submitted_at) | last)
+		| map(select(.state == "CHANGES_REQUESTED" and .commit_id == $head)
+			| .user.login)
+		| join(", ")' "$AG_TMP/reviews.json" 2>"$AG_TMP/err") || {
+		echo "approval-gate: ERROR — reviews payload unparseable on the at-head blocking pass: $(cat "$AG_TMP/err")" >&2
+		return 2
+	}
+	if [ -n "$blocking_at_head" ]; then
+		echo "approval-gate: REFUSING — a policy approver has requested changes ON THIS HEAD ($HEAD_SHA): $blocking_at_head" >&2
+		echo "  Not nudgeable: asking a reviewer to approve the commit it just rejected is the" >&2
+		echo "  laundering this gate exists to prevent. Address the findings, reply with evidence" >&2
+		echo "  via scripts/cr/thread-reply.sh, and push — the next review clears it." >&2
+		return 3
+	fi
+
 	[ "$ok" = "true" ] || return 1
 
 	# ANY(APPROVED) IS NOT WHAT GITHUB ASKS, and this gate printed
@@ -470,6 +515,17 @@ while :; do
 		exit 0
 	elif [ "$_ah_rc" -eq 2 ]; then
 		echo "approval-gate: REFUSING — mid-poll query failure (fail-closed). NOTE: the nudge WAS already posted; the record may land on its own — re-run to pick it up." >&2
+		exit 2
+	elif [ "$_ah_rc" -eq 3 ]; then
+		# TERMINAL here too, and this arm was missing. rc 3 fell through to
+		# "still waiting", so the loop polled to NUDGE_TIMEOUT and then
+		# reported "no APPROVED record within Ns" — factually wrong when a
+		# record DID land mid-poll and a different approver is the one
+		# blocking, and it sends the operator after a rate-limit that is not
+		# happening. Same "rc 3 not handled at a call site" mistake as the
+		# first call site, one loop further in. The diagnostic has already
+		# been printed by _approved_at_head.
+		echo "approval-gate: REFUSING mid-poll — see the CHANGES_REQUESTED diagnostic above. This is NOT a nudge timeout; the block is at review level." >&2
 		exit 2
 	fi
 	if [ "$waited" -ge "$NUDGE_TIMEOUT" ]; then
