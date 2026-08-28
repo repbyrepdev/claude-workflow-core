@@ -298,6 +298,18 @@ EOF
 		echo "the Docs sub-issue got the untitled phase's tasks: $b2"
 		return 1
 	}
+	# ...and it did not flow BACKWARDS into phase 1 either. A rejected Phase
+	# marker still ends the phase above it; leaving the output file unchanged
+	# appended the stray heading and its whole task list to the previous
+	# sub-issue, which is the same misattribution in the other direction.
+	[[ $b1 != *"orphan work"* ]] || {
+		echo "the untitled phase's tasks flowed into phase 1: $b1"
+		return 1
+	}
+	[[ $b1 != *"Phase 2"* ]] || {
+		echo "a rejected Phase heading was copied into phase 1's body: $b1"
+		return 1
+	}
 }
 
 @test "phase bodies: bold and whitespace-only headings keep titles and bodies aligned" {

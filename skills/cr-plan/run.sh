@@ -315,6 +315,14 @@ parse)
 				: ($0 ~ /^[0-9]+\.[[:space:]]+[^[:space:]]/)
 		}
 		is_head { idx++; file = sprintf("%s/%02d.md", outdir, idx); next }
+		# A Phase marker the heading test REJECTED still ends the phase above
+		# it. Leaving file unchanged meant an untitled `### Phase 2` and every
+		# task under it were appended to Phase 1 — so the first sub-issue
+		# carried a stray heading and a second phase worth of tasks, which is
+		# the same misattribution as the index desync wearing a different hat.
+		# Clearing file drops that span instead: it belongs to a phase with no
+		# title, and there is no sub-issue for it to go to.
+		/^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+/ { file = ""; next }
 		idx > 0 && file != "" { print >> file }
 	' 2>/dev/null || true
 	if [ "$raw_count" -gt "$PHASE_MAX" ]; then

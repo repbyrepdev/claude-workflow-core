@@ -82,7 +82,11 @@ OPEN_N=$(task_queue_open_count "$ITEMS") || OPEN_N="?"
 # force-read by the agent via the hook-ack gate, so newlines left intact let a
 # task item break out of the indented quote below and issue instructions in
 # the hook's own voice. One line, printable only.
-NEXT_SHORT=$(printf '%s' "$NEXT" | tr '\n\r\t' '   ' | tr -cd '[:print:]' | head -c 160)
+NEXT_SHORT=$(task_queue_sanitise_line "$NEXT" 160)
+# Empty after sanitising — see the matching guard in task-queue-track.sh. This
+# one also feeds the systemMessage at the foot of the file, so an empty value
+# would surface as "N open task(s) remain — next: " with nothing after it.
+[ -n "$NEXT_SHORT" ] || exit 0
 
 BODY="$OPEN_N open task(s) remain. The next actionable one is:
 
@@ -124,8 +128,14 @@ _DIAG=$(hook_ack_diagnostic_write "next-task-stop-nudge" "next-open-task" "$BODY
 if [ -n "$_DIAG" ]; then
 	# The append is what ENFORCES; the systemMessage below only makes it
 	# visible now, and scrolls past exactly like next-step-advisor.sh did.
-	hook_ack_append "next-task-stop-nudge" "next-open-task" "$_DIAG" 2>/dev/null ||
+	# The prune runs only on a SUCCESSFUL append — until the row is replaced,
+	# the older diagnostics are still live pending targets, and a row pointing
+	# at a missing file cannot be cleared by Read.
+	if hook_ack_append "next-task-stop-nudge" "next-open-task" "$_DIAG" 2>/dev/null; then
+		task_queue_prune_superseded_diags "next-task-stop-nudge" "next-open-task" "$_DIAG"
+	else
 		echo "next-task-stop-nudge: WARN: could not register the next-open-task sentinel — the diagnostic is at $_DIAG but nothing will block on it" >&2
+	fi
 else
 	echo "next-task-stop-nudge: WARN: could not write the nudge diagnostic (is .claude/.session-state writable?) — NOT registering a sentinel, because one with no file path cannot be acknowledged and would block every subsequent tool call" >&2
 fi

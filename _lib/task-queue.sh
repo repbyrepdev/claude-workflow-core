@@ -89,9 +89,17 @@ task_queue_from_transcript() { # $1 = transcript path
 	      # transcript would take out the parse for every well-formed one
 	      # before AND after it, and the caller would read that as "no queue".
 	      # Detection is supposed to fail open per item, not per transcript.
-	      | (if (.input | type) == "object"
-	         then (.input.todos // .input.tasks // .input.items // [])
-	         else [] end)
+	      #
+	      # DROPPED, not mapped to []. The first cut of this guard emitted []
+	      # for a malformed input, which then joined the candidate list — and
+	      # `last` below picks the final candidate, so a valid TodoWrite
+	      # followed by a malformed TaskUpdate classified as `empty` and
+	      # suppressed the nudge with work still open. Failing open per item
+	      # means the item leaves the list, not that it becomes an empty queue
+	      # that outvotes the good ones.
+	      | select((.input | type) == "object")
+	      | (.input.todos // .input.tasks // .input.items // [])
+	      | select(type == "array")
 	    ] | if length == 0 then "__TQ_ABSENT__"
 	        else (last | '"$TASK_QUEUE_NORMALISE_JQ"') end' "$transcript" 2>/dev/null) || rc=$?
 	[ "$rc" -eq 0 ] || return 1
@@ -394,6 +402,139 @@ task_queue_state_calls_since_update() { # $1 = state JSON
 
 task_queue_state_nudged_for() { # $1 = state JSON
 	printf '%s' "${1:-}" | jq -r '.nudged_for // ""' 2>/dev/null || return 1
+}
+
+# --- per-session lock -----------------------------------------------------
+#
+# THE RACE: matching PostToolUse hooks run in PARALLEL. task-queue-track.sh
+# and task-issue-reconcile.sh both fire on the same `git commit` Bash call,
+# both do read → modify → atomic-replace on the SAME state file, and they
+# modify DIFFERENT fields — the tracker writes calls_since_update, the
+# reconciler writes ids_at_last_commit. The `mv` is atomic, so the file is
+# never torn; but the loser's read happened before the winner's write, so
+# whichever lands second writes back a whole object built from stale data and
+# silently drops the other's field. Losing ids_at_last_commit costs the
+# reconciler a commit's baseline — the exact bookkeeping the hook exists for.
+#
+# mkdir is the atomicity primitive, same as _lib/hook-ack.sh (CR PR #790) and
+# the same ~2s budget. It is duplicated in shape rather than sourced because
+# this library must not depend on hook-ack — hook-ack is about the sentinel,
+# this is about session state, and one is not a layer over the other.
+#
+# FAILS OPEN: if the lock cannot be taken, the caller proceeds unlocked. A
+# reminder mechanism must not be able to wedge a tool call, and an unlocked
+# write is what every write did before this existed.
+_task_queue_lock() { # $1 = lock dir path
+	local lockdir=${1:-} tries=0
+	[ -n "$lockdir" ] || return 1
+	while ! mkdir "$lockdir" 2>/dev/null; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 200 ]; then
+			echo "task-queue: WARN: state lock not acquired after 2s ($lockdir) — proceeding unlocked; a concurrent hook may overwrite a field" >&2
+			return 1
+		fi
+		sleep 0.01
+	done
+	return 0
+}
+
+_task_queue_unlock() { # $1 = lock dir path
+	[ -n "${1:-}" ] && rmdir "$1" 2>/dev/null
+	return 0
+}
+
+# The public pair. Callers wrap their WHOLE read-modify-write span, not just
+# the write: locking inside task_queue_state_write alone would leave the read
+# outside the critical section, which is where the stale data comes from.
+#
+# Callers must release on EVERY exit path. Both hooks use `trap … EXIT` for
+# this — they are short-lived scripts with no other EXIT trap — because they
+# are full of `|| exit 0` fail-open branches, and one of those exiting while
+# holding the lock would make every later hook pay the full 2s timeout and
+# print a warning about a process that is long gone.
+task_queue_state_lock() { # $1 = session id
+	local path
+	path=$(task_queue_state_path "${1:-}") || return 1
+	mkdir -p "$(dirname "$path")" 2>/dev/null || return 1
+	_task_queue_lock "${path}.lockdir"
+}
+
+task_queue_state_unlock() { # $1 = session id
+	local path
+	path=$(task_queue_state_path "${1:-}") || return 0
+	_task_queue_unlock "${path}.lockdir"
+}
+
+# --- shared text sanitiser ------------------------------------------------
+#
+# One definition, used by all three hooks. It was `tr '\n\r\t' '   ' | tr -cd
+# '[:print:]'` copied into each of them, and the second half was wrong twice
+# over:
+#
+#   1. `tr -cd '[:print:]'` operates on BYTES. Every UTF-8 continuation byte
+#      is outside [:print:] in the C locale, so an em dash, an accented word,
+#      or any non-Latin script was mangled or deleted outright. A task item
+#      written in Japanese reduced to nothing, and the nudge then quoted an
+#      empty string back at the operator.
+#   2. It was three copies of a security-relevant filter in a cohort where
+#      every other shared definition already lives in this file.
+#
+# The injection defence is the CONTROL-CHARACTER removal, not the non-ASCII
+# removal: what let a task item forge lines in a force-read diagnostic was
+# \n, \r and escape sequences, and those are exactly what this deletes.
+# Printable text in any language is content, not an attack.
+task_queue_sanitise_line() { # $1 = text, $2 = max bytes (default 160)
+	local max=${2:-160}
+	printf '%s' "${1:-}" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' | cut -b "1-$max"
+}
+
+# --- superseded diagnostic cleanup ----------------------------------------
+#
+# hook_ack_append DEDUPES sentinel rows by (hook, reason) — a second nudge
+# from the same hook for the same reason replaces the row rather than adding
+# one. hook_ack_diagnostic_write, by contrast, mints a UNIQUE filename every
+# call (timestamp + random suffix, added so rapid calls cannot clobber each
+# other). So the row always points at the newest file and every earlier one is
+# orphaned in .claude/.session-state/hook-ack/<hook>/ forever.
+#
+# ORDER MATTERS AND IS THE WHOLE SAFETY ARGUMENT: this must be called only
+# AFTER a successful append, never before. Until the append lands, the old
+# file is still the target of a LIVE pending row — and hook-ack-clear.sh
+# cannot clear a row whose file is missing, so deleting it early would
+# manufacture exactly the unclearable deadlock these hooks refuse to create
+# with an empty file_path.
+#
+# Best-effort throughout: a failure here leaves files on disk, which is the
+# status quo, and must never affect the caller.
+task_queue_prune_superseded_diags() { # $1 = hook name, $2 = reason, $3 = path to KEEP
+	local hook=${1:-} reason=${2:-} keep=${3:-}
+	[ -n "$hook" ] && [ -n "$reason" ] && [ -n "$keep" ] || return 0
+	local repo_root dir safe_hook safe_reason f
+	repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+	# Same sanitising hook_ack_diagnostic_write applies when it builds the
+	# path, so this looks in the directory the files are actually in.
+	safe_hook=$(printf '%s' "${hook##*/}" | tr -c '[:alnum:]_.-' '-')
+	safe_reason=$(printf '%s' "$reason" | tr -c '[:alnum:]_.-' '-' | cut -c1-60)
+	[ -n "$safe_hook" ] && [ -n "$safe_reason" ] || return 0
+	dir="$repo_root/.claude/.session-state/hook-ack/$safe_hook"
+	[ -d "$dir" ] || return 0
+	# Compared by BASENAME, not by full path. `keep` and `dir` are derived
+	# independently — `keep` from hook_ack_diagnostic_write's own
+	# `git rev-parse --show-toplevel`, `dir` from this function's — and on
+	# macOS $TMPDIR is /var/folders/… while git reports the resolved
+	# /private/var/folders/…, so two strings naming the SAME file compared
+	# unequal and the live diagnostic was deleted, leaving a pending row
+	# pointing at nothing: the unclearable deadlock this code exists to avoid.
+	# The basename carries a timestamp and a random suffix and is unique
+	# within the directory, so it identifies the file without depending on
+	# how either caller spells the path to it.
+	local keep_base=${keep##*/}
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		[ "${f##*/}" = "$keep_base" ] && continue
+		rm -f "$f" 2>/dev/null || true
+	done < <(find "$dir" -maxdepth 1 -type f -name "*-${safe_reason}-*.txt" 2>/dev/null)
+	return 0
 }
 
 # The first in_progress item that is NOT blocked. The staleness check used a

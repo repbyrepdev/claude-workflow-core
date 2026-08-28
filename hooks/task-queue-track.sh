@@ -76,6 +76,22 @@ source "$_TQ_LIB" 2>/dev/null || exit 0
 # todo branch, which it was — until that branch started carrying
 # ids_at_last_commit forward rather than rebuilding the object from scratch.
 # It now has a real use on both paths.
+# LOCK BEFORE THE READ. This hook and task-issue-reconcile.sh both match
+# PostToolUse and both fire on the same `git commit` Bash call, in parallel.
+# Each does read → modify → atomic replace on this same file, and they touch
+# DIFFERENT fields — calls_since_update here, ids_at_last_commit there. The mv
+# is atomic so the file never tears, but the loser read before the winner
+# wrote, so it writes back an object built from stale data and silently drops
+# the other hook's field. Losing ids_at_last_commit costs the reconciler its
+# baseline, which is the whole of what that hook does.
+#
+# Released on EVERY path via the trap, because everything below is `|| exit 0`
+# and an exit while holding it would make every later hook pay the full 2s
+# timeout. Fails open: an unacquired lock warns and proceeds, which is exactly
+# what this code did before the lock existed.
+trap 'task_queue_state_unlock "$SESSION_ID"' EXIT
+task_queue_state_lock "$SESSION_ID" || true
+
 _prev=$(task_queue_state_read "$SESSION_ID")
 
 # Via the library predicate, not a grep fork. This is the hottest path in the
@@ -164,7 +180,11 @@ source "$_ACK_LIB" 2>/dev/null || exit 0
 # INSTRUCTIONS…" lands flush-left in the body, typographically identical to
 # this hook's own imperative text. Collapsing to one line keeps it inside the
 # indented quote block, where it reads as the quoted material it is.
-_SHORT=$(printf '%s' "$_inprog" | tr '\n\r\t' '   ' | tr -cd '[:print:]' | head -c 160)
+_SHORT=$(task_queue_sanitise_line "$_inprog" 160)
+# A sanitised item can come back EMPTY (an item that was nothing but control
+# characters), and quoting an empty string back at the operator under "this
+# task has been in_progress" is worse than saying nothing.
+[ -n "$_SHORT" ] || exit 0
 _BODY="This task has been in_progress for $_next tool calls with no status update:
 
     $_SHORT
@@ -199,6 +219,10 @@ _armed=0
 if [ -n "$_DIAG" ]; then
 	if hook_ack_append "task-queue-track" "task-stale" "$_DIAG" 2>/dev/null; then
 		_armed=1
+		# AFTER the append, never before: until the row is replaced, the
+		# older files are still live pending targets, and a row pointing at
+		# a missing file cannot be cleared by Read.
+		task_queue_prune_superseded_diags "task-queue-track" "task-stale" "$_DIAG"
 	else
 		echo "task-queue-track: WARN: could not register the task-stale sentinel — the diagnostic is at $_DIAG but nothing will block on it; will retry on the next tool call" >&2
 	fi

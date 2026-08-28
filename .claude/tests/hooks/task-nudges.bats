@@ -1,6 +1,5 @@
 #!/usr/bin/env bats
-# covers: hooks/next-task-stop-nudge.sh hooks/task-issue-reconcile.sh
-# audits: hooks/task-queue-track.sh
+# covers: hooks/next-task-stop-nudge.sh hooks/task-issue-reconcile.sh hooks/task-queue-track.sh
 #
 # (#2555) The three mechanical nudges. Each writes a hook-ack diagnostic and
 # registers a sentinel, so `stale-state-gate.sh` denies the next tool call
@@ -260,13 +259,30 @@ _tick() { # $1 = how many, $2 = threshold
 	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
 	_tick 3 3
 	[ "$(_diag_count task-queue-track)" = "1" ]
+	local first
+	first=$(find "$DIAG_ROOT/task-queue-track" -type f -name '*.txt' | head -1)
+	[ -n "$first" ] || {
+		echo "no diagnostic from the first nudge"
+		return 1
+	}
 	# The SAME item, re-stated. Using a different one ("item B") made the
 	# re-fire explainable by the content differing from nudged_for, so the
 	# test passed against a hook that never cleared the field — mutation-
 	# verified. Re-stating item A is what pins the reset itself.
 	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
 	_tick 3 3
-	[ "$(_diag_count task-queue-track)" = "2" ] || {
+	# ASSERTED ON THE PATH, NOT THE COUNT. This used to require two files,
+	# which stopped meaning "it re-armed" once superseded diagnostics began
+	# being pruned: the count is now 1 after any number of nudges, by design.
+	# A re-arm produces a NEW diagnostic path (timestamp + random suffix), so
+	# that is what distinguishes a second nudge from no second nudge.
+	local second
+	second=$(find "$DIAG_ROOT/task-queue-track" -type f -name '*.txt' | head -1)
+	[ -n "$second" ] || {
+		echo "the diagnostic disappeared entirely — the prune deleted the live one"
+		return 1
+	}
+	[ "$second" != "$first" ] || {
 		echo "the nudge did not re-arm after a status update on the SAME item"
 		return 1
 	}

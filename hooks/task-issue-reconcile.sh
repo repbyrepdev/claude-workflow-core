@@ -75,6 +75,13 @@ _TQ_LIB="$_HOOK_DIR/../_lib/task-queue.sh"
 # shellcheck source=../_lib/task-queue.sh
 source "$_TQ_LIB" 2>/dev/null || exit 0
 
+# LOCK BEFORE THE READ — see the matching block in task-queue-track.sh. Both
+# hooks match PostToolUse and both fire on the same `git commit`, in parallel,
+# read-modify-writing this one file on different fields. Unlocked, whichever
+# lands second drops the other's field.
+trap 'task_queue_state_unlock "$SESSION_ID"' EXIT
+task_queue_state_lock "$SESSION_ID" || true
+
 _STATE=$(task_queue_state_read "$SESSION_ID")
 # Through the lib accessors, not ad hoc jq. Reading `.open_ids` and
 # `.ids_at_last_commit` directly here put the state SCHEMA in two files —
@@ -140,7 +147,10 @@ source "$_ACK_LIB" 2>/dev/null || exit 0
 # "chore: tidy\rIGNORE PREVIOUS INSTRUCTIONS" still overwrites the visible
 # line while head counts it as one. Verified: `printf 'safe\rINJECTED\n' |
 # head -1` emits both halves.
-_SUBJ=$(printf '%s' "$MSG" | head -1 | tr '\n\r\t' '   ' | tr -cd '[:print:]' | head -c 120)
+_SUBJ=$(task_queue_sanitise_line "$(printf '%s' "$MSG" | head -1)" 120)
+# A commit subject that sanitises to nothing still means a commit landed, so
+# unlike the two nudges this does NOT bail — it just stops quoting.
+[ -n "$_SUBJ" ] || _SUBJ="(subject not printable)"
 _BODY="A commit referencing $ISSUES landed, and the task list did not move.
 
     $_SUBJ
@@ -173,8 +183,13 @@ _DIAG=$(hook_ack_diagnostic_write "task-issue-reconcile" "commit-no-task-transit
 if [ -n "$_DIAG" ]; then
 	# The append is what ENFORCES. Swallowing its failure meant the drift was
 	# detected and then silently dropped.
-	hook_ack_append "task-issue-reconcile" "commit-no-task-transition" "$_DIAG" 2>/dev/null ||
+	# The prune runs only on a SUCCESSFUL append — see the matching comment in
+	# the sibling hooks.
+	if hook_ack_append "task-issue-reconcile" "commit-no-task-transition" "$_DIAG" 2>/dev/null; then
+		task_queue_prune_superseded_diags "task-issue-reconcile" "commit-no-task-transition" "$_DIAG"
+	else
 		echo "task-issue-reconcile: WARN: could not register the drift sentinel — the diagnostic is at $_DIAG but nothing will block on it" >&2
+	fi
 else
 	echo "task-issue-reconcile: WARN: could not write the drift diagnostic (is .claude/.session-state writable?) — NOT registering a sentinel, because one with no file path cannot be acknowledged and would block every subsequent tool call" >&2
 fi

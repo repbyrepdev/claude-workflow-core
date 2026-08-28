@@ -1,6 +1,12 @@
 #!/usr/bin/env bats
 # covers: _lib/task-queue.sh hooks/task-queue-track.sh
 #
+# SC2030/SC2031: the concurrency test deliberately exports the state-dir
+# override INSIDE background subshells — that is the point of the test, since
+# each subshell stands in for a separate hook process. The warning is about
+# the change not escaping, which is exactly what is wanted here.
+# shellcheck disable=SC2030,SC2031
+#
 # (#2554) The SSOT the #2555 nudge hooks read: what is open, which item is
 # next, and how many tool calls have passed since the operator last said
 # anything about the queue.
@@ -561,6 +567,162 @@ _state_json() { # $1 = session id
 	only_completed=$(task_queue_from_tool_input '{"todos":[{"content":"done","status":"completed"}]}')
 	[ "$(task_queue_open_ids "$all_blocked")" = "$(task_queue_open_ids "$only_completed")" ] || {
 		echo "a blocked-only queue hashed differently from an empty one"
+		return 1
+	}
+}
+
+@test "task-queue: a malformed input does NOT outvote a valid earlier queue" {
+	# `last` picks the final candidate. The first cut of the .input object
+	# guard emitted [] for a malformed tool_use, which then JOINED the
+	# candidate list — so a valid TodoWrite followed by a TaskUpdate with a
+	# non-object .input classified as `empty` and suppressed the nudge with
+	# work still open. Failing open per item means the item leaves the list,
+	# not that it becomes an empty queue that outvotes the good ones.
+	local t="$TEST_TMP/mixed.jsonl"
+	{
+		jq -nc '{message:{content:[{type:"tool_use",name:"TodoWrite",
+			input:{todos:[{content:"real work",status:"in_progress"}]}}]}}'
+		jq -nc '{message:{content:[{type:"tool_use",name:"TaskUpdate",
+			input:"not an object"}]}}'
+	} >"$t"
+	local items state
+	items=$(task_queue_from_transcript "$t") || {
+		echo "a malformed trailing input aborted the whole parse"
+		return 1
+	}
+	state=$(task_queue_classify "$items")
+	[ "$state" = "open" ] || {
+		echo "classified as '$state' rather than open; the malformed input won: $items"
+		return 1
+	}
+}
+
+@test "task-queue: the sanitiser strips control chars and KEEPS non-ASCII" {
+	# `tr -cd '[:print:]'` was byte-based, so every UTF-8 continuation byte
+	# fell outside [:print:] in the C locale: em dashes, accents and
+	# non-Latin script were mangled or deleted outright. The injection
+	# defence is the CONTROL-character removal; printable text in any
+	# language is content, not an attack.
+	local got
+	got=$(task_queue_sanitise_line "$(printf 'refactor \xe2\x80\x94 caf\xc3\xa9 \xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\rINJECTED\there')" 160)
+	case "$got" in
+	*$'\r'* | *$'\t'*)
+		echo "a control character survived: $got"
+		return 1
+		;;
+	esac
+	case "$got" in
+	*"café"*) ;;
+	*)
+		echo "an accented word was destroyed: $got"
+		return 1
+		;;
+	esac
+	case "$got" in
+	*"—"*) ;;
+	*)
+		echo "an em dash was destroyed: $got"
+		return 1
+		;;
+	esac
+	case "$got" in
+	*"テスト"*) ;;
+	*)
+		echo "non-Latin script was destroyed: $got"
+		return 1
+		;;
+	esac
+	# And the injected text is still on ONE line, which is the actual point.
+	case "$got" in
+	*"INJECTED"*) ;;
+	*)
+		echo "flattening deleted content instead of flattening it: $got"
+		return 1
+		;;
+	esac
+}
+
+@test "task-queue: concurrent read-modify-write keeps BOTH fields" {
+	# The race: task-queue-track.sh and task-issue-reconcile.sh both match
+	# PostToolUse, both fire on the same `git commit`, and both
+	# read-modify-write this one file on DIFFERENT fields. The mv is atomic
+	# so the file never tears, but the loser read before the winner wrote,
+	# so it writes back stale data and drops the other field silently.
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "racer" \
+		'{"open_ids":"seed","calls_since_update":0,"ids_at_last_commit":"base"}' || return 1
+
+	local i=0
+	while [ "$i" -lt 5 ]; do
+		(
+			export TASK_QUEUE_STATE_DIR="$STATE_DIR"
+			task_queue_state_lock "racer" || true
+			s=$(task_queue_state_read "racer")
+			s=$(printf '%s' "$s" | jq -c '.calls_since_update += 1')
+			task_queue_state_write "racer" "$s"
+			task_queue_state_unlock "racer"
+		) &
+		(
+			export TASK_QUEUE_STATE_DIR="$STATE_DIR"
+			task_queue_state_lock "racer" || true
+			s=$(task_queue_state_read "racer")
+			s=$(printf '%s' "$s" | jq -c --arg v "commit-$RANDOM" '.ids_at_last_commit = $v')
+			task_queue_state_write "racer" "$s"
+			task_queue_state_unlock "racer"
+		) &
+		i=$((i + 1))
+	done
+	wait
+
+	local sf ids calls
+	sf=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "racer")
+	jq -e . "$sf" >/dev/null 2>&1 || {
+		echo "concurrent writes produced invalid JSON"
+		return 1
+	}
+	ids=$(jq -r '.ids_at_last_commit // ""' "$sf")
+	calls=$(jq -r '.calls_since_update // "MISSING"' "$sf")
+	[ -n "$ids" ] || {
+		echo "ids_at_last_commit was dropped by a concurrent writer"
+		return 1
+	}
+	[ "$calls" != "MISSING" ] || {
+		echo "calls_since_update was dropped by a concurrent writer"
+		return 1
+	}
+}
+
+@test "task-queue: superseded diagnostics are pruned, the live one is kept" {
+	# hook_ack_append dedupes rows by (hook, reason);
+	# hook_ack_diagnostic_write mints a unique filename per call. So the row
+	# points at the newest file and every earlier one is orphaned forever.
+	local root="$TEST_TMP/prunerepo"
+	mkdir -p "$root"
+	(cd "$root" && git init -q -b main) || return 1
+	local dir="$root/.claude/.session-state/hook-ack/some-hook"
+	mkdir -p "$dir"
+	printf 'old\n' >"$dir/20260101T000000Z-a-reason-aaaaaa.txt"
+	printf 'older\n' >"$dir/20260102T000000Z-a-reason-bbbbbb.txt"
+	printf 'keep\n' >"$dir/20260103T000000Z-a-reason-cccccc.txt"
+	# A different reason in the same directory must be untouched.
+	printf 'other\n' >"$dir/20260101T000000Z-other-reason-dddddd.txt"
+
+	(cd "$root" && task_queue_prune_superseded_diags "some-hook" "a-reason" \
+		"$dir/20260103T000000Z-a-reason-cccccc.txt")
+
+	[ -f "$dir/20260103T000000Z-a-reason-cccccc.txt" ] || {
+		echo "the LIVE diagnostic was deleted — its sentinel row is now unclearable"
+		return 1
+	}
+	[ ! -f "$dir/20260101T000000Z-a-reason-aaaaaa.txt" ] || {
+		echo "a superseded diagnostic survived"
+		return 1
+	}
+	[ ! -f "$dir/20260102T000000Z-a-reason-bbbbbb.txt" ] || {
+		echo "a superseded diagnostic survived"
+		return 1
+	}
+	[ -f "$dir/20260101T000000Z-other-reason-dddddd.txt" ] || {
+		echo "a DIFFERENT reason was pruned — that row is now unclearable"
 		return 1
 	}
 }
