@@ -322,35 +322,40 @@ _approved_at_head() {
 		return 2
 	}
 	if [ -n "$blocking" ]; then
-		echo "approval-gate: REFUSING — a policy approver has a STANDING CHANGES_REQUESTED: $blocking" >&2
-		echo "  (returning 3 — TERMINAL, not the 'no record yet' rc 1 that leads to the nudge path)" >&2
-		echo "  An APPROVED from a different approver does not override it, and neither does a" >&2
-		echo "  later COMMENTED review — GitHub keeps the request in force until that same" >&2
-		echo "  reviewer APPROVES or the review is dismissed." >&2
+		echo "approval-gate: an APPROVED record is at head, but a policy approver still has a" >&2
+		echo "  STANDING CHANGES_REQUESTED on an EARLIER commit: $blocking" >&2
+		echo "  GitHub will refuse the merge on that alone — an APPROVED from a different" >&2
+		echo "  approver does not override it, and neither does a later COMMENTED review; the" >&2
+		echo "  request stays in force until that same reviewer APPROVES or it is dismissed." >&2
 		echo "" >&2
-		echo "  The process fix is to let the reviewer clear its own block, NOT to dismiss it:" >&2
-		echo "    - CodeRabbit runs with request_changes_workflow: true, so it posts APPROVED on" >&2
-		echo "      a re-review that finds nothing actionable. Address the findings, reply with" >&2
-		echo "      evidence via scripts/cr/thread-reply.sh, and push — the next review clears it." >&2
+		echo "  So this is NOT exit 0. But it is also not terminal: a stale request on an" >&2
+		echo "  otherwise-converged head is the case the policy nudge exists for (see the file" >&2
+		echo "  header). Falling through to the convergence-verified nudge lets the reviewer" >&2
+		echo "  clear its OWN block, which is the process fix — dismissing the review would" >&2
+		echo "  clear the signal without clearing the cause." >&2
+		echo "    - CodeRabbit runs with request_changes_workflow: true, so it posts APPROVED" >&2
+		echo "      on a clean re-review or in answer to the nudge. Address any findings and" >&2
+		echo "      reply with evidence via scripts/cr/thread-reply.sh, then push." >&2
 		echo "    - hooks/_pr-cr-findings.sh reading zero is NOT the same signal: it counts" >&2
 		echo "      THREADS, and the block lives at REVIEW level." >&2
-		# rc 3, NOT 1. rc 1 means "no APPROVED record yet", and the caller
-		# answers that by NUDGING: it posts the policy comment
-		# (`@coderabbitai approve`) and polls for nudge_timeout_seconds.
+		# rc 1 — the nudge path — and NOT rc 3.
 		#
-		# Doing that here would be actively wrong, not merely slow. The
-		# outcome is already conclusively known, so the wait is dead time —
-		# but worse, it would command an approval onto a head that a policy
-		# approver has explicitly requested changes on. This file's own
-		# header forbids exactly that: "commanding an approval onto an
-		# unreviewed or findings-bearing head would launder the exact state
-		# the gate exists to block." A refusal that then asks to be
-		# overridden is not a refusal.
+		# This branch returned 3 (terminal) for one commit, and dogfooding
+		# PR #2638 showed that to be a dead end: with an APPROVED at head
+		# from one approver and a STALE request from another, the gate
+		# refused accurately and offered no remedy, so the PR could only be
+		# unstuck by dismissing a review — the bypass this whole block
+		# argues against.
 		#
-		# Caught by the backup reviewer on the commit that introduced the
-		# check — the refusal itself was right, and returning the same code
-		# as "not yet" quietly routed it into the nudge.
-		return 3
+		# The laundering hazard is handled ABOVE, by the at-head check: an
+		# approver that requested changes on THIS commit is never nudged.
+		# What is left here is precisely the stale-record case the file
+		# header names as the nudge's purpose, and the nudge path still
+		# verifies convergence two ways before it posts anything.
+		#
+		# What must NOT happen is returning 0, which is the original bug —
+		# claiming "✓ APPROVED" while GitHub goes on to refuse the merge.
+		return 1
 	fi
 	return 0
 }

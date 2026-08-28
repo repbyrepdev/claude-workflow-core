@@ -909,6 +909,38 @@ EOF
 
 # ---------- a standing CHANGES_REQUESTED from ANOTHER approver ----------
 
+@test "a STALE request DOES reach the nudge even with an APPROVED at head (PR #2638)" {
+	# The exact PR #2638 end-state: all checks green, zero unresolved
+	# threads, the backup reviewer APPROVED at head, and CodeRabbit holding a
+	# CHANGES_REQUESTED two commits back.
+	#
+	# For one commit this branch returned rc 3 (terminal) here. That refusal
+	# was ACCURATE — GitHub does block on the stale request — but it offered
+	# no remedy, so the only way to unstick the PR was to dismiss a review:
+	# the bypass the refusal text itself argues against. Dogfooding this very
+	# PR is what surfaced it.
+	#
+	# The nudge is the remedy, and it is safe here because the laundering
+	# hazard is handled separately by the at-head check above.
+	_install_gh_shim
+	_write_policy 1
+	_write_findings 0
+	_comments_with_head_witness
+	_reviews '[
+		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""}
+	]'
+	_run_gate
+	[ -f "$NUDGE_MARKER" ] || {
+		echo "a stale request on a converged head did not reach the nudge — the PR can only be unstuck by dismissing a review: $output"
+		return 1
+	}
+	# It must NOT have claimed approval, which was the original bug.
+	assert_output_lacks "✓ APPROVED bot review at final head"
+	# And it must not have used the at-head wording for a stale request.
+	assert_output_lacks "requested changes ON THIS HEAD"
+}
+
 @test "a SECOND approver's standing CHANGES_REQUESTED refuses, despite an APPROVED at head" {
 	# The exact shape of PR #2638, where this gate printed "✓ APPROVED" and
 	# `gh pr merge` then refused with "the base branch policy prohibits the
@@ -1016,7 +1048,7 @@ EOF
 	assert_output_contains "APPROVED bot review at final head"
 }
 
-@test "a standing CHANGES_REQUESTED refusal posts NO nudge and does not poll" {
+@test "an AT-HEAD refusal posts NO nudge and does not poll, even with another approval at head" {
 	# The refusal was correct and still routed into the nudge path, because
 	# it returned rc 1 — the same code as "no APPROVED record yet", which
 	# the caller answers by posting `@coderabbitai approve` and polling for
@@ -1035,13 +1067,18 @@ EOF
 	_write_policy 180
 	_write_findings 0
 	_comments_with_head_witness
+	# AT HEAD, not stale. The stale variant deliberately DOES nudge now —
+	# that is the case the policy nudge exists for, and pinning "never
+	# nudge" on it made this PR unmergeable without dismissing a review.
+	# The invariant that actually holds is narrower and sharper: never ask a
+	# reviewer to approve the very commit it just rejected.
 	_reviews '[
 		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
-		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""}
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:33:00Z","body":""}
 	]'
 	_run_gate
 	[ "$status" -eq 2 ]
-	assert_output_contains "STANDING CHANGES_REQUESTED"
+	assert_output_contains "requested changes ON THIS HEAD"
 	# THE POINT: no public comment was posted.
 	[ ! -f "$NUDGE_MARKER" ] || {
 		echo "the refusal posted a nudge asking for approval on a head with a standing request"
