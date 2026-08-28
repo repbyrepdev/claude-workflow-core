@@ -243,8 +243,14 @@ parse)
 	# numbered lines INSIDE a phase body — a plan whose tasks read "1. Run
 	# …" produced phantom phases after the real ones.
 	phase_form="heading"
+	# The strip below uses `[:[:space:]]*` — a RUN of colons and spaces, not
+	# `:?[[:space:]]*`. With the single optional colon, `### Phase 1: :`
+	# reduced to a title of ":" — non-empty, so the loop advanced its index —
+	# while the awk splitter refused the line outright. Desync again, one
+	# character wide. The two sides now agree that a heading whose title is
+	# nothing but punctuation is not a phase.
 	phase_titles_raw=$({ echo "$phases_section" | grep -oE '^(###+|[*]{2})[[:space:]]*Phase[[:space:]]+[0-9]+:?[[:space:]]*[^*#]+' |
-		sed -E 's/^[#*[:space:]]+Phase[[:space:]]+[0-9]+:?[[:space:]]*//' |
+		sed -E 's/^[#*[:space:]]+Phase[[:space:]]+[0-9]+[:[:space:]]*//' |
 		sed -E 's/[*[:space:]]+$//'; } || true)
 	if [ -z "$phase_titles_raw" ]; then
 		# Fallback: `1. Foo\n2. Bar` numbered-list form.

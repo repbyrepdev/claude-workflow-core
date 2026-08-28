@@ -112,10 +112,10 @@ fi
 # Any other tool: tick the clock. Nothing to do when the queue has never been
 # seen — a counter with no queue behind it would make the first todo call look
 # instantly stale.
-_prev_ids=$(printf '%s' "$_prev" | jq -r '.open_ids // ""' 2>/dev/null) || exit 0
+_prev_ids=$(task_queue_state_open_ids "$_prev") || exit 0
 [ -n "$_prev_ids" ] || exit 0
 
-_n=$(printf '%s' "$_prev" | jq -r '.calls_since_update // 0' 2>/dev/null) || exit 0
+_n=$(task_queue_state_calls_since_update "$_prev") || exit 0
 [[ $_n =~ ^[0-9]+$ ]] || _n=0
 _next=$((_n + 1))
 
@@ -148,7 +148,7 @@ _inprog=$(task_queue_state_stale_candidate "$_state") || exit 0
 # repeatedly, and a mechanism meant to be noticed becomes one to be dismissed.
 # Re-arms only when the next status update resets the clock, which also
 # rewrites nudged_for to "".
-_nudged=$(printf '%s' "$_state" | jq -r '.nudged_for // ""' 2>/dev/null) || _nudged=""
+_nudged=$(task_queue_state_nudged_for "$_state") || _nudged=""
 [ "$_nudged" = "$_inprog" ] && exit 0
 
 _ACK_LIB="$_HOOK_DIR/../_lib/hook-ack.sh"

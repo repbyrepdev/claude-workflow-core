@@ -83,7 +83,15 @@ task_queue_from_transcript() { # $1 = transcript path
 	      | .message.content[]?
 	      | select(.type == "tool_use")
 	      | select(.name | test($re))
-	      | (.input.todos // .input.tasks // .input.items // [])
+	      # `.input` is GUARDED to objects first. jq raises "Cannot index
+	      # array/string with todos" on a scalar or array .input and aborts
+	      # the whole slurp — so one malformed tool_use anywhere in a long
+	      # transcript would take out the parse for every well-formed one
+	      # before AND after it, and the caller would read that as "no queue".
+	      # Detection is supposed to fail open per item, not per transcript.
+	      | (if (.input | type) == "object"
+	         then (.input.todos // .input.tasks // .input.items // [])
+	         else [] end)
 	    ] | if length == 0 then "__TQ_ABSENT__"
 	        else (last | '"$TASK_QUEUE_NORMALISE_JQ"') end' "$transcript" 2>/dev/null) || rc=$?
 	[ "$rc" -eq 0 ] || return 1
@@ -368,6 +376,24 @@ task_queue_state_ids_at_last_commit() { # $1 = state JSON
 
 task_queue_state_set_ids_at_last_commit() { # $1 = state JSON, $2 = ids
 	printf '%s' "${1:-}" | jq -c --arg ids "${2:-}" '.ids_at_last_commit = $ids' 2>/dev/null || return 1
+}
+
+# The remaining three fields. These were still being read with inline jq by
+# the two hooks — `.items` in task-issue-reconcile.sh, `.calls_since_update`
+# and `.nudged_for` in task-queue-track.sh — which is the same schema-in-two-
+# files drift the comment above describes, just in the fields that had not
+# been noticed yet. Every field of the state object now has exactly one
+# reader.
+task_queue_state_items() { # $1 = state JSON
+	printf '%s' "${1:-}" | jq -c '.items // []' 2>/dev/null || return 1
+}
+
+task_queue_state_calls_since_update() { # $1 = state JSON
+	printf '%s' "${1:-}" | jq -r '.calls_since_update // 0' 2>/dev/null || return 1
+}
+
+task_queue_state_nudged_for() { # $1 = state JSON
+	printf '%s' "${1:-}" | jq -r '.nudged_for // ""' 2>/dev/null || return 1
 }
 
 # The first in_progress item that is NOT blocked. The staleness check used a

@@ -81,6 +81,10 @@ _diag_count() {
 	find "$DIAG_ROOT/task-issue-reconcile" -type f -name '*.txt' 2>/dev/null | wc -l | tr -d ' '
 }
 
+_sentinel() {
+	printf '%s' "$WORK/.claude/.session-state/hook-output-pending.txt"
+}
+
 _diag_body() {
 	local f
 	f=$(find "$DIAG_ROOT/task-issue-reconcile" -type f -name '*.txt' 2>/dev/null | head -1)
@@ -305,6 +309,63 @@ _diag_body() {
 	[ "$status" -eq 0 ]
 	[ "$(_diag_count)" = "0" ] || {
 		echo "the operator toggle was ignored"
+		return 1
+	}
+}
+
+@test "reconcile ENFORCES: drift writes the hook-ack sentinel, not just a file" {
+	# The whole point of this hook family is that the diagnostic BLOCKS the
+	# next tool call — next-step-advisor.sh already existed and was advisory,
+	# and its output scrolled past. So "a file was written" is not the
+	# property under test; "a sentinel was registered" is.
+	#
+	# hook_ack_append short-circuits under bats unless HOOK_ACK_BATS_SKIP=0,
+	# so every other test in this file exercises DETECTION only. The two
+	# sibling suites gained these after a mutation showed that deleting the
+	# append left all their tests green; this hook never got one, and it is
+	# the same blind spot in the same shape.
+	_seed_queue "build the thing:in_progress"
+	_commit "feat(x): first for #4321"
+	_run_hook "" "HOOK_ACK_BATS_SKIP=0"
+	_commit "feat(x): second for #4321"
+	_run_hook "" "HOOK_ACK_BATS_SKIP=0"
+	[ "$status" -eq 0 ]
+	[ -s "$(_sentinel)" ] || {
+		echo "drift wrote a diagnostic but registered NO block"
+		return 1
+	}
+	grep -q 'commit-no-task-transition' "$(_sentinel)" || {
+		echo "the sentinel does not carry this hook's reason: $(cat "$(_sentinel)")"
+		return 1
+	}
+	# A row with an EMPTY file_path cannot be cleared by Read —
+	# hook-ack-clear.sh preserves those — so it would hard-block every
+	# subsequent tool call with no way out but HOOK_ACK_CLEAR=1.
+	local fp
+	fp=$(awk -F'\t' '/commit-no-task-transition/{print $4; exit}' "$(_sentinel)")
+	[ -n "$fp" ] || {
+		echo "the sentinel has an EMPTY file_path — that entry is unclearable"
+		return 1
+	}
+	[ -f "$fp" ] || {
+		echo "the sentinel points at a file that does not exist: $fp"
+		return 1
+	}
+}
+
+@test "reconcile ENFORCES: a reconciled list registers NO sentinel" {
+	# The negative half. Without it the test above passes on a hook that
+	# registers a block unconditionally, which is worse than one that never
+	# blocks: it trains the operator to dismiss the mechanism.
+	_seed_queue "build the thing:in_progress"
+	_commit "feat(x): first for #4322"
+	_run_hook "" "HOOK_ACK_BATS_SKIP=0"
+	_seed_queue "build the thing:completed" "next thing:pending"
+	_commit "feat(x): second for #4322"
+	_run_hook "" "HOOK_ACK_BATS_SKIP=0"
+	[ "$status" -eq 0 ]
+	[ ! -s "$(_sentinel)" ] || {
+		echo "a reconciled list registered a BLOCKING sentinel: $(cat "$(_sentinel)")"
 		return 1
 	}
 }

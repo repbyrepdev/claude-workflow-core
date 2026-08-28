@@ -96,7 +96,7 @@ _IDS=$(task_queue_state_open_ids "$_STATE") || exit 0
 # It also made the README's "never fires on an empty queue" false, and the
 # emitted diagnostic said "the open items are byte-identical to what they were
 # at the previous commit" about zero open items.
-_OPEN_ITEMS=$(printf '%s' "$_STATE" | jq -c '.items // []' 2>/dev/null) || exit 0
+_OPEN_ITEMS=$(task_queue_state_items "$_STATE") || exit 0
 _OPEN_N=$(task_queue_open_count "$_OPEN_ITEMS") || exit 0
 [ "$_OPEN_N" -gt 0 ] || exit 0
 
