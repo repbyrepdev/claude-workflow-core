@@ -245,7 +245,52 @@ _approved_at_head() {
 		echo "  Payload head: $(head -c 300 "$AG_TMP/reviews.json")" >&2
 		return 2
 	}
-	[ "$ok" = "true" ]
+	[ "$ok" = "true" ] || return 1
+
+	# ANY(APPROVED) IS NOT WHAT GITHUB ASKS, and this gate printed
+	# "✓ APPROVED" on PR #2638 moments before `gh pr merge` refused it with
+	# "the base branch policy prohibits the merge".
+	#
+	# The check above is per-reviewer-latest, which is right, but it then
+	# passes as soon as ONE policy approver approves — so a second approver
+	# whose latest decisive review is CHANGES_REQUESTED was invisible to it.
+	# GitHub does not average reviewers: a standing CHANGES_REQUESTED from
+	# ANY of them blocks, and a later COMMENTED review does not clear it —
+	# only a subsequent APPROVED or an explicit dismissal does.
+	#
+	# So the gate has to answer BOTH questions. Reporting green on a PR that
+	# cannot merge is the worst failure available to a merge gate: it sends
+	# the operator to debug `gh` when the answer was already in the review
+	# list, and it is precisely the "mechanically enforced signal that does
+	# not match reality" this repo exists to eliminate.
+	local blocking
+	blocking=$(jq -rs --argjson bots "$APPROVERS_JSON" '
+		add // []
+		| [.[] | select(.user.login as $l | $bots | index($l))
+			| select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
+		| group_by(.user.login)
+		| map(sort_by(.submitted_at) | last)
+		| map(select(.state == "CHANGES_REQUESTED")
+			| "\(.user.login) at \(.commit_id[0:8])")
+		| join(", ")' "$AG_TMP/reviews.json" 2>"$AG_TMP/err") || {
+		echo "approval-gate: ERROR — reviews payload unparseable on the blocking-review pass: $(cat "$AG_TMP/err")" >&2
+		return 2
+	}
+	if [ -n "$blocking" ]; then
+		echo "approval-gate: REFUSING — a policy approver has a STANDING CHANGES_REQUESTED: $blocking" >&2
+		echo "  An APPROVED from a different approver does not override it, and neither does a" >&2
+		echo "  later COMMENTED review — GitHub keeps the request in force until that same" >&2
+		echo "  reviewer APPROVES or the review is dismissed." >&2
+		echo "" >&2
+		echo "  The process fix is to let the reviewer clear its own block, NOT to dismiss it:" >&2
+		echo "    - CodeRabbit runs with request_changes_workflow: true, so it posts APPROVED on" >&2
+		echo "      a re-review that finds nothing actionable. Address the findings, reply with" >&2
+		echo "      evidence via scripts/cr/thread-reply.sh, and push — the next review clears it." >&2
+		echo "    - hooks/_pr-cr-findings.sh reading zero is NOT the same signal: it counts" >&2
+		echo "      THREADS, and the block lives at REVIEW level." >&2
+		return 1
+	fi
+	return 0
 }
 
 _ah_rc=0

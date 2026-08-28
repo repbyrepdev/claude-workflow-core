@@ -845,3 +845,112 @@ EOF
 	[ "$status" -eq 2 ]
 	[ ! -f "$NUDGE_MARKER" ]
 }
+
+# ---------- a standing CHANGES_REQUESTED from ANOTHER approver ----------
+
+@test "a SECOND approver's standing CHANGES_REQUESTED refuses, despite an APPROVED at head" {
+	# The exact shape of PR #2638, where this gate printed "✓ APPROVED" and
+	# `gh pr merge` then refused with "the base branch policy prohibits the
+	# merge". The predicate asked "did ANY approver approve at head", which
+	# is not what GitHub asks: a standing CHANGES_REQUESTED from ANY
+	# approver blocks, and one approver's APPROVED does not override
+	# another's request.
+	#
+	# Reporting green on a PR that cannot merge is the worst failure a merge
+	# gate has — it sends the operator to debug `gh` when the answer was in
+	# the review list all along.
+	_install_gh_shim
+	_reviews '[
+		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""}
+	]'
+	_run_gate
+	[ "$status" -ne 0 ]
+	assert_output_contains "STANDING CHANGES_REQUESTED"
+	assert_output_contains "coderabbitai[bot]"
+	# It must name the COMMIT, so the operator can tell a stale request from
+	# a current one without another query.
+	assert_output_contains "b6ca909a"
+	# And it must NOT have claimed approval first.
+	assert_output_lacks "✓ APPROVED bot review"
+}
+
+@test "a later COMMENTED review does not clear a standing CHANGES_REQUESTED" {
+	# CodeRabbit posts a COMMENTED record for every thread-reply batch. Those
+	# are correctly ignored when looking for an approval — but they must not
+	# be mistaken for the request being withdrawn either. GitHub keeps it in
+	# force until the SAME reviewer approves or it is dismissed.
+	_install_gh_shim
+	_reviews '[
+		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T15:01:00Z","body":"reply batch"}
+	]'
+	_run_gate
+	[ "$status" -ne 0 ]
+	assert_output_contains "STANDING CHANGES_REQUESTED"
+}
+
+@test "the refusal points at the PROCESS fix, not at dismissing the review" {
+	# The tempting unblock is `gh api ... /dismissals`, which is a bypass:
+	# it clears the signal without clearing the cause. CodeRabbit runs with
+	# request_changes_workflow: true, so it withdraws its own request by
+	# posting APPROVED on a clean re-review. The refusal has to say that,
+	# because a gate that refuses without naming the remedy gets bypassed.
+	_install_gh_shim
+	_reviews '[
+		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""}
+	]'
+	_run_gate
+	[ "$status" -ne 0 ]
+	assert_output_contains "request_changes_workflow"
+	assert_output_contains "thread-reply.sh"
+	# And it must warn that the thread count is a DIFFERENT signal — reading
+	# zero there is what made this look mergeable.
+	assert_output_contains "THREADS"
+}
+
+@test "a DISMISSED review is not treated as standing" {
+	# Dismissal is the other legitimate way the request goes away. Once
+	# dismissed it must not keep refusing, or the gate would be unpassable
+	# after a human has resolved it out-of-band.
+	_install_gh_shim
+	_reviews '[
+		{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T14:55:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"DISMISSED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:40:00Z","body":""}
+	]'
+	_run_gate
+	[ "$status" -eq 0 ]
+	assert_output_contains "APPROVED bot review at final head"
+}
+
+@test "the approver's OWN later APPROVED clears its earlier request" {
+	# The process path: CR re-reviews at the new head, finds nothing, and
+	# posts APPROVED. That is what should unblock a real PR, and the gate
+	# must recognise it without any dismissal.
+	_install_gh_shim
+	_reviews '[
+		{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""},
+		{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T15:20:00Z","body":""}
+	]'
+	_run_gate
+	[ "$status" -eq 0 ]
+	assert_output_contains "APPROVED bot review at final head"
+}
+
+@test "a NON-approver's CHANGES_REQUESTED does not refuse" {
+	# The policy names which reviewers are decisive. A drive-by request from
+	# somebody outside that list is not what GitHub gates on here, and
+	# refusing on it would make the gate stricter than the branch rule —
+	# unpassable for a reason the operator cannot act on through this skill.
+	_install_gh_shim
+	_reviews '[
+		{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"'"$HEAD_SHA"'","submitted_at":"2026-08-28T15:20:00Z","body":""},
+		{"user":{"login":"some-human"},"state":"CHANGES_REQUESTED","commit_id":"b6ca909a","submitted_at":"2026-08-28T14:33:00Z","body":""}
+	]'
+	_run_gate
+	[ "$status" -eq 0 ]
+	assert_output_contains "APPROVED bot review at final head"
+}
