@@ -424,123 +424,172 @@ if [ -x "$TRIVY_PM" ]; then
 	fi
 fi
 
-# v4.21 wire-in: auto-close-parent for any sub-issues this PR's merge-commit
-# closed via "Closes #N" trailers. Fires recursively for nested epic chains.
-# Script is idempotent (no-ops if parent already closed or has open subs).
+# v4.21 wire-in: auto-close-parent for any sub-issues this PR closed via
+# "Closes #N" trailers. Fires recursively for nested epic chains. The script
+# is idempotent (no-ops if the parent is already closed or has open subs).
+#
+# TWO SOURCES, because either alone is insufficient:
+#   the PR BODY          — the only source that works under --squash. GitHub
+#                          composes a squash commit from the PR title plus
+#                          the constituent commit messages and NEVER the
+#                          body, while the body is what GitHub's own
+#                          issue-linking reads. On PR #2638 the body carried
+#                          four trailers and the squash commit carried zero:
+#                          the sub-issues closed, the epic did not, and this
+#                          stanza printed NOTHING — indistinguishable from
+#                          "this PR closed no sub-issues".
+#   the MERGE COMMIT     — a --merge commit keeps the body, and individual
+#                          commits may carry their own trailers.
+#
+# The keyword set and the matching live in _lib/issue-trailers.sh; they are
+# deliberately NOT restated here, because a prose copy of the contract is
+# still a copy (Phase 1 found this comment carrying a third one).
+#
+# EVERY failure in this block is warn-only: it runs after the merge has
+# landed, and nothing here may abort the wrapper and strand the post-merge
+# deploy/tag/release chain below.
 AUTO_CLOSE="$REPO_ROOT/.claude/hooks/auto-close-parent.sh"
 if [ -x "$AUTO_CLOSE" ]; then
-	# Extract "Closes #N" (case-insensitive, also "Closed", "Close", "Fixes",
-	# "Fixed", "Fix", "Resolves", "Resolved", "Resolve") from the merge commit
-	# message. gh's issue-linking uses this exact keyword set.
-	# Capture git-log stderr loudly — a MERGE_SHA that doesn't resolve
-	# (race, rebase, corrupt ref) would otherwise make closed_nums empty
-	# and the whole stanza silently no-op; operator would assume "no sub-
-	# issues to close" when git-log actually failed.
-	if ! commit_body=$(git log -1 --format=%B "$MERGE_SHA" 2>&1); then
+	# Both fetches degrade SYMMETRICALLY. A git-log failure used to abort
+	# the whole stanza, which was right when the commit message was the only
+	# source and is wrong now — the PR body alone is sufficient, and on a
+	# squash merge it is the only source that carries anything.
+	commit_body=""
+	cb_rc=0
+	commit_body=$(git log -1 --format=%B "$MERGE_SHA" 2>&1) || cb_rc=$?
+	if [ "$cb_rc" -ne 0 ]; then
 		echo "⚠ git log failed on $MERGE_SHA: $commit_body" >&2
-		echo "  Skipping auto-close-parent — check if merge commit is visible locally." >&2
-	else
-		# `|| true` required because `set -eo pipefail` aborts the wrapper
-		# when the first grep produces no matches (exit 1). A merge commit
-		# with no Closes/Fixes/Resolves trailers is a legitimate case
-		# (refactor PR, doc-only) — it must yield empty closed_nums, not
-		# abort. Phase 2 CR caught this; Phase 1 silent-failure-hunter
-		# missed it because the empty-body bats test didn't set pipefail.
-		# THE PR BODY IS ALSO A SOURCE, and under --squash it is the ONLY
-		# one that works.
-		#
-		# GitHub composes a squash commit from the PR TITLE plus the
-		# constituent commit messages — never the PR BODY. The
-		# `Closes #N` trailers live in the body (that is what GitHub's own
-		# issue-linking reads), so on PR #2638 the body carried four and
-		# the squash commit carried zero. The sub-issues closed, the epic
-		# did not, and this stanza printed NOTHING — indistinguishable
-		# from "this PR closed no sub-issues".
-		#
-		# That is the failure epic #2544 is about: a mechanism reporting
-		# enforcement it is not performing. It went unnoticed for as long
-		# as it did because the silent path and the nothing-to-do path
-		# were the same path.
-		#
-		# Both sources are unioned rather than one replacing the other:
-		# --merge keeps the body in the commit, individual commits may
-		# carry their own trailers, and a squash needs the body. A gh
-		# outage degrades to commit-only rather than aborting — this block
-		# is warn-only and must never block a merge that already happened —
-		# but it degrades LOUDLY; see the fetch below.
-		# WARNS on failure rather than swallowing it. `2>/dev/null || true`
-		# turned an auth error, a rate limit or an outage into an empty body
-		# and silent commit-only parsing — the operator would then read the
-		# "no trailers found" line below and conclude the PR closed nothing,
-		# when the source that carries them was never read at all. Same
-		# silent-degradation shape as the bug this stanza exists to fix.
-		#
-		# stderr goes to its own file rather than being merged into the
-		# value: gh prints update notices and auth warnings on stderr even
-		# when it succeeds, and 2>&1 would splice those into the body text
-		# the extractor then scans.
-		pr_body=""
-		pb_err=$(mktemp "${TMPDIR:-/tmp}/pr-body-err.XXXXXX") || pb_err=""
-		if ! pr_body=$(gh pr view "$PR" --json body --jq '.body' 2>"${pb_err:-/dev/null}"); then
-			echo "⚠ could not read PR #$PR body for the epic rollup: $([ -n "$pb_err" ] && cat "$pb_err")" >&2
-			echo "  Falling back to the merge-commit message alone. On a SQUASH merge that" >&2
-			echo "  message carries no Closes/Fixes/Resolves trailers, so a parent epic may" >&2
-			echo "  not auto-close — check it manually." >&2
-			pr_body=""
-		fi
-		[ -n "$pb_err" ] && rm -f "$pb_err"
+		echo "  Continuing with the PR body alone — check that the merge commit is visible locally." >&2
+		commit_body=""
+	fi
 
-		# Through the SHARED extractor, not a second copy of the regex. The
-		# pattern already lived in _lib/epic-completeness-check.sh; adding
-		# another here is precisely the drift this repo keeps paying for.
-		# ONE resolution rule, the same one _lib/epic-completeness-check.sh
-		# uses: relative to the resolving file's OWN location.
-		#
-		# This was a two-candidate list — $REPO_ROOT/.claude/_lib first,
-		# then SCRIPT_DIR-relative — which meant the repo had two different
-		# ways to find one library, in the very commit that removed two
-		# different copies of one regex. Phase 0.5 caught it. The candidate
-		# list was also unnecessary: both layouts resolve correctly from
-		# SCRIPT_DIR alone, because a consumer's copy lives at
-		# .claude/skills/github-pr-merge/run.sh and ../../_lib is then
-		# .claude/_lib.
-		closed_nums=""
-		_it_lib="$SCRIPT_DIR/../../_lib/issue-trailers.sh"
-		if [ -r "$_it_lib" ]; then
-			# shellcheck source=../../_lib/issue-trailers.sh
-			. "$_it_lib"
-			closed_nums=$(issue_trailers_extract "$commit_body" "$pr_body")
+	# Resolved relative to THIS script's location. _lib/epic-completeness-
+	# check.sh resolves the same library from ${BASH_SOURCE[0]} — a
+	# different mechanism for the same idea, and necessarily so: a file
+	# cannot source the resolver it is trying to locate. What matters is
+	# that neither carries a copy of the PATTERN.
+	closed_nums=""
+	rollup_state="ok"
+	pr_src="github"
+	_it_lib="$SCRIPT_DIR/../../_lib/issue-trailers.sh"
+	if [ ! -r "$_it_lib" ]; then
+		rollup_state="no-library"
+	else
+		# shellcheck source=../../_lib/issue-trailers.sh
+		. "$_it_lib"
+		# Readability is not usability: a truncated library passes `-r` and
+		# then defines nothing, so the function itself is what gets checked.
+		if ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
+			! command -v issue_trailers_extract >/dev/null 2>&1; then
+			rollup_state="no-library"
 		else
-			echo "⚠ _lib/issue-trailers.sh not found — skipping the epic rollup entirely." >&2
-			echo "  Parent epics will NOT auto-close for this merge; check them manually." >&2
-		fi
-		if [ -z "$closed_nums" ]; then
-			# LOUD, because silence here is what hid the bug. A PR that
-			# genuinely closes nothing is common and fine; the operator
-			# still needs to be able to tell that apart from a parse that
-			# found nothing to work with.
-			echo "auto-close-parent: no Closes/Fixes/Resolves trailers found in the merge commit OR the PR body — no epic rollup attempted."
-			echo "  If this PR was meant to close sub-issues, their parent epic will NOT auto-close; check the trailers and close the parent manually."
-		fi
-		if [ -n "$closed_nums" ]; then
-			count=$(printf '%s\n' "$closed_nums" | grep -c .)
-			echo "=== Checking epic parent auto-close for $count closed sub-issue(s) ==="
-			# `|| rc=$?` form so `set -e` doesn't abort the wrapper when a
-			# single auto-close fails — warn and continue with the next
-			# sub-issue in the loop. `if ! cmd; then rc=$?` would report
-			# rc=0 (negated-test clobber); plain `cmd; rc=$?` would abort
-			# under set -e before the assignment runs. Both avoided here.
-			for n in $closed_nums; do
-				rc=0
-				"$AUTO_CLOSE" "$n" 2>&1 || rc=$?
-				if [ "$rc" -ne 0 ]; then
-					echo "⚠ auto-close-parent exited $rc on #$n — check parent epic state manually." >&2
+			# GITHUB IS ASKED FIRST, because GitHub is the authority on what
+			# this PR closes. Scraping the body with a regex re-derives that
+			# answer more loosely: Phase 1 security review showed fenced code
+			# blocks, HTML comments and even "does not close #N" all yielding
+			# numbers whose parent epics would then be closed. The body is
+			# free-form text from whoever opened the PR, and this feeds a
+			# destructive action.
+			#
+			# `|| api_rc=$?` because this is an unguarded assignment under
+			# `set -euo pipefail` and the whole block must stay warn-only —
+			# it runs after the merge has landed.
+			api_rc=0
+			closed_nums=$(issue_trailers_for_pr "$PR") || api_rc=$?
+			if [ "$api_rc" -ne 0 ]; then
+				# FALLBACK, and labelled as one. The merge-commit message is
+				# written by the committer rather than being arbitrary
+				# markdown, so the regex is far safer here than on a body —
+				# but it is still a guess at what GitHub would have linked,
+				# and on a squash merge the commit carries no trailers at
+				# all, so this can legitimately come back empty.
+				echo "⚠ could not ask GitHub which issues PR #$PR closes (gh rc=$api_rc)." >&2
+				echo "  Falling back to trailers in the merge-commit message, which is a" >&2
+				echo "  GUESS at GitHub's answer — and on a squash merge that message carries" >&2
+				echo "  none, so an empty result here proves nothing." >&2
+				pr_src="fallback"
+				ex_rc=0
+				closed_nums=$(issue_trailers_extract "$commit_body") || ex_rc=$?
+				if [ "$ex_rc" -ne 0 ]; then
+					rollup_state="extract-failed"
+					closed_nums=""
 				fi
-			done
+			fi
 		fi
 	fi
-fi
 
+	# A sanity cap. GitHub bounds closingIssuesReferences, but the fallback
+	# scans a commit message with no bound at all, and each number costs
+	# several API calls in a script that recurses upward through parents.
+	# A merge that appears to close hundreds of issues is a malformed input,
+	# not a big epic.
+	if [ -n "$closed_nums" ]; then
+		_n_closed=$(printf '%s\n' "$closed_nums" | grep -c .)
+		if [ "$_n_closed" -gt 50 ]; then
+			echo "⚠ auto-close-parent SKIPPED: $_n_closed closing references is implausible (cap 50)." >&2
+			echo "  Refusing to spend that many API calls on what is almost certainly a" >&2
+			echo "  malformed commit message; check the PR and close parents manually." >&2
+			rollup_state="too-many"
+			closed_nums=""
+		fi
+	fi
+
+	# ONE if/elif chain, not three independent tests of the same variable.
+	# As separate ifs, the no-library and extract-failed paths ALSO printed
+	# "no trailers found in the merge commit OR the PR body" — asserting a
+	# scan that never happened, and telling the operator to go check their
+	# trailers when the real cause was a half-installed plugin. Conflating
+	# "found nothing" with "could not look" is precisely the defect this
+	# whole change exists to remove, so the three outcomes are now mutually
+	# exclusive and say different things.
+	if [ "$rollup_state" = "too-many" ]; then
+		: # already reported above; nothing further to say
+	elif [ "$rollup_state" = "no-library" ]; then
+		echo "⚠ auto-close-parent SKIPPED: _lib/issue-trailers.sh is missing or unusable at $_it_lib" >&2
+		echo "  Nothing was parsed — this is NOT 'the PR closed no sub-issues'." >&2
+		echo "  Parent epics will not auto-close for this merge; check them manually." >&2
+	elif [ "$rollup_state" = "extract-failed" ]; then
+		echo "⚠ auto-close-parent SKIPPED: trailer extraction failed (rc=$ex_rc); see the error above." >&2
+		echo "  The trailer set is UNKNOWN, not empty. Parent epics will not auto-close;" >&2
+		echo "  check them manually." >&2
+	elif [ -z "$closed_nums" ]; then
+		# LOUD, because silence here is what hid the original bug: a PR that
+		# genuinely closes nothing and a parse that came up empty produced
+		# byte-identical output, namely none.
+		#
+		# The message NAMES THE SOURCES ACTUALLY READ. Saying "both sources
+		# scanned" when one of the two fetches failed would be the same
+		# over-claim as the no-library path making, and the PR body is the
+		# source that matters — an empty result with the body unread is not
+		# evidence of anything.
+		# The message NAMES ITS SOURCE, because the two differ in weight:
+		# GitHub saying "none" is authoritative, while the fallback coming
+		# back empty is the expected outcome on a squash merge and proves
+		# nothing at all.
+		if [ "$pr_src" = "github" ]; then
+			echo "auto-close-parent: GitHub reports PR #$PR closes no issues — no epic rollup needed."
+			echo '  If it was meant to close sub-issues, add `Closes #N` to the PR body; GitHub links from there, and without a link nothing auto-closes.'
+		else
+			echo "⚠ auto-close-parent: no trailers in the merge-commit message, and GitHub could not be asked." >&2
+			echo "  This is NOT evidence the PR closes nothing — on a squash merge the commit never carries them." >&2
+			echo "  Check the parent epics manually." >&2
+		fi
+	else
+		count=$(printf '%s\n' "$closed_nums" | grep -c .)
+		echo "=== Checking epic parent auto-close for $count closed sub-issue(s) ==="
+		# `|| rc=$?` so `set -e` doesn't abort when a single auto-close
+		# fails — warn and continue with the next. `if ! cmd; then rc=$?`
+		# would report rc=0 (negated-test clobber); plain `cmd; rc=$?`
+		# would abort before the assignment runs. Both avoided here.
+		for n in $closed_nums; do
+			rc=0
+			"$AUTO_CLOSE" "$n" 2>&1 || rc=$?
+			if [ "$rc" -ne 0 ]; then
+				echo "⚠ auto-close-parent exited $rc on #$n — check parent epic state manually." >&2
+			fi
+		done
+	fi
+fi
 # v4.24-C (#568) wire-in: post-merge-deploy chain when the PR touched
 # stacks/**/compose.yaml or config/**. Prior state was honor-system —
 # SKILL.md Step 8 told the operator to recreate stacks manually, which

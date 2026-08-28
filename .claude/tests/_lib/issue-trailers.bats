@@ -113,10 +113,25 @@ Closes #31" "Closes #30")
 }
 
 @test "trailers: NO ARGUMENTS at all is rc 0 and empty" {
+	# NOTE ON WHAT THIS DOES NOT COVER, since Phase 1 proved it: deleting
+	# the `[ "$#" -gt 0 ] || return 0` guard leaves this green, because
+	# `printf` with no arguments feeds grep an empty line, grep returns 1,
+	# and the function reaches the same rc-0-and-empty result by the longer
+	# route. The guard is an early exit, not a behavioural boundary.
+	#
+	# The test is kept because the CONTRACT — no arguments is not an error —
+	# is worth pinning against a future change that makes it one. It is
+	# labelled here so nobody mistakes it for coverage of the guard itself.
 	local got rc=0
 	got=$(_extract) || rc=$?
-	[ "$rc" -eq 0 ]
-	[ -z "$got" ]
+	[ "$rc" -eq 0 ] || {
+		echo "no arguments returned rc $rc; the contract says it is not an error"
+		return 1
+	}
+	[ -z "$got" ] || {
+		echo "no arguments produced output: $got"
+		return 1
+	}
 }
 
 @test "trailers: a bare '#123' is NOT a closing reference" {
@@ -130,6 +145,41 @@ Refs #789
 See also #999")
 	[ -z "$got" ] || {
 		echo "a non-closing reference was treated as a closure: $got"
+		return 1
+	}
+}
+
+@test "trailers: a keyword INSIDE another word does not count" {
+	# The gap Phase 1 proved rather than asserted. The pattern was
+	# unanchored, so it matched substrings: `postfixes #12`, `unclosed #34`
+	# and `prefix #56` all yielded numbers, and GitHub links none of them.
+	#
+	# That made the extractor strictly WIDER than the contract the library
+	# header claims — it would have rolled up epics a PR never said it
+	# closed, which is worse than the under-matching bug this branch started
+	# from. The file's negatives covered non-keywords but never a substring,
+	# so nothing enforced the stated invariant.
+	local got
+	got=$(_extract "This postfixes #12 and unclosed #34 and prefix #56 and refixes #78")
+	[ -z "$got" ] || {
+		echo "a keyword embedded in another word was treated as a closure: $got"
+		return 1
+	}
+}
+
+@test "trailers: a real keyword adjacent to punctuation STILL counts" {
+	# The other half of word-boundary matching. Bullets, parentheses and
+	# list markers are the normal way these appear in a PR body, and an
+	# anchor that rejected them would silently stop closing real epics —
+	# trading an over-match for an under-match.
+	local got
+	got=$(_extract "- Closes #1
+(closes #2)
+* Fixes #3
+  Resolves #4
+Closes #5.")
+	[ "$got" = "$(printf '1\n2\n3\n4\n5')" ] || {
+		echo "punctuation-adjacent keywords were rejected; got: $got"
 		return 1
 	}
 }
@@ -250,14 +300,24 @@ _ecc_gh_stub() {
 	cat >"$TEST_TMP/bin/gh" <<'SHIM'
 #!/bin/bash
 case "$1 $2" in
-"repo view") printf 'testowner/testrepo
-' ;;
+"repo view") printf 'testowner/testrepo\n' ;;
 "pr view")
-	# Empty body: the function refuses with "empty/missing PR body", which
-	# is the downstream failure these tests use as proof that everything
-	# before it succeeded.
-	printf '
-'
+	case "$*" in
+	*closingIssuesReferences*)
+		# The AUTHORITATIVE query, asked before the body. Failed by default so
+		# these fixtures travel the labelled fallback, which is where the
+		# body-scanning behaviour they were written for now lives.
+		if [ "${ECC_CLOSING_FAIL:-1}" = "1" ]; then
+			echo "gh: closingIssuesReferences unavailable" >&2
+			exit 1
+		fi
+		printf '%s' "${ECC_CLOSING:-}"
+		exit 0
+		;;
+	esac
+	# Empty body: the function refuses with "body is empty", the downstream
+	# failure these tests use as proof everything before it succeeded.
+	printf '\n'
 	;;
 *) exit 0 ;;
 esac
@@ -293,28 +353,37 @@ SHIM
 	esac
 }
 
-@test "epic-completeness: sourcing the extractor does not clobber the caller" {
-	# `. "$_it_lib"` runs in the CALLER's shell. The library sets `set -u`
-	# at top level and defines ISSUE_TRAILER_RE — both leak outward, which
-	# is fine, but a variable collision would not be. Pin that the caller's
-	# own state survives the dot-source.
+@test "epic-completeness: sourcing the extractor turns nounset ON in the caller" {
+	# WHAT THIS USED TO ASSERT was unfalsifiable: it checked that `body` and
+	# `closed_ids` survived the dot-source, but those are declared `local`
+	# in epic_completeness_check AFTER the source, so the collision it
+	# guarded against cannot happen. Only an absurd mutation killed it.
+	#
+	# The REAL, documented side effect is the option leak: a top-level
+	# `set -u` in a sourced file runs in the caller's shell. The library
+	# header explains why it cannot be removed (bash-safety.sh mandates it),
+	# so the behaviour should be pinned rather than described — a future
+	# reader deciding it is safe to drop needs a test to argue with.
 	local root
 	root=$(_ecc_fixture with-lib)
 	run bash -c "
 		set +u
-		body='keep me'
-		closed_ids='sentinel'
+		unset MAYBE_UNSET
 		source '$root/issue-trailers.sh'
-		printf '%s|%s\n' \"\$body\" \"\$closed_ids\"
+		printf 'still-here:%s\n' \"\${MAYBE_UNSET}\"
+		echo NOTREACHED
 	"
-	[ "$status" -eq 0 ] || {
-		echo "sourcing the extractor failed: $output"
+	# nounset is now ON in the caller, so reading an unset variable aborts.
+	[ "$status" -ne 0 ] || {
+		echo "the library did NOT turn nounset on in the caller — the documented leak is gone, so the header explaining it is now wrong: $output"
 		return 1
 	}
-	[ "$output" = "keep me|sentinel" ] || {
-		echo "the extractor clobbered a caller variable: $output"
+	case "$output" in
+	*NOTREACHED*)
+		echo "execution continued past an unset read; nounset did not take effect"
 		return 1
-	}
+		;;
+	esac
 }
 
 @test "epic-completeness: the extractor resolves from a FOREIGN cwd" {
@@ -340,10 +409,116 @@ SHIM
 	# POSITIVE half. Asserting only the ABSENCE of one message would pass if
 	# the function died for some third reason before reaching either — the
 	# same shape of hole as a test that checks a command "did not fail".
+	# The downstream refusal is now "body is empty (gh succeeded)" — the
+	# split introduced when gh's own stderr stopped being discarded, so an
+	# outage and a genuinely blank body no longer share one message.
 	case "$output" in
-	*"empty/missing PR body"*) ;;
+	*"body is empty"*) ;;
 	*)
 		echo "did not reach the expected downstream failure; got: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "epic-completeness: an extraction FAILURE refuses, it does not report 'nothing to check'" {
+	# THE FAIL-OPEN. `closed_ids=$(issue_trailers_extract "$body")` discarded
+	# the return code, so the rc>1 the library deliberately raises for a
+	# broken parse landed in the `[ -z "$closed_ids" ]` branch and returned
+	# 0 — this merge gate reported PASS while its parser was broken.
+	#
+	# That is the identical fail-open the whole branch exists to fix,
+	# reproduced one call site downstream. It survived because the library's
+	# own hard-failure test exercises the library in ISOLATION and never
+	# either caller — the same isolation gap that has produced four vacuous
+	# tests on this work already.
+	local root
+	_ecc_gh_stub
+	root=$(_ecc_fixture with-lib)
+	# gh returns a body WITH a real trailer, so an empty closed_ids can only
+	# come from the extractor failing — not from there being nothing to find.
+	cat >"$TEST_TMP/bin/gh" <<'SHIM'
+#!/bin/bash
+case "$1 $2" in
+"repo view") printf 'testowner/testrepo\n' ;;
+"pr view")
+	case "$*" in
+	*closingIssuesReferences*)
+		# Force the FALLBACK. The body-scanning path is the only one where
+		# a broken pattern can be reached at all, so the authoritative
+		# query has to fail for this test to exercise anything.
+		echo "gh: closingIssuesReferences unavailable" >&2
+		exit 1
+		;;
+	esac
+	printf 'Closes #4242\n'
+	;;
+*) exit 0 ;;
+esac
+SHIM
+	chmod +x "$TEST_TMP/bin/gh"
+	# Break the pattern in the fixture's copy so the real rc>1 path runs.
+	python3 - "$root/issue-trailers.sh" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+s = s.replace(
+    "ISSUE_TRAILER_RE='(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+'",
+    "ISSUE_TRAILER_RE='['")
+open(p, 'w', encoding='utf-8').write(s)
+PY
+	grep -q "ISSUE_TRAILER_RE='\['" "$root/issue-trailers.sh" || {
+		echo "fixture failed: the pattern was not broken"
+		return 1
+	}
+
+	run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -ne 0 ] || {
+		echo "a broken parser returned SUCCESS — the gate is fail-open: $output"
+		return 1
+	}
+	case "$output" in
+	*"extraction FAILED"*) ;;
+	*)
+		echo "the refusal does not name the extraction failure: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "epic-completeness: a gh FAILURE is reported as a gh failure" {
+	# Every network, auth and permission fault used to surface as
+	# "empty/missing PR body", pointing the operator at the PR description
+	# for a 503 or an expired token. The sibling in github-pr-merge/run.sh
+	# was fixed for this in the same branch; this caller was missed.
+	local root
+	_ecc_gh_stub
+	root=$(_ecc_fixture with-lib)
+	cat >"$TEST_TMP/bin/gh" <<'SHIM'
+#!/bin/bash
+case "$1 $2" in
+"repo view") printf 'testowner/testrepo\n' ;;
+"pr view")
+	echo "gh: API rate limit exceeded (HTTP 403)" >&2
+	exit 1
+	;;
+*) exit 0 ;;
+esac
+SHIM
+	chmod +x "$TEST_TMP/bin/gh"
+	run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -eq 2 ]
+	# The CAUSE must reach the operator, not a guess about the body.
+	case "$output" in
+	*"rate limit exceeded"*) ;;
+	*)
+		echo "gh's own error was discarded: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"empty/missing PR body"*)
+		echo "a gh failure was still reported as an empty body: $output"
 		return 1
 		;;
 	esac

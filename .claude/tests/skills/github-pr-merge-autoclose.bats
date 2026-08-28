@@ -2,26 +2,34 @@
 # covers: skills/github-pr-merge/run.sh
 # shellcheck disable=SC2030,SC2031,SC2089,SC2090
 #
-# (#2544) The epic-rollup stanza had NO coverage, which is how it shipped
-# broken and stayed broken.
+# (#2544) The epic-rollup stanza: which issues does a merge close, and whose
+# answer is it?
 #
-# It scraped `Closes #N` out of the MERGE COMMIT message. GitHub composes a
-# squash commit from the PR TITLE plus the constituent commit messages and
-# never the PR BODY — and the body is where the trailers live, because that
-# is what GitHub's own issue-linking reads. So on a squash merge the stanza
-# saw an empty list.
+# THE ORIGINAL BUG. The stanza scraped `Closes #N` from the MERGE COMMIT
+# message. GitHub composes a squash commit from the PR title plus the
+# constituent commits and never the PR body — and the body is where the
+# trailers live. So on PR #2638 the body carried four and the commit carried
+# zero: the sub-issues closed, the epic did not, and the stanza printed
+# nothing, because the empty case had no `else`. The broken path and the
+# nothing-to-do path were byte-identical.
 #
-# Worse, it then did nothing AT ALL: `if [ -n "$closed_nums" ]` with no else,
-# so the broken path and the legitimate nothing-to-close path printed the
-# same thing — nothing. Observed live on PR #2638: four sub-issues closed by
-# GitHub from the body, epic left open, not a word of output.
+# THE FIRST FIX WAS ALSO WRONG, and worse. Reading the body with the same
+# regex made the extractor markdown-blind, and Phase 1 security review
+# demonstrated it: a fenced code block, an HTML comment invisible in the
+# rendered PR, and the literal phrase "does not close #4010" all yielded
+# numbers whose PARENT EPICS would then be closed, recursively. Trading a
+# failure-to-close for closing things nobody asked to close is not progress.
+#
+# THE ANSWER: GitHub already publishes it — `closingIssuesReferences` — and
+# it is exact, markdown-aware and already computed. The regex survives only
+# as a labelled fallback over the commit message when gh cannot be reached.
 #
 # These drive the REAL wrapper with a stubbed gh and a recording stand-in for
 # auto-close-parent.sh, so what is asserted is which issue numbers the
 # wrapper actually hands to the rollup.
 
 setup() {
-	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
+	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
 	SCRIPT="${REPO_ROOT}/skills/github-pr-merge/run.sh"
 	[ -x "$SCRIPT" ]
 	command -v jq >/dev/null
@@ -34,7 +42,6 @@ setup() {
 	export AC_LOG="$TEST_TMP/autoclose-calls.log"
 	: >"$AC_LOG"
 
-	# A scratch repo whose HEAD commit carries NO trailers — the squash shape.
 	WORK="$TEST_TMP/work"
 	ORIGIN="$TEST_TMP/origin.git"
 	mkdir -p "$WORK"
@@ -52,9 +59,9 @@ setup() {
 * feat(lib): a constituent commit message
 
 No trailers anywhere in here, exactly as GitHub composes a squash."
-		# A REAL origin: the wrapper does a post-merge pull, and without a
-		# reachable remote it aborts before the rollup stanza is ever
-		# reached — the fixture would then be testing the pull, not this.
+		# A REAL origin: the wrapper pulls after the merge, and without a
+		# reachable remote it aborts before the rollup stanza is reached —
+		# the fixture would then be testing the pull, not this.
 		git remote add origin "$ORIGIN"
 		git push -q -u origin main
 	) || {
@@ -63,7 +70,6 @@ No trailers anywhere in here, exactly as GitHub composes a squash."
 	}
 	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
 
-	# Recording stand-in for the rollup script, at the path run.sh looks up.
 	mkdir -p "$WORK/.claude/hooks"
 	cat >"$WORK/.claude/hooks/auto-close-parent.sh" <<'AC'
 #!/bin/bash
@@ -71,6 +77,8 @@ printf '%s\n' "$1" >>"$AC_LOG"
 exit 0
 AC
 	chmod +x "$WORK/.claude/hooks/auto-close-parent.sh"
+	mkdir -p "$TEST_TMP/bin"
+	export PATH="$TEST_TMP/bin:$PATH"
 }
 
 teardown() {
@@ -78,20 +86,27 @@ teardown() {
 	case "${TEST_TMP:-}" in
 	*/gh-pr-merge-autoclose.*) rm -rf "$TEST_TMP" ;;
 	esac
-	true
+	return 0
 }
 
-# gh stub. FAKE_PR_BODY is what `pr view --json body` returns — the seam the
-# whole file is about.
+# gh stub. FAKE_CLOSING is what `--json closingIssuesReferences` returns
+# (newline-separated numbers) — the authoritative seam this file is about.
+# FAKE_CLOSING_FAIL=1 makes that one query fail so the fallback runs.
 _install_gh_shim() {
-	mkdir -p "$TEST_TMP/bin"
 	cat >"$TEST_TMP/bin/gh" <<'SHIM'
 #!/bin/bash
 case "$1 $2" in
 "pr view")
 	case "$*" in
+	*closingIssuesReferences*)
+		if [ "${FAKE_CLOSING_FAIL:-0}" = "1" ]; then
+			echo "gh: could not resolve PR" >&2
+			exit 1
+		fi
+		printf '%s' "${FAKE_CLOSING:-}"
+		exit 0
+		;;
 	*mergeCommit*) printf '%s\n' "$FAKE_MERGE_SHA" ;;
-	*--json\ body*) printf '%s\n' "${FAKE_PR_BODY:-}" ;;
 	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
 	*) echo "{}" ;;
 	esac
@@ -107,34 +122,68 @@ case "$1 $2" in
 esac
 SHIM
 	chmod +x "$TEST_TMP/bin/gh"
-	export PATH="$TEST_TMP/bin:$PATH"
 }
 
-_run_merge() {
+_run_merge() { # $1 = wrapper path (default: the real one)
 	export FAKE_MERGE_SHA="$MERGE_SHA"
 	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":"'"$MERGE_SHA"'","checks":[]}'
-	run bash -c "cd '$WORK' && APPROVE=1 AC_LOG='$AC_LOG' bash '$SCRIPT' --pr 2638 --squash --yes </dev/null"
+	run bash -c "cd '$WORK' && APPROVE=1 AC_LOG='$AC_LOG' bash '${1:-$SCRIPT}' --pr 2638 --squash --yes </dev/null"
 }
 
-_called_with() { # $1 = issue number
-	grep -qx "$1" "$AC_LOG"
+_called_with() { grep -qx "$1" "$AC_LOG"; }
+
+_commit_with() { # $1 = message
+	(cd "$WORK" && git commit -q --allow-empty -m "$1" && git push -q origin main) || return 1
+	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
 }
 
-@test "autoclose: trailers in the PR BODY reach the rollup on a squash merge" {
-	# The PR #2638 shape. Body has the trailers; the squash commit has none.
-	# Before the fix this closed nothing and said nothing.
+# Builds a copy of the plugin under $TEST_TMP. $1 = dir name, $2 = mode:
+#   full      — every lib present
+#   no-lib    — issue-trailers.sh absent (half-installed consumer)
+#   truncated — issue-trailers.sh readable but defines nothing
+#   broken-re — issue-trailers.sh present with an invalid pattern
+_plugin_copy() {
+	local root="$TEST_TMP/$1" mode="$2" f
+	mkdir -p "$root/skills/github-pr-merge" "$root/_lib" "$root/skills/_lib"
+	cp "${REPO_ROOT}/skills/github-pr-merge/"*.sh "$root/skills/github-pr-merge/"
+	# skills/_lib/ too — the wrapper sources skill-common.sh before it ever
+	# reaches the library lookup, and a fixture that died earlier would
+	# "pass" these tests for the wrong reason.
+	cp "${REPO_ROOT}/skills/_lib/"*.sh "$root/skills/_lib/" 2>/dev/null || true
+	for f in "${REPO_ROOT}/_lib/"*.sh; do
+		case "${f##*/}" in
+		issue-trailers.sh) [ "$mode" = "no-lib" ] && continue ;;
+		esac
+		cp "$f" "$root/_lib/" 2>/dev/null || true
+	done
+	case "$mode" in
+	truncated) printf '#!/bin/bash\nset -u\n# truncated mid-write\n' >"$root/_lib/issue-trailers.sh" ;;
+	broken-re)
+		python3 - "$root/_lib/issue-trailers.sh" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+s = s.replace(
+    "ISSUE_TRAILER_RE='(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+'",
+    "ISSUE_TRAILER_RE='['")
+open(p, 'w', encoding='utf-8').write(s)
+PY
+		;;
+	esac
+	printf '%s' "$root"
+}
+
+# ---- the authoritative path ---------------------------------------------
+
+@test "autoclose: GitHub's answer drives the rollup (the PR #2638 shape)" {
+	# The squash commit carries no trailers; GitHub still knows what the PR
+	# closes, because it links from the body. This is the case the original
+	# bug silently dropped.
 	_install_gh_shim
-	export FAKE_PR_BODY="## Summary
-
-Some description.
-
-Closes #2554
-Closes #2555
-Closes #2556
-Closes #2551"
+	export FAKE_CLOSING=$'2551\n2554\n2555\n2556\n'
 	_run_merge
 	local n
-	for n in 2554 2555 2556 2551; do
+	for n in 2551 2554 2555 2556; do
 		_called_with "$n" || {
 			echo "auto-close-parent was never called for #$n; log: $(cat "$AC_LOG")"
 			echo "output: $output"
@@ -143,306 +192,221 @@ Closes #2551"
 	done
 }
 
-@test "autoclose: trailers in the MERGE COMMIT still work (the --merge shape)" {
-	# The body is not a replacement for the commit message — a --merge
-	# commit keeps the body, and individual commits may carry their own
-	# trailers. Both sources are unioned, so neither shape regresses.
+@test "autoclose: markdown that GitHub does NOT link is not closed" {
+	# THE SECURITY FINDING. The regex-over-body design closed issues named
+	# in fenced code blocks, in HTML comments invisible in the rendered PR,
+	# and in the phrase "does not close #N" — verified: it emitted
+	# 7, 4010, 4242 and 9999 for exactly that text, against GitHub's 7.
+	#
+	# Asking GitHub removes the whole class, because GitHub is the thing
+	# that decides. Nothing here parses markdown, which is the point.
 	_install_gh_shim
-	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
+	export FAKE_CLOSING=$'7\n'
+	_commit_with 'chore: rollup
 
-Fixes #4242" && git push -q origin main) || return 1
-	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
-	export FAKE_PR_BODY="no trailers here at all"
+```
+Closes #4242
+```
+<!-- Closes #9999 -->
+This does not close #4010'
 	_run_merge
-	_called_with 4242 || {
-		echo "a trailer in the merge commit was ignored; log: $(cat "$AC_LOG")"
+	_called_with 7 || {
+		echo "the real closing reference was lost; log: $(cat "$AC_LOG")"
 		return 1
 	}
+	local bad
+	for bad in 4242 9999 4010; do
+		grep -qx "$bad" "$AC_LOG" && {
+			echo "closed #$bad, which GitHub does not link — from markdown a regex cannot read"
+			return 1
+		}
+	done
+	true
 }
 
-@test "autoclose: the two sources are UNIONED, not one-or-the-other" {
+@test "autoclose: GitHub reporting NONE is stated as authoritative" {
+	# A PR that genuinely closes nothing is ordinary. But the message has to
+	# distinguish it from the fallback coming back empty, which proves
+	# nothing — that conflation is the original bug in miniature.
 	_install_gh_shim
-	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
-
-Resolves #111" && git push -q origin main) || return 1
-	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
-	export FAKE_PR_BODY="Closes #222"
+	export FAKE_CLOSING=""
 	_run_merge
-	_called_with 111 || {
-		echo "the commit-message trailer was dropped once a body existed"
+	[ ! -s "$AC_LOG" ] || {
+		echo "rolled up something when GitHub reported none: $(cat "$AC_LOG")"
 		return 1
 	}
-	_called_with 222 || {
-		echo "the body trailer was dropped once a commit trailer existed"
+	case "$output" in
+	*"GitHub reports PR #2638 closes no issues"*) ;;
+	*)
+		echo "an empty authoritative answer was not announced as authoritative: $output"
 		return 1
-	}
+		;;
+	esac
 }
 
-@test "autoclose: a duplicate across both sources is passed ONCE" {
-	# sort -u across the union, not per source. Calling the rollup twice for
-	# one issue is harmless (it is idempotent) but it doubles the output and
-	# makes the log lie about how many sub-issues closed.
+@test "autoclose: a duplicate in GitHub's answer is passed ONCE" {
 	_install_gh_shim
-	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
-
-Closes #777" && git push -q origin main) || return 1
-	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
-	export FAKE_PR_BODY="Closes #777"
+	export FAKE_CLOSING=$'30\n31\n30\n'
 	_run_merge
 	local n
-	n=$(grep -cx 777 "$AC_LOG")
+	n=$(grep -cx 30 "$AC_LOG")
 	[ "$n" = "1" ] || {
-		echo "expected one call for #777, got $n"
+		echo "expected one call for #30, got $n"
 		return 1
 	}
+	case "$output" in
+	*"for 2 closed sub-issue(s)"*) ;;
+	*)
+		echo "the count message does not reflect the deduped total: $output"
+		return 1
+		;;
+	esac
 }
 
-@test "autoclose: finding NOTHING is announced, not silent" {
-	# The silence is what hid the bug for as long as it hid: the broken path
-	# and the legitimate nothing-to-close path were the same path, both
-	# printing nothing. A doc-only PR closing no issues is fine; the
-	# operator still has to be able to tell that from a parse that came up
-	# empty.
+# ---- the fallback -------------------------------------------------------
+
+@test "autoclose: gh failure falls back to the commit message, LABELLED" {
+	# The fallback is a guess at GitHub's answer and must say so. Silently
+	# substituting a weaker source for an authoritative one is how a wrong
+	# result gets trusted.
 	_install_gh_shim
-	export FAKE_PR_BODY="A refactor. Nothing to close."
+	export FAKE_CLOSING_FAIL=1
+	_commit_with "chore: rollup
+
+Fixes #4242"
+	_run_merge
+	_called_with 4242 || {
+		echo "the fallback did not read the commit message; log: $(cat "$AC_LOG")"
+		return 1
+	}
+	case "$output" in
+	*"could not ask GitHub"*) ;;
+	*)
+		echo "the fallback was silent about not being authoritative: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"GUESS at GitHub"*) ;;
+	*)
+		echo "the fallback does not describe itself as a guess: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "autoclose: an EMPTY fallback is not reported as 'closes nothing'" {
+	# On a squash merge the commit carries no trailers, so an empty fallback
+	# is the EXPECTED outcome and proves nothing. Announcing it the way the
+	# authoritative path announces none would be exactly the false negative
+	# this branch exists to remove.
+	_install_gh_shim
+	export FAKE_CLOSING_FAIL=1
 	_run_merge
 	[ ! -s "$AC_LOG" ] || {
-		echo "the rollup was called with no trailers present: $(cat "$AC_LOG")"
+		echo "rolled up on an empty fallback: $(cat "$AC_LOG")"
 		return 1
 	}
 	case "$output" in
-	*"no Closes/Fixes/Resolves trailers found"*) ;;
+	*"NOT evidence the PR closes nothing"*) ;;
 	*)
-		echo "an empty trailer set was silent — indistinguishable from the bug: $output"
+		echo "an empty fallback was presented as proof: $output"
 		return 1
 		;;
 	esac
-}
-
-@test "autoclose: a gh failure fetching the body degrades to commit-only" {
-	# This block is warn-only and runs AFTER the merge has already landed.
-	# A gh outage must not abort the wrapper or lose the trailers that are
-	# still readable from the commit.
-	_install_gh_shim
-	cat >"$TEST_TMP/bin/gh" <<'SHIM'
-#!/bin/bash
-case "$1 $2" in
-"pr view")
-	case "$*" in
-	*mergeCommit*) printf '%s\n' "$FAKE_MERGE_SHA" ;;
-	*--json\ body*)
-		echo "gh: API is down (HTTP 503)" >&2
-		exit 1
-		;;
-	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
-	*) echo "{}" ;;
-	esac
-	;;
-"pr merge") exit 0 ;;
-"repo view")
-	case "$*" in
-	*nameWithOwner*) printf 'testowner/testrepo\n' ;;
-	*) printf 'false\n' ;;
-	esac
-	;;
-*) exit 0 ;;
-esac
-SHIM
-	chmod +x "$TEST_TMP/bin/gh"
-	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
-
-Closes #909" && git push -q origin main) || return 1
-	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
-	_run_merge
-	_called_with 909 || {
-		echo "a body-fetch failure lost the commit-message trailers; log: $(cat "$AC_LOG")"
-		return 1
-	}
-}
-
-@test "autoclose: the COUNT message matches the deduped total" {
-	# The stanza announces "for N closed sub-issue(s)". If the union ever
-	# double-counts, that N is the only place it shows — the rollup itself is
-	# idempotent, so a duplicate would otherwise be invisible and the log
-	# would simply lie about how much work happened.
-	_install_gh_shim
-	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
-
-Closes #501
-Closes #502" && git push -q origin main) || return 1
-	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
-	# #502 appears in BOTH sources; #503 only in the body. Deduped total: 3.
-	export FAKE_PR_BODY="Closes #502
-Closes #503"
-	_run_merge
 	case "$output" in
-	*"for 3 closed sub-issue(s)"*) ;;
-	*)
-		echo "count message wrong (expected 3 after dedup): $output"
+	*"GitHub reports PR #2638 closes no issues"*)
+		echo "the fallback borrowed the authoritative wording: $output"
 		return 1
 		;;
 	esac
-	local lines
-	lines=$(grep -c . "$AC_LOG")
-	[ "$lines" = "3" ] || {
-		echo "rollup called $lines times, expected 3: $(cat "$AC_LOG")"
+}
+
+@test "autoclose: a git-log failure does not abort the stanza" {
+	# git log used to skip the ENTIRE stanza via its else. The commit
+	# message is now only the fallback's input, so a git failure must not
+	# stop GitHub's answer being used.
+	_install_gh_shim
+	export FAKE_CLOSING=$'5150\n'
+	export FAKE_MERGE_SHA="0000000000000000000000000000000000000000"
+	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":"'"$MERGE_SHA"'","checks":[]}'
+	run bash -c "cd '$WORK' && APPROVE=1 AC_LOG='$AC_LOG' bash '$SCRIPT' --pr 2638 --squash --yes </dev/null"
+	case "$output" in
+	*"git log failed"*) ;;
+	*)
+		echo "the git-log failure was silent: $output"
+		return 1
+		;;
+	esac
+	_called_with 5150 || {
+		echo "GitHub's answer was abandoned because git log failed; log: $(cat "$AC_LOG")"
 		return 1
 	}
 }
 
-@test "autoclose: body-fetch failure AND no commit trailers still announces" {
-	# The two degradations compose. The existing failure test has a trailer
-	# in the commit to fall back on; this one has nothing anywhere, which is
-	# the state where the operator most needs to be told — the epic will not
-	# roll up and the reason is not visible from the merge output otherwise.
+# ---- the guards ---------------------------------------------------------
+
+@test "autoclose: an implausible number of closing refs is REFUSED" {
+	# The fallback scans a commit message with no bound, and each number
+	# costs several API calls in a script that recurses upward through
+	# parents — a 65k-char body was measured at ~6,000 numbers and ~24,000
+	# calls against a 5,000/hr budget. A merge closing hundreds of issues is
+	# a malformed input, not a big epic.
 	_install_gh_shim
-	cat >"$TEST_TMP/bin/gh" <<'SHIM'
-#!/bin/bash
-case "$1 $2" in
-"pr view")
-	case "$*" in
-	*mergeCommit*) printf '%s\n' "$FAKE_MERGE_SHA" ;;
-	*--json\ body*)
-		echo "gh: API is down (HTTP 503)" >&2
-		exit 1
-		;;
-	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
-	*) echo "{}" ;;
-	esac
-	;;
-"pr merge") exit 0 ;;
-"repo view")
-	case "$*" in
-	*nameWithOwner*) printf 'testowner/testrepo\n' ;;
-	*) printf 'false\n' ;;
-	esac
-	;;
-*) exit 0 ;;
-esac
-SHIM
-	chmod +x "$TEST_TMP/bin/gh"
+	local many="" i=1
+	while [ "$i" -le 60 ]; do
+		many="$many$i"$'\n'
+		i=$((i + 1))
+	done
+	export FAKE_CLOSING="$many"
 	_run_merge
 	[ ! -s "$AC_LOG" ] || {
-		echo "rollup ran with no trailers anywhere: $(cat "$AC_LOG")"
+		echo "spent API calls on an implausible list: $(grep -c . "$AC_LOG") calls"
 		return 1
 	}
-	# BOTH messages: the fetch failed AND nothing was found. Either alone
-	# leaves the operator with half the picture.
 	case "$output" in
-	*"could not read PR"*) ;;
+	*"implausible"*) ;;
 	*)
-		echo "a body-fetch failure was silent: $output"
+		echo "the cap was applied silently: $output"
 		return 1
 		;;
 	esac
-	case "$output" in
-	*"no Closes/Fixes/Resolves trailers found"*) ;;
-	*)
-		echo "an empty trailer set was silent: $output"
-		return 1
-		;;
-	esac
-}
-
-@test "autoclose: gh exits 0 but emits a MALFORMED body" {
-	# Distinct from the exit-1 case: gh can succeed at the transport level
-	# and still hand back something --jq turns into junk (a proxy error page,
-	# a truncated response). The stanza must not treat that as trailers, must
-	# not crash the wrapper, and must still fall back to the commit message.
-	_install_gh_shim
-	cat >"$TEST_TMP/bin/gh" <<'SHIM'
-#!/bin/bash
-case "$1 $2" in
-"pr view")
-	case "$*" in
-	*mergeCommit*) printf '%s\n' "$FAKE_MERGE_SHA" ;;
-	*--json\ body*)
-		printf '<html><body>502 Bad Gateway</body></html>\n'
-		exit 0
-		;;
-	*statusCheckRollup*) printf '%s\n' "$FAKE_STATE" ;;
-	*) echo "{}" ;;
-	esac
-	;;
-"pr merge") exit 0 ;;
-"repo view")
-	case "$*" in
-	*nameWithOwner*) printf 'testowner/testrepo\n' ;;
-	*) printf 'false\n' ;;
-	esac
-	;;
-*) exit 0 ;;
-esac
-SHIM
-	chmod +x "$TEST_TMP/bin/gh"
-	(cd "$WORK" && git commit -q --allow-empty -m "chore: rollup
-
-Closes #606" && git push -q origin main) || return 1
-	MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
-	_run_merge
-	[ "$status" -eq 0 ] || {
-		echo "a malformed body aborted the wrapper (rc=$status): $output"
-		return 1
-	}
-	_called_with 606 || {
-		echo "the commit trailer was lost when the body came back malformed: $(cat "$AC_LOG")"
-		return 1
-	}
-	# Junk must not manufacture issue numbers.
-	local lines
-	lines=$(grep -c . "$AC_LOG")
-	[ "$lines" = "1" ] || {
-		echo "malformed body produced extra rollup calls: $(cat "$AC_LOG")"
-		return 1
-	}
 }
 
 @test "autoclose: a MISSING shared library is announced, not silently skipped" {
-	# The `_lib/issue-trailers.sh not found` branch had no coverage. It is
-	# the branch that fires in a half-installed consumer repo, and skipping
-	# the rollup quietly there would reproduce the original bug exactly:
-	# sub-issues closed by GitHub, epic left open, nothing said.
-	#
-	# The library is hidden by pointing the wrapper at a copy of the skill
-	# whose ../../_lib has no issue-trailers.sh — the real resolution rule,
-	# exercised as the wrapper actually runs it.
+	# The half-installed consumer repo. Skipping quietly here reproduces the
+	# original bug exactly: issues closed by GitHub, epic left open, nothing
+	# said. The library is hidden by running a copy of the skill whose
+	# ../../_lib lacks it — the real resolution rule, as the wrapper runs it.
 	_install_gh_shim
-	local half_installed="$TEST_TMP/half-installed-plugin"
-	mkdir -p "$half_installed/skills/github-pr-merge" "$half_installed/_lib" "$half_installed/skills/_lib"
-	cp "${REPO_ROOT}/skills/github-pr-merge/"*.sh "$half_installed/skills/github-pr-merge/"
-	# skills/_lib/ too — the wrapper sources skill-common.sh from there
-	# before it ever reaches the lookup under test, and a fixture that dies
-	# earlier would "pass" this test for the wrong reason.
-	cp "${REPO_ROOT}/skills/_lib/"*.sh "$half_installed/skills/_lib/" 2>/dev/null || true
-	# Every sibling lib EXCEPT the one under test, so the wrapper gets far
-	# enough to reach the lookup rather than failing earlier for a different
-	# reason.
-	for f in "${REPO_ROOT}/_lib/"*.sh; do
-		case "${f##*/}" in
-		issue-trailers.sh) continue ;;
-		esac
-		cp "$f" "$half_installed/_lib/" 2>/dev/null || true
-	done
-	[ ! -f "$half_installed/_lib/issue-trailers.sh" ] || {
+	local root
+	root=$(_plugin_copy half-installed no-lib)
+	[ ! -f "$root/_lib/issue-trailers.sh" ] || {
 		echo "fixture failed: the library is still present"
 		return 1
 	}
-	export FAKE_PR_BODY="Closes #808"
-	export FAKE_MERGE_SHA="$MERGE_SHA"
-	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":"'"$MERGE_SHA"'","checks":[]}'
-	run bash -c "cd '$WORK' && APPROVE=1 AC_LOG='$AC_LOG' bash '$half_installed/skills/github-pr-merge/run.sh' --pr 2638 --squash --yes </dev/null"
+	export FAKE_CLOSING=$'808\n'
+	_run_merge "$root/skills/github-pr-merge/run.sh"
 	case "$output" in
-	*"issue-trailers.sh not found"*) ;;
+	*"missing or unusable"*) ;;
 	*)
 		echo "a missing shared library was silent: $output"
 		return 1
 		;;
 	esac
-	# And it must say what that COSTS, not just that a file is absent.
 	case "$output" in
-	*"will NOT auto-close"*) ;;
+	*"will not auto-close"*) ;;
 	*)
 		echo "the consequence of skipping the rollup was not stated: $output"
+		return 1
+		;;
+	esac
+	# CRUCIALLY it must not ALSO claim an answer was obtained. As separate
+	# `if` tests this path fell through and printed the empty-result message
+	# too — conflating "could not look" with "found nothing".
+	case "$output" in
+	*"closes no issues"*)
+		echo "the no-library path also claimed GitHub answered: $output"
 		return 1
 		;;
 	esac
@@ -452,18 +416,99 @@ Closes #606" && git push -q origin main) || return 1
 	}
 }
 
-@test "autoclose: the lookup uses ONE rule, not a candidate list" {
-	# The previous commit removed two copies of one regex and, in the same
-	# change, introduced two different ways to LOCATE the library that
-	# replaced it — a candidate list here, BASH_SOURCE-relative in
-	# _lib/epic-completeness-check.sh. Phase 0.5 caught it.
-	#
-	# Both files now resolve relative to their own location. Asserted on the
-	# source because the behaviour is identical either way until a layout
-	# diverges, at which point it is a debugging session rather than a test
-	# failure.
+@test "autoclose: a TRUNCATED library is caught, and the wrapper survives" {
+	# `-r` says readable, not usable. A truncated library passes the
+	# readability gate, defines nothing, and then — under `set -euo
+	# pipefail` — an undefined function kills the wrapper AFTER the merge
+	# has landed. Replacing the `command -v` guard with `if false` broke no
+	# test until this one existed.
+	_install_gh_shim
+	local root
+	root=$(_plugin_copy truncated truncated)
+	[ -r "$root/_lib/issue-trailers.sh" ] || {
+		echo "fixture failed: the stub is not readable, so -r would have caught it"
+		return 1
+	}
+	export FAKE_CLOSING=$'8008\n'
+	_run_merge "$root/skills/github-pr-merge/run.sh"
+	case "$output" in
+	*"Merged PR #2638"*) ;;
+	*)
+		echo "an unusable library aborted the wrapper after the merge: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"missing or unusable"*) ;;
+	*)
+		echo "a truncated library was not reported: $output"
+		return 1
+		;;
+	esac
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup ran with no extractor defined: $(cat "$AC_LOG")"
+		return 1
+	}
+}
+
+@test "autoclose: a fallback extraction FAILURE refuses and does not abort" {
+	# Two defects in one fixture, both invisible to the library's own test,
+	# which exercises the extractor in isolation and never a caller:
+	#   1. the assignment was UNGUARDED under `set -euo pipefail`, so the
+	#      library's rc>1 path killed the wrapper after the merge, skipping
+	#      the post-merge deploy and tag/release blocks;
+	#   2. the failure then fell through and announced "no trailers", a
+	#      broken parse reported as a PR that closes nothing.
+	_install_gh_shim
+	local root
+	root=$(_plugin_copy shadow broken-re)
+	grep -q "ISSUE_TRAILER_RE='\['" "$root/_lib/issue-trailers.sh" || {
+		echo "fixture failed: the pattern was not shadowed"
+		return 1
+	}
+	export FAKE_CLOSING_FAIL=1
+	_commit_with "chore: rollup
+
+Closes #4242"
+	_run_merge "$root/skills/github-pr-merge/run.sh"
+	case "$output" in
+	*"Merged PR #2638"*) ;;
+	*)
+		echo "the wrapper aborted before reporting the merge: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"trailer extraction failed"*) ;;
+	*)
+		echo "an extraction failure was not reported as one: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"UNKNOWN, not empty"*) ;;
+	*)
+		echo "the message does not distinguish unknown from empty: $output"
+		return 1
+		;;
+	esac
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup ran on an unreliable extraction: $(cat "$AC_LOG")"
+		return 1
+	}
+}
+
+@test "autoclose: the lookup resolves relative to the script, not a candidate list" {
+	# Removing two copies of one regex while introducing two ways to LOCATE
+	# its replacement was the same drift one layer up. Asserted on the
+	# source: the behaviour is identical either way until a layout diverges,
+	# at which point it is a debugging session rather than a test failure.
+	# Matched on the PATH FRAGMENT, not the exact variable spelling —
+	# `$SCRIPT_DIR` vs `${SCRIPT_DIR}` is a zero-behaviour edit that broke a
+	# more literal earlier form, and a test that breaks on reformatting
+	# trains people to edit the test instead of reading it.
 	local runsh="${REPO_ROOT}/skills/github-pr-merge/run.sh"
-	grep -q '_it_lib="\$SCRIPT_DIR/\.\./\.\./_lib/issue-trailers\.sh"' "$runsh" || {
+	grep -qE '_it_lib=.*SCRIPT_DIR.*\.\./\.\./_lib/issue-trailers\.sh' "$runsh" || {
 		echo "run.sh no longer resolves the library relative to SCRIPT_DIR"
 		return 1
 	}
