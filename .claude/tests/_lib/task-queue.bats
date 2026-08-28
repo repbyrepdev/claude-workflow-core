@@ -663,17 +663,29 @@ _state_json() { # $1 = session id
 	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "racer" \
 		'{"open_ids":"seed","calls_since_update":0,"ids_at_last_commit":"base"}' || return 1
 
+	# ACQUISITION FAILURES ARE RECORDED SEPARATELY. `task_queue_state_lock`
+	# returns non-zero after its budget and `|| true` proceeds unlocked by
+	# design — so a stale overwrite caused by a TIMEOUT would be reported
+	# here as "lost update", blaming the serialisation for a contention
+	# problem. Two different defects, two different fixes; the test has to
+	# say which one it saw.
+	local failfile="$TEST_TMP/lockfail"
+	: >"$failfile"
 	local i=0
 	while [ "$i" -lt "$n" ]; do
 		(
 			export TASK_QUEUE_STATE_DIR="$STATE_DIR"
-			task_queue_state_lock "racer" || true
+			task_queue_state_lock "racer" || echo x >>"$failfile"
 			s=$(task_queue_state_read "racer")
 			# The sleep WIDENS the window deliberately. Without it the
 			# read-modify-write is fast enough that an unlocked run can pass
 			# by luck, and a concurrency test that passes by luck is the same
 			# defect as one that passes by construction.
-			sleep 0.02
+			#
+			# 10ms x 8 writers is well inside the 2s lock budget, so the
+			# serialised total cannot itself provoke the timeout this test
+			# needs to keep distinct from a lost update.
+			sleep 0.01
 			s=$(printf '%s' "$s" | jq -c '.calls_since_update += 1')
 			task_queue_state_write "racer" "$s"
 			task_queue_state_unlock "racer"
@@ -681,6 +693,13 @@ _state_json() { # $1 = session id
 		i=$((i + 1))
 	done
 	wait
+
+	local nfail
+	nfail=$(wc -l <"$failfile" | tr -d ' ')
+	[ "$nfail" = "0" ] || {
+		echo "$nfail writer(s) timed out acquiring the lock — contention exceeded the budget, so this run cannot speak to lost updates"
+		return 1
+	}
 
 	local sf calls
 	sf=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "racer")
@@ -778,16 +797,38 @@ _state_json() { # $1 = session id
 	# control-only filter had just fixed: byte N can fall inside a multibyte
 	# sequence, so the result ends in a partial character — invalid UTF-8,
 	# emitted into both the diagnostic and the systemMessage.
+	# RUN UNDER LC_ALL=C. The function used to default with `${LC_ALL:-…}`,
+	# which PRESERVES a caller's C locale — and under C, bash indexes bytes,
+	# so the substring split multibyte sequences exactly as `cut -b` had. A
+	# test run in the ambient UTF-8 locale could never see that.
 	local got
 	# Ten 3-byte characters; a 5-character cut is byte 15, and any byte-wise
-	# truncation to 5 would split the second character.
-	got=$(task_queue_sanitise_line "ありがとうございます" 5)
+	# truncation to 5 bytes would split the second character.
+	got=$(LC_ALL=C LANG=C task_queue_sanitise_line "ありがとうございます" 5)
+
+	# VALIDITY is asserted with iconv, which is locale-independent. The
+	# length is asserted in BYTES via `wc -c`, not characters via `wc -m`:
+	# wc -m itself counts by the current locale, so it would report the
+	# byte count under C and the character count elsewhere — an assertion
+	# that changes meaning with the environment cannot pin a boundary.
 	printf '%s' "$got" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || {
 		echo "truncation produced invalid UTF-8: $(printf '%s' "$got" | od -c | head -2)"
 		return 1
 	}
-	[ "$(printf '%s' "$got" | wc -m | tr -d ' ')" = "5" ] || {
-		echo "expected 5 characters, got $(printf '%s' "$got" | wc -m | tr -d ' '): $got"
+	# Whole characters only: the result must be a byte-length divisible by 3
+	# (these are all 3-byte characters) and non-empty.
+	local nbytes
+	nbytes=$(printf '%s' "$got" | wc -c | tr -d ' ')
+	[ "$nbytes" -gt 0 ] || {
+		echo "truncation destroyed the string entirely"
+		return 1
+	}
+	[ $((nbytes % 3)) -eq 0 ] || {
+		echo "truncation landed mid-character: $nbytes bytes is not a whole number of 3-byte characters"
+		return 1
+	}
+	[ "$nbytes" -le 15 ] || {
+		echo "truncation did not bound the result: $nbytes bytes"
 		return 1
 	}
 }

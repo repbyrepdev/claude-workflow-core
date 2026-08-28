@@ -534,12 +534,34 @@ task_queue_sanitise_line() { # $1 = text, $2 = max characters (default 160)
 		tr '\n\r\t' '   ' |
 		LC_ALL=C tr -d '\000-\010\013\014\016-\037\177') || return 1
 	# Bash substring expansion, NOT `cut -b` and not awk substr. `cut -b`
-	# counts bytes and split multibyte characters. macOS ships BWK awk, whose
+	# counts bytes and splits multibyte characters. macOS ships BWK awk, whose
 	# substr is also byte-oriented regardless of locale — verified, it
 	# produced the same broken suffix. Bash indexes by CHARACTER whenever the
 	# locale is multibyte-aware, and costs no fork.
-	local LC_ALL=${LC_ALL:-en_US.UTF-8}
-	printf '%s' "${flat:0:max}"
+	#
+	# FORCED, not inherited. This was `${LC_ALL:-en_US.UTF-8}`, which PRESERVES
+	# a caller's `LC_ALL=C` — and under C, bash indexes bytes, so the
+	# expansion below splits multibyte sequences exactly as `cut -b` did. The
+	# fix carried its own bug in the defaulting operator.
+	local out
+	local LC_ALL=C.UTF-8 LANG=C.UTF-8
+	out=${flat:0:max}
+
+	# AND THEN VERIFY, because forcing a locale is not the same as having it.
+	# C.UTF-8 is absent on older macOS and bash silently falls back to byte
+	# indexing when the requested locale does not exist — so the line above is
+	# a preference, not a guarantee. Dropping trailing bytes until the result
+	# is valid UTF-8 needs no locale at all and converges in at most three
+	# steps, that being the longest incomplete prefix of a UTF-8 sequence.
+	if [ -n "$out" ] && command -v iconv >/dev/null 2>&1; then
+		local guard=0
+		while [ -n "$out" ] && [ "$guard" -lt 3 ] &&
+			! printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; do
+			out=${out%?}
+			guard=$((guard + 1))
+		done
+	fi
+	printf '%s' "$out"
 }
 
 # --- superseded diagnostic cleanup ----------------------------------------

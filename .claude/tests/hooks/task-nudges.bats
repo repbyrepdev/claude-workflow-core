@@ -271,19 +271,27 @@ _tick() { # $1 = how many, $2 = threshold
 	# verified. Re-stating item A is what pins the reset itself.
 	_track TodoWrite "$(jq -nc '{todos:[{content:"item A",status:"in_progress"}]}')"
 	_tick 3 3
-	# ASSERTED ON THE PATH, NOT THE COUNT. This used to require two files,
-	# which stopped meaning "it re-armed" once superseded diagnostics began
-	# being pruned: the count is now 1 after any number of nudges, by design.
-	# A re-arm produces a NEW diagnostic path (timestamp + random suffix), so
-	# that is what distinguishes a second nudge from no second nudge.
-	local second
-	second=$(find "$DIAG_ROOT/task-queue-track" -type f -name '*.txt' | head -1)
-	[ -n "$second" ] || {
-		echo "the diagnostic disappeared entirely — the prune deleted the live one"
+	# ASSERTED AS "A FILE THAT IS NOT THE FIRST ONE EXISTS", not as a count
+	# and not as `head -1` differing.
+	#
+	# The count stopped meaning "it re-armed" once superseded diagnostics
+	# began being pruned. Then `head -1` stopped meaning it either, once the
+	# prune gained its age guard — it spares anything younger than a minute,
+	# so within a test both files survive and `head -1` can return the older
+	# one, failing a hook that re-armed perfectly well. Two assertions in a
+	# row that tracked an implementation detail instead of the property.
+	#
+	# The property is: a second nudge writes a diagnostic the first one did
+	# not. Any file that is not `$first` is that file, since the first nudge
+	# produced exactly one.
+	local newfile
+	newfile=$(find "$DIAG_ROOT/task-queue-track" -type f -name '*.txt' | grep -Fxv "$first" | head -1)
+	[ -n "$newfile" ] || {
+		echo "the nudge did not re-arm after a status update on the SAME item"
 		return 1
 	}
-	[ "$second" != "$first" ] || {
-		echo "the nudge did not re-arm after a status update on the SAME item"
+	[ -f "$first" ] || {
+		echo "the prune deleted a diagnostic younger than its age guard"
 		return 1
 	}
 }

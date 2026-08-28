@@ -55,7 +55,7 @@
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
     "_lib/ship-cycle-directives.sh": "dd5835a3e86c8ce143542d008e5c852412155b1f2b6b5ee2b733f7521cc23bb6",
     "_lib/ship-cycle-protocol.sh": "dd166d5322ef4cbfb3a8d9088ce783ebdad3cd2051c241dfd234a1f1ac0c7c27",
-    "_lib/task-queue.sh": "78dcdf680385495e22014386828ed3444f91ed4fc6f4604b542ccb6c4c9df6cf",
+    "_lib/task-queue.sh": "dbf8327e9560d9b9dafba29b579836b3fcd6e7efb764f5e0632ba42c2ec39202",
     "hooks/_lib.sh": "57ff0032f45b672fc9a501086bb6190ac5a8de99897a10175862a6401fddde44",
     "hooks/_otel-silence.sh": "606246aa6856494e99b2858fc07a230132a51aab2f3e624e52a67427b1d73e2b",
     "hooks/_phase1-collect-logs.sh": "488f2dac255ee29cb946df3e2411855b7d6c7de232318b8a91e3bf1937ca3b1b",
