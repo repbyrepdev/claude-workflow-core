@@ -78,7 +78,7 @@ teardown() {
 	case "${TEST_TMP:-}" in
 	*/gh-pr-merge-autoclose.*) rm -rf "$TEST_TMP" ;;
 	esac
-	return 0
+	true
 }
 
 # gh stub. FAKE_PR_BODY is what `pr view --json body` returns — the seam the
@@ -471,5 +471,5 @@ Closes #606" && git push -q origin main) || return 1
 		echo "run.sh still carries a candidate-path list for the library"
 		return 1
 	}
-	return 0
+	true
 }

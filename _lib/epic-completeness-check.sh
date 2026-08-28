@@ -32,6 +32,28 @@ epic_completeness_check() {
 		return 2
 	fi
 
+	# THE DEPENDENCY IS CHECKED BEFORE THE NETWORK CALL.
+	#
+	# This pattern was written here first and then written AGAIN in
+	# skills/github-pr-merge/run.sh — two copies of GitHub's closing-trailer
+	# contract, equivalent by luck rather than design. One definition now,
+	# in _lib/issue-trailers.sh.
+	#
+	# Ordering matters: the check sat AFTER the `gh pr view` fetch, so a
+	# missing library could only ever be reported when the network call
+	# happened to succeed first, and any gh failure masked it with
+	# "empty/missing PR body" — a local, deterministic, instantly-fixable
+	# problem reported as a remote one. Its own test surfaced that: the
+	# fixture had no gh at all and got the wrong refusal.
+	local _it_lib
+	_it_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/issue-trailers.sh
+	if [ ! -r "$_it_lib" ]; then
+		echo "epic_completeness_check: _lib/issue-trailers.sh missing — cannot parse closing trailers" >&2
+		return 2
+	fi
+	# shellcheck source=./issue-trailers.sh
+	. "$_it_lib"
+
 	# Extract `Closes #N` (and variants: Close, Fixes, Fixed, Resolves, Resolved)
 	# from PR body.
 	local body closed_ids
@@ -41,18 +63,8 @@ epic_completeness_check() {
 		return 2
 	fi
 
-	# Through the shared extractor. This pattern was written here first and
-	# then written AGAIN in skills/github-pr-merge/run.sh — two copies of
-	# GitHub's closing-trailer contract, equivalent by luck rather than by
-	# design, with nothing tying them together. One definition now.
-	local _it_lib
-	_it_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/issue-trailers.sh
-	if [ ! -r "$_it_lib" ]; then
-		echo "epic_completeness_check: _lib/issue-trailers.sh missing — cannot parse closing trailers" >&2
-		return 2
-	fi
-	# shellcheck source=./issue-trailers.sh
-	. "$_it_lib"
+	# Through the shared extractor, resolved and sourced at the TOP of this
+	# function — see the block above the usage check.
 	closed_ids=$(issue_trailers_extract "$body")
 	if [ -z "$closed_ids" ]; then
 		# No closing refs — nothing to check.

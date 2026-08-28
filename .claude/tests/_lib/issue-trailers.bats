@@ -18,8 +18,25 @@ setup() {
 	REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
 	LIB="$REPO_ROOT/_lib/issue-trailers.sh"
 	[ -r "$LIB" ]
+	# A scratch dir for the epic-completeness dependency tests below, which
+	# build small lib trees rather than touching the real one. Created
+	# BEFORE the source: the library sets `set -u` at top level and that
+	# persists into the caller, so an unbound TEST_TMP afterwards is fatal
+	# rather than empty.
+	TEST_TMP=$(mktemp -d -t issue-trailers.XXXXXX) || {
+		echo "FATAL: mktemp failed" >&2
+		return 1
+	}
 	# shellcheck source=../../../_lib/issue-trailers.sh
 	source "$LIB"
+}
+
+teardown() {
+	cd "${TMPDIR:-/tmp}" 2>/dev/null || cd "$HOME" || return 0
+	case "${TEST_TMP:-}" in
+	*/issue-trailers.*) rm -rf "$TEST_TMP" ;;
+	esac
+	true
 }
 
 _extract() { issue_trailers_extract "$@"; }
@@ -178,5 +195,90 @@ Closes #2")
 			return 1
 		}
 	done
-	return 0
+	true
+}
+
+# ---- epic_completeness_check: the new external dependency ----------------
+#
+# The refactor gave this previously self-contained function a dependency on
+# a sibling library, and a new error path when that library is absent.
+# Neither was covered. A dependency nobody tests is a dependency that breaks
+# in a consumer repo and not here.
+
+_ecc_fixture() { # builds a lib dir; $1 = "with-lib" | "without-lib"
+	local root="$TEST_TMP/ecc-$1"
+	mkdir -p "$root"
+	cp "$REPO_ROOT/_lib/epic-completeness-check.sh" "$root/"
+	[ "$1" = "with-lib" ] && cp "$REPO_ROOT/_lib/issue-trailers.sh" "$root/"
+	printf '%s' "$root"
+}
+
+@test "epic-completeness: a MISSING issue-trailers.sh fails closed with a named reason" {
+	# return 2, not a silent 0 and not a crash. This function gates a merge,
+	# so an unreadable dependency has to refuse rather than report "nothing
+	# to check" — which is what an empty closed_ids means and would be
+	# indistinguishable from success.
+	local root
+	root=$(_ecc_fixture without-lib)
+	[ ! -f "$root/issue-trailers.sh" ] || {
+		echo "fixture failed: the library is present"
+		return 1
+	}
+	run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -eq 2 ] || {
+		echo "expected rc 2 for a missing dependency, got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*"issue-trailers.sh missing"*) ;;
+	*)
+		echo "the refusal does not name the missing file: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "epic-completeness: sourcing the extractor does not clobber the caller" {
+	# `. "$_it_lib"` runs in the CALLER's shell. The library sets `set -u`
+	# at top level and defines ISSUE_TRAILER_RE — both leak outward, which
+	# is fine, but a variable collision would not be. Pin that the caller's
+	# own state survives the dot-source.
+	local root
+	root=$(_ecc_fixture with-lib)
+	run bash -c "
+		set +u
+		body='keep me'
+		closed_ids='sentinel'
+		source '$root/issue-trailers.sh'
+		printf '%s|%s\n' \"\$body\" \"\$closed_ids\"
+	"
+	[ "$status" -eq 0 ] || {
+		echo "sourcing the extractor failed: $output"
+		return 1
+	}
+	[ "$output" = "keep me|sentinel" ] || {
+		echo "the extractor clobbered a caller variable: $output"
+		return 1
+	}
+}
+
+@test "epic-completeness: the extractor resolves from a FOREIGN cwd" {
+	# The rule is BASH_SOURCE-relative, so it must hold when the function is
+	# called from an arbitrary directory — a consumer invoking it from a repo
+	# subdirectory is the normal case, not the exotic one.
+	#
+	# Asserted by WHICH refusal comes back: with the library present the
+	# dependency check passes and the function proceeds to the gh fetch,
+	# which fails in this fixture. Getting the BODY error rather than the
+	# LIBRARY error is the proof that resolution succeeded.
+	local root
+	root=$(_ecc_fixture with-lib)
+	mkdir -p "$TEST_TMP/elsewhere"
+	run bash -c "cd '$TEST_TMP/elsewhere' && source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	case "$output" in
+	*"issue-trailers.sh missing"*)
+		echo "the extractor was not resolvable from a foreign cwd: $output"
+		return 1
+		;;
+	esac
 }
