@@ -278,14 +278,27 @@ parse)
 		echo "cr-plan: ERROR: mktemp for phase bodies failed" >&2
 		exit 2
 	}
+	# Join the combined EXIT trap. Left out, every parse leaves the extracted
+	# plan text in /tmp indefinitely — user-private at 0700, but unbounded.
+	trap '[ -n "${tmpdir:-}" ] && rm -rf "${tmpdir}"; [ -n "${phase_bodies_dir:-}" ] && rm -rf "${phase_bodies_dir}"; rm -f "${issue_err:-}" "${comments_err:-}"' EXIT
 	printf '%s\n' "$phases_section" | awk -v outdir="$phase_bodies_dir" -v form="$phase_form" '
 		# Splits on the SAME heading shape the titles came from. Matching both
 		# forms at once split on numbered lines INSIDE a phase body, inventing
 		# phases after the real ones — verified against the #2551 plan, whose
 		# task lists contain numbered steps.
+		# The heading test must accept EXACTLY what the title grep above
+		# accepted. It used to be looser — it took a bare `### Phase 2`
+		# where the grep requires trailing title text (`[^*#]+`) — so on a
+		# plan containing one untitled phase the awk index advanced where
+		# the title list did not, and EVERY LATER BODY was copied into the
+		# wrong sub-issue. Not an empty body: the WRONG phase body, under a
+		# title that does not describe it. Two regexes that must agree, in
+		# two languages, is the standing hazard here.
+		# (No apostrophes in this block: it lives inside a single-quoted
+		# awk program, and one would terminate it.)
 		{
 			is_head = (form == "heading") \
-				? ($0 ~ /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+/) \
+				? ($0 ~ /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+:?[[:space:]]*[^*#[:space:]]/) \
 				: ($0 ~ /^[0-9]+\.[[:space:]]+[^[:space:]]/)
 		}
 		is_head { idx++; file = sprintf("%s/%02d.md", outdir, idx); next }
@@ -395,7 +408,16 @@ $(
 			_pb="$phase_bodies_dir/$(printf '%02d' "$idx").md"
 			if [ -s "$_pb" ]; then
 				printf '### Tasks (copied from the CR plan)\n\n'
-				cat "$_pb"
+				# `@name` is wrapped in backticks on the way through. The
+				# plan is CR-authored but CR generates it FROM the source
+				# issue text, so an @mention written by whoever filed that
+				# issue would otherwise be replayed here — notifying that
+				# person once per sub-issue this skill creates, from an
+				# issue they never opened. Backticks keep the text readable
+				# and stop GitHub resolving it. No shell risk either way:
+				# bash does not re-scan substitution output (verified), so
+				# this is about GitHub's parser, not the shell.
+				sed -E 's/(^|[^A-Za-z0-9`_-])@([A-Za-z0-9][A-Za-z0-9-]*)/\1`@\2`/g' "$_pb"
 				printf '\nThe CR plan comment on #%s remains the authority — `gh issue view %s --comments`. This copy exists so the sub-issue can be worked from, reviewed for completeness, and judged done without opening another thread.\n' "$issue" "$issue"
 			else
 				printf 'See parent epic + CR plan comment (`gh issue view %s --comments`) for the WHY and acceptance specifics.\n\n_(The per-phase task list could not be extracted from the plan; the comment is the only source.)_\n' "$issue"

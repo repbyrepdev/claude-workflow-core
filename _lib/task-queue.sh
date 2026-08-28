@@ -264,10 +264,30 @@ task_queue_state_write() { # $1 = session id, $2 = state JSON
 	mkdir -p "$dir" 2>/dev/null || return 1
 	# Prune on write so ended sessions do not accumulate. 7 days is well past
 	# any live session; a wrongly-pruned file costs a reset counter, not a
-	# wrong decision — and the glob matches only this tool's own shape, so a
-	# relocated TASK_QUEUE_STATE_DIR holding something else is not harvested.
-	local prune_err prune_rc=0
-	prune_err=$(find "$dir" -maxdepth 1 -name '*-[0-9]*.json' -type f -mtime +7 -delete 2>&1 >/dev/null) || prune_rc=$?
+	# wrong decision.
+	#
+	# The GLOB IS NOT THE OWNERSHIP TEST, and an earlier comment here claimed
+	# it was. `*-[0-9]*.json` is the shape of `<slug>-<cksum>.json`, but it is
+	# also the shape of `tsconfig-1.json`, `report-2023-final.json` and
+	# `credentials-2.json` — and TASK_QUEUE_STATE_DIR is operator-relocatable,
+	# so "the dir only ever holds our files" is an assumption about someone
+	# else's directory. `-delete` on that assumption is the whole finding.
+	#
+	# So the glob only NARROWS the candidates and every one of them must then
+	# prove it is ours by CONTENT: a JSON object carrying the two keys this
+	# library writes. A file that fails the check is left alone, including a
+	# file we cannot read or parse — unreadable is not the same as foreign,
+	# and the safe response to both is identical.
+	# prune_err MUST be initialised, not merely declared: it is appended to
+	# below, and `local prune_err` leaves it UNSET, which is a hard error
+	# under the `set -u` a caller may have in force.
+	local prune_err="" prune_rc=0 _cand
+	while IFS= read -r _cand; do
+		[ -n "$_cand" ] || continue
+		jq -e 'type == "object" and has("open_ids") and has("calls_since_update")' \
+			<"$_cand" >/dev/null 2>&1 || continue
+		prune_err="$prune_err$(rm -f "$_cand" 2>&1 >/dev/null)" || prune_rc=$?
+	done < <(find "$dir" -maxdepth 1 -name '*-[0-9]*.json' -type f -mtime +7 2>/dev/null)
 	if [ "$prune_rc" -ne 0 ] || [ -n "$prune_err" ]; then
 		echo "task-queue: WARN: could not prune stale session state in $dir (rc=$prune_rc${prune_err:+: $prune_err})" >&2
 	fi

@@ -402,4 +402,67 @@ _sentinel() {
 		echo "the sentinel does not carry the task-stale reason: $(cat "$(_sentinel)")"
 		return 1
 	}
+	# On SUCCESS the item is armed OFF. This is the counterpart to the
+	# failed-append test below, and it is what stops that one being vacuous:
+	# without this, "nudged_for is empty after a failure" would also pass if
+	# nudged_for were never written on any path at all.
+	local sf armed
+	sf=$(find "$STATE_DIR" -name '*.json' -type f | head -1)
+	[ -n "$sf" ] || {
+		echo "no session state was written"
+		return 1
+	}
+	armed=$(jq -r '.nudged_for // ""' "$sf")
+	[ -n "$armed" ] || {
+		echo "a SUCCESSFUL nudge did not arm the item off — it will re-fire every call"
+		return 1
+	}
+}
+
+@test "stale-nudge RECOVERS: a failed append leaves the item armed for a retry" {
+	# `nudged_for` used to be recorded unconditionally, so a FAILED append
+	# still suppressed the item for the rest of the session: the arm-once
+	# guard reads that field and exits, and it re-arms only when a todo call
+	# rewrites it. hook_ack_append returns 1 on ordinary lock contention, so
+	# a transient failure became permanent silence — a nudge that reported
+	# itself as fired while blocking nothing.
+	#
+	# The failure is injected by making the sentinel path a DIRECTORY: the
+	# append cannot write to it, while hook_ack_diagnostic_write (a different
+	# path entirely) still succeeds. That split is the point — it exercises
+	# the "diagnostic written, registration failed" state specifically, not a
+	# general unwritable-state-dir failure that would take out both.
+	mkdir -p "$WORK/.claude/.session-state"
+	mkdir -p "$WORK/.claude/.session-state/hook-output-pending.txt"
+
+	run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+		"$(jq -nc '{tool_name:"TodoWrite", session_id:"sess-1", tool_input:{todos:[{content:"slow one",status:"in_progress"}]}}')"
+	local n=0
+	while [ "$n" -lt 3 ]; do
+		run bash -c "cd '$WORK' && printf '%s' \"\$1\" | TASK_QUEUE_STATE_DIR='$STATE_DIR' TASK_STALE_AFTER_CALLS=3 HOOK_ACK_BATS_SKIP=0 bash '$TRACK_HOOK'" _ \
+			"$(jq -nc '{tool_name:"Bash", session_id:"sess-1", tool_input:{}}')"
+		[ "$status" -eq 0 ] || {
+			echo "a failed append broke the tool call (rc=$status): $output"
+			return 1
+		}
+		n=$((n + 1))
+	done
+	# It must have SAID so — a silent failure here is the whole defect.
+	[[ $output == *"nothing will block on it"* ]] || {
+		echo "the failed registration was silent: $output"
+		return 1
+	}
+	# And the item must still be armed: nudged_for empty, so the next call
+	# retries rather than treating the item as already nudged.
+	local sf armed
+	sf=$(find "$STATE_DIR" -name '*.json' -type f | head -1)
+	[ -n "$sf" ] || {
+		echo "no session state was written at all"
+		return 1
+	}
+	armed=$(jq -r '.nudged_for // ""' "$sf")
+	[ -z "$armed" ] || {
+		echo "a FAILED append still armed the item off (nudged_for='$armed') — it will never retry"
+		return 1
+	}
 }

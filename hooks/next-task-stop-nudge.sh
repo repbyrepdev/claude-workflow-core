@@ -76,10 +76,13 @@ NEXT=$(task_queue_next_actionable "$ITEMS") || exit 0
 # that, and the drift had simply moved into a consumer.
 OPEN_N=$(task_queue_open_count "$ITEMS") || OPEN_N="?"
 
-# The item's own words, truncated. Prose from a payload goes in a diagnostic
-# file rather than a shell string, and nothing here interpolates it into a
-# command.
-NEXT_SHORT=$(printf '%s' "$NEXT" | head -c 160)
+# The item's own words, FLATTENED and truncated. Prose from a payload goes in
+# a diagnostic file rather than a shell string, and nothing here interpolates
+# it into a command — but the shell was never the exposure. This diagnostic is
+# force-read by the agent via the hook-ack gate, so newlines left intact let a
+# task item break out of the indented quote below and issue instructions in
+# the hook's own voice. One line, printable only.
+NEXT_SHORT=$(printf '%s' "$NEXT" | tr '\n\r\t' '   ' | tr -cd '[:print:]' | head -c 160)
 
 BODY="$OPEN_N open task(s) remain. The next actionable one is:
 

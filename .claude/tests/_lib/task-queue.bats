@@ -422,10 +422,23 @@ _state_json() { # $1 = session id
 	# Real data-loss risk with zero coverage: a prune whose -mtime predicate
 	# is lost or inverted deletes every session's state, silently resetting
 	# every staleness clock — strictly worse than not pruning at all.
-	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" '{"open_ids":"x"}' || return 1
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" \
+		'{"open_ids":"x","calls_since_update":0}' || return 1
 	mkdir -p "$STATE_DIR"
-	local old="$STATE_DIR/dead_session-123456.json"
-	printf '{"open_ids":"gone"}\n' >"$old"
+	# The dead session is written THROUGH THE LIBRARY and then aged, rather
+	# than hand-authored. A hand-authored `{"open_ids":"gone"}` was missing
+	# `calls_since_update`, so once the prune began checking ownership by
+	# content this fixture stopped looking like session state at all — the
+	# test failed on a file production never writes. Going through the real
+	# writer means the fixture cannot drift from the production shape again.
+	local old
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "dead_session" \
+		'{"open_ids":"gone","calls_since_update":7}' || return 1
+	old=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "dead_session")
+	[ -f "$old" ] || {
+		echo "fixture: the dead session was never written"
+		return 1
+	}
 	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$old"
 	# A second write is what triggers the prune.
 	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" '{"open_ids":"y"}' || return 1
@@ -441,17 +454,58 @@ _state_json() { # $1 = session id
 	}
 }
 
-@test "task-queue: the prune only matches this tool own filenames" {
-	# TASK_QUEUE_STATE_DIR is operator-settable and the write path runs a
-	# find -delete. Harvesting every old .json from a relocated directory is
-	# a destructive default.
+@test "task-queue: the prune spares bystanders that MATCH the glob" {
+	# TASK_QUEUE_STATE_DIR is operator-settable and the write path deletes.
+	# Harvesting every old .json from a relocated directory is a destructive
+	# default.
+	#
+	# This test used to use `notes.json` as its only decoy — a name with no
+	# hyphen-digit, so `*-[0-9]*.json` never matched it and the test passed
+	# no matter how broad the glob was. It certified an ownership check that
+	# did not exist. The security review found the real shape by fuzzing the
+	# glob directly: `tsconfig-1.json` and friends were being deleted.
+	#
+	# Every decoy below MATCHES the glob and must survive on CONTENT.
 	mkdir -p "$STATE_DIR"
-	local bystander="$STATE_DIR/notes.json"
-	printf '{"not":"session state"}\n' >"$bystander"
-	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$bystander"
+	local old
+	old="$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)"
+	local decoys=(
+		"tsconfig-1.json"
+		"report-2023-final.json"
+		"credentials-2.json"
+		"openapi-3.json"
+		"backup-1.json"
+	)
+	local d
+	for d in "${decoys[@]}"; do
+		printf '{"not":"session state"}\n' >"$STATE_DIR/$d"
+		touch -t "$old" "$STATE_DIR/$d"
+	done
+	# Also: a file that is ours by NAME but unreadable. Unreadable is not the
+	# same as foreign, and the safe response to both is to leave it alone.
+	printf 'not json at all\n' >"$STATE_DIR/garbled-9.json"
+	touch -t "$old" "$STATE_DIR/garbled-9.json"
+
 	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "sess-p" '{"open_ids":"z"}' || return 1
-	[ -f "$bystander" ] || {
-		echo "the prune deleted a file that is not session state"
+
+	for d in "${decoys[@]}" "garbled-9.json"; do
+		[ -f "$STATE_DIR/$d" ] || {
+			echo "the prune deleted $d, which is not session state"
+			return 1
+		}
+	done
+}
+
+@test "task-queue: the prune DOES still collect real stale state (not vacuously safe)" {
+	# The content check above could be made trivially safe by never deleting
+	# anything. This is the other half: a file that IS ours, old, and gone.
+	mkdir -p "$STATE_DIR"
+	local mine="$STATE_DIR/oldsess-778899.json"
+	printf '{"open_ids":"a","calls_since_update":3}\n' >"$mine"
+	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$mine"
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "sess-q" '{"open_ids":"z"}' || return 1
+	[ ! -f "$mine" ] || {
+		echo "real stale session state survived — the prune has stopped working"
 		return 1
 	}
 }

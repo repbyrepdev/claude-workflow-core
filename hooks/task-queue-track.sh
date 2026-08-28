@@ -146,7 +146,15 @@ _ACK_LIB="$_HOOK_DIR/../_lib/hook-ack.sh"
 # shellcheck source=../_lib/hook-ack.sh
 source "$_ACK_LIB" 2>/dev/null || exit 0
 
-_SHORT=$(printf '%s' "$_inprog" | head -c 160)
+# FLATTENED, not just truncated. This string is interpolated into a
+# diagnostic that the hook-ack gate FORCES the agent to Read before its next
+# tool call — the one place in this system where attacker-influenced text is
+# guaranteed an audience. `head -c 160` bounds the length but keeps newlines,
+# so a task item containing a blank line and then "IGNORE PREVIOUS
+# INSTRUCTIONS…" lands flush-left in the body, typographically identical to
+# this hook's own imperative text. Collapsing to one line keeps it inside the
+# indented quote block, where it reads as the quoted material it is.
+_SHORT=$(printf '%s' "$_inprog" | tr '\n\r\t' '   ' | tr -cd '[:print:]' | head -c 160)
 _BODY="This task has been in_progress for $_next tool calls with no status update:
 
     $_SHORT
