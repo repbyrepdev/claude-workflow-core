@@ -446,9 +446,40 @@ if [ -x "$AUTO_CLOSE" ]; then
 		# (refactor PR, doc-only) — it must yield empty closed_nums, not
 		# abort. Phase 2 CR caught this; Phase 1 silent-failure-hunter
 		# missed it because the empty-body bats test didn't set pipefail.
-		closed_nums=$(printf '%s\n' "$commit_body" |
+		# THE PR BODY IS ALSO A SOURCE, and under --squash it is the ONLY
+		# one that works.
+		#
+		# GitHub composes a squash commit from the PR TITLE plus the
+		# constituent commit messages — never the PR BODY. The
+		# `Closes #N` trailers live in the body (that is what GitHub's own
+		# issue-linking reads), so on PR #2638 the body carried four and
+		# the squash commit carried zero. The sub-issues closed, the epic
+		# did not, and this stanza printed NOTHING — indistinguishable
+		# from "this PR closed no sub-issues".
+		#
+		# That is the failure epic #2544 is about: a mechanism reporting
+		# enforcement it is not performing. It went unnoticed for as long
+		# as it did because the silent path and the nothing-to-do path
+		# were the same path.
+		#
+		# Both sources are unioned rather than one replacing the other:
+		# --merge keeps the body in the commit, individual commits may
+		# carry their own trailers, and a squash needs the body. `|| true`
+		# on the fetch so a gh outage degrades to the commit-only
+		# behaviour instead of aborting the wrapper — this block is
+		# warn-only and must never block a merge that already happened.
+		pr_body=$(gh pr view "$PR" --json body --jq '.body' 2>/dev/null || true)
+		closed_nums=$(printf '%s\n%s\n' "$commit_body" "$pr_body" |
 			grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' |
 			grep -oE '[0-9]+' | sort -u || true)
+		if [ -z "$closed_nums" ]; then
+			# LOUD, because silence here is what hid the bug. A PR that
+			# genuinely closes nothing is common and fine; the operator
+			# still needs to be able to tell that apart from a parse that
+			# found nothing to work with.
+			echo "auto-close-parent: no Closes/Fixes/Resolves trailers found in the merge commit OR the PR body — no epic rollup attempted."
+			echo "  If this PR was meant to close sub-issues, their parent epic will NOT auto-close; check the trailers and close the parent manually."
+		fi
 		if [ -n "$closed_nums" ]; then
 			count=$(printf '%s\n' "$closed_nums" | grep -c .)
 			echo "=== Checking epic parent auto-close for $count closed sub-issue(s) ==="
