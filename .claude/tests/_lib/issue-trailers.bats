@@ -198,6 +198,30 @@ Closes #2")
 	true
 }
 
+@test "trailers: a REAL grep failure is reported, not returned as empty" {
+	# The branch added to stop a blanket `|| true` swallowing everything.
+	# grep rc 1 is no-match and ordinary; rc above 1 is grep reporting a
+	# genuine failure, and returning empty for that is indistinguishable
+	# from "this PR closes nothing" — the exact confusion this change
+	# exists to remove.
+	#
+	# Forced with an invalid ERE, the realistic shape: a broken pattern or
+	# a locale that makes the character class unparseable.
+	local rc=0 out
+	out=$(ISSUE_TRAILER_RE='[' issue_trailers_extract "Closes #1" 2>&1) || rc=$?
+	[ "$rc" -gt 1 ] || {
+		echo "a hard grep failure returned rc $rc — indistinguishable from no-match"
+		return 1
+	}
+	case "$out" in
+	*"UNRELIABLE"*) ;;
+	*)
+		echo "the failure was not reported to the operator: $out"
+		return 1
+		;;
+	esac
+}
+
 # ---- epic_completeness_check: the new external dependency ----------------
 #
 # The refactor gave this previously self-contained function a dependency on
