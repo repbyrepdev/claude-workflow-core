@@ -7,10 +7,21 @@ set -uo pipefail
 # (#2554) The staleness CLOCK for the task-queue nudges. Every tool call ticks
 # it; a todo-tool call resets it and snapshots what is open.
 #
-# This hook DECIDES NOTHING and BLOCKS NOTHING. It only records, so that
-# hooks/next-task-stop-nudge.sh and the staleness nudge (#2555) can ask "how
-# long has this item sat untouched" without each keeping its own count and
-# disagreeing about the answer.
+# TWO JOBS, and the second was added in #2555 after this header was written:
+#
+#   1. RECORD (#2554) — tick the clock, snapshot the queue. So that
+#      next-task-stop-nudge.sh and the staleness check below can ask "how long
+#      has this item sat untouched" without each keeping its own count and
+#      disagreeing about the answer.
+#   2. NUDGE (#2555) — when an in_progress item passes the staleness
+#      threshold, register a hook-ack sentinel, which DOES block the next tool
+#      call until it is Read.
+#
+# The header said "decides nothing and blocks nothing" until phase 3 review
+# pointed out that it now does both. Recorded rather than quietly reworded:
+# the pairing lives in one file because the clock and the thing that reads it
+# must not disagree, and a comment claiming otherwise is how the next reader
+# gets the trust boundary wrong.
 #
 # FAILS OPEN, everywhere. It runs after EVERY tool call, so a fault here would
 # be a fault in every action the operator takes — and the thing it protects is
@@ -95,8 +106,10 @@ _THRESH=${TASK_STALE_AFTER_CALLS:-40}
 [[ $_THRESH =~ ^[1-9][0-9]*$ ]] || _THRESH=40
 [ "$_next" -ge "$_THRESH" ] || exit 0
 
-_inprog=$(printf '%s' "$_state" | jq -r '
-    [ .items[]? | select(.status == "in_progress") ] | first | .content // ""' 2>/dev/null) || exit 0
+# Through the lib accessor, which also excludes BLOCKED items: a bare status
+# filter reported an item marked blocked-and-in_progress as stale, nudging the
+# operator about work they had already said cannot proceed.
+_inprog=$(task_queue_state_stale_candidate "$_state") || exit 0
 [ -n "$_inprog" ] || exit 0
 
 # ARM ONCE per item. Without this the nudge re-fires on every subsequent tool
@@ -133,8 +146,14 @@ this item until the task list is next updated.
 Threshold: TASK_STALE_AFTER_CALLS (default 40).
 Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
 
+# The append is what ENFORCES — the diagnostic file alone is just a file that
+# nobody is required to read. Swallowing its failure meant the nudge could
+# report itself as fired while blocking nothing, which is the shape this whole
+# epic exists to remove. Still non-fatal (this must never break a tool call),
+# but LOUD.
 _DIAG=$(hook_ack_diagnostic_write "task-queue-track" "task-stale" "$_BODY" 2>/dev/null) || _DIAG=""
-hook_ack_append "task-queue-track" "task-stale" "$_DIAG" 2>/dev/null || true
+hook_ack_append "task-queue-track" "task-stale" "$_DIAG" 2>/dev/null ||
+	echo "task-queue-track: WARN: could not register the task-stale sentinel — the diagnostic was written to ${_DIAG:-<unwritten>} but nothing will block on it" >&2
 
 # Record that this item has been nudged for, so the next tool call does not
 # repeat it. Best-effort: a failed write costs a duplicate nudge, never a

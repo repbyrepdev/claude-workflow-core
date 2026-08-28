@@ -390,3 +390,91 @@ _state_json() { # $1 = session id
 		return 1
 	}
 }
+
+@test "task-queue: stale session state is PRUNED, live state is not" {
+	# Real data-loss risk with zero coverage: a prune whose -mtime predicate
+	# is lost or inverted deletes every session's state, silently resetting
+	# every staleness clock — strictly worse than not pruning at all.
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" '{"open_ids":"x"}' || return 1
+	mkdir -p "$STATE_DIR"
+	local old="$STATE_DIR/dead_session-123456.json"
+	printf '{"open_ids":"gone"}\n' >"$old"
+	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$old"
+	# A second write is what triggers the prune.
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "keeper" '{"open_ids":"y"}' || return 1
+	[ ! -f "$old" ] || {
+		echo "a 14-day-old session file survived the prune"
+		return 1
+	}
+	local keep
+	keep=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "keeper")
+	[ -f "$keep" ] || {
+		echo "the prune deleted LIVE session state"
+		return 1
+	}
+}
+
+@test "task-queue: the prune only matches this tool own filenames" {
+	# TASK_QUEUE_STATE_DIR is operator-settable and the write path runs a
+	# find -delete. Harvesting every old .json from a relocated directory is
+	# a destructive default.
+	mkdir -p "$STATE_DIR"
+	local bystander="$STATE_DIR/notes.json"
+	printf '{"not":"session state"}\n' >"$bystander"
+	touch -t "$(date -u -v-14d +%Y%m%d0000 2>/dev/null || date -u -d '14 days ago' +%Y%m%d0000)" "$bystander"
+	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "sess-p" '{"open_ids":"z"}' || return 1
+	[ -f "$bystander" ] || {
+		echo "the prune deleted a file that is not session state"
+		return 1
+	}
+}
+
+@test "task-queue: with NO override the state dir is repo-scoped" {
+	# Every other test sets TASK_QUEUE_STATE_DIR, so the default branch — the
+	# one that actually runs in production — was never exercised. The #2637
+	# lesson: a fixture that reproduces the inputs but not the real
+	# configuration certifies a path nothing takes.
+	local got
+	got=$(
+		cd "$TEST_TMP" && git init -q -b main 2>/dev/null
+		cd "$TEST_TMP" && TASK_QUEUE_STATE_DIR="" bash -c "source '$LIB'; _task_queue_state_dir"
+	)
+	case "$got" in
+	*/.claude/.session-state/task-queue) ;;
+	*)
+		echo "the default state dir is not repo-scoped: $got"
+		return 1
+		;;
+	esac
+}
+
+@test "task-queue: alternative content field names are read" {
+	# The normaliser falls through .content / .description / .title / .prompt
+	# because Task* carries different keys by version. An unread key means an
+	# item with empty content, which the selector then cannot name.
+	local items
+	items=$(task_queue_from_tool_input '{"tasks":[{"description":"via description","state":"pending"}]}')
+	[ "$(task_queue_next_actionable "$items")" = "via description" ] || {
+		echo ".description was not read: $items"
+		return 1
+	}
+	items=$(task_queue_from_tool_input '{"items":[{"title":"via title","status":"pending"}]}')
+	[ "$(task_queue_next_actionable "$items")" = "via title" ] || {
+		echo ".title was not read: $items"
+		return 1
+	}
+}
+
+@test "task-queue: a BLOCKED item does not count toward the open-id hash" {
+	# open_ids and next_actionable must agree on what 'open' means. They did
+	# not: a blocked item counted toward the hash while being unselectable, so
+	# a queue whose only remaining work was blocked reported movement that
+	# could never happen.
+	local all_blocked only_completed
+	all_blocked=$(task_queue_from_tool_input '{"todos":[{"content":"stuck","status":"pending","blocked":true}]}')
+	only_completed=$(task_queue_from_tool_input '{"todos":[{"content":"done","status":"completed"}]}')
+	[ "$(task_queue_open_ids "$all_blocked")" = "$(task_queue_open_ids "$only_completed")" ] || {
+		echo "a blocked-only queue hashed differently from an empty one"
+		return 1
+	}
+}

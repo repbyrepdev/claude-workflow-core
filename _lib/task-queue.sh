@@ -264,9 +264,44 @@ task_queue_open_ids() { # $1 = items JSON array
 	[ -n "$items" ] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
 	local out rc=0
+	# BLOCKED items are excluded, matching task_queue_next_actionable. They
+	# were not, and the inconsistency was real: a blocked item counted toward
+	# "is anything open" while being unselectable, so a queue whose only
+	# remaining work was blocked reported movement that could never happen.
+	# One definition of open, used by every consumer — the same reason this
+	# file exists at all.
 	out=$(printf '%s' "$items" | jq -r '
-	    [ .[]? | select(.status == "pending" or .status == "in_progress") | .content ]
+	    [ .[]? | select(.blocked | not)
+	           | select(.status == "pending" or .status == "in_progress") | .content ]
 	    | sort | join("")' 2>/dev/null) || rc=$?
 	[ "$rc" -eq 0 ] || return 1
 	printf '%s' "$out" | cksum | cut -d' ' -f1
+}
+
+# --- state accessors ------------------------------------------------------
+#
+# The reconcile hook read `.open_ids` and `.ids_at_last_commit` with its own
+# ad hoc jq, which put the state SCHEMA in two files — exactly the drift this
+# library exists to prevent, reintroduced one field at a time. Consumers go
+# through these.
+task_queue_state_open_ids() { # $1 = state JSON
+	printf '%s' "${1:-}" | jq -r '.open_ids // ""' 2>/dev/null || return 1
+}
+
+task_queue_state_ids_at_last_commit() { # $1 = state JSON
+	printf '%s' "${1:-}" | jq -r '.ids_at_last_commit // ""' 2>/dev/null || return 1
+}
+
+task_queue_state_set_ids_at_last_commit() { # $1 = state JSON, $2 = ids
+	printf '%s' "${1:-}" | jq -c --arg ids "${2:-}" '.ids_at_last_commit = $ids' 2>/dev/null || return 1
+}
+
+# The first in_progress item that is NOT blocked. The staleness check used a
+# bare status filter, so an item marked blocked AND in_progress was reported
+# as stale — nudging the operator about work they had already said cannot
+# proceed, which is the fastest way to teach them to ignore the nudge.
+task_queue_state_stale_candidate() { # $1 = state JSON
+	printf '%s' "${1:-}" | jq -r '
+	    [ .items[]? | select(.blocked | not) | select(.status == "in_progress") ]
+	    | first | .content // ""' 2>/dev/null || return 1
 }

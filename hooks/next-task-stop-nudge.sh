@@ -100,7 +100,11 @@ Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
 # (once to write, once to capture) would leave two diagnostics for one nudge,
 # and the operator would Read one and still be blocked by the other.
 _DIAG=$(hook_ack_diagnostic_write "next-task-stop-nudge" "next-open-task" "$BODY" 2>/dev/null) || _DIAG=""
-hook_ack_append "next-task-stop-nudge" "next-open-task" "$_DIAG" 2>/dev/null || true
+# The append is what ENFORCES; the systemMessage below only makes it visible
+# now, and scrolls past exactly like next-step-advisor.sh did. A swallowed
+# failure here means the nudge reports itself as fired while blocking nothing.
+hook_ack_append "next-task-stop-nudge" "next-open-task" "$_DIAG" 2>/dev/null ||
+	echo "next-task-stop-nudge: WARN: could not register the next-open-task sentinel — nothing will block on it" >&2
 
 # Also surface it immediately, following hooks/stop-uncommitted-changes.sh.
 # The sentinel is what makes it stick; this is what makes it visible NOW.

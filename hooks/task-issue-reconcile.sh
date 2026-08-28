@@ -76,7 +76,11 @@ _TQ_LIB="$_HOOK_DIR/../_lib/task-queue.sh"
 source "$_TQ_LIB" 2>/dev/null || exit 0
 
 _STATE=$(task_queue_state_read "$SESSION_ID")
-_IDS=$(printf '%s' "$_STATE" | jq -r '.open_ids // ""' 2>/dev/null) || exit 0
+# Through the lib accessors, not ad hoc jq. Reading `.open_ids` and
+# `.ids_at_last_commit` directly here put the state SCHEMA in two files —
+# exactly the drift this library exists to prevent, reintroduced one field at
+# a time.
+_IDS=$(task_queue_state_open_ids "$_STATE") || exit 0
 
 # No queue in this session — nothing to reconcile AGAINST. Firing here would
 # demand a task list from an operator who never made one, which is the
@@ -94,13 +98,17 @@ _IDS=$(printf '%s' "$_STATE" | jq -r '.open_ids // ""' 2>/dev/null) || exit 0
 # deliberate: an operator may reconcile by completing an item, by adding the
 # follow-up they discovered, or by re-scoping. All three move the set, and all
 # three are reconciliation. Only doing nothing leaves it identical.
-_LAST_COMMIT_IDS=$(printf '%s' "$_STATE" | jq -r '.ids_at_last_commit // ""' 2>/dev/null) || _LAST_COMMIT_IDS=""
+_LAST_COMMIT_IDS=$(task_queue_state_ids_at_last_commit "$_STATE") || _LAST_COMMIT_IDS=""
 
 # Record the current set for the NEXT commit regardless of what is decided
 # below — otherwise the first commit of a session, which has nothing to
 # compare against, would leave the baseline unset forever and never fire.
-_NEW_STATE=$(printf '%s' "$_STATE" | jq -c --arg ids "$_IDS" '.ids_at_last_commit = $ids' 2>/dev/null) || exit 0
-task_queue_state_write "$SESSION_ID" "$_NEW_STATE" 2>/dev/null || true
+_NEW_STATE=$(task_queue_state_set_ids_at_last_commit "$_STATE" "$_IDS") || exit 0
+# A failed baseline write means the NEXT commit compares against a stale value
+# and can report drift that did not happen — worth saying, though never worth
+# failing a tool call over.
+task_queue_state_write "$SESSION_ID" "$_NEW_STATE" 2>/dev/null ||
+	echo "task-issue-reconcile: WARN: could not record the commit baseline; the next commit may compare against a stale open-item set" >&2
 
 # First commit of the session: nothing to compare, so nothing to claim.
 [ -n "$_LAST_COMMIT_IDS" ] || exit 0
@@ -137,5 +145,8 @@ fires once per commit, not repeatedly.
 Operator toggle: TASK_NUDGE_SKIP=1 disables the task-nudge family."
 
 _DIAG=$(hook_ack_diagnostic_write "task-issue-reconcile" "commit-no-task-transition" "$_BODY" 2>/dev/null) || _DIAG=""
-hook_ack_append "task-issue-reconcile" "commit-no-task-transition" "$_DIAG" 2>/dev/null || true
+# The append is what ENFORCES. Swallowing its failure meant the drift was
+# detected and then silently dropped.
+hook_ack_append "task-issue-reconcile" "commit-no-task-transition" "$_DIAG" 2>/dev/null ||
+	echo "task-issue-reconcile: WARN: could not register the drift sentinel — nothing will block on it" >&2
 exit 0
