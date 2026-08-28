@@ -322,7 +322,12 @@ parse)
 		# the same misattribution as the index desync wearing a different hat.
 		# Clearing file drops that span instead: it belongs to a phase with no
 		# title, and there is no sub-issue for it to go to.
-		/^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+/ { file = ""; next }
+		# GATED ON form == "heading". Unqualified, this rule also ran for
+		# numbered-form plans, where a literal `### Phase 2` inside a task
+		# body is just text — it would clear file and silently drop the rest
+		# of that body until the next numbered item. The reset only makes
+		# sense for the form whose phases these markers actually delimit.
+		form == "heading" && /^(###+|\*\*)[[:space:]]*Phase[[:space:]]+[0-9]+/ { file = ""; next }
 		idx > 0 && file != "" { print >> file }
 	' 2>/dev/null || true
 	if [ "$raw_count" -gt "$PHASE_MAX" ]; then

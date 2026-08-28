@@ -424,22 +424,60 @@ task_queue_state_nudged_for() { # $1 = state JSON
 # FAILS OPEN: if the lock cannot be taken, the caller proceeds unlocked. A
 # reminder mechanism must not be able to wedge a tool call, and an unlocked
 # write is what every write did before this existed.
+# OWNERSHIP IS TRACKED, and the first cut of this did not track it.
+#
+# `_task_queue_lock` returns non-zero after the budget and the caller proceeds
+# unlocked — but the caller also arms `trap … EXIT` unconditionally, so the
+# hook that NEVER ACQUIRED the lock went on to rmdir the lockdir the other
+# hook was still holding. The holder then finished its read-modify-write
+# outside the critical section and the lost-field race came back, in exactly
+# the contention window this layer was added for. A lock that is released by
+# whoever loses the race is worse than no lock: it looks like protection.
+#
+# _TQ_LOCKS_HELD records the paths this process actually owns, and unlock is a
+# no-op for anything not in it.
+_TQ_LOCKS_HELD="${_TQ_LOCKS_HELD:-}"
+
+# STALE RECLAIM. A hook killed mid-critical-section (or one that hit an exit
+# path before the trap was armed) leaves the directory forever, and every
+# later hook in that session then pays the full budget and warns about a
+# process that is long gone. A lockdir older than twice the budget cannot
+# belong to a live holder — nothing here holds it for more than a few jq
+# calls — so it is reclaimed rather than waited on.
 _task_queue_lock() { # $1 = lock dir path
-	local lockdir=${1:-} tries=0
+	local lockdir=${1:-} tries=0 reclaimed=0
 	[ -n "$lockdir" ] || return 1
 	while ! mkdir "$lockdir" 2>/dev/null; do
 		tries=$((tries + 1))
+		# Halfway through the budget, check for a corpse exactly once.
+		if [ "$tries" -eq 100 ] && [ "$reclaimed" -eq 0 ]; then
+			reclaimed=1
+			if [ -n "$(find "$lockdir" -maxdepth 0 -type d -mmin +1 2>/dev/null)" ]; then
+				echo "task-queue: WARN: reclaiming a stale state lock older than 1m ($lockdir) — a hook was probably killed while holding it" >&2
+				rmdir "$lockdir" 2>/dev/null || true
+			fi
+		fi
 		if [ "$tries" -ge 200 ]; then
 			echo "task-queue: WARN: state lock not acquired after 2s ($lockdir) — proceeding unlocked; a concurrent hook may overwrite a field" >&2
 			return 1
 		fi
 		sleep 0.01
 	done
+	_TQ_LOCKS_HELD="$_TQ_LOCKS_HELD:$lockdir"
 	return 0
 }
 
 _task_queue_unlock() { # $1 = lock dir path
-	[ -n "${1:-}" ] && rmdir "$1" 2>/dev/null
+	local lockdir=${1:-}
+	[ -n "$lockdir" ] || return 0
+	# ONLY if this process owns it. Releasing a lock we never took is the
+	# defect described above.
+	case ":$_TQ_LOCKS_HELD:" in
+	*":$lockdir:"*) ;;
+	*) return 0 ;;
+	esac
+	rmdir "$lockdir" 2>/dev/null || true
+	_TQ_LOCKS_HELD=${_TQ_LOCKS_HELD//":$lockdir"/}
 	return 0
 }
 
@@ -483,9 +521,25 @@ task_queue_state_unlock() { # $1 = session id
 # removal: what let a task item forge lines in a force-read diagnostic was
 # \n, \r and escape sequences, and those are exactly what this deletes.
 # Printable text in any language is content, not an attack.
-task_queue_sanitise_line() { # $1 = text, $2 = max bytes (default 160)
-	local max=${2:-160}
-	printf '%s' "${1:-}" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' | cut -b "1-$max"
+#
+# Truncation is by CHARACTER, not byte. `cut -b` was the first cut and it
+# reintroduced the very problem the control-only filter had just fixed: byte
+# 160 can land inside a multibyte sequence, so the result ended in a partial
+# character — invalid UTF-8, emitted into both the diagnostic and the
+# systemMessage. awk with a UTF-8 locale counts characters, so the cut always
+# falls on a boundary.
+task_queue_sanitise_line() { # $1 = text, $2 = max characters (default 160)
+	local max=${2:-160} flat
+	flat=$(printf '%s' "${1:-}" |
+		tr '\n\r\t' '   ' |
+		LC_ALL=C tr -d '\000-\010\013\014\016-\037\177') || return 1
+	# Bash substring expansion, NOT `cut -b` and not awk substr. `cut -b`
+	# counts bytes and split multibyte characters. macOS ships BWK awk, whose
+	# substr is also byte-oriented regardless of locale — verified, it
+	# produced the same broken suffix. Bash indexes by CHARACTER whenever the
+	# locale is multibyte-aware, and costs no fork.
+	local LC_ALL=${LC_ALL:-en_US.UTF-8}
+	printf '%s' "${flat:0:max}"
 }
 
 # --- superseded diagnostic cleanup ----------------------------------------
@@ -529,9 +583,38 @@ task_queue_prune_superseded_diags() { # $1 = hook name, $2 = reason, $3 = path t
 	# within the directory, so it identifies the file without depending on
 	# how either caller spells the path to it.
 	local keep_base=${keep##*/}
+
+	# TWO MORE GUARDS, because "after a successful append" is not enough on
+	# its own. hook_ack_append serialises only the APPEND; this prune runs
+	# after that lock is released, so with two overlapping registrations one
+	# process can delete the diagnostic the other just recorded — the missing
+	# path is then unclearable and blocks every later tool call. Rather than
+	# reach for another interprocess lock (hook-ack's is not reentrant, so
+	# taking it around append+prune would deadlock against append itself),
+	# the prune is made SAFE UNDER ANY INTERLEAVING:
+	#
+	#   1. Never delete a file still REFERENCED by a row in the sentinel.
+	#      That is precisely the "cannot be cleared" condition, read from the
+	#      authority rather than assumed from ordering.
+	#   2. Never delete a file younger than a minute. A concurrent process
+	#      that has written its diagnostic but not yet appended its row has
+	#      no sentinel reference to protect it, and this is what covers that
+	#      window.
+	#
+	# Both are conservative in the same direction: the cost of skipping a file
+	# is that it is collected on the next nudge; the cost of deleting a live
+	# one is a wedged session.
+	local referenced=""
+	local sentinel="$repo_root/.claude/.session-state/hook-output-pending.txt"
+	[ -r "$sentinel" ] && referenced=$(cut -f4 "$sentinel" 2>/dev/null)
+
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
 		[ "${f##*/}" = "$keep_base" ] && continue
+		case "$referenced" in
+		*"${f##*/}"*) continue ;;
+		esac
+		[ -n "$(find "$f" -maxdepth 0 -mmin +1 2>/dev/null)" ] || continue
 		rm -f "$f" 2>/dev/null || true
 	done < <(find "$dir" -maxdepth 1 -type f -name "*-${safe_reason}-*.txt" 2>/dev/null)
 	return 0

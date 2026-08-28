@@ -642,30 +642,39 @@ _state_json() { # $1 = session id
 	esac
 }
 
-@test "task-queue: concurrent read-modify-write keeps BOTH fields" {
+@test "task-queue: concurrent read-modify-write loses NO increment" {
 	# The race: task-queue-track.sh and task-issue-reconcile.sh both match
 	# PostToolUse, both fire on the same `git commit`, and both
-	# read-modify-write this one file on DIFFERENT fields. The mv is atomic
-	# so the file never tears, but the loser read before the winner wrote,
-	# so it writes back stale data and drops the other field silently.
+	# read-modify-write this one file. The mv is atomic so the file never
+	# tears; the loser read before the winner wrote, so it writes back a
+	# stale object and the winner's change is gone.
+	#
+	# ASSERTED ON THE INCREMENT COUNT, NOT ON KEY PRESENCE. The first version
+	# of this test checked that ids_at_last_commit and calls_since_update
+	# were still there — which the seed guarantees, because every writer
+	# jq-edits the WHOLE object it read, so even a losing writer writes both
+	# keys back. It named the invariant "keeps BOTH fields" and asserted
+	# something the seed made unfalsifiable: deleting the lock left it green.
+	#
+	# A lost update, by contrast, is exactly what an unserialised
+	# read-modify-write produces and nothing else does. N increments must
+	# yield N.
+	local n=8
 	TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_write "racer" \
 		'{"open_ids":"seed","calls_since_update":0,"ids_at_last_commit":"base"}' || return 1
 
 	local i=0
-	while [ "$i" -lt 5 ]; do
+	while [ "$i" -lt "$n" ]; do
 		(
 			export TASK_QUEUE_STATE_DIR="$STATE_DIR"
 			task_queue_state_lock "racer" || true
 			s=$(task_queue_state_read "racer")
+			# The sleep WIDENS the window deliberately. Without it the
+			# read-modify-write is fast enough that an unlocked run can pass
+			# by luck, and a concurrency test that passes by luck is the same
+			# defect as one that passes by construction.
+			sleep 0.02
 			s=$(printf '%s' "$s" | jq -c '.calls_since_update += 1')
-			task_queue_state_write "racer" "$s"
-			task_queue_state_unlock "racer"
-		) &
-		(
-			export TASK_QUEUE_STATE_DIR="$STATE_DIR"
-			task_queue_state_lock "racer" || true
-			s=$(task_queue_state_read "racer")
-			s=$(printf '%s' "$s" | jq -c --arg v "commit-$RANDOM" '.ids_at_last_commit = $v')
 			task_queue_state_write "racer" "$s"
 			task_queue_state_unlock "racer"
 		) &
@@ -673,20 +682,112 @@ _state_json() { # $1 = session id
 	done
 	wait
 
-	local sf ids calls
+	local sf calls
 	sf=$(TASK_QUEUE_STATE_DIR="$STATE_DIR" task_queue_state_path "racer")
 	jq -e . "$sf" >/dev/null 2>&1 || {
 		echo "concurrent writes produced invalid JSON"
 		return 1
 	}
-	ids=$(jq -r '.ids_at_last_commit // ""' "$sf")
 	calls=$(jq -r '.calls_since_update // "MISSING"' "$sf")
-	[ -n "$ids" ] || {
-		echo "ids_at_last_commit was dropped by a concurrent writer"
+	[ "$calls" = "$n" ] || {
+		echo "lost update: $n writers incremented, final value is $calls"
 		return 1
 	}
-	[ "$calls" != "MISSING" ] || {
-		echo "calls_since_update was dropped by a concurrent writer"
+}
+
+@test "task-queue: a hook that never ACQUIRED the lock does not release it" {
+	# The lock had no ownership tracking, and both hooks arm the EXIT trap
+	# unconditionally. So a hook that timed out — proceeding unlocked, which
+	# is the intended fail-open — went on to rmdir the lockdir the OTHER hook
+	# was still holding. The holder then finished outside the critical
+	# section and the lost-update race returned, in exactly the contention
+	# window the lock was added for. A lock released by whoever loses the
+	# race is worse than no lock: it looks like protection.
+	local dir="$STATE_DIR/lockowner"
+	mkdir -p "$dir"
+	local ld="$dir/held.lockdir"
+	mkdir "$ld" || return 1
+
+	# This shell never called _task_queue_lock for $ld, so it owns nothing.
+	_task_queue_unlock "$ld"
+	[ -d "$ld" ] || {
+		echo "a non-owner released a lock it never acquired"
+		return 1
+	}
+
+	# And the real owner still can.
+	_TQ_LOCKS_HELD="$_TQ_LOCKS_HELD:$ld"
+	_task_queue_unlock "$ld"
+	[ ! -d "$ld" ] || {
+		echo "the owner could not release its own lock"
+		return 1
+	}
+}
+
+@test "task-queue: a STALE lockdir is reclaimed, not waited on forever" {
+	# A hook killed mid-critical-section leaves the directory behind, and
+	# every later hook in the session then pays the full budget and warns
+	# about a process that is long gone.
+	local dir="$STATE_DIR/stale"
+	mkdir -p "$dir"
+	local ld="$dir/old.lockdir"
+	mkdir "$ld" || return 1
+	# Age it well past the reclaim threshold.
+	# NOT `date -u`: touch -t interprets its argument as LOCAL time, so a UTC
+	# stamp lands in the FUTURE outside UTC and `find -mmin +1` never matches
+	# it. The reclaim looked broken; the fixture was dating the corpse wrong.
+	touch -t "$(date -v-1H +%Y%m%d%H%M 2>/dev/null || date -d '1 hour ago' +%Y%m%d%H%M)" "$ld"
+
+	run _task_queue_lock "$ld"
+	[ "$status" -eq 0 ] || {
+		echo "a stale lock was never reclaimed: $output"
+		return 1
+	}
+	case "$output" in
+	*reclaiming*) ;;
+	*)
+		echo "the reclaim was silent — an operator cannot tell this happened: $output"
+		return 1
+		;;
+	esac
+	_task_queue_unlock "$ld"
+}
+
+@test "task-queue: a FRESH lockdir is NOT reclaimed" {
+	# The other half. Reclaiming an actively-held lock would be the same
+	# defect as releasing one you never took, arriving by a different route.
+	local dir="$STATE_DIR/fresh"
+	mkdir -p "$dir"
+	local ld="$dir/live.lockdir"
+	mkdir "$ld" || return 1
+
+	run _task_queue_lock "$ld"
+	[ "$status" -ne 0 ] || {
+		echo "a freshly-held lock was stolen from its holder"
+		return 1
+	}
+	[ -d "$ld" ] || {
+		echo "a freshly-held lockdir was removed"
+		return 1
+	}
+	rmdir "$ld"
+}
+
+@test "task-queue: truncation lands on a CHARACTER boundary" {
+	# `cut -b` was the first truncation and it reintroduced the problem the
+	# control-only filter had just fixed: byte N can fall inside a multibyte
+	# sequence, so the result ends in a partial character — invalid UTF-8,
+	# emitted into both the diagnostic and the systemMessage.
+	local got
+	# Ten 3-byte characters; a 5-character cut is byte 15, and any byte-wise
+	# truncation to 5 would split the second character.
+	got=$(task_queue_sanitise_line "ありがとうございます" 5)
+	printf '%s' "$got" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || {
+		echo "truncation produced invalid UTF-8: $(printf '%s' "$got" | od -c | head -2)"
+		return 1
+	}
+	[ "$(printf '%s' "$got" | wc -m | tr -d ' ')" = "5" ] || {
+		echo "expected 5 characters, got $(printf '%s' "$got" | wc -m | tr -d ' '): $got"
 		return 1
 	}
 }
@@ -705,6 +806,14 @@ _state_json() { # $1 = session id
 	printf 'keep\n' >"$dir/20260103T000000Z-a-reason-cccccc.txt"
 	# A different reason in the same directory must be untouched.
 	printf 'other\n' >"$dir/20260101T000000Z-other-reason-dddddd.txt"
+	# AGE the superseded ones. The prune deliberately spares anything younger
+	# than a minute: a concurrent process that has written its diagnostic but
+	# not yet appended its sentinel row has no reference protecting it, and
+	# that window is exactly what the age guard covers.
+	touch -t "$(date -v-1H +%Y%m%d%H%M 2>/dev/null || date -d '1 hour ago' +%Y%m%d%H%M)" \
+		"$dir/20260101T000000Z-a-reason-aaaaaa.txt" \
+		"$dir/20260102T000000Z-a-reason-bbbbbb.txt" \
+		"$dir/20260101T000000Z-other-reason-dddddd.txt"
 
 	(cd "$root" && task_queue_prune_superseded_diags "some-hook" "a-reason" \
 		"$dir/20260103T000000Z-a-reason-cccccc.txt")
