@@ -101,12 +101,23 @@ hook_ack_append() {
 		}
 		# awk: emit lines whose (hook, reason) tuple does NOT match the incoming pair.
 		# Tab-separated fields: $1=ts, $2=hook, $3=reason, $4=file.
-		awk -F'\t' -v h="$hook" -v r="$reason" '!($2 == h && $3 == r)' "$sentinel" >"$tmp" && mv -f "$tmp" "$sentinel" || {
+		# `if`, not `A && B || C`. The chained form runs the handler when A
+		# succeeds and B fails AND when A fails — which happens to be the
+		# intent here, since both are errors, but it reads as if-then-else
+		# and is not one. Latent until this file was next staged, because
+		# the lint only sees files in the commit.
+		local _dedup_ok=1
+		if awk -F'\t' -v h="$hook" -v r="$reason" '!($2 == h && $3 == r)' "$sentinel" >"$tmp"; then
+			mv -f "$tmp" "$sentinel" || _dedup_ok=0
+		else
+			_dedup_ok=0
+		fi
+		if [ "$_dedup_ok" -eq 0 ]; then
 			echo "hook_ack_append: dedup rewrite failed" >&2
 			rm -f "$tmp"
 			rmdir "$lockdir" 2>/dev/null || true
 			return 1
-		}
+		fi
 	fi
 	printf '%s\t%s\t%s\t%s\n' "$ts" "$hook" "$reason" "$file" \
 		>>"$sentinel" || {
@@ -156,10 +167,32 @@ hook_ack_diagnostic_write() {
 	# calls in the same second clobber each other (real path: dogfood-gate
 	# loop over multiple drift targets). Append a 6-char random suffix so
 	# rapid back-to-back calls produce distinct paths even at same ts.
+	#
+	# (#2641) THE SUFFIX NEVER WORKED. It was:
+	#
+	#     rand_suffix=$(... </dev/urandom | head -c 6) || rand_suffix="$$"
+	#
+	# `head -c 6` exits as soon as it has six bytes and SIGPIPEs `tr`. Under
+	# `set -o pipefail` — which EVERY caller of this library sets — the
+	# pipeline therefore reports failure and the fallback always fires. All
+	# 511 diagnostics on disk at the time of this fix carried a `$$` suffix;
+	# not one had a random one. And `$$` is the process id, stable across
+	# subshells, so two calls in the same second from one process produced
+	# the SAME path and clobbered each other — precisely the collision the
+	# suffix was added to prevent, with the real trigger (a gate looping over
+	# several targets) already named in the comment above.
+	#
+	# Verified: without pipefail the original returns a random string; with
+	# it, always the pid. That is why this was invisible to a shell test run
+	# by hand.
+	#
+	# No pipeline now, so there is no SIGPIPE to mis-report. `$RANDOM` is a
+	# bash builtin present in 3.2, and two draws give 8 hex chars, trimmed to
+	# 6. This is filename disambiguation, not cryptography.
 	local ts rand_suffix
 	ts=$(date -u +%Y%m%dT%H%M%SZ)
-	rand_suffix=$(LC_ALL=C tr -dc '[:alnum:]' </dev/urandom 2>/dev/null | head -c 6) ||
-		rand_suffix="$$"
+	rand_suffix=$(printf '%04x%04x' "$RANDOM" "$RANDOM")
+	rand_suffix=${rand_suffix:0:6}
 	# Sanitize reason for use in filename: replace non-alnum with `-`,
 	# truncate to 60 chars to prevent excessive filenames.
 	local safe_reason

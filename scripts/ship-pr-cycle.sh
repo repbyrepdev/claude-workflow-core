@@ -1603,8 +1603,9 @@ cmd_status() {
 	esac
 }
 
-cmd_next() {
-	# Advance one stage. Caller-driven (one transition per invocation).
+# The single-stage dispatcher. Callers use cmd_next (below), which re-enters
+# this exactly once for the phase0.5 -> phase1 edge.
+_cmd_next_once() {
 	local stage
 	stage=$(_get_stage)
 	echo "ship-pr-cycle: current stage = $stage"
@@ -1732,7 +1733,8 @@ cmd_next() {
 					_set_stage "phase1"
 					echo "ship-pr-cycle: branch $_grad_branch already graduated past Phase 0.5/1 — skipping phase0.5 prefilter for this SHA"
 					echo "→ advanced to phase1"
-					_emit_stage_directive two-step-phase1
+					# Continue into the phase1 arm in this same call (#2641).
+					_SHIP_NEXT_REDISPATCH=1
 					[ "$_grad_src_err" != "/dev/null" ] && rm -f "$_grad_src_err"
 					return 0
 				fi
@@ -1784,7 +1786,8 @@ cmd_next() {
 		0)
 			_set_stage "phase1"
 			echo "→ phase0.5 logged for $sha; advanced to phase1"
-			_emit_stage_directive two-step-phase1
+			# Continue into the phase1 arm in this same call (#2641).
+			_SHIP_NEXT_REDISPATCH=1
 			;;
 		1 | 4)
 			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
@@ -3086,6 +3089,57 @@ EOF
 		return 2
 		;;
 	esac
+}
+
+# (#2641) Advance one stage per invocation — EXCEPT the phase0.5 -> phase1
+# edge, which continues into the phase1 arm within the same call.
+#
+# WHY. Flipping the stage to phase1 used to consume the whole invocation,
+# because `_cmd_next_once` is one `case` with no loop. The phase1 arm — which
+# writes the directive marker + nonce and prints the real agent directive —
+# could then only run on a SUBSEQUENT call, so the phase0.5 arm emitted a
+# `two-step-phase1` hook-ack telling the operator to type the same
+# argument-free command again.
+#
+# That directive accounted for 246 of 511 recorded hook-ack blocks, 239 of
+# them byte-identical, each costing a denied tool call + a Read + a retry.
+# It was never designed: `_set_stage "phase1"` landed in 121bd43 (#20) and
+# the directive was added nine days later in 2184197 (#283), whose own
+# message calls it "the two-step-next trap that cost the most this
+# convergence". A directive documenting a footgun is not a justification for
+# one.
+#
+# NOTHING happened between the two calls. Same sha; the marker path and
+# nonce are sha-keyed; the phase1 arm's inputs (clean streak, scaler cap,
+# round count) are all final the moment the flip returns. No operator
+# judgement, no new information.
+#
+# This also CLOSES a hazard rather than opening one: there was a window where
+# the stage read `phase1` while no marker existed, so an agent fired in it was
+# denied by hooks/ship-cycle-guard.sh ("outside an active Phase 1 directive").
+# Under re-dispatch the marker exists the instant the directive prints.
+#
+# Deliberately NOT a general loop. `_SHIP_NEXT_REDISPATCH` is set at exactly
+# one edge, and the counter caps re-entry at one, so a future arm that sets
+# it cannot turn `next` into an unbounded walk. cmd_resume remains the thing
+# that walks many stages.
+#
+# bash 3.2 target (see the shebang), so `;&` case fall-through is unavailable.
+cmd_next() {
+	local _redispatched=0 _rc=0
+	while :; do
+		_SHIP_NEXT_REDISPATCH=0
+		_cmd_next_once || _rc=$?
+		[ "$_rc" -eq 0 ] || return "$_rc"
+		[ "${_SHIP_NEXT_REDISPATCH:-0}" = "1" ] || return 0
+		if [ "$_redispatched" -ge 1 ]; then
+			# Defensive: a second request means an arm other than the one
+			# edge set the flag. Stop and say so rather than looping.
+			echo "ship-pr-cycle: WARN: more than one stage re-dispatch requested in a single 'next'; stopping here. Re-run 'next' to continue." >&2
+			return 0
+		fi
+		_redispatched=$((_redispatched + 1))
+	done
 }
 
 cmd_resume() {

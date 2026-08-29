@@ -348,3 +348,80 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	[[ $output == *"no parseable ROUNDS=N line"* ]] || return 1
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }
+
+# ---- (#2641) the phase0.5 -> phase1 collapse ----------------------------
+
+_seed_stage_phase05() {
+	printf '{"version":1,"stage":"phase0.5","branch":"feat-2575-cap","sha":"%s","history":[]}\n' \
+		"$SHA" >"$STATE_DIR/$SHA.json"
+}
+
+_seed_phase05_log() {
+	# The phase0.5 arm's gate: a logged prefilter row for this sha.
+	mkdir -p "$ROOT/.claude/logs"
+	printf '{"sha":"%s","findings":0,"status":"ok"}\n' "$SHA" \
+		>"$ROOT/.claude/logs/phase0.5-run.jsonl"
+}
+
+@test "one next at phase0.5 lands BOTH the stage flip and the phase1 directive" {
+	# THE COLLAPSE. Flipping to phase1 used to consume the whole invocation,
+	# so the phase1 arm — which writes the directive marker + nonce and
+	# prints the agent directive — could only run on a SECOND call. That
+	# second call was byte-identical and argument-free, and the hook-ack
+	# nagging the operator into typing it accounted for 246 of 511 recorded
+	# blocks.
+	#
+	# Asserted on BOTH halves. Checking only the stage would pass on the old
+	# two-call behaviour; checking only the directive would not prove the
+	# stage advanced.
+	_seed_stage_phase05
+	_seed_phase05_log
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+
+	[ "$(_cur_stage)" = "phase1" ] || {
+		echo "stage did not advance: $(_cur_stage)"
+		return 1
+	}
+	# The phase1 arm ran in the SAME call — it either printed its directive
+	# or took a documented phase1 exit (cap/graduation). What it must NOT do
+	# is stop after the flip having produced neither.
+	case "$output" in
+	*"DIRECTIVE FOR OPERATOR"* | *"GRADUATED to phase2"* | *"round-cap ENFORCED"*) ;;
+	*)
+		echo "the phase1 arm never ran in this invocation: $output"
+		return 1
+		;;
+	esac
+	# And the two-step nag is gone for good.
+	case "$output" in
+	*"two-step"* | *"AGAIN"*)
+		echo "the two-step directive is still being emitted: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "the collapse does NOT turn next into an unbounded walk" {
+	# Scoped to one edge, capped at a single re-dispatch. A future arm that
+	# sets the flag must not be able to make `next` walk the whole machine —
+	# cmd_resume is the thing that does that, deliberately and with its own
+	# suppression rules.
+	_seed_stage_phase05
+	_seed_phase05_log
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || [ "$status" -eq 2 ]
+	# One invocation must not reach the far side of the machine.
+	case "$(_cur_stage)" in
+	phase0.5 | phase1 | phase2) ;;
+	*)
+		echo "one next walked past phase2 to: $(_cur_stage)"
+		return 1
+		;;
+	esac
+}

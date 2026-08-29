@@ -1,0 +1,288 @@
+#!/usr/bin/env bats
+# covers: _lib/hook-ack.sh
+#
+# (#2641) This library had NO covering test file, despite being the mechanism
+# every enforcement hook in the repo relies on to make its output impossible
+# to scroll past. It is the thing that turns "a hook printed something" into
+# "the next tool call is denied until you read it".
+#
+# The immediate reason for writing it: the filename suffix intended to stop
+# rapid calls clobbering each other had never once worked in production. All
+# 511 diagnostics on disk carried the `$$` fallback and not one a random
+# suffix — because `head -c 6` SIGPIPEs `tr`, and under the `set -o pipefail`
+# that EVERY caller sets, the pipeline reports failure. A shell test run by
+# hand, without pipefail, returns a random string and shows nothing wrong.
+# That is why the bug survived: it is invisible except under the callers' own
+# shell options.
+
+setup() {
+	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	LIB="$REPO_ROOT/_lib/hook-ack.sh"
+	[ -r "$LIB" ]
+	TEST_TMP=$(mktemp -d -t hook-ack.XXXXXX) || {
+		echo "FATAL: mktemp failed" >&2
+		return 1
+	}
+	# A scratch repo: hook_ack_diagnostic_write resolves its directory from
+	# the git toplevel, so this keeps every diagnostic out of the real tree.
+	# Writing them into the operator's own hook-ack dir would block their
+	# next tool call for a test fixture.
+	WORK="$TEST_TMP/work"
+	mkdir -p "$WORK"
+	(cd "$WORK" && git init -q -b main) || {
+		echo "FATAL: fixture repo init failed" >&2
+		return 1
+	}
+	SENTINEL="$WORK/.claude/.session-state/hook-output-pending.txt"
+	DIAG_ROOT="$WORK/.claude/.session-state/hook-ack"
+}
+
+teardown() {
+	cd "${TMPDIR:-/tmp}" 2>/dev/null || cd "$HOME" || return 0
+	case "${TEST_TMP:-}" in
+	*/hook-ack.*) rm -rf "$TEST_TMP" ;;
+	esac
+	return 0
+}
+
+# Runs a snippet with the library sourced, in the fixture repo, under the
+# SAME shell options every real caller uses. `HOOK_ACK_BATS_SKIP=0` forces
+# the real append path (it short-circuits under bats by default).
+_in_lib() { # $1 = shell snippet
+	run bash -c "set -uo pipefail
+		cd '$WORK'
+		export HOOK_ACK_BATS_SKIP=0
+		. '$LIB'
+		$1"
+}
+
+# ---- the suffix bug ------------------------------------------------------
+
+@test "hook-ack: the filename suffix is not the pid" {
+	# The regression itself. `$$` is stable across subshells within one
+	# process, so a pid suffix is not a disambiguator at all — two calls in
+	# the same second from one process produced the same path.
+	_in_lib 'hook_ack_diagnostic_write h reason "body"'
+	[ "$status" -eq 0 ] || {
+		echo "diagnostic write failed: $output"
+		return 1
+	}
+	local base suffix
+	base=$(basename "$output")
+	suffix=$(printf '%s' "$base" | sed -E 's/.*-([A-Za-z0-9]+)\.txt$/\1/')
+	[ -n "$suffix" ] || {
+		echo "could not extract a suffix from: $base"
+		return 1
+	}
+	# ASSERTS ONLY WHAT IT CAN. The suffix must be exactly 6 characters —
+	# the pid fallback was 5 or 6 decimal digits, so length alone does not
+	# discriminate, and a hex draw can be all-digits. An earlier draft had a
+	# `case` arm here pretending to reject pid-shaped values and doing
+	# nothing at all; the real invariant is distinctness, asserted in the
+	# next test. This one pins the format so a future change that drops the
+	# suffix entirely, or emits a full pid, is caught.
+	[ ${#suffix} -eq 6 ] || {
+		echo "suffix is ${#suffix} chars, expected 6: $suffix"
+		return 1
+	}
+	case "$suffix" in
+	*[!0-9a-f]*)
+		echo "suffix is not lowercase hex, so it is not the intended draw: $suffix"
+		return 1
+		;;
+	esac
+}
+
+@test "hook-ack: two calls in ONE process get DISTINCT paths" {
+	# The actual invariant, and the one the pid fallback broke. Same
+	# process, same second, two diagnostics — they must not collide.
+	_in_lib 'a=$(hook_ack_diagnostic_write h reason "body one")
+		b=$(hook_ack_diagnostic_write h reason "body two")
+		printf "%s\n%s\n" "$a" "$b"'
+	[ "$status" -eq 0 ] || {
+		echo "writes failed: $output"
+		return 1
+	}
+	local first second
+	first=$(printf '%s\n' "$output" | sed -n '1p')
+	second=$(printf '%s\n' "$output" | sed -n '2p')
+	[ "$first" != "$second" ] || {
+		echo "two calls in one process produced the SAME path: $first"
+		return 1
+	}
+	# And BOTH files must survive — a collision would leave one body only.
+	[ -f "$first" ] && [ -f "$second" ] || {
+		echo "a diagnostic was clobbered: first=$first second=$second"
+		return 1
+	}
+	grep -q 'body one' "$first" || {
+		echo "first diagnostic lost its body"
+		return 1
+	}
+	grep -q 'body two' "$second" || {
+		echo "second diagnostic lost its body"
+		return 1
+	}
+}
+
+@test "hook-ack: the suffix works under the callers' OWN shell options" {
+	# The reason the bug was invisible: without `pipefail` the old pipeline
+	# returned a random string and looked fine. Every real caller sets
+	# `set -uo pipefail`, and _in_lib does too — so this test would have
+	# failed before the fix and passes after it. Pinned explicitly because
+	# "works when I try it in a shell" was the false signal.
+	_in_lib 'set -o | grep -q "pipefail.*on" || { echo "FIXTURE-NO-PIPEFAIL"; exit 1; }
+		hook_ack_diagnostic_write h reason "body"'
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*FIXTURE-NO-PIPEFAIL*)
+		echo "the fixture did not actually enable pipefail — this test proves nothing"
+		return 1
+		;;
+	esac
+}
+
+# ---- the core contract ---------------------------------------------------
+
+@test "hook-ack: a written diagnostic contains hook, reason and body" {
+	_in_lib 'p=$(hook_ack_diagnostic_write myhook myreason "the explanation")
+		cat "$p"'
+	[ "$status" -eq 0 ]
+	case "$output" in
+	*myhook*) ;;
+	*)
+		echo "the diagnostic does not name its hook: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*myreason*) ;;
+	*)
+		echo "the diagnostic does not name its reason: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"the explanation"*) ;;
+	*)
+		echo "the diagnostic lost its body: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "hook-ack: append registers a row that names the diagnostic" {
+	_in_lib 'p=$(hook_ack_diagnostic_write h r "body")
+		hook_ack_append h r "$p"'
+	[ "$status" -eq 0 ] || {
+		echo "append failed: $output"
+		return 1
+	}
+	[ -s "$SENTINEL" ] || {
+		echo "no sentinel row was written"
+		return 1
+	}
+	# Field 4 is the path, and it must exist — a row pointing at nothing
+	# cannot be cleared by Read and hard-blocks every later tool call.
+	local fp
+	fp=$(awk -F'\t' 'NR==1{print $4}' "$SENTINEL")
+	[ -n "$fp" ] || {
+		echo "the row has an EMPTY file_path — unclearable"
+		return 1
+	}
+	[ -f "$fp" ] || {
+		echo "the row points at a file that does not exist: $fp"
+		return 1
+	}
+}
+
+@test "hook-ack: append DEDUPES by (hook, reason), keeping one row" {
+	# The documented behaviour, and the reason a repeated directive still
+	# blocks: the row collapses but is re-pointed at a brand-new file that
+	# has never been Read.
+	_in_lib 'for i in 1 2 3; do
+			p=$(hook_ack_diagnostic_write h r "body $i")
+			hook_ack_append h r "$p"
+		done'
+	[ "$status" -eq 0 ]
+	local rows
+	rows=$(grep -c . "$SENTINEL")
+	[ "$rows" = "1" ] || {
+		echo "expected 1 deduped row, got $rows: $(cat "$SENTINEL")"
+		return 1
+	}
+	# And it points at the LAST one written.
+	local fp
+	fp=$(awk -F'\t' 'NR==1{print $4}' "$SENTINEL")
+	grep -q 'body 3' "$fp" || {
+		echo "the surviving row does not point at the newest diagnostic"
+		return 1
+	}
+}
+
+@test "hook-ack: a DIFFERENT reason gets its own row" {
+	# Dedup is on the pair, not on the hook. Two concerns from one hook must
+	# both block.
+	_in_lib 'p=$(hook_ack_diagnostic_write h reason-a "a"); hook_ack_append h reason-a "$p"
+		q=$(hook_ack_diagnostic_write h reason-b "b"); hook_ack_append h reason-b "$q"'
+	[ "$status" -eq 0 ]
+	local rows
+	rows=$(grep -c . "$SENTINEL")
+	[ "$rows" = "2" ] || {
+		echo "expected 2 rows for 2 reasons, got $rows: $(cat "$SENTINEL")"
+		return 1
+	}
+}
+
+@test "hook-ack: a path-traversing hook name cannot escape the ack dir" {
+	# The hook name becomes a directory component. `basename` + a character
+	# filter run on it for exactly this reason.
+	_in_lib 'hook_ack_diagnostic_write "../../../etc/evil" r "body"' || true
+	# Either it refuses, or it writes INSIDE the ack root — never outside.
+	[ ! -e "$WORK/.claude/.session-state/etc" ] || {
+		echo "a traversing hook name created a directory outside the ack root"
+		return 1
+	}
+	[ ! -e "$TEST_TMP/etc" ] || {
+		echo "a traversing hook name escaped the fixture repo entirely"
+		return 1
+	}
+	if [ "$status" -eq 0 ] && [ -n "$output" ]; then
+		# RESOLVED on both sides. macOS $TMPDIR is /var/folders/... while the
+		# library resolves through git, which reports /private/var/... — two
+		# spellings of one directory. Comparing them raw fails on a path that
+		# is actually contained, which is a false alarm about a security
+		# property and the third time this exact mismatch has bitten today.
+		local _root_real _out_real
+		_root_real=$(cd "$DIAG_ROOT" 2>/dev/null && pwd -P) || _root_real="$DIAG_ROOT"
+		_out_real=$(cd "$(dirname "$output")" 2>/dev/null && pwd -P) || _out_real=$(dirname "$output")
+		case "$_out_real/" in
+		"$_root_real"/*) ;;
+		*)
+			echo "wrote outside the ack root: $_out_real (root: $_root_real)"
+			return 1
+			;;
+		esac
+	fi
+}
+
+@test "hook-ack: a body with tabs and newlines cannot forge a sentinel row" {
+	# The sentinel is tab-delimited, one row per line. Body text is
+	# attacker-influenced in several callers (commit subjects, task items),
+	# and it must not be able to inject a second row or shift the columns.
+	_in_lib 'p=$(hook_ack_diagnostic_write h r "$(printf "evil\tcol\nsecond\trow")")
+		hook_ack_append h r "$p"'
+	[ "$status" -eq 0 ]
+	local rows
+	rows=$(grep -c . "$SENTINEL")
+	[ "$rows" = "1" ] || {
+		echo "body text forged extra sentinel rows ($rows): $(cat "$SENTINEL")"
+		return 1
+	}
+	local fp
+	fp=$(awk -F'\t' 'NR==1{print $4}' "$SENTINEL")
+	[ -f "$fp" ] || {
+		echo "body text corrupted the path column: [$fp]"
+		return 1
+	}
+}

@@ -32,28 +32,54 @@ teardown() {
 	return 0
 }
 
-@test "two-step-phase1 directive prints to stdout (status 0)" {
-	run _emit_stage_directive two-step-phase1
+# (#2641) These three exercised the generic _emit_stage_directive machinery
+# through the `two-step-phase1` label. That arm has been REMOVED — cmd_next
+# now continues from phase0.5 into phase1 within one invocation, so nothing
+# emitted it any more, and a directive arm that no call site reaches is the
+# same "looks live, is not" shape this epic exists to remove.
+#
+# Retargeted to `phase2-preread`, which has four live call sites. The
+# properties under test are the machinery's, not that label's: prints to
+# stdout, registers an ack under the right hook name, and is suppressed
+# inside cmd_resume.
+@test "a stage directive prints to stdout (status 0)" {
+	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]] || return 1
-	[[ $output == *"AGAIN"* ]] || return 1
-	[[ $output == *"two-step"* ]] || return 1
-	# F3 (#253 r1 pr-test-analyzer): lock the load-bearing trap instruction, not
-	# just the word "two-step" — a body rewrite that drops the warning must fail.
-	[[ $output == *"Do NOT fire phase1 agents"* ]] || return 1
-	[[ $output == *"2nd next"* ]]
+	# Lock the load-bearing instruction, not merely that something printed —
+	# a body rewrite that drops the "APPROVE=1, never a *_SKIP" rule must fail.
+	[[ $output == *"ONLY operator merge gate"* ]] || return 1
+	[[ $output == *"never a *_SKIP"* ]] || return 1
+	[ -n "$output" ]
+}
+
+@test "every IMPLEMENTED directive arm has at least one live call site" {
+	# The check that would have caught the dead arm. A label with no emitter
+	# is unreachable code wearing the shape of enforcement, and the removed
+	# `two-step-phase1` arm sat that way from the moment cmd_next stopped
+	# calling it.
+	local lib="${BATS_TEST_DIRNAME}/../../../_lib/ship-cycle-directives.sh"
+	local cycle="${BATS_TEST_DIRNAME}/../../../scripts/ship-pr-cycle.sh"
+	local label n dead=""
+	for label in $(grep -oE '^	[a-z0-9-]+\)' "$lib" | tr -d '\t)'); do
+		n=$(grep -c "_emit_stage_directive $label" "$cycle" || true)
+		[ "$n" -gt 0 ] || dead="$dead $label"
+	done
+	[ -z "$dead" ] || {
+		echo "directive arm(s) with no call site:$dead"
+		return 1
+	}
 }
 
 @test "calls hook_ack_append with the label (not in resume)" {
-	run _emit_stage_directive two-step-phase1
+	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
 	grep -q 'ship-pr-cycle-next' "$CALLS"
-	grep -q 'two-step-phase1' "$CALLS"
+	grep -q 'merge-gate' "$CALLS"
 }
 
 @test "SHIP_PR_IN_RESUME=1 (exported) suppresses the ack-pending (stdout still prints)" {
 	export SHIP_PR_IN_RESUME=1
-	run _emit_stage_directive two-step-phase1
+	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
 	[[ $output == *"do NOT skip"* ]] || return 1 # stdout still emitted during resume
 	[ ! -s "$CALLS" ]                            # hook_ack_append NOT called
@@ -65,7 +91,7 @@ teardown() {
 	# Prove a `local` in a caller is visible to _emit_stage_directive.
 	_outer() {
 		local SHIP_PR_IN_RESUME=1
-		_emit_stage_directive two-step-phase1
+		_emit_stage_directive phase2-preread
 	}
 	run _outer
 	[ "$status" -eq 0 ]
