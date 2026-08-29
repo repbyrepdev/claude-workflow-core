@@ -573,3 +573,52 @@ Fixes #15'
 		;;
 	esac
 }
+
+@test "epic-completeness: a library whose SOURCE fails refuses, it does not abort" {
+	# The same guard on the OTHER caller. It was added to
+	# skills/github-pr-merge/run.sh and not here — the third time on this
+	# branch that a fix landed on one of two callers of the same library,
+	# which is why this one is tested rather than assumed.
+	local root
+	_ecc_gh_stub
+	root=$(_ecc_fixture with-lib)
+	# Defines everything; only the trailing status is non-zero.
+	printf '\nfalse\n' >>"$root/issue-trailers.sh"
+	run bash -c "set -euo pipefail; source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -eq 2 ] || {
+		echo "expected a refusal (rc 2), got $status: $output"
+		return 1
+	}
+	case "$output" in
+	*"returned non-zero"*) ;;
+	*)
+		echo "the failing source was not named as the cause: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "trailers: the cap constant and counter live in the LIBRARY" {
+	# The cap started in run.sh, was copied into epic-completeness-check.sh
+	# when Phase 2 flagged the asymmetry, and a third copy is exactly how
+	# the regex duplication that created this library began.
+	[ "${ISSUE_TRAILER_MAX}" = "50" ] || {
+		echo "the shared cap is not 50: ${ISSUE_TRAILER_MAX}"
+		return 1
+	}
+	[ "$(issue_trailers_count "$(printf '1\n2\n3')")" = "3" ] || {
+		echo "counter miscounted three ids"
+		return 1
+	}
+	# The single-line case is why this is not `wc -l`: a command
+	# substitution has already stripped the trailing newline, so wc would
+	# report 0 for one id.
+	[ "$(issue_trailers_count '7')" = "1" ] || {
+		echo "counter miscounted a single id"
+		return 1
+	}
+	[ "$(issue_trailers_count '')" = "0" ] || {
+		echo "counter miscounted the empty case"
+		return 1
+	}
+}

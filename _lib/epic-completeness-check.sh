@@ -55,8 +55,17 @@ epic_completeness_check() {
 		echo "epic_completeness_check: _lib/issue-trailers.sh missing — cannot parse closing trailers" >&2
 		return 2
 	fi
+	# GUARDED, like the sibling caller. `. file` returns the status of the
+	# last statement in that file, so a library whose tail evaluates
+	# non-zero aborts this gate outright under a caller's `set -e`. The
+	# guard was added to skills/github-pr-merge/run.sh and not here — the
+	# third time on this branch that a fix landed on one of two callers of
+	# the same library.
 	# shellcheck source=./issue-trailers.sh
-	. "$_it_lib"
+	if ! . "$_it_lib"; then
+		echo "epic_completeness_check: sourcing $_it_lib returned non-zero — cannot determine closing references" >&2
+		return 2
+	fi
 	# Readable is not usable. A truncated library passes `-r` and defines
 	# nothing; the missing function then surfaces as rc 127 down in the
 	# extraction path and gets reported as a GitHub outage AND a broken
@@ -131,9 +140,9 @@ epic_completeness_check() {
 		# the asymmetry this branch keeps producing: a guard applied to one
 		# of two callers of the same library.
 		local _n_ids
-		_n_ids=$(printf '%s\n' "$closed_ids" | grep -c .) || _n_ids=0
-		if [ "$_n_ids" -gt 50 ]; then
-			echo "epic_completeness_check: $_n_ids closing references from the fallback is implausible (cap 50) — refusing rather than spending that many API calls" >&2
+		_n_ids=$(issue_trailers_count "$closed_ids")
+		if [ "$_n_ids" -gt "$ISSUE_TRAILER_MAX" ]; then
+			echo "epic_completeness_check: $_n_ids closing references from the fallback is implausible (cap $ISSUE_TRAILER_MAX) — refusing rather than spending that many API calls" >&2
 			return 2
 		fi
 	fi

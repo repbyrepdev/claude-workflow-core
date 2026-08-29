@@ -548,10 +548,10 @@ else
 	# several API calls in a script that recurses upward through parents.
 	# A merge that appears to close hundreds of issues is a malformed input,
 	# not a big epic.
-	if [ -n "$closed_nums" ]; then
-		_n_closed=$(printf '%s\n' "$closed_nums" | grep -c .)
-		if [ "$_n_closed" -gt 50 ]; then
-			echo "⚠ auto-close-parent SKIPPED: $_n_closed closing references is implausible (cap 50)." >&2
+	if [ -n "$closed_nums" ] && command -v issue_trailers_count >/dev/null 2>&1; then
+		_n_closed=$(issue_trailers_count "$closed_nums")
+		if [ "$_n_closed" -gt "${ISSUE_TRAILER_MAX:-50}" ]; then
+			echo "⚠ auto-close-parent SKIPPED: $_n_closed closing references is implausible (cap ${ISSUE_TRAILER_MAX:-50})." >&2
 			echo "  Refusing to spend that many API calls on what is almost certainly a" >&2
 			echo "  malformed commit message; check the PR and close parents manually." >&2
 			rollup_state="too-many"

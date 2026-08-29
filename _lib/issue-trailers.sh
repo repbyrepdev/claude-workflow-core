@@ -35,6 +35,32 @@ set -u
 # from.
 ISSUE_TRAILER_RE='(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+'
 
+# The plausibility cap, shared by both callers.
+#
+# It started life in skills/github-pr-merge/run.sh, was then copied into
+# _lib/epic-completeness-check.sh when Phase 2 pointed out the asymmetry,
+# and a third copy is how the regex duplication that created this whole
+# library began. One constant, one counter.
+#
+# WHY 50: the fallback scans text with no bound — a GitHub PR body may be
+# 65,536 characters, measured at roughly 6,000 extractable numbers — and
+# each number costs several API calls in a rollup that recurses upward
+# through parents. A merge closing more than 50 issues is a malformed
+# input, not a large epic.
+ISSUE_TRAILER_MAX=${ISSUE_TRAILER_MAX:-50}
+
+# Count non-empty lines. `grep -c .` rather than `wc -l` because the input
+# is a command substitution with its trailing newline already stripped, so
+# wc undercounts by one on a single-line answer and counts an empty string
+# as zero lines either way.
+issue_trailers_count() { # $1 = newline-separated ids
+	[ -n "${1:-}" ] || {
+		printf '0'
+		return 0
+	}
+	printf '%s\n' "$1" | grep -c . || printf '0'
+}
+
 # Emit the issue NUMBERS referenced by closing trailers in the given text,
 # one per line, sorted numerically and de-duplicated.
 #

@@ -138,10 +138,12 @@ _commit_with() { # $1 = message
 }
 
 # Builds a copy of the plugin under $TEST_TMP. $1 = dir name, $2 = mode:
-#   full      — every lib present
-#   no-lib    — issue-trailers.sh absent (half-installed consumer)
-#   truncated — issue-trailers.sh readable but defines nothing
-#   broken-re — issue-trailers.sh present with an invalid pattern
+#   full         — every lib present
+#   no-lib       — issue-trailers.sh absent (half-installed consumer)
+#   truncated    — readable but defines nothing
+#   broken-re    — present with an invalid pattern
+#   source-fails — defines everything, but its LAST statement returns
+#                  non-zero, so `. file` itself reports failure
 _plugin_copy() {
 	local root="$TEST_TMP/$1" mode="$2" f
 	mkdir -p "$root/skills/github-pr-merge" "$root/_lib" "$root/skills/_lib"
@@ -171,6 +173,13 @@ _plugin_copy() {
 	done
 	case "$mode" in
 	truncated) printf '#!/bin/bash\nset -u\n# truncated mid-write\n' >"$root/_lib/issue-trailers.sh" ;;
+	source-fails)
+		# Everything is defined; only the trailing status is non-zero.
+		# `. file` returns that status, and under `set -euo pipefail` an
+		# unguarded source therefore kills the wrapper — after the merge
+		# has landed.
+		printf '\nfalse\n' >>"$root/_lib/issue-trailers.sh"
+		;;
 	broken-re)
 		python3 - "$root/_lib/issue-trailers.sh" <<'PY'
 import sys
@@ -628,4 +637,41 @@ Closes #4242"
 		return 1
 		;;
 	esac
+}
+
+@test "autoclose: a library whose SOURCE fails does not kill the wrapper" {
+	# `. file` returns the status of the file's last statement. Every other
+	# call in the rollup stanza was guarded for that reason and the source
+	# itself was not, so a library ending on a non-zero statement — a
+	# truncated write stopping mid-conditional, a future top-level guard —
+	# terminated the wrapper here, AFTER the merge, skipping the post-merge
+	# deploy and tag/release chain.
+	#
+	# The library in this fixture defines everything correctly; only its
+	# trailing status is non-zero, so nothing but the source guard can
+	# distinguish it from a healthy one.
+	_install_gh_shim
+	export FAKE_CLOSING=$'4242\n'
+	local root
+	root=$(_plugin_copy srcfail source-fails)
+	_run_merge "$root/skills/github-pr-merge/run.sh"
+	case "$output" in
+	*"Merged PR #2638"*) ;;
+	*)
+		echo "a failing source aborted the wrapper after the merge: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"returned non-zero"*) ;;
+	*)
+		echo "the failing source was not reported: $output"
+		return 1
+		;;
+	esac
+	# Treated as unusable rather than half-trusted.
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup ran on a library that failed to source: $(cat "$AC_LOG")"
+		return 1
+	}
 }
