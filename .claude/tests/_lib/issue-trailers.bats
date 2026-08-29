@@ -240,7 +240,20 @@ Closes #2")
 	# And neither carries an inline copy of the keyword alternation.
 	local f
 	for f in "$runsh" "$epic"; do
-		grep -qE "\(close\[[sd]{2}\]\?\|fix" "$f" && {
+		# Matched on `#[0-9]`, the ONE thing any inline copy must contain.
+		#
+		# Two earlier forms failed here, both by being too specific about
+		# spelling: `\(close\[[sd]{2}\]\?\|fix` required that exact
+		# bracket class, and an alternation-based version required the
+		# keywords in that exact ORDER — mutation-verified, a copy written
+		# `(closes?|closed|fixes?|fixed|resolves?|resolved)` walked past
+		# both. A decoy that only catches the spelling it was written
+		# against is not a decoy.
+		#
+		# The issue-number fragment is unavoidable: a trailer pattern that
+		# does not match a number is not a trailer pattern. Measured zero
+		# occurrences in both clean callers and one in a reintroduced copy.
+		grep -qF '#[0-9]' "$f" && {
 			echo "$f still contains an inline copy of the trailer regex"
 			return 1
 		}

@@ -511,25 +511,37 @@ Closes #4242"
 	}
 }
 
-@test "autoclose: the lookup resolves relative to the script, not a candidate list" {
-	# Removing two copies of one regex while introducing two ways to LOCATE
-	# its replacement was the same drift one layer up. Asserted on the
-	# source: the behaviour is identical either way until a layout diverges,
-	# at which point it is a debugging session rather than a test failure.
-	# Matched on the PATH FRAGMENT, not the exact variable spelling —
-	# `$SCRIPT_DIR` vs `${SCRIPT_DIR}` is a zero-behaviour edit that broke a
-	# more literal earlier form, and a test that breaks on reformatting
-	# trains people to edit the test instead of reading it.
-	local runsh="${REPO_ROOT}/skills/github-pr-merge/run.sh"
-	grep -qE '_it_lib=.*SCRIPT_DIR.*\.\./\.\./_lib/issue-trailers\.sh' "$runsh" || {
-		echo "run.sh no longer resolves the library relative to SCRIPT_DIR"
+@test "autoclose: the library is found relative to the SCRIPT, not the cwd" {
+	# Converted from a source grep, which CodeRabbit raised twice: the
+	# earlier form asserted the literal assignment text and broke on a
+	# `${SCRIPT_DIR}` reformat with zero behaviour change, which trains
+	# people to edit the test instead of reading it.
+	#
+	# The property that matters is behavioural and is asserted here: the
+	# same wrapper copy, run from a DIFFERENT working directory, still
+	# finds its own sibling library. A cwd-relative lookup passes when run
+	# from the repo and fails from anywhere else — which is precisely the
+	# shape that would ship broken to a consumer.
+	_install_gh_shim
+	export FAKE_CLOSING=$'4242\n'
+	local root
+	root=$(_plugin_copy cwdtest full)
+
+	# Run with the WORK repo as cwd (as every other test does) — the
+	# wrapper lives somewhere else entirely, so a cwd-relative lookup has
+	# nothing to find.
+	_run_merge "$root/skills/github-pr-merge/run.sh"
+	_called_with 4242 || {
+		echo "the wrapper could not find its own library when run from another directory; log: $(cat "$AC_LOG")"
+		echo "output: $output"
 		return 1
 	}
-	grep -q 'for _cand in' "$runsh" && {
-		echo "run.sh still carries a candidate-path list for the library"
+	case "$output" in
+	*"missing or unusable"*)
+		echo "the library was reported missing though it sits beside the wrapper: $output"
 		return 1
-	}
-	true
+		;;
+	esac
 }
 
 @test "autoclose: a MISSING auto-close-parent hook is announced, not skipped in silence" {

@@ -488,11 +488,23 @@ else
 	if [ ! -r "$_it_lib" ]; then
 		rollup_state="no-library"
 	else
+		# THE SOURCE ITSELF IS GUARDED. `. file` returns the status of the
+		# last statement in that file, so a library whose tail happens to
+		# evaluate non-zero — a truncated write ending mid-conditional, a
+		# future top-level guard — terminates the wrapper right here, under
+		# `set -euo pipefail`, AFTER the merge has landed. Every other call
+		# in this block is guarded for exactly that reason; the source was
+		# the one that was not.
 		# shellcheck source=../../_lib/issue-trailers.sh
-		. "$_it_lib"
+		. "$_it_lib" || {
+			echo "⚠ sourcing $_it_lib returned non-zero — treating the library as unusable." >&2
+			rollup_state="no-library"
+		}
 		# Readability is not usability: a truncated library passes `-r` and
 		# then defines nothing, so the function itself is what gets checked.
-		if ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
+		if [ "$rollup_state" = "no-library" ]; then
+			: # the source failed; already decided
+		elif ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
 			! command -v issue_trailers_extract >/dev/null 2>&1; then
 			rollup_state="no-library"
 		else

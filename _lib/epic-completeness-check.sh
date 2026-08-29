@@ -123,6 +123,19 @@ epic_completeness_check() {
 			echo "epic_completeness_check: closing-reference extraction FAILED (rc=$_ex_rc) — refusing rather than reporting 'nothing to check'" >&2
 			return 2
 		fi
+
+		# THE SAME CAP THE SIBLING HAS. The fallback scans a PR body with no
+		# bound — GitHub allows 65,536 characters, measured at ~6,000
+		# extractable numbers — and each one costs API calls below. The cap
+		# was added to skills/github-pr-merge/run.sh and not here, which is
+		# the asymmetry this branch keeps producing: a guard applied to one
+		# of two callers of the same library.
+		local _n_ids
+		_n_ids=$(printf '%s\n' "$closed_ids" | grep -c .) || _n_ids=0
+		if [ "$_n_ids" -gt 50 ]; then
+			echo "epic_completeness_check: $_n_ids closing references from the fallback is implausible (cap 50) — refusing rather than spending that many API calls" >&2
+			return 2
+		fi
 	fi
 	if [ -z "$closed_ids" ]; then
 		# No closing refs — nothing to check.
