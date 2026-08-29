@@ -507,7 +507,7 @@ else
 		elif ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
 			! command -v issue_trailers_extract >/dev/null 2>&1 ||
 			! command -v issue_trailers_count >/dev/null 2>&1 ||
-			[ -z "${ISSUE_TRAILER_MAX:-}" ]; then
+			! [[ ${ISSUE_TRAILER_MAX:-} =~ ^[0-9]+$ ]]; then
 			rollup_state="no-library"
 		else
 			# GITHUB IS ASKED FIRST, because GitHub is the authority on what

@@ -80,7 +80,7 @@ epic_completeness_check() {
 	if ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
 		! command -v issue_trailers_extract >/dev/null 2>&1 ||
 		! command -v issue_trailers_count >/dev/null 2>&1 ||
-		[ -z "${ISSUE_TRAILER_MAX:-}" ]; then
+		! [[ ${ISSUE_TRAILER_MAX:-} =~ ^[0-9]+$ ]]; then
 		echo "epic_completeness_check: _lib/issue-trailers.sh is unusable (defines no extractor) — cannot determine closing references" >&2
 		return 2
 	fi

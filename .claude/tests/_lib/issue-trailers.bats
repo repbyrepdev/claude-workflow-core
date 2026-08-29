@@ -760,3 +760,25 @@ Fixes #15'
 		;;
 	esac
 }
+
+@test "epic-completeness: a NON-NUMERIC cap is rejected at the gate too" {
+	# The SAME requirement, on the OTHER caller, in the same change rather
+	# than after a reviewer names it. Applying a shared library's new
+	# requirement to only the file I happen to be editing is the mistake
+	# this branch made four times, and the fourth caused a real regression.
+	local root
+	_ecc_gh_stub
+	root=$(_ecc_fixture with-lib)
+	run bash -c "ISSUE_TRAILER_MAX=abc bash -c \"source '$root/epic-completeness-check.sh' && epic_completeness_check 123\""
+	[ "$status" -eq 2 ] || {
+		echo "a non-numeric cap was accepted (rc $status): $output"
+		return 1
+	}
+	case "$output" in
+	*unusable*) ;;
+	*)
+		echo "the refusal does not name the unusable library/config: $output"
+		return 1
+		;;
+	esac
+}

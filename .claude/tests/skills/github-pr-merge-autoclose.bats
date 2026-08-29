@@ -718,11 +718,18 @@ PY
 
 	export FAKE_CLOSING=$'4242\n'
 	_run_merge "$root/skills/github-pr-merge/run.sh"
-	# The wrapper SURVIVED — that is the whole point.
+	# The wrapper SURVIVED — that is the whole point — and the STATUS is
+	# what proves it. The "Merged PR" line can sit in the output of a run
+	# that later failed and returned non-zero, so matching on it alone
+	# proves the merge happened, not that the wrapper finished.
+	[ "$status" -eq 0 ] || {
+		echo "a stale library made the wrapper exit $status: $output"
+		return 1
+	}
 	case "$output" in
 	*"Merged PR #2638"*) ;;
 	*)
-		echo "a stale library aborted the wrapper after the merge: $output"
+		echo "a stale library aborted the wrapper before the merge: $output"
 		return 1
 		;;
 	esac
@@ -735,6 +742,36 @@ PY
 	esac
 	[ ! -s "$AC_LOG" ] || {
 		echo "the rollup ran against a stale library: $(cat "$AC_LOG")"
+		return 1
+	}
+}
+
+@test "autoclose: a NON-NUMERIC ISSUE_TRAILER_MAX is rejected at the gate" {
+	# `ISSUE_TRAILER_MAX=abc` passes an emptiness check, and the later `-gt`
+	# then ERRORS instead of comparing: its status is discarded,
+	# rollup_state stays "ok", and the references are processed UNCAPPED —
+	# the cap silently absent exactly when someone has tried to configure
+	# it, which is worse than never having had one.
+	_install_gh_shim
+	local root
+	root=$(_plugin_copy badmax full)
+	export FAKE_CLOSING=$'4242\n'
+	export FAKE_MERGE_SHA="$MERGE_SHA"
+	export FAKE_STATE='{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","head":"'"$MERGE_SHA"'","checks":[]}'
+	run bash -c "cd '$WORK' && ISSUE_TRAILER_MAX=abc APPROVE=1 AC_LOG='$AC_LOG' bash '$root/skills/github-pr-merge/run.sh' --pr 2638 --squash --yes </dev/null"
+	[ "$status" -eq 0 ] || {
+		echo "a bad cap value made the wrapper exit $status: $output"
+		return 1
+	}
+	case "$output" in
+	*"missing or unusable"*) ;;
+	*)
+		echo "a non-numeric cap was accepted: $output"
+		return 1
+		;;
+	esac
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup ran UNCAPPED with a bad cap value: $(cat "$AC_LOG")"
 		return 1
 	}
 }

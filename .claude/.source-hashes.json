@@ -29,7 +29,7 @@
     "_lib/cr-phase2-coverage.sh": "162f7cee6220ee729239dd6ad328dcaf1effb54c07ab8e537aa10253dbba321f",
     "_lib/cr-thread-state.sh": "a8b7b3013947a227f9a1389c8be91f9bc32e950cf828dab12717dccd6aec363a",
     "_lib/dogfood-fingerprint.sh": "71eb4e8990307ccb52f9e45b90d77c2c9d6b0435b7e608c16982afd56a95b722",
-    "_lib/epic-completeness-check.sh": "776d0609ed023bbfca407f60d48d0ea44fc93a8ea6fceff3319b47b2ad11bc9c",
+    "_lib/epic-completeness-check.sh": "6a889199b179cdecaf27f255c4a0488f9c73c97a532546d51533402a96161fdc",
     "_lib/event-frontmatter.sh": "938cea33f06d4f5a1e8b816505dcb5032863f07982b9c274338406f9796be3cf",
     "_lib/gh-issue-classify.sh": "5a65e1d86f7bcde2aec3f495db676442985d77d99dbe3262491b8083b4f44729",
     "_lib/hook-ack.sh": "02bb33f2e47e2221cbfe7b1536e05f02dead420c62e8f5a42641b6214d5af9b9",
