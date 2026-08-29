@@ -531,3 +531,89 @@ Closes #4242"
 	}
 	true
 }
+
+@test "autoclose: a MISSING auto-close-parent hook is announced, not skipped in silence" {
+	# `if [ -x "$AUTO_CLOSE" ]` had no else, so a consumer repo without the
+	# hook installed got no rollup and no word about it — "nothing happened
+	# and nothing was said", sitting one level ABOVE the code written to
+	# remove exactly that.
+	_install_gh_shim
+	export FAKE_CLOSING=$'4242\n'
+	rm -f "$WORK/.claude/hooks/auto-close-parent.sh"
+	_run_merge
+	case "$output" in
+	*"missing or not executable"*) ;;
+	*)
+		echo "a missing rollup hook was silent: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"will not auto-close"*) ;;
+	*)
+		echo "the consequence was not stated: $output"
+		return 1
+		;;
+	esac
+	# And the merge itself still completed — this block is warn-only.
+	case "$output" in
+	*"Merged PR #2638"*) ;;
+	*)
+		echo "a missing rollup hook broke the merge path: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "autoclose: a NON-EXECUTABLE rollup hook is treated as missing" {
+	# The other half of `-x`. A file that exists but lost its bit is the
+	# likelier real-world shape (a bad checkout, a copied tree), and it must
+	# not read as "installed and fine".
+	_install_gh_shim
+	export FAKE_CLOSING=$'4242\n'
+	chmod -x "$WORK/.claude/hooks/auto-close-parent.sh"
+	_run_merge
+	case "$output" in
+	*"missing or not executable"*) ;;
+	*)
+		echo "a non-executable rollup hook was silent: $output"
+		return 1
+		;;
+	esac
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup somehow ran: $(cat "$AC_LOG")"
+		return 1
+	}
+}
+
+@test "autoclose: library present vs absent differ in BEHAVIOUR, not just source" {
+	# CodeRabbit's point on the source-grep test: pin the behaviour, not the
+	# spelling. Two runs of the SAME wrapper copy, identical inputs, the
+	# only difference being whether ../../_lib carries the library.
+	_install_gh_shim
+	export FAKE_CLOSING=$'909\n'
+
+	local with_lib
+	with_lib=$(_plugin_copy beh-with full)
+	_run_merge "$with_lib/skills/github-pr-merge/run.sh"
+	_called_with 909 || {
+		echo "with the library present the rollup did not run; log: $(cat "$AC_LOG")"
+		return 1
+	}
+
+	: >"$AC_LOG"
+	local without_lib
+	without_lib=$(_plugin_copy beh-without no-lib)
+	_run_merge "$without_lib/skills/github-pr-merge/run.sh"
+	[ ! -s "$AC_LOG" ] || {
+		echo "with the library absent the rollup still ran: $(cat "$AC_LOG")"
+		return 1
+	}
+	case "$output" in
+	*"missing or unusable"*) ;;
+	*)
+		echo "the absent-library run did not report why it did nothing: $output"
+		return 1
+		;;
+	esac
+}

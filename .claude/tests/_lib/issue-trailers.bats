@@ -524,3 +524,39 @@ SHIM
 		;;
 	esac
 }
+
+@test "trailers: both callers agree on the SAME input, behaviourally" {
+	# CodeRabbit's point on the drift decoy: it greps source, which pins the
+	# absence of a second regex but says nothing about the two callers
+	# actually agreeing. This exercises the shared extractor the way both
+	# reach it and asserts identical answers — including the rejections,
+	# which is where a divergent copy would show up first.
+	local input='Closes #11
+Refs #12
+postfixes #13
+Fixes #15'
+	local direct
+	direct=$(_extract "$input")
+	[ "$direct" = "$(printf '11\n15')" ] || {
+		echo "the extractor answer changed: $direct"
+		return 1
+	}
+
+	# Through a sourced copy, as epic-completeness-check.sh reaches it.
+	local root viaLib
+	root=$(_ecc_fixture with-lib)
+	viaLib=$(bash -c "source '$root/issue-trailers.sh' && issue_trailers_extract \"\$1\"" _ "$input")
+	[ "$viaLib" = "$direct" ] || {
+		echo "a sourced copy disagreed with the direct call: '$viaLib' vs '$direct'"
+		return 1
+	}
+
+	# The rejections are the load-bearing half: a divergent copy would show
+	# up first as a non-keyword or a substring surviving.
+	case "$direct" in
+	*12* | *13*)
+		echo "a substring or non-keyword reference survived: $direct"
+		return 1
+		;;
+	esac
+}

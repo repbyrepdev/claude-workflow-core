@@ -454,7 +454,15 @@ fi
 # landed, and nothing here may abort the wrapper and strand the post-merge
 # deploy/tag/release chain below.
 AUTO_CLOSE="$REPO_ROOT/.claude/hooks/auto-close-parent.sh"
-if [ -x "$AUTO_CLOSE" ]; then
+if [ ! -x "$AUTO_CLOSE" ]; then
+	# ANNOUNCED, not skipped in silence. A consumer repo without the hook
+	# installed got no rollup and no word about it — the same "nothing
+	# happened and nothing was said" this entire stanza exists to remove,
+	# sitting one level above the code that removes it. Warn-only, like
+	# everything else here: the merge has already landed.
+	echo "⚠ auto-close-parent: $AUTO_CLOSE is missing or not executable — epic rollup SKIPPED." >&2
+	echo "  Nothing was checked; parent epics will not auto-close for this merge." >&2
+else
 	# Both fetches degrade SYMMETRICALLY. A git-log failure used to abort
 	# the whole stanza, which was right when the commit message was the only
 	# source and is wrong now — the PR body alone is sufficient, and on a
@@ -562,11 +570,6 @@ if [ -x "$AUTO_CLOSE" ]; then
 		# genuinely closes nothing and a parse that came up empty produced
 		# byte-identical output, namely none.
 		#
-		# The message NAMES THE SOURCES ACTUALLY READ. Saying "both sources
-		# scanned" when one of the two fetches failed would be the same
-		# over-claim as the no-library path making, and the PR body is the
-		# source that matters — an empty result with the body unread is not
-		# evidence of anything.
 		# The message NAMES ITS SOURCE, because the two differ in weight:
 		# GitHub saying "none" is authoritative, while the fallback coming
 		# back empty is the expected outcome on a squash merge and proves
