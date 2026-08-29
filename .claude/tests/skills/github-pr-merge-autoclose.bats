@@ -675,3 +675,66 @@ Closes #4242"
 		return 1
 	}
 }
+
+@test "autoclose: a library missing ISSUE_TRAILER_MAX is caught by the gate" {
+	# THE REGRESSION THIS COMMIT FIXES. The previous commit removed
+	# `${ISSUE_TRAILER_MAX:-50}` in favour of the bare `$ISSUE_TRAILER_MAX`
+	# — correct, since the gate guarantees the library is sourced — but did
+	# not add the variable to the gate. A STALE library defining all three
+	# functions and not the constant therefore passed, and `set -u` aborted
+	# the wrapper at the bare expansion, after the merge had landed.
+	#
+	# That is a real deployment shape: a consumer whose `_lib` predates the
+	# shared cap. The fixture is exactly that — every function present, the
+	# constant absent.
+	_install_gh_shim
+	local root
+	root=$(_plugin_copy stalelib full)
+	python3 - "$root/_lib/issue-trailers.sh" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+out = []
+for line in s.split('\n'):
+    if line.startswith('ISSUE_TRAILER_MAX='):
+        out.append('# (removed to simulate a library predating the shared cap)')
+    else:
+        out.append(line)
+open(p, 'w', encoding='utf-8').write('\n'.join(out))
+PY
+	grep -q '^ISSUE_TRAILER_MAX=' "$root/_lib/issue-trailers.sh" && {
+		echo "fixture failed: the constant is still defined"
+		return 1
+	}
+	# Every function must still be there, or this would pass via the
+	# command -v checks instead of the one under test.
+	local fn
+	for fn in issue_trailers_for_pr issue_trailers_extract issue_trailers_count; do
+		grep -q "^$fn()" "$root/_lib/issue-trailers.sh" || {
+			echo "fixture failed: $fn went missing too"
+			return 1
+		}
+	done
+
+	export FAKE_CLOSING=$'4242\n'
+	_run_merge "$root/skills/github-pr-merge/run.sh"
+	# The wrapper SURVIVED — that is the whole point.
+	case "$output" in
+	*"Merged PR #2638"*) ;;
+	*)
+		echo "a stale library aborted the wrapper after the merge: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"missing or unusable"*) ;;
+	*)
+		echo "a stale library was not reported: $output"
+		return 1
+		;;
+	esac
+	[ ! -s "$AC_LOG" ] || {
+		echo "the rollup ran against a stale library: $(cat "$AC_LOG")"
+		return 1
+	}
+}

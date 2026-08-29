@@ -712,10 +712,27 @@ Fixes #15'
 	_ecc_gh_stub
 	root=$(_ecc_fixture with-lib)
 
-	# A plausible answer travels PAST the cap and dies downstream.
+	# A plausible answer travels PAST the cap.
+	#
+	# ASSERTED ON THE STATUS, not merely on the absence of a word: checking
+	# only that `$output` lacks "implausible" passes whenever the gate
+	# refuses for ANY other reason, so a cap regression with different
+	# wording would stay green. That is the same shape as the three other
+	# vacuous tests this branch has already produced.
+	#
+	# And the mechanism is stated correctly here: the stub answers
+	# `gh issue view` from its catch-all `*) exit 0` arm and prints nothing,
+	# so no id resolves to an epic, every one is skipped, and the function
+	# returns 0. It does NOT die downstream — an earlier comment said it
+	# did, which would have made this assertion wrong in the other
+	# direction.
 	local few
 	few=$(printf '%s\n' 1 2 3)
 	ECC_CLOSING_FAIL=0 ECC_CLOSING="$few" run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -eq 0 ] || {
+		echo "three closing references did not pass the cap (rc $status): $output"
+		return 1
+	}
 	case "$output" in
 	*implausible*)
 		echo "three closing references were rejected as implausible: $output"
