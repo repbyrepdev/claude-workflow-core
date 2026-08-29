@@ -145,16 +145,29 @@ _commit_with() { # $1 = message
 _plugin_copy() {
 	local root="$TEST_TMP/$1" mode="$2" f
 	mkdir -p "$root/skills/github-pr-merge" "$root/_lib" "$root/skills/_lib"
-	cp "${REPO_ROOT}/skills/github-pr-merge/"*.sh "$root/skills/github-pr-merge/"
+	# NO `|| true` on the copies. A fixture that half-builds and then runs
+	# anyway is how a test ends up asserting on a wrapper that died for an
+	# unrelated reason — the "never arrived" failure this suite has already
+	# produced twice. If the fixture cannot be built, say so and stop.
+	cp "${REPO_ROOT}/skills/github-pr-merge/"*.sh "$root/skills/github-pr-merge/" || {
+		echo "fixture: could not copy the skill" >&2
+		return 1
+	}
 	# skills/_lib/ too — the wrapper sources skill-common.sh before it ever
 	# reaches the library lookup, and a fixture that died earlier would
 	# "pass" these tests for the wrong reason.
-	cp "${REPO_ROOT}/skills/_lib/"*.sh "$root/skills/_lib/" 2>/dev/null || true
+	cp "${REPO_ROOT}/skills/_lib/"*.sh "$root/skills/_lib/" || {
+		echo "fixture: could not copy skills/_lib" >&2
+		return 1
+	}
 	for f in "${REPO_ROOT}/_lib/"*.sh; do
 		case "${f##*/}" in
 		issue-trailers.sh) [ "$mode" = "no-lib" ] && continue ;;
 		esac
-		cp "$f" "$root/_lib/" 2>/dev/null || true
+		cp "$f" "$root/_lib/" || {
+			echo "fixture: could not copy ${f##*/}" >&2
+			return 1
+		}
 	done
 	case "$mode" in
 	truncated) printf '#!/bin/bash\nset -u\n# truncated mid-write\n' >"$root/_lib/issue-trailers.sh" ;;

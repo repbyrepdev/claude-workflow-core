@@ -409,11 +409,12 @@ SHIM
 	# POSITIVE half. Asserting only the ABSENCE of one message would pass if
 	# the function died for some third reason before reaching either — the
 	# same shape of hole as a test that checks a command "did not fail".
-	# The downstream refusal is now "body is empty (gh succeeded)" — the
-	# split introduced when gh's own stderr stopped being discarded, so an
-	# outage and a genuinely blank body no longer share one message.
+	# The downstream marker moved again, and the move was the point: the
+	# body is no longer fetched before the authoritative query, so an empty
+	# body is only fatal once GitHub has already failed to answer. The
+	# refusal that proves resolution succeeded is now the fallback's.
 	case "$output" in
-	*"body is empty"*) ;;
+	*"the closing set is UNKNOWN"*) ;;
 	*)
 		echo "did not reach the expected downstream failure; got: $output"
 		return 1

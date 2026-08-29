@@ -119,11 +119,38 @@ issue_trailers_for_pr() { # $1 = PR number
 	local pr=${1:-}
 	[ -n "$pr" ] || return 1
 	command -v gh >/dev/null 2>&1 || return 1
-	local out rc=0
+	# gh's stderr is SURFACED, not discarded. The caller announces this
+	# function's empty result as authoritative ("GitHub reports PR #N closes
+	# no issues"), so the one thing it must never do is fail quietly — and
+	# an operator told the query failed still needs to know why.
+	local out rc=0 err
+	err=$(mktemp "${TMPDIR:-/tmp}/it-gh-err.XXXXXX") || err=""
 	out=$(gh pr view "$pr" --json closingIssuesReferences \
-		--jq '.closingIssuesReferences[].number' 2>/dev/null) || rc=$?
-	[ "$rc" -eq 0 ] || return 1
+		--jq '.closingIssuesReferences[].number' 2>"${err:-/dev/null}") || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "issue_trailers_for_pr: could not ask GitHub about PR #$pr (gh rc=$rc)" >&2
+		[ -n "$err" ] && cat "$err" >&2
+		[ -n "$err" ] && rm -f "$err"
+		return 1
+	fi
+	[ -n "$err" ] && rm -f "$err"
+
 	# Digits only, deduped, numerically sorted — same output contract as the
 	# text extractor, so callers can treat the two identically.
-	printf '%s\n' "$out" | grep -oE '^[0-9]+$' | sort -u -n || true
+	#
+	# NO BLANKET `|| true`. grep rc 1 is the ordinary no-match case (GitHub
+	# genuinely closes none); anything above that is a real failure, and
+	# suppressing it would hand the caller rc 0 with no output, which run.sh
+	# then announces as GitHub's authoritative "closes no issues". Same
+	# distinction issue_trailers_extract enforces, and it was missing here —
+	# the new function reintroduced the exact defect the old one was fixed
+	# for, on the path that carries more authority.
+	local nums nrc=0
+	nums=$(printf '%s\n' "$out" | grep -oE '^[0-9]+$') || nrc=$?
+	if [ "$nrc" -gt 1 ]; then
+		echo "issue_trailers_for_pr: number filter failed (grep rc=$nrc) — the closing set is UNKNOWN, not empty" >&2
+		return 1
+	fi
+	[ -n "$nums" ] || return 0
+	printf '%s\n' "$nums" | sort -u -n
 }

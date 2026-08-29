@@ -57,28 +57,23 @@ epic_completeness_check() {
 	fi
 	# shellcheck source=./issue-trailers.sh
 	. "$_it_lib"
+	# Readable is not usable. A truncated library passes `-r` and defines
+	# nothing; the missing function then surfaces as rc 127 down in the
+	# extraction path and gets reported as a GitHub outage AND a broken
+	# parser — two wrong causes for one missing file. The sibling caller
+	# already guards this way.
+	if ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
+		! command -v issue_trailers_extract >/dev/null 2>&1; then
+		echo "epic_completeness_check: _lib/issue-trailers.sh is unusable (defines no extractor) — cannot determine closing references" >&2
+		return 2
+	fi
 
-	# Extract `Closes #N` (and variants: Close, Fixes, Fixed, Resolves, Resolved)
-	# from PR body.
+	# The PR BODY IS NOT FETCHED HERE. It is only the fallback's input, so
+	# fetching it up front — and refusing outright on an empty one —
+	# rejected PRs that GitHub could have answered for perfectly well. A PR
+	# with a blank description that closes issues via its branch linkage is
+	# an ordinary thing, and this gate used to refuse it.
 	local body closed_ids
-	# stderr is CAPTURED, not discarded. Throwing it away reported a 503, an
-	# expired token and an unknown PR all as "empty/missing PR body",
-	# pointing the operator at the PR's description for a network or auth
-	# fault. The sibling call in skills/github-pr-merge/run.sh was fixed for
-	# this in the same branch; this one was missed.
-	local _b_err _b_rc=0
-	_b_err=$(mktemp "${TMPDIR:-/tmp}/ecc-body-err.XXXXXX") || _b_err=""
-	body=$(gh pr view "$pr" --json body --jq '.body' 2>"${_b_err:-/dev/null}") || _b_rc=$?
-	if [ "$_b_rc" -ne 0 ]; then
-		echo "epic_completeness_check: could not read PR #$pr body (gh rc=$_b_rc): $([ -n "$_b_err" ] && cat "$_b_err")" >&2
-		[ -n "$_b_err" ] && rm -f "$_b_err"
-		return 2
-	fi
-	[ -n "$_b_err" ] && rm -f "$_b_err"
-	if [ -z "$body" ]; then
-		echo "epic_completeness_check: PR #$pr body is empty (gh succeeded)" >&2
-		return 2
-	fi
 
 	# GITHUB IS THE AUTHORITY on what a PR closes, and this gate asks it
 	# rather than re-deriving the answer from the body with a regex.
@@ -102,6 +97,26 @@ epic_completeness_check() {
 		# it is used only when GitHub cannot be reached, and its failure is
 		# still a refusal rather than a pass.
 		echo "epic_completeness_check: could not ask GitHub which issues PR #$pr closes; falling back to scanning the body, which is a GUESS" >&2
+
+		# NOW the body is needed. stderr is captured rather than discarded:
+		# throwing it away reported a 503, an expired token and an unknown
+		# PR all as an empty body, pointing the operator at the PR's
+		# description for a network fault.
+		local _b_err _b_rc=0
+		_b_err=$(mktemp "${TMPDIR:-/tmp}/ecc-body-err.XXXXXX") || _b_err=""
+		body=$(gh pr view "$pr" --json body --jq '.body' 2>"${_b_err:-/dev/null}") || _b_rc=$?
+		if [ "$_b_rc" -ne 0 ]; then
+			echo "epic_completeness_check: the fallback could not read PR #$pr body either (gh rc=$_b_rc):" >&2
+			[ -n "$_b_err" ] && cat "$_b_err" >&2
+			[ -n "$_b_err" ] && rm -f "$_b_err"
+			return 2
+		fi
+		[ -n "$_b_err" ] && rm -f "$_b_err"
+		if [ -z "$body" ]; then
+			echo "epic_completeness_check: GitHub could not be asked and PR #$pr has an empty body — the closing set is UNKNOWN, refusing rather than passing" >&2
+			return 2
+		fi
+
 		_ex_rc=0
 		closed_ids=$(issue_trailers_extract "$body") || _ex_rc=$?
 		if [ "$_ex_rc" -ne 0 ]; then

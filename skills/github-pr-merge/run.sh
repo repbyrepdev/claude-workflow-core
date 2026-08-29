@@ -428,18 +428,23 @@ fi
 # "Closes #N" trailers. Fires recursively for nested epic chains. The script
 # is idempotent (no-ops if the parent is already closed or has open subs).
 #
-# TWO SOURCES, because either alone is insufficient:
-#   the PR BODY          — the only source that works under --squash. GitHub
-#                          composes a squash commit from the PR title plus
-#                          the constituent commit messages and NEVER the
-#                          body, while the body is what GitHub's own
-#                          issue-linking reads. On PR #2638 the body carried
-#                          four trailers and the squash commit carried zero:
-#                          the sub-issues closed, the epic did not, and this
-#                          stanza printed NOTHING — indistinguishable from
-#                          "this PR closed no sub-issues".
-#   the MERGE COMMIT     — a --merge commit keeps the body, and individual
-#                          commits may carry their own trailers.
+# ONE AUTHORITY, ONE FALLBACK. This block does NOT scan the PR body — an
+# earlier revision did, and that was the wrong shape twice over:
+#
+#   GitHub (authoritative)  `closingIssuesReferences`. GitHub decides what a
+#                           PR closes, and publishes the decision. Verified
+#                           on PR #2638: it returns exactly the four
+#                           sub-issues, while a regex over the same text
+#                           also returns numbers from a fenced code block,
+#                           an HTML comment, and the phrase "does not close
+#                           #N" — each of which would have had its parent
+#                           epic closed.
+#   commit msg (fallback)   Used ONLY when gh cannot be reached, and
+#                           labelled as a guess. On a squash merge the
+#                           commit carries no trailers at all, so an empty
+#                           fallback proves nothing and must not be reported
+#                           as "closes nothing" — that conflation is the
+#                           original bug this stanza was opened for.
 #
 # The keyword set and the matching live in _lib/issue-trailers.sh; they are
 # deliberately NOT restated here, because a prose copy of the contract is
