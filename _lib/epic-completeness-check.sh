@@ -32,17 +32,133 @@ epic_completeness_check() {
 		return 2
 	fi
 
-	# Extract `Closes #N` (and variants: Close, Fixes, Fixed, Resolves, Resolved)
-	# from PR body.
-	local body closed_ids
-	body=$(gh pr view "$pr" --json body --jq '.body' 2>/dev/null)
-	if [ -z "$body" ]; then
-		echo "epic_completeness_check: empty/missing PR body" >&2
+	# The dependency is checked before the PR-BODY fetch — not before every
+	# network call, which an earlier version of this comment claimed in
+	# capitals. `gh repo view` above runs first, and when gh is missing or
+	# unauthenticated the empty owner_repo returns 2 with the usage message,
+	# still masking a missing library. This branch's own test has to install
+	# a gh stub for exactly that reason, which is the counterexample.
+	#
+	# This pattern was written here first and then written AGAIN in
+	# skills/github-pr-merge/run.sh — two copies of GitHub's closing-trailer
+	# contract, equivalent by luck rather than design. One definition now,
+	# in _lib/issue-trailers.sh.
+	#
+	# Ordering still matters: the check sat AFTER the `gh pr view` fetch, so
+	# a body-fetch failure masked a missing library with "empty/missing PR
+	# body" — a local, deterministic, instantly-fixable problem reported as
+	# a remote one. Moving it above that fetch removes the common case; the
+	# `gh repo view` guard above remains ahead of it.
+	local _it_lib
+	_it_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/issue-trailers.sh
+	if [ ! -r "$_it_lib" ]; then
+		echo "epic_completeness_check: _lib/issue-trailers.sh missing — cannot parse closing trailers" >&2
+		return 2
+	fi
+	# GUARDED, like the sibling caller. `. file` returns the status of the
+	# last statement in that file, so a library whose tail evaluates
+	# non-zero aborts this gate outright under a caller's `set -e`. The
+	# guard was added to skills/github-pr-merge/run.sh and not here — the
+	# third time on this branch that a fix landed on one of two callers of
+	# the same library.
+	# shellcheck source=./issue-trailers.sh
+	if ! . "$_it_lib"; then
+		echo "epic_completeness_check: sourcing $_it_lib returned non-zero — cannot determine closing references" >&2
+		return 2
+	fi
+	# Readable is not usable. A truncated library passes `-r` and defines
+	# nothing; the missing function then surfaces as rc 127 down in the
+	# extraction path and gets reported as a GitHub outage AND a broken
+	# parser — two wrong causes for one missing file. The sibling caller
+	# already guards this way.
+	# EVERY symbol this function goes on to use, not just the two it used to.
+	# `issue_trailers_count` and `ISSUE_TRAILER_MAX` arrived with the shared
+	# cap and were not added here, so a library predating them would pass
+	# the gate and fail later at the cap check — a stale install reported as
+	# something else entirely, which is the wrong-cause pattern this branch
+	# keeps producing.
+	if ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
+		! command -v issue_trailers_extract >/dev/null 2>&1 ||
+		! command -v issue_trailers_count >/dev/null 2>&1 ||
+		! [[ ${ISSUE_TRAILER_MAX:-} =~ ^[0-9]+$ ]]; then
+		echo "epic_completeness_check: _lib/issue-trailers.sh is unusable (defines no extractor) — cannot determine closing references" >&2
 		return 2
 	fi
 
-	# Match: (?i)(close[ds]?|fix(es|ed)?|resolve[ds]?)\s+#(\d+)
-	closed_ids=$(printf '%s\n' "$body" | grep -iEo '(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+#[0-9]+' | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
+	# The PR BODY IS NOT FETCHED HERE. It is only the fallback's input, so
+	# fetching it up front — and refusing outright on an empty one —
+	# rejected PRs that GitHub could have answered for perfectly well. A PR
+	# with a blank description that closes issues via its branch linkage is
+	# an ordinary thing, and this gate used to refuse it.
+	local body closed_ids
+
+	# GITHUB IS THE AUTHORITY on what a PR closes, and this gate asks it
+	# rather than re-deriving the answer from the body with a regex.
+	#
+	# Phase 1 security review showed why the regex is not adequate here: a
+	# fenced code block, an HTML comment invisible in the rendered PR, and
+	# the phrase "does not close #N" all yield numbers. In THIS function
+	# that means checking the completeness of epics the PR never claimed to
+	# close — noise at best, and a refused merge at worst.
+	#
+	# THE RETURN CODE IS HONOURED. Discarding it put a failure into the same
+	# branch as "no closing refs", so this merge gate reported PASS while it
+	# could not read its input at all — the identical fail-open this branch
+	# was opened to fix, reproduced one call site downstream, and found by
+	# Phase 1 rather than by the library's own test, which exercises the
+	# library in isolation and never either caller.
+	local _ex_rc=0
+	closed_ids=$(issue_trailers_for_pr "$pr") || _ex_rc=$?
+	if [ "$_ex_rc" -ne 0 ]; then
+		# FALLBACK, labelled. The body regex is a guess at GitHub's answer;
+		# it is used only when GitHub cannot be reached, and its failure is
+		# still a refusal rather than a pass.
+		echo "epic_completeness_check: could not ask GitHub which issues PR #$pr closes; falling back to scanning the body, which is a GUESS" >&2
+
+		# NOW the body is needed. stderr is captured rather than discarded:
+		# throwing it away reported a 503, an expired token and an unknown
+		# PR all as an empty body, pointing the operator at the PR's
+		# description for a network fault.
+		local _b_err _b_rc=0
+		_b_err=$(mktemp "${TMPDIR:-/tmp}/ecc-body-err.XXXXXX") || _b_err=""
+		body=$(gh pr view "$pr" --json body --jq '.body' 2>"${_b_err:-/dev/null}") || _b_rc=$?
+		if [ "$_b_rc" -ne 0 ]; then
+			echo "epic_completeness_check: the fallback could not read PR #$pr body either (gh rc=$_b_rc):" >&2
+			[ -n "$_b_err" ] && cat "$_b_err" >&2
+			[ -n "$_b_err" ] && rm -f "$_b_err"
+			return 2
+		fi
+		[ -n "$_b_err" ] && rm -f "$_b_err"
+		if [ -z "$body" ]; then
+			echo "epic_completeness_check: GitHub could not be asked and PR #$pr has an empty body — the closing set is UNKNOWN, refusing rather than passing" >&2
+			return 2
+		fi
+
+		_ex_rc=0
+		closed_ids=$(issue_trailers_extract "$body") || _ex_rc=$?
+		if [ "$_ex_rc" -ne 0 ]; then
+			echo "epic_completeness_check: closing-reference extraction FAILED (rc=$_ex_rc) — refusing rather than reporting 'nothing to check'" >&2
+			return 2
+		fi
+	fi
+
+	# THE CAP APPLIES AFTER SOURCE SELECTION, so it bounds BOTH paths.
+	#
+	# It sat inside the fallback branch, which left the authoritative path
+	# entirely unbounded — and that path is the one that normally runs. Each
+	# id costs an issue lookup below, so "GitHub returned a lot" was as
+	# expensive as the malformed-body case the cap was written for, while
+	# looking like it was covered.
+	#
+	# The fallback scans text with no bound at all — a GitHub PR body may be
+	# 65,536 characters, measured at roughly 6,000 extractable numbers — so
+	# it remains the worst case, not the only one.
+	local _n_ids
+	_n_ids=$(issue_trailers_count "$closed_ids")
+	if [ "$_n_ids" -gt "$ISSUE_TRAILER_MAX" ]; then
+		echo "epic_completeness_check: $_n_ids closing references is implausible (cap $ISSUE_TRAILER_MAX) — refusing rather than spending that many API calls" >&2
+		return 2
+	fi
 	if [ -z "$closed_ids" ]; then
 		# No closing refs — nothing to check.
 		return 0
