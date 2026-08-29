@@ -223,42 +223,57 @@ Closes #2")
 	}
 }
 
-@test "trailers: the two former call sites now share ONE pattern" {
-	# The point of the extraction. Both files must reference the library
-	# rather than carrying their own regex — a second copy is how the drift
-	# started, and it would be invisible again the moment it reappears.
-	local runsh="$REPO_ROOT/skills/github-pr-merge/run.sh"
-	local epic="$REPO_ROOT/_lib/epic-completeness-check.sh"
-	grep -q 'issue_trailers_extract' "$runsh" || {
-		echo "github-pr-merge/run.sh does not use the shared extractor"
+@test "trailers: epic_completeness_check DEPENDS on the shared library" {
+	# CONVERTED FROM A SOURCE GREP, which CodeRabbit was right to reject and
+	# which the path instructions for .claude/tests/**/*.bats require
+	# behaviour for.
+	#
+	# The old form grepped both callers for an inline pattern. It could fail
+	# on a pure reformat, and its `#[0-9]` decoy scanned whole files —
+	# comments, jq filters and sed expressions included — so any future
+	# comment containing that literal would have tripped a false failure.
+	# It also could not fail when the shared contract actually broke, since
+	# it never ran either caller.
+	#
+	# The behavioural seam is the dependency itself: with the library
+	# present the function travels past the guard and fails downstream on
+	# the stubbed gh; with it absent it refuses with rc 2 and names the
+	# file. A caller that had quietly reintroduced its own copy of the
+	# pattern would no longer NEED the library, and would stop refusing.
+	local root
+	_ecc_gh_stub
+
+	root=$(_ecc_fixture without-lib)
+	run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -eq 2 ] || {
+		echo "without the shared library the gate did not refuse (rc $status) — it is no longer depending on it: $output"
 		return 1
 	}
-	grep -q 'issue_trailers_extract' "$epic" || {
-		echo "epic-completeness-check.sh does not use the shared extractor"
+	case "$output" in
+	*"issue-trailers.sh"*) ;;
+	*)
+		echo "the refusal does not name the missing library: $output"
 		return 1
-	}
-	# And neither carries an inline copy of the keyword alternation.
-	local f
-	for f in "$runsh" "$epic"; do
-		# Matched on `#[0-9]`, the ONE thing any inline copy must contain.
-		#
-		# Two earlier forms failed here, both by being too specific about
-		# spelling: `\(close\[[sd]{2}\]\?\|fix` required that exact
-		# bracket class, and an alternation-based version required the
-		# keywords in that exact ORDER — mutation-verified, a copy written
-		# `(closes?|closed|fixes?|fixed|resolves?|resolved)` walked past
-		# both. A decoy that only catches the spelling it was written
-		# against is not a decoy.
-		#
-		# The issue-number fragment is unavoidable: a trailer pattern that
-		# does not match a number is not a trailer pattern. Measured zero
-		# occurrences in both clean callers and one in a reintroduced copy.
-		grep -qF '#[0-9]' "$f" && {
-			echo "$f still contains an inline copy of the trailer regex"
-			return 1
-		}
-	done
-	true
+		;;
+	esac
+
+	root=$(_ecc_fixture with-lib)
+	run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	case "$output" in
+	*"issue-trailers.sh"*"missing"* | *"unusable"*)
+		echo "the library is present but the gate still reported it missing: $output"
+		return 1
+		;;
+	esac
+	# It got past the dependency guard and died downstream instead, which is
+	# what "the library is genuinely in use" looks like from outside.
+	case "$output" in
+	*"closing set is UNKNOWN"* | *"could not ask GitHub"*) ;;
+	*)
+		echo "did not reach the downstream path with the library present: $output"
+		return 1
+		;;
+	esac
 }
 
 @test "trailers: a REAL grep failure is reported, not returned as empty" {
@@ -685,4 +700,46 @@ Fixes #15'
 		echo "empty input did not answer 0"
 		return 1
 	}
+}
+
+@test "epic-completeness: the cap bounds the AUTHORITATIVE path too" {
+	# The cap sat inside the fallback branch, so GitHub's own answer — the
+	# path that normally runs — was entirely unbounded. Each id costs an
+	# issue lookup downstream, so "GitHub returned a lot" was as expensive
+	# as the malformed-body case the cap was written for, while looking
+	# covered.
+	local root
+	_ecc_gh_stub
+	root=$(_ecc_fixture with-lib)
+
+	# A plausible answer travels PAST the cap and dies downstream.
+	local few
+	few=$(printf '%s\n' 1 2 3)
+	ECC_CLOSING_FAIL=0 ECC_CLOSING="$few" run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	case "$output" in
+	*implausible*)
+		echo "three closing references were rejected as implausible: $output"
+		return 1
+		;;
+	esac
+
+	# An implausible one is refused BEFORE any lookup.
+	local many i=1
+	many=""
+	while [ "$i" -le 60 ]; do
+		many="$many$i"$'\n'
+		i=$((i + 1))
+	done
+	ECC_CLOSING_FAIL=0 ECC_CLOSING="$many" run bash -c "source '$root/epic-completeness-check.sh' && epic_completeness_check 123"
+	[ "$status" -eq 2 ] || {
+		echo "60 authoritative closing references were not capped (rc $status): $output"
+		return 1
+	}
+	case "$output" in
+	*implausible*) ;;
+	*)
+		echo "the cap did not name why it refused: $output"
+		return 1
+		;;
+	esac
 }

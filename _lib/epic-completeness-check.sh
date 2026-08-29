@@ -140,19 +140,24 @@ epic_completeness_check() {
 			echo "epic_completeness_check: closing-reference extraction FAILED (rc=$_ex_rc) — refusing rather than reporting 'nothing to check'" >&2
 			return 2
 		fi
+	fi
 
-		# THE SAME CAP THE SIBLING HAS. The fallback scans a PR body with no
-		# bound — GitHub allows 65,536 characters, measured at ~6,000
-		# extractable numbers — and each one costs API calls below. The cap
-		# was added to skills/github-pr-merge/run.sh and not here, which is
-		# the asymmetry this branch keeps producing: a guard applied to one
-		# of two callers of the same library.
-		local _n_ids
-		_n_ids=$(issue_trailers_count "$closed_ids")
-		if [ "$_n_ids" -gt "$ISSUE_TRAILER_MAX" ]; then
-			echo "epic_completeness_check: $_n_ids closing references from the fallback is implausible (cap $ISSUE_TRAILER_MAX) — refusing rather than spending that many API calls" >&2
-			return 2
-		fi
+	# THE CAP APPLIES AFTER SOURCE SELECTION, so it bounds BOTH paths.
+	#
+	# It sat inside the fallback branch, which left the authoritative path
+	# entirely unbounded — and that path is the one that normally runs. Each
+	# id costs an issue lookup below, so "GitHub returned a lot" was as
+	# expensive as the malformed-body case the cap was written for, while
+	# looking like it was covered.
+	#
+	# The fallback scans text with no bound at all — a GitHub PR body may be
+	# 65,536 characters, measured at roughly 6,000 extractable numbers — so
+	# it remains the worst case, not the only one.
+	local _n_ids
+	_n_ids=$(issue_trailers_count "$closed_ids")
+	if [ "$_n_ids" -gt "$ISSUE_TRAILER_MAX" ]; then
+		echo "epic_completeness_check: $_n_ids closing references is implausible (cap $ISSUE_TRAILER_MAX) — refusing rather than spending that many API calls" >&2
+		return 2
 	fi
 	if [ -z "$closed_ids" ]; then
 		# No closing refs — nothing to check.

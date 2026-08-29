@@ -551,8 +551,12 @@ else
 	# not a big epic.
 	if [ -n "$closed_nums" ]; then
 		_n_closed=$(issue_trailers_count "$closed_nums")
-		if [ "$_n_closed" -gt "${ISSUE_TRAILER_MAX:-50}" ]; then
-			echo "⚠ auto-close-parent SKIPPED: $_n_closed closing references is implausible (cap ${ISSUE_TRAILER_MAX:-50})." >&2
+		# `$ISSUE_TRAILER_MAX` directly, not `${ISSUE_TRAILER_MAX:-50}`: the
+		# library is guaranteed sourced by this point (the gate above
+		# refuses otherwise), so the default was unreachable AND a second
+		# copy of the number the library already owns.
+		if [ "$_n_closed" -gt "$ISSUE_TRAILER_MAX" ]; then
+			echo "⚠ auto-close-parent SKIPPED: $_n_closed closing references is implausible (cap $ISSUE_TRAILER_MAX)." >&2
 			echo "  Refusing to spend that many API calls on what is almost certainly a" >&2
 			echo "  malformed commit message; check the PR and close parents manually." >&2
 			rollup_state="too-many"
