@@ -71,8 +71,16 @@ epic_completeness_check() {
 	# extraction path and gets reported as a GitHub outage AND a broken
 	# parser — two wrong causes for one missing file. The sibling caller
 	# already guards this way.
+	# EVERY symbol this function goes on to use, not just the two it used to.
+	# `issue_trailers_count` and `ISSUE_TRAILER_MAX` arrived with the shared
+	# cap and were not added here, so a library predating them would pass
+	# the gate and fail later at the cap check — a stale install reported as
+	# something else entirely, which is the wrong-cause pattern this branch
+	# keeps producing.
 	if ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
-		! command -v issue_trailers_extract >/dev/null 2>&1; then
+		! command -v issue_trailers_extract >/dev/null 2>&1 ||
+		! command -v issue_trailers_count >/dev/null 2>&1 ||
+		[ -z "${ISSUE_TRAILER_MAX:-}" ]; then
 		echo "epic_completeness_check: _lib/issue-trailers.sh is unusable (defines no extractor) — cannot determine closing references" >&2
 		return 2
 	fi

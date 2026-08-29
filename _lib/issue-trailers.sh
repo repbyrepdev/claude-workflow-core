@@ -58,7 +58,12 @@ issue_trailers_count() { # $1 = newline-separated ids
 		printf '0'
 		return 0
 	}
-	printf '%s\n' "$1" | grep -c . || printf '0'
+	# NO `|| printf 0` FALLBACK. `grep -c .` PRINTS its count and THEN
+	# exits 1 when that count is zero, so the fallback appended a second
+	# zero and the function returned "0\n0" — which fails every numeric
+	# comparison it feeds. Verified. The empty case is already handled
+	# above, so the count is simply taken as printed.
+	printf '%s\n' "$1" | grep -c . || true
 }
 
 # Emit the issue NUMBERS referenced by closing trailers in the given text,
@@ -155,11 +160,19 @@ issue_trailers_for_pr() { # $1 = PR number
 		--jq '.closingIssuesReferences[].number' 2>"${err:-/dev/null}") || rc=$?
 	if [ "$rc" -ne 0 ]; then
 		echo "issue_trailers_for_pr: could not ask GitHub about PR #$pr (gh rc=$rc)" >&2
-		[ -n "$err" ] && cat "$err" >&2
-		[ -n "$err" ] && rm -f "$err"
+		if [ -n "$err" ]; then
+			cat "$err" >&2
+			rm -f "$err"
+		fi
 		return 1
 	fi
-	[ -n "$err" ] && rm -f "$err"
+	# `if`, not a bare `[ -n … ] && rm`: as the last statement of a branch
+	# the test's own false result becomes the function's status, and under a
+	# caller's `set -e` an empty err — the mktemp-failed case — would then
+	# read as a failure of this function.
+	if [ -n "$err" ]; then
+		rm -f "$err"
+	fi
 
 	# Digits only, deduped, numerically sorted — same output contract as the
 	# text extractor, so callers can treat the two identically.

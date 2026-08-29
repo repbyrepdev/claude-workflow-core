@@ -505,7 +505,8 @@ else
 		if [ "$rollup_state" = "no-library" ]; then
 			: # the source failed; already decided
 		elif ! command -v issue_trailers_for_pr >/dev/null 2>&1 ||
-			! command -v issue_trailers_extract >/dev/null 2>&1; then
+			! command -v issue_trailers_extract >/dev/null 2>&1 ||
+			! command -v issue_trailers_count >/dev/null 2>&1; then
 			rollup_state="no-library"
 		else
 			# GITHUB IS ASKED FIRST, because GitHub is the authority on what
@@ -548,7 +549,7 @@ else
 	# several API calls in a script that recurses upward through parents.
 	# A merge that appears to close hundreds of issues is a malformed input,
 	# not a big epic.
-	if [ -n "$closed_nums" ] && command -v issue_trailers_count >/dev/null 2>&1; then
+	if [ -n "$closed_nums" ]; then
 		_n_closed=$(issue_trailers_count "$closed_nums")
 		if [ "$_n_closed" -gt "${ISSUE_TRAILER_MAX:-50}" ]; then
 			echo "⚠ auto-close-parent SKIPPED: $_n_closed closing references is implausible (cap ${ISSUE_TRAILER_MAX:-50})." >&2
@@ -595,7 +596,7 @@ else
 			echo "  Check the parent epics manually." >&2
 		fi
 	else
-		count=$(printf '%s\n' "$closed_nums" | grep -c .)
+		count=$(issue_trailers_count "$closed_nums")
 		echo "=== Checking epic parent auto-close for $count closed sub-issue(s) ==="
 		# `|| rc=$?` so `set -e` doesn't abort when a single auto-close
 		# fails — warn and continue with the next. `if ! cmd; then rc=$?`

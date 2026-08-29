@@ -295,8 +295,21 @@ Closes #2")
 _ecc_fixture() { # builds a lib dir; $1 = "with-lib" | "without-lib"
 	local root="$TEST_TMP/ecc-$1"
 	mkdir -p "$root"
-	cp "$REPO_ROOT/_lib/epic-completeness-check.sh" "$root/"
-	[ "$1" = "with-lib" ] && cp "$REPO_ROOT/_lib/issue-trailers.sh" "$root/"
+	# GUARDED. The sibling fixture in github-pr-merge-autoclose.bats was
+	# fixed for this a commit ago and this one was not — the same
+	# one-of-two pattern as the production guards. A fixture that
+	# half-builds and runs anyway is how a test ends up asserting on a
+	# function that failed for an unrelated reason.
+	cp "$REPO_ROOT/_lib/epic-completeness-check.sh" "$root/" || {
+		echo "fixture: could not copy epic-completeness-check.sh" >&2
+		return 1
+	}
+	if [ "$1" = "with-lib" ]; then
+		cp "$REPO_ROOT/_lib/issue-trailers.sh" "$root/" || {
+			echo "fixture: could not copy issue-trailers.sh" >&2
+			return 1
+		}
+	fi
 	printf '%s' "$root"
 }
 
@@ -538,12 +551,15 @@ SHIM
 	esac
 }
 
-@test "trailers: both callers agree on the SAME input, behaviourally" {
-	# CodeRabbit's point on the drift decoy: it greps source, which pins the
-	# absence of a second regex but says nothing about the two callers
-	# actually agreeing. This exercises the shared extractor the way both
-	# reach it and asserts identical answers — including the rejections,
-	# which is where a divergent copy would show up first.
+@test "trailers: the extractor answers identically however it is sourced" {
+	# SCOPE, stated honestly: this compares the extractor called directly
+	# against the extractor reached through a sourced copy. It does NOT
+	# drive either production caller, so it cannot prove the two callers
+	# agree — an earlier title claimed that and was wrong. What it does
+	# pin is that sourcing the library does not change its answers, which
+	# is the property a divergent or partially-installed copy would break.
+	# The callers are compared behaviourally in
+	# .claude/tests/skills/github-pr-merge-autoclose.bats.
 	local input='Closes #11
 Refs #12
 postfixes #13
@@ -602,8 +618,21 @@ Fixes #15'
 	# The cap started in run.sh, was copied into epic-completeness-check.sh
 	# when Phase 2 flagged the asymmetry, and a third copy is exactly how
 	# the regex duplication that created this library began.
-	[ "${ISSUE_TRAILER_MAX}" = "50" ] || {
-		echo "the shared cap is not 50: ${ISSUE_TRAILER_MAX}"
+	# Asserted in a CLEAN environment. The library reads
+	# `${ISSUE_TRAILER_MAX:-50}`, so an exported value inherited from the
+	# shell — or from another test — would make this assert the environment
+	# rather than the default.
+	local default_max
+	default_max=$(env -u ISSUE_TRAILER_MAX bash -c "source '$REPO_ROOT/_lib/issue-trailers.sh'; printf '%s' \"\$ISSUE_TRAILER_MAX\"")
+	[ "$default_max" = "50" ] || {
+		echo "the shared cap default is not 50: $default_max"
+		return 1
+	}
+	# And it is overridable, which is what the :- form is for.
+	local override_max
+	override_max=$(ISSUE_TRAILER_MAX=7 bash -c "source '$REPO_ROOT/_lib/issue-trailers.sh'; printf '%s' \"\$ISSUE_TRAILER_MAX\"")
+	[ "$override_max" = "7" ] || {
+		echo "the cap is not overridable: $override_max"
 		return 1
 	}
 	[ "$(issue_trailers_count "$(printf '1\n2\n3')")" = "3" ] || {
@@ -619,6 +648,41 @@ Fixes #15'
 	}
 	[ "$(issue_trailers_count '')" = "0" ] || {
 		echo "counter miscounted the empty case"
+		return 1
+	}
+}
+
+@test "trailers: the counter returns ONE number, not two" {
+	# `grep -c .` PRINTS its count and THEN exits 1 when that count is zero,
+	# so a `|| printf '0'` fallback appended a second zero and the function
+	# returned "0\n0" — which fails every numeric comparison it feeds, and
+	# it feeds the plausibility cap on both callers. Verified before the
+	# fix; pinned here because the shape is invisible in a passing
+	# `[ "$n" = "0" ]` written the obvious way.
+	# THE INPUT MATTERS, and my first attempt at this test got it wrong:
+	# both `""` and `"$(printf '\n')"` take the EARLY EXIT — command
+	# substitution strips the trailing newline, so the second is also the
+	# empty string — and neither ever reached the grep the bug lives in.
+	# Mutation-verified: restoring the broken form left that version green.
+	#
+	# A bare newline assigned directly is non-empty (so it passes the early
+	# exit) and contains no non-empty lines (so grep counts 0 and exits 1),
+	# which is exactly the branch.
+	local n nl
+	nl=$'\n'
+	n=$(issue_trailers_count "$nl")
+	[ "$n" = "0" ] || {
+		echo "counter returned [$n] where a single 0 was expected — the classic shape here is the two-line '0' that fails every numeric test it feeds"
+		return 1
+	}
+	# Usable in arithmetic, which "0\n0" is not.
+	[ "$n" -eq 0 ] 2>/dev/null || {
+		echo "counter result is not usable in arithmetic: [$n]"
+		return 1
+	}
+	# And the ordinary early-exit case still answers 0.
+	[ "$(issue_trailers_count "")" = "0" ] || {
+		echo "empty input did not answer 0"
 		return 1
 	}
 }
