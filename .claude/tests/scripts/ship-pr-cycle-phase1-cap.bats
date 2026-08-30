@@ -432,8 +432,11 @@ _seed_phase05_log() {
 		return 1
 	}
 
-	# The phase1 arm announces itself exactly once. Twice would mean the
-	# loop re-entered it, which the cap exists to prevent.
+	# The dispatcher announces itself once per dispatch, so a collapsed
+	# `next` prints the line twice: once entering phase0.5, once entering
+	# the phase1 arm it collapsed into. Three would mean the loop re-entered
+	# past the single sanctioned re-dispatch, which the cap exists to
+	# prevent; one would mean the collapse never happened.
 	local n
 	n=$(printf '%s\n' "$output" | grep -c 'current stage = ' || true)
 	# EXACTLY 2, not "at most 2". `-le` has no floor, so it is satisfied by
@@ -501,6 +504,60 @@ STUB
 	esac
 }
 
+@test "a dispatch that FAILS does not re-dispatch, even having asked to" {
+	# The wrapper checks the rc before the flag. That order is the whole
+	# safety property: an arm that both errored and set the flag must
+	# surface its error, not be retried into a stage it could not reach.
+	# Reversed, a failing gate would be re-entered on the strength of a
+	# flag it set before failing — the exact shape of a gate that refuses
+	# and gets run again anyway.
+	cd "$TEST_TMP" || return 1
+	cat >"$TEST_TMP/fail-and-ask.sh" <<SHIM
+#!/bin/bash
+set -uo pipefail
+_extracted=\$(sed -n '/^cmd_next()/,/^}\$/p' '$SCRIPT')
+case "\$_extracted" in
+*_SHIP_NEXT_REDISPATCH*) ;;
+*)
+	echo "SHIM: could not extract cmd_next" >&2
+	exit 99
+	;;
+esac
+_calls=0
+_cmd_next_once() {
+	_calls=\$((_calls + 1))
+	echo "dispatch \$_calls"
+	_SHIP_NEXT_REDISPATCH=1
+	return 3
+}
+eval "\$_extracted"
+cmd_next
+_rc=\$?
+echo "rc=\$_rc calls=\$_calls"
+exit "\$_rc"
+SHIM
+	run bash "$TEST_TMP/fail-and-ask.sh"
+	# The arm's own rc must reach the caller unchanged — not 0, not 2.
+	[ "$status" -eq 3 ] || {
+		echo "a failing dispatch returned $status, expected its own rc 3: $output"
+		return 1
+	}
+	# And it must have run exactly once.
+	case "$output" in
+	*"dispatch 2"*)
+		echo "a failing dispatch was re-dispatched anyway: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"dispatch 1"*) ;;
+	*)
+		echo "the shim never dispatched at all: $output"
+		return 1
+		;;
+	esac
+}
+
 @test "a SECOND re-dispatch request in one next is REFUSED, not warned past" {
 	# The defensive arm, which had no coverage: only the phase0.5 edge may
 	# request a re-dispatch, and a second request means some other arm set
@@ -522,13 +579,26 @@ STUB
 set -uo pipefail
 # Source the orchestrator's functions without running main, then make the
 # inner dispatcher always ask to re-dispatch.
+# The two function bodies are lifted out of the script by range-extract
+# rather than sourced, because sourcing runs main. That is brittle to a
+# reformat of the function headers — so it is CHECKED: an empty extract
+# would otherwise leave cmd_next undefined and the run would fail with
+# status 127, which an "expected non-zero" assertion would happily accept.
+_extracted=\$(sed -n '/^cmd_next()/,/^}\$/p' '$SCRIPT')
+case "\$_extracted" in
+*_SHIP_NEXT_REDISPATCH*) ;;
+*)
+	echo "SHIM: could not extract cmd_next from $SCRIPT — the range-extract needs updating" >&2
+	exit 99
+	;;
+esac
 eval "\$(sed -n '/^_cmd_next_once()/,/^}\$/p' '$SCRIPT')" 2>/dev/null || true
 _cmd_next_once() {
 	echo "ship-pr-cycle: current stage = stub"
 	_SHIP_NEXT_REDISPATCH=1
 	return 0
 }
-eval "\$(sed -n '/^cmd_next()/,/^}\$/p' '$SCRIPT')"
+eval "\$_extracted"
 cmd_next
 SHIM
 	chmod +x "$TEST_TMP/force-redispatch.sh"

@@ -234,3 +234,38 @@ teardown() {
 	[[ $output == *"SERVER-SIDE"* ]] || return 1
 	[ ! -s "$CALLS" ]
 }
+
+@test "#2641: the IMPLEMENTED-arms comment matches the arms that exist" {
+	# The header comment enumerates the implemented directive arms, and a
+	# reader consults it before adding one. It drifted: cr-thread-reply
+	# shipped implemented and unlisted, and phase 0.5 found it by reading
+	# rather than by any check. A hand-maintained list next to the thing it
+	# describes will drift again unless something compares them.
+	#
+	# Both sides are derived from the file, so this cannot be satisfied by
+	# editing only one of them.
+	local listed actual
+	listed=$(sed -n '/^# when emitted from multiple call sites\. IMPLEMENTED arms:/,/^# Add an arm per NEW/p' "$LIB" |
+		sed -e 's/^# when emitted.*IMPLEMENTED arms://' -e 's/^# Add an arm per NEW.*//' -e 's/^#//' |
+		tr ',' '\n' | tr -d ' .' | grep -v '^$' | sort -u)
+	actual=$(grep -oE '^\t[a-z0-9][a-z0-9-]*\)' "$LIB" | tr -d '\t)' | sort -u)
+
+	[ -n "$listed" ] || {
+		echo "could not parse the IMPLEMENTED list out of $LIB — the comment shape changed"
+		return 1
+	}
+	[ -n "$actual" ] || {
+		echo "could not find any case arms in $LIB — the arm shape changed"
+		return 1
+	}
+	[ "$listed" = "$actual" ] || {
+		echo "the IMPLEMENTED-arms comment and the actual arms disagree."
+		echo "--- listed in the comment:"
+		printf '%s\n' "$listed"
+		echo "--- actually implemented:"
+		printf '%s\n' "$actual"
+		echo "--- only in one of them:"
+		diff <(printf '%s\n' "$listed") <(printf '%s\n' "$actual") || true
+		return 1
+	}
+}

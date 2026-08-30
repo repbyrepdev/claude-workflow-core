@@ -74,6 +74,16 @@ hook_ack_append() {
 	local lockdir="${sentinel}.lockdir"
 	local _lock_tries=0
 	while ! mkdir "$lockdir" 2>/dev/null; do
+		# A lock that cannot be TAKEN and a lock that is HELD are different
+		# problems with different fixes, and this loop reported both as the
+		# latter. An unwritable state directory spins the full 2s and then
+		# blames a concurrent hook that does not exist — which sent a test
+		# in this very commit chasing the wrong branch. If the lock is not
+		# there, nobody holds it, and waiting cannot help.
+		if [ ! -d "$lockdir" ]; then
+			echo "hook_ack_append: cannot create $lockdir — the state directory is not writable, so no lock is held and waiting will not help" >&2
+			return 1
+		fi
 		_lock_tries=$((_lock_tries + 1))
 		[ "$_lock_tries" -lt 200 ] || {
 			echo "hook_ack_append: lock acquisition failed after 2s — another hook may be stuck holding $lockdir" >&2
@@ -106,14 +116,23 @@ hook_ack_append() {
 		# intent here, since both are errors, but it reads as if-then-else
 		# and is not one. Latent until this file was next staged, because
 		# the lint only sees files in the commit.
-		local _dedup_ok=1
+		# The two failures are named separately. They have different causes
+		# and different fixes — a bad awk means the sentinel content is
+		# malformed, a bad mv means the filesystem or permissions — and a
+		# shared message made them indistinguishable both to the operator
+		# and to any test trying to prove which branch it exercised.
+		local _dedup_ok=1 _dedup_why=""
 		if awk -F'\t' -v h="$hook" -v r="$reason" '!($2 == h && $3 == r)' "$sentinel" >"$tmp"; then
-			mv -f "$tmp" "$sentinel" || _dedup_ok=0
+			mv -f "$tmp" "$sentinel" || {
+				_dedup_ok=0
+				_dedup_why="mv could not replace $sentinel"
+			}
 		else
 			_dedup_ok=0
+			_dedup_why="awk could not filter $sentinel"
 		fi
 		if [ "$_dedup_ok" -eq 0 ]; then
-			echo "hook_ack_append: dedup rewrite failed" >&2
+			echo "hook_ack_append: dedup rewrite failed — $_dedup_why" >&2
 			rm -f "$tmp"
 			rmdir "$lockdir" 2>/dev/null || true
 			return 1

@@ -121,6 +121,35 @@ _in_lib() { # $1 = shell snippet
 	esac
 }
 
+@test "hook-ack: an unwritable state dir is not reported as a stuck lock" {
+	# It waited the full 2s and then blamed "another hook may be stuck",
+	# for a directory nothing could write to and no lock existed in. The
+	# wrong diagnosis sends the reader looking for a process; the right one
+	# is a chmod. Also 2s of latency on a path that cannot succeed.
+	_in_lib 'p=$(hook_ack_diagnostic_write h r "first"); hook_ack_append h r "$p"'
+	[ "$status" -eq 0 ]
+	chmod 500 "$(dirname "$SENTINEL")"
+	_in_lib 'hook_ack_append h r "/tmp/x"'
+	chmod -R u+w "$WORK/.claude/.session-state" 2>/dev/null || true
+	[ "$status" -ne 0 ] || {
+		echo "an unwritable state dir reported success: $output"
+		return 1
+	}
+	case "$output" in
+	*"not writable"*) ;;
+	*)
+		echo "an unwritable dir is still diagnosed as a held lock: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"stuck holding"*)
+		echo "still blaming a concurrent hook that does not exist: $output"
+		return 1
+		;;
+	esac
+}
+
 @test "hook-ack: a failing RENAME after mktemp fails loudly and leaves no stem" {
 	# mktemp creates the file; the rename onto .txt is a second syscall with
 	# its own failure. If it were allowed to fall through, the caller would
@@ -173,19 +202,41 @@ STUB
 	# append — a sentinel that lost rows is worse than one with a stale row,
 	# because the lost rows were blocks somebody was owed.
 	#
-	# Forced by making the sentinel unwritable AFTER it has a row, so the
-	# dedup's `mv` cannot replace it.
+	# Forced by shadowing `mv` with a failing stub. The first version of
+	# this test chmod 500'd the state directory instead, which never
+	# reached the dedup at all — mkdir of the lockdir failed two guards
+	# earlier and the function returned on lock acquisition. It passed
+	# anyway, because "non-zero" and "sentinel unchanged" are true of that
+	# failure too. Only asserting WHICH branch ran exposed it.
 	_in_lib 'p=$(hook_ack_diagnostic_write h r "first"); hook_ack_append h r "$p"'
 	[ "$status" -eq 0 ]
 	local before
 	before=$(cat "$SENTINEL")
-	chmod 500 "$(dirname "$SENTINEL")"
-	_in_lib 'p=$(hook_ack_diagnostic_write h r "second"); hook_ack_append h r "$p"'
-	chmod -R u+w "$WORK/.claude/.session-state" 2>/dev/null || true
+	mkdir -p "$TEST_TMP/bin2"
+	cat >"$TEST_TMP/bin2/mv" <<'STUB'
+#!/bin/bash
+echo "mv: stubbed failure" >&2
+exit 1
+STUB
+	chmod +x "$TEST_TMP/bin2/mv"
+	run env PATH="$TEST_TMP/bin2:$PATH" bash -c "set -uo pipefail
+		cd '$WORK'
+		export HOOK_ACK_BATS_SKIP=0
+		. '$LIB'
+		hook_ack_append h r '$WORK/second.txt'"
 	[ "$status" -ne 0 ] || {
-		echo "a failed dedup rewrite reported success"
+		echo "a failed dedup rewrite reported success: $output"
 		return 1
 	}
+	# WHICH branch. The two dedup failures have different causes and fixes,
+	# and a shared message let this test claim one while exercising neither.
+	case "$output" in
+	*"mv could not replace"*) ;;
+	*)
+		echo "expected the rename branch, got: $output"
+		return 1
+		;;
+	esac
 	# The original row must survive — nothing silently dropped.
 	[ "$(cat "$SENTINEL")" = "$before" ] || {
 		echo "the sentinel was mutated by a failed rewrite: $(cat "$SENTINEL")"

@@ -195,6 +195,102 @@ EOF
 	}
 }
 
+@test "#2641: a diagnostic that cannot be REGISTERED says so — it is not a block" {
+	# The subtle failure: the file is written, the operator is told to read
+	# it, and nothing actually blocks, because the sentinel row that does
+	# the blocking never landed. Silent, and indistinguishable from working
+	# — the diagnostic is right there on disk. This is the shape the whole
+	# epic is about, so its two variants each get a test.
+	mkdir -p "$SANDBOX/.claude/_lib"
+	# A library that writes fine but whose append FAILS.
+	{
+		sed 's/^hook_ack_append()/hook_ack_append_real()/' "${BATS_TEST_DIRNAME}/../../../_lib/hook-ack.sh"
+		echo 'hook_ack_append() { echo "sentinel is unwritable" >&2; return 1; }'
+	} >"$SANDBOX/.claude/_lib/hook-ack.sh"
+	cat >"$SANDBOX/.git/hooks/pre-commit" <<'EOF'
+#!/bin/bash
+echo "- hook id: fakehook"
+echo "Failed"
+exit 1
+EOF
+	chmod +x "$SANDBOX/.git/hooks/pre-commit"
+	echo "content" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: exercise the unregistered-diagnostic path
+
+Covers the WARN when the sentinel append fails.
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
+	[ "$status" -ne 0 ]
+	[[ $output == *"could NOT be registered for mandatory read"* ]] || {
+		echo "a diagnostic that blocks nothing was reported as normal: $output"
+		return 1
+	}
+	# The library's own reason must be carried through, not replaced by a
+	# generic message — that is the difference between a fixable report and
+	# knowing only that something went wrong.
+	[[ $output == *"sentinel is unwritable"* ]] || {
+		echo "the append's own error was discarded: $output"
+		return 1
+	}
+	# The file still exists and is still named, since reading it manually is
+	# the remaining remedy.
+	[[ $output == *"Read"* ]] || {
+		echo "the operator is not told to read it anyway: $output"
+		return 1
+	}
+}
+
+@test "#2641: an append that is MISSING entirely also warns" {
+	# The other variant: a library that loaded but is missing the function.
+	# `command -v` guards it, and the else branch that guard needs had no
+	# test — a guard whose fallback is unproven is half a guard.
+	# A MINIMAL library, written from scratch rather than filtered from the
+	# real one. The first attempt deleted the `hook_ack_append()` header
+	# with grep and left its body behind, which is a syntax error — the
+	# source then failed outright and the test appeared to prove the
+	# missing-append warning while actually proving the missing-WRITE one.
+	mkdir -p "$SANDBOX/.claude/_lib"
+	cat >"$SANDBOX/.claude/_lib/hook-ack.sh" <<'EOF'
+#!/bin/bash
+# Defines the writer and deliberately NOT hook_ack_append.
+hook_ack_diagnostic_write() {
+	local d="$PWD/.claude/.session-state/hook-ack/git-commit"
+	mkdir -p "$d" || return 1
+	local f
+	f=$(mktemp "$d/stub-XXXXXX") || return 1
+	mv -f "$f" "$f.txt" || return 1
+	printf 'Hook:      %s\nReason:    %s\n\n%s\n' "$1" "$2" "$3" >"$f.txt" || return 1
+	printf '%s\n' "$f.txt"
+}
+EOF
+	cat >"$SANDBOX/.git/hooks/pre-commit" <<'EOF'
+#!/bin/bash
+echo "- hook id: fakehook"
+echo "Failed"
+exit 1
+EOF
+	chmod +x "$SANDBOX/.git/hooks/pre-commit"
+	echo "content" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: exercise the missing-append path
+
+Covers the WARN when hook_ack_append is absent from the library.
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
+	[ "$status" -ne 0 ]
+	[[ $output == *"hook_ack_append missing"* ]] || {
+		echo "a library missing the append function was accepted silently: $output"
+		return 1
+	}
+}
+
 @test "#2641: back-to-back aborts do not overwrite each other's diagnostic" {
 	# The library's uniqueness suffix is the thing under test. Two aborted
 	# commits must leave two readable diagnostics: an operator who is

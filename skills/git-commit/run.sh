@@ -335,8 +335,28 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 		#
 		# The library is therefore sourced BEFORE the body is built, since
 		# the write is now a function call rather than a redirect.
-		# shellcheck source=../../_lib/hook-ack.sh
-		source "$HOOK_ACK_LIB" 2>/dev/null || true
+		# Sourcing errors are CAPTURED, not discarded: a syntax error or a
+		# permissions problem in the library is the actual reason the
+		# diagnostic will not be written, and reporting only the generic
+		# "failed to persist" downstream would hide it. Still non-fatal —
+		# the operator-facing stderr below must land either way.
+		# NOT `_ack_src_err=$(source ...)`. Command substitution runs the
+		# source in a SUBSHELL, so every function it defines is discarded
+		# the moment it returns — the library appears to load and then
+		# nothing is defined. Caught by the tests immediately, which is the
+		# only reason it is not in this file. stderr goes to a temp file so
+		# the sourcing still happens in THIS shell.
+		_ack_src_err=""
+		_ack_src_err_f=$(mktemp -t git-commit-src.XXXXXX 2>/dev/null) || _ack_src_err_f=""
+		if [ -n "$_ack_src_err_f" ]; then
+			# shellcheck source=../../_lib/hook-ack.sh
+			source "$HOOK_ACK_LIB" 2>"$_ack_src_err_f" || true
+			[ -s "$_ack_src_err_f" ] && _ack_src_err=$(head -c 400 "$_ack_src_err_f")
+			rm -f "$_ack_src_err_f"
+		else
+			# shellcheck source=../../_lib/hook-ack.sh
+			source "$HOOK_ACK_LIB" 2>/dev/null || true
+		fi
 		ACK_BODY=$(
 			echo "Commit attempt aborted — HEAD did not advance."
 			echo ""
@@ -363,8 +383,21 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			tail -80 "$COMMIT_OUT" 2>/dev/null
 		)
 		ACK_FILE_ABS=""
+		_ack_write_err=""
 		if command -v hook_ack_diagnostic_write >/dev/null 2>&1; then
-			ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>/dev/null) || ACK_FILE_ABS=""
+			# stderr to a temp, not /dev/null: the library says exactly what
+			# broke (mktemp in which directory, or the rename), and that is
+			# the difference between a fixable report and "it didn't work".
+			_ack_err_f=$(mktemp -t git-commit-ack.XXXXXX 2>/dev/null) || _ack_err_f=""
+			if [ -n "$_ack_err_f" ]; then
+				ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>"$_ack_err_f") || ACK_FILE_ABS=""
+				[ -s "$_ack_err_f" ] && _ack_write_err=$(head -c 400 "$_ack_err_f")
+				rm -f "$_ack_err_f"
+			else
+				ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>/dev/null) || ACK_FILE_ABS=""
+			fi
+		else
+			_ack_write_err="hook_ack_diagnostic_write not defined after sourcing $HOOK_ACK_LIB${_ack_src_err:+ (source said: $_ack_src_err)}"
 		fi
 		if [ -n "$ACK_FILE_ABS" ] && [ -f "$ACK_FILE_ABS" ]; then
 			# Report the repo-relative path; the operator Reads either form,
@@ -384,7 +417,7 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 				echo "git-commit: WARN: hook_ack_append missing after sourcing $HOOK_ACK_LIB — the diagnostic at $ACK_FILE_ABS will not block anything. Read it yourself." >&2
 			fi
 		else
-			echo "git-commit: WARN: failed to persist hook-ack diagnostic under .claude/.session-state/hook-ack/git-commit" >&2
+			echo "git-commit: WARN: failed to persist hook-ack diagnostic under .claude/.session-state/hook-ack/git-commit${_ack_write_err:+ — $_ack_write_err}" >&2
 			ACK_FILE=""
 		fi
 	fi

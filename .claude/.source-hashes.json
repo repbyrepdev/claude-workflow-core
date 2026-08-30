@@ -32,7 +32,7 @@
     "_lib/epic-completeness-check.sh": "6a889199b179cdecaf27f255c4a0488f9c73c97a532546d51533402a96161fdc",
     "_lib/event-frontmatter.sh": "938cea33f06d4f5a1e8b816505dcb5032863f07982b9c274338406f9796be3cf",
     "_lib/gh-issue-classify.sh": "5a65e1d86f7bcde2aec3f495db676442985d77d99dbe3262491b8083b4f44729",
-    "_lib/hook-ack.sh": "9757ae7dc31e19badd854affcfcb6881b21e1086052fb91509bef578e6ed589e",
+    "_lib/hook-ack.sh": "1dae060fe2c4917073968021d6b56042a56effe4ec9e5427f7144951478cb3c5",
     "_lib/hook-deny.sh": "94b8bc9233e3e664c5148400137889c9b8387303248928d2513f9bdefa9c20b6",
     "_lib/hook-inline-sentinel.sh": "d7a5e3b7431cdb033b50a4f938a6a57000acf4b7a9b807c27b759578ae56f272",
     "_lib/issue-trailers.sh": "4b5948a0561032d88d6cb67b09b3e32568576a6fd0884b087d75edd8ed3d23eb",
