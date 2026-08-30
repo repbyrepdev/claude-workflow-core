@@ -405,10 +405,16 @@ _seed_phase05_log() {
 }
 
 @test "the collapse does NOT turn next into an unbounded walk" {
-	# Scoped to one edge, capped at a single re-dispatch. A future arm that
-	# sets the flag must not be able to make `next` walk the whole machine —
-	# cmd_resume is the thing that does that, deliberately and with its own
+	# Scoped to one edge, capped at a single re-dispatch. cmd_resume is the
+	# thing that walks many stages, deliberately and with its own
 	# suppression rules.
+	#
+	# ASSERTS THE COUNT, not just the destination. Phase 0.5 pointed out
+	# that checking only "the final stage is one of phase0.5/phase1/phase2"
+	# would still pass if the loop re-dispatched several times and happened
+	# to land inside that set — which is most of the machine. The bound is
+	# what is under test, so the bound is what is measured: exactly one
+	# re-dispatch, evidenced by the phase1 arm running exactly once.
 	_seed_stage_phase05
 	_seed_phase05_log
 	_seed_rounds "$SHA" 1 1 0
@@ -416,11 +422,64 @@ _seed_phase05_log() {
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ] || [ "$status" -eq 2 ]
-	# One invocation must not reach the far side of the machine.
+
+	# The phase1 arm announces itself exactly once. Twice would mean the
+	# loop re-entered it, which the cap exists to prevent.
+	local n
+	n=$(printf '%s\n' "$output" | grep -c 'current stage = ' || true)
+	[ "$n" -le 2 ] || {
+		echo "cmd_next dispatched $n times in one invocation (cap is 2): $output"
+		return 1
+	}
 	case "$(_cur_stage)" in
-	phase0.5 | phase1 | phase2) ;;
+	phase1 | phase2) ;;
 	*)
-		echo "one next walked past phase2 to: $(_cur_stage)"
+		echo "one next landed at an unexpected stage: $(_cur_stage)"
+		return 1
+		;;
+	esac
+}
+
+@test "a SECOND re-dispatch request in one next is REFUSED, not warned past" {
+	# The defensive arm, which had no coverage: only the phase0.5 edge may
+	# request a re-dispatch, and a second request means some other arm set
+	# the flag — a broken state machine, not a slow path.
+	#
+	# It returns 2, not 0. Reporting success would let a caller and CI treat
+	# a violated invariant as a clean advance, which is the silent
+	# degradation this whole epic is about.
+	#
+	# Forced by wrapping the script with a shim that sets the flag from a
+	# stage arm that must never set it.
+	_seed_stage_phase05
+	_seed_phase05_log
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	cat >"$TEST_TMP/force-redispatch.sh" <<SHIM
+#!/bin/bash
+set -uo pipefail
+# Source the orchestrator's functions without running main, then make the
+# inner dispatcher always ask to re-dispatch.
+eval "\$(sed -n '/^_cmd_next_once()/,/^}\$/p' '$SCRIPT')" 2>/dev/null || true
+_cmd_next_once() {
+	echo "ship-pr-cycle: current stage = stub"
+	_SHIP_NEXT_REDISPATCH=1
+	return 0
+}
+eval "\$(sed -n '/^cmd_next()/,/^}\$/p' '$SCRIPT')"
+cmd_next
+SHIM
+	chmod +x "$TEST_TMP/force-redispatch.sh"
+	run bash "$TEST_TMP/force-redispatch.sh"
+	[ "$status" -eq 2 ] || {
+		echo "a repeated re-dispatch request returned $status, expected 2: $output"
+		return 1
+	}
+	case "$output" in
+	*"more than one stage re-dispatch"*) ;;
+	*)
+		echo "the refusal does not name the invariant it caught: $output"
 		return 1
 		;;
 	esac

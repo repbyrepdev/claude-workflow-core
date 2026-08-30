@@ -3126,6 +3126,12 @@ EOF
 #
 # bash 3.2 target (see the shebang), so `;&` case fall-through is unavailable.
 cmd_next() {
+	# _SHIP_NEXT_REDISPATCH is the one channel between the arms and this
+	# wrapper. It is a global by necessity — bash cannot return a value and
+	# a status from one call — so it is reset HERE on every iteration and
+	# written in exactly one place (the phase0.5 arm). Anything else setting
+	# it trips the refusal below. Named with the SHIP_ prefix so it cannot
+	# collide with an arm's own locals.
 	local _redispatched=0 _rc=0
 	while :; do
 		_SHIP_NEXT_REDISPATCH=0
@@ -3133,10 +3139,16 @@ cmd_next() {
 		[ "$_rc" -eq 0 ] || return "$_rc"
 		[ "${_SHIP_NEXT_REDISPATCH:-0}" = "1" ] || return 0
 		if [ "$_redispatched" -ge 1 ]; then
-			# Defensive: a second request means an arm other than the one
-			# edge set the flag. Stop and say so rather than looping.
-			echo "ship-pr-cycle: WARN: more than one stage re-dispatch requested in a single 'next'; stopping here. Re-run 'next' to continue." >&2
-			return 0
+			# A second request means an arm OTHER than the single sanctioned
+			# edge set the flag — an invariant violation, not a slow path.
+			#
+			# Returns 2, not 0. Warning and reporting success would let a
+			# caller (and CI) treat a broken state machine as a clean
+			# advance, which is the silent-degradation shape this whole
+			# epic is about. rc 2 is this script's established "could not
+			# proceed" code.
+			echo "ship-pr-cycle: ERROR: more than one stage re-dispatch requested in a single 'next' — only the phase0.5→phase1 edge may request one. Refusing rather than looping." >&2
+			return 2
 		fi
 		_redispatched=$((_redispatched + 1))
 	done

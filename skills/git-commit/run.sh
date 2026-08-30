@@ -312,13 +312,32 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 	HOOK_ACK_LIB="$REPO_ROOT/.claude/_lib/hook-ack.sh"
 	ACK_FILE=""
 	if [ -f "$HOOK_ACK_LIB" ]; then
-		# Write the failure diagnostic to a sentinel file the operator
-		# Reads to ack. Filename includes timestamp so multiple commit
-		# attempts in a session don't collide.
-		ACK_DIR=".claude/.session-state/hook-ack/git-commit"
-		ACK_FILE="$ACK_DIR/$(date -u +%Y%m%dT%H%M%SZ)-commit-aborted-$$.txt"
-		ACK_FILE_ABS="$REPO_ROOT/$ACK_FILE"
-		if mkdir -p "$ACK_DIR" >/dev/null 2>&1 && {
+		# (#2641) This block used to build the diagnostic path by hand:
+		#
+		#     ACK_FILE="$ACK_DIR/$(date -u +...)-commit-aborted-$$.txt"
+		#
+		# which is hook_ack_diagnostic_write's job, re-derived — the same
+		# shape of defect the library itself was just fixed for, in the one
+		# caller (of seven that source this library) that builds its own
+		# path instead of registering an existing file.
+		#
+		# NOT a live collision here, and the first draft of this comment
+		# wrongly said it was: this wrapper is always executed, never
+		# sourced, so `$$` is a fresh pid per invocation and two aborted
+		# commits do get distinct names. The reason to change it is that
+		# the guarantee is accidental rather than owned. The library's
+		# identical-looking `$$` WAS a real collision, because there it ran
+		# inside long-lived hook processes that call it repeatedly; a
+		# reader cannot tell the two apart by looking, and the next person
+		# to copy this line into a loop inherits the bug. One
+		# implementation, whose uniqueness comes from mktemp, cannot drift
+		# from the library's format or miss its next fix.
+		#
+		# The library is therefore sourced BEFORE the body is built, since
+		# the write is now a function call rather than a redirect.
+		# shellcheck source=../../_lib/hook-ack.sh
+		source "$HOOK_ACK_LIB" 2>/dev/null || true
+		ACK_BODY=$(
 			echo "Commit attempt aborted — HEAD did not advance."
 			echo ""
 			echo "HEAD before: $HEAD_BEFORE"
@@ -328,11 +347,13 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			echo "=== Common causes + fixes ==="
 			echo "1. pre-commit auto-fix conflict (shfmt/shellcheck/semgrep rewrote a"
 			echo "   staged file): re-stage the file (git add ...) and retry."
-			echo "2. memory-index-valid: feedback memory missing **Why:** or **How to"
+			echo "2. NOTHING STAGED: the wrapper commits the INDEX, so unstaged edits"
+			echo "   produce an all-Skipped run and no commit. git add the files."
+			echo "3. memory-index-valid: feedback memory missing **Why:** or **How to"
 			echo "   apply:** sections. Fix the memory file content."
-			echo "3. bats-gate assertion-weakening: tests removed/weakened assertions."
+			echo "4. bats-gate assertion-weakening: tests removed/weakened assertions."
 			echo "   Fix tests OR set TEST_GATE_WEAKEN_OK=1 with a recorded reason."
-			echo "4. Commit-message validation drift: subject >70 chars, missing"
+			echo "5. Commit-message validation drift: subject >70 chars, missing"
 			echo "   Co-Authored-By, etc."
 			echo ""
 			echo "=== FAILING HOOK(S) (extracted) ==="
@@ -340,14 +361,20 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			echo ""
 			echo "=== Last 80 lines of pre-commit output ==="
 			tail -80 "$COMMIT_OUT" 2>/dev/null
-		} >"$ACK_FILE_ABS" 2>/dev/null; then
-			# shellcheck source=../../_lib/hook-ack.sh
-			source "$HOOK_ACK_LIB" 2>/dev/null || true
+		)
+		ACK_FILE_ABS=""
+		if command -v hook_ack_diagnostic_write >/dev/null 2>&1; then
+			ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>/dev/null) || ACK_FILE_ABS=""
+		fi
+		if [ -n "$ACK_FILE_ABS" ] && [ -f "$ACK_FILE_ABS" ]; then
+			# Report the repo-relative path; the operator Reads either form,
+			# and the relative one is what the rest of this script prints.
+			ACK_FILE=${ACK_FILE_ABS#"$REPO_ROOT/"}
 			if command -v hook_ack_append >/dev/null 2>&1; then
 				hook_ack_append "git-commit" "commit-aborted" "$ACK_FILE_ABS" 2>/dev/null || true
 			fi
 		else
-			echo "git-commit: WARN: failed to persist hook-ack diagnostic at $ACK_FILE_ABS" >&2
+			echo "git-commit: WARN: failed to persist hook-ack diagnostic under .claude/.session-state/hook-ack/git-commit" >&2
 			ACK_FILE=""
 		fi
 	fi

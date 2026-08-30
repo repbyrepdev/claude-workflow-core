@@ -75,22 +75,76 @@ _in_lib() { # $1 = shell snippet
 		return 1
 	}
 	# ASSERTS ONLY WHAT IT CAN. The suffix must be exactly 6 characters —
-	# the pid fallback was 5 or 6 decimal digits, so length alone does not
-	# discriminate, and a hex draw can be all-digits. An earlier draft had a
-	# `case` arm here pretending to reject pid-shaped values and doing
-	# nothing at all; the real invariant is distinctness, asserted in the
-	# next test. This one pins the format so a future change that drops the
-	# suffix entirely, or emits a full pid, is caught.
+	# the pid fallback was 5-6 decimal digits, so length alone does not
+	# discriminate. An earlier draft had a `case` arm pretending to reject
+	# pid-shaped values while doing nothing; a later one asserted lowercase
+	# hex, which was true only of the hand-rolled draw that mktemp then
+	# replaced. The real invariant is distinctness, asserted next. This pins
+	# the shape so dropping the suffix, or emitting a bare pid, is caught.
 	[ ${#suffix} -eq 6 ] || {
 		echo "suffix is ${#suffix} chars, expected 6: $suffix"
 		return 1
 	}
 	case "$suffix" in
-	*[!0-9a-f]*)
-		echo "suffix is not lowercase hex, so it is not the intended draw: $suffix"
+	*[!0-9A-Za-z]*)
+		echo "suffix is not alphanumeric: $suffix"
 		return 1
 		;;
 	esac
+}
+
+@test "hook-ack: a diagnostic write into an UNWRITABLE dir fails loudly" {
+	# mktemp is now the uniqueness authority, so its failure is the write's
+	# failure. It must return non-zero and say where — a silent empty return
+	# would hand the caller an empty path, and every caller in this repo
+	# refuses to register a sentinel with an empty file_path precisely
+	# because such a row cannot be cleared by Read.
+	# The per-hook dir must EXIST and be read-only, so `mkdir -p` succeeds
+	# and mktemp is the step that fails. Making the parent read-only instead
+	# fails one step earlier at mkdir, which is also correct behaviour but
+	# is not the path under test.
+	_in_lib 'mkdir -p .claude/.session-state/hook-ack/h
+		chmod 500 .claude/.session-state/hook-ack/h
+		hook_ack_diagnostic_write h r "body"'
+	# Restore before asserting so teardown can clean up regardless.
+	chmod -R u+w "$WORK/.claude/.session-state" 2>/dev/null || true
+	[ "$status" -ne 0 ] || {
+		echo "an unwritable ack dir returned success: $output"
+		return 1
+	}
+	case "$output" in
+	*mktemp*) ;;
+	*)
+		echo "the failure does not name its cause: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "hook-ack: a FAILED dedup rewrite refuses and does not append" {
+	# The if/else rewrite distinguishes an awk failure from an mv failure.
+	# Neither may leave a half-deduped sentinel or fall through to the
+	# append — a sentinel that lost rows is worse than one with a stale row,
+	# because the lost rows were blocks somebody was owed.
+	#
+	# Forced by making the sentinel unwritable AFTER it has a row, so the
+	# dedup's `mv` cannot replace it.
+	_in_lib 'p=$(hook_ack_diagnostic_write h r "first"); hook_ack_append h r "$p"'
+	[ "$status" -eq 0 ]
+	local before
+	before=$(cat "$SENTINEL")
+	chmod 500 "$(dirname "$SENTINEL")"
+	_in_lib 'p=$(hook_ack_diagnostic_write h r "second"); hook_ack_append h r "$p"'
+	chmod -R u+w "$WORK/.claude/.session-state" 2>/dev/null || true
+	[ "$status" -ne 0 ] || {
+		echo "a failed dedup rewrite reported success"
+		return 1
+	}
+	# The original row must survive — nothing silently dropped.
+	[ "$(cat "$SENTINEL")" = "$before" ] || {
+		echo "the sentinel was mutated by a failed rewrite: $(cat "$SENTINEL")"
+		return 1
+	}
 }
 
 @test "hook-ack: two calls in ONE process get DISTINCT paths" {

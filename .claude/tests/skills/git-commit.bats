@@ -57,6 +57,131 @@ EOF
 	[ "$status" -ne 0 ]
 }
 
+@test "#2641: the abort diagnostic is written by the library, and is readable" {
+	# The whole point of the ack file is that the operator is BLOCKED until
+	# they Read it, so a diagnostic that is empty, unnamed, or written under
+	# a path the wrapper then misreports is worse than none — the block
+	# stands and the evidence does not.
+	#
+	# Every other test in this file runs in a sandbox with no
+	# .claude/_lib/hook-ack.sh, which is deliberate (it keeps the real
+	# session sentinel untouched) but means the entire ack branch — 60
+	# lines, the part that fires on every blocked commit — had NO coverage.
+	# This test gives the sandbox the real library. hook_ack_append still
+	# short-circuits under bats via its own BATS_TEST_NAME guard, so the
+	# operator's live queue is still not touched; hook_ack_diagnostic_write
+	# fires for real, into the SANDBOX repo root, which is what we assert on.
+	local lib_src="${BATS_TEST_DIRNAME}/../../../_lib/hook-ack.sh"
+	[ -f "$lib_src" ]
+	mkdir -p "$SANDBOX/.claude/_lib"
+	cp "$lib_src" "$SANDBOX/.claude/_lib/hook-ack.sh"
+
+	cat >"$SANDBOX/.git/hooks/pre-commit" <<'EOF'
+#!/bin/bash
+echo "- hook id: fakehook"
+echo "Failed"
+exit 1
+EOF
+	chmod +x "$SANDBOX/.git/hooks/pre-commit"
+	echo "content" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: exercise the abort-diagnostic path
+
+Covers the hook-ack branch of the git-commit wrapper.
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
+	[ "$status" -ne 0 ]
+
+	# The wrapper must NAME the file it wrote.
+	[[ $output == *"diagnostic written to"* ]] || {
+		echo "the wrapper did not report a diagnostic path: $output"
+		return 1
+	}
+	# Extract the reported path and check it is real, relative, and non-empty.
+	local rel
+	rel=$(printf '%s\n' "$output" | sed -n 's/.*diagnostic written to \(.*\) — Read it.*/\1/p' | tail -1)
+	[ -n "$rel" ] || {
+		echo "could not parse the reported path out of: $output"
+		return 1
+	}
+	case "$rel" in
+	/*)
+		echo "the reported path is absolute; the wrapper reports repo-relative: $rel"
+		return 1
+		;;
+	esac
+	[ -s "$SANDBOX/$rel" ] || {
+		echo "the reported diagnostic does not exist or is empty: $rel"
+		ls -la "$SANDBOX/.claude/.session-state/hook-ack/git-commit" 2>&1
+		return 1
+	}
+	# It must carry the evidence, not just exist. The failing hook line is
+	# the reason the operator is being made to read it.
+	grep -q 'HEAD did not advance' "$SANDBOX/$rel" || {
+		echo "diagnostic lacks the abort statement: $(cat "$SANDBOX/$rel")"
+		return 1
+	}
+	grep -q 'fakehook' "$SANDBOX/$rel" || {
+		echo "diagnostic lacks the failing hook: $(cat "$SANDBOX/$rel")"
+		return 1
+	}
+	# Written through the library, so it carries the library's header.
+	grep -q '^Hook:  *git-commit' "$SANDBOX/$rel" || {
+		echo "diagnostic is not in the library's format — hand-rolled again? $(head -3 "$SANDBOX/$rel")"
+		return 1
+	}
+}
+
+@test "#2641: back-to-back aborts do not overwrite each other's diagnostic" {
+	# The library's uniqueness suffix is the thing under test. Two aborted
+	# commits must leave two readable diagnostics: an operator who is
+	# blocked twice needs both, and the second silently replacing the first
+	# is how the ORIGINAL library bug lost evidence.
+	local lib_src="${BATS_TEST_DIRNAME}/../../../_lib/hook-ack.sh"
+	mkdir -p "$SANDBOX/.claude/_lib"
+	cp "$lib_src" "$SANDBOX/.claude/_lib/hook-ack.sh"
+	cat >"$SANDBOX/.git/hooks/pre-commit" <<'EOF'
+#!/bin/bash
+echo "- hook id: fakehook"
+echo "Failed"
+exit 1
+EOF
+	chmod +x "$SANDBOX/.git/hooks/pre-commit"
+	echo "content" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: exercise the abort-diagnostic path twice
+
+Covers diagnostic uniqueness across repeated blocked commits.
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	# Same second, deliberately — the timestamp component is identical, so
+	# only the suffix can distinguish them.
+	bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt" >/dev/null 2>&1 || true
+	bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt" >/dev/null 2>&1 || true
+
+	local n
+	n=$(find "$SANDBOX/.claude/.session-state/hook-ack/git-commit" -name '*.txt' -type f 2>/dev/null | wc -l | tr -d ' ')
+	[ "$n" -eq 2 ] || {
+		echo "expected 2 distinct diagnostics after 2 aborts, found $n"
+		ls -la "$SANDBOX/.claude/.session-state/hook-ack/git-commit" 2>&1
+		return 1
+	}
+	# Both must be non-empty — two names pointing at one truncated file
+	# would satisfy a count-only assertion.
+	local f
+	while IFS= read -r f; do
+		[ -s "$f" ] || {
+			echo "diagnostic is empty: $f"
+			return 1
+		}
+	done < <(find "$SANDBOX/.claude/.session-state/hook-ack/git-commit" -name '*.txt' -type f)
+}
+
 # --- #2293 edge-case expansion: happy path, partial stage, fail-closed,
 # --- dry-run. (Operator --message-file schema checks are warn-only by design,
 # --- so these target the behaviors that actually change commit state.) ---

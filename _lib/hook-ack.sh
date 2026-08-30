@@ -186,18 +186,37 @@ hook_ack_diagnostic_write() {
 	# it, always the pid. That is why this was invisible to a shell test run
 	# by hand.
 	#
-	# No pipeline now, so there is no SIGPIPE to mis-report. `$RANDOM` is a
-	# bash builtin present in 3.2, and two draws give 8 hex chars, trimmed to
-	# 6. This is filename disambiguation, not cryptography.
-	local ts rand_suffix
+	# mktemp IS the uniqueness authority — do not re-derive one.
+	#
+	# The first fix here hand-rolled a suffix from two $RANDOM draws. Phase
+	# 0.5 flagged it immediately, via the derivation question added to the
+	# code-reviewer brief in this same commit: mktemp already guarantees a
+	# name nothing else holds, atomically, and re-deriving that guarantee
+	# from a PRNG invites exactly the question ("is the entropy adequate?")
+	# that using the real primitive makes unaskable.
+	#
+	# BSD mktemp requires the X-run at the END of the template, so the .txt
+	# extension cannot be part of it — hook-ack-clear.sh globs *.txt. The
+	# file is therefore created by mktemp (exclusive, unique) and then
+	# renamed onto the extension. The random component still comes from
+	# mktemp; the rename only adds the suffix.
+	local ts
 	ts=$(date -u +%Y%m%dT%H%M%SZ)
-	rand_suffix=$(printf '%04x%04x' "$RANDOM" "$RANDOM")
-	rand_suffix=${rand_suffix:0:6}
 	# Sanitize reason for use in filename: replace non-alnum with `-`,
 	# truncate to 60 chars to prevent excessive filenames.
 	local safe_reason
 	safe_reason=$(printf '%s' "$reason" | tr -c '[:alnum:]_.-' '-' | cut -c1-60)
-	local diag_path="$diag_dir/${ts}-${safe_reason}-${rand_suffix}.txt"
+	local diag_stem diag_path
+	diag_stem=$(mktemp "$diag_dir/${ts}-${safe_reason}-XXXXXX") || {
+		echo "hook_ack_diagnostic_write: mktemp failed in $diag_dir" >&2
+		return 1
+	}
+	diag_path="${diag_stem}.txt"
+	mv -f "$diag_stem" "$diag_path" || {
+		echo "hook_ack_diagnostic_write: cannot name $diag_path" >&2
+		rm -f "$diag_stem"
+		return 1
+	}
 	{
 		printf 'Hook:      %s\n' "$hook"
 		printf 'Reason:    %s\n' "$reason"
