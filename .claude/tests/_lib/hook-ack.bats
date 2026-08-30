@@ -135,10 +135,22 @@ _in_lib() { # $1 = shell snippet
 		echo "an unwritable state dir reported success: $output"
 		return 1
 	}
+	# The message is deliberately HEDGED: "mkdir failed and the path is
+	# absent" is not proof of an unwritable directory — a stale non-
+	# directory at the lock path lands here too, and so would a holder that
+	# released in the window (which is why the code retries once first).
+	# What it must NOT do is name a concurrent process it cannot see.
 	case "$output" in
-	*"not writable"*) ;;
+	*"not one we can create"*) ;;
 	*)
-		echo "an unwritable dir is still diagnosed as a held lock: $output"
+		echo "an uncreatable lock path is still diagnosed as a held lock: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"waiting will not help"*) ;;
+	*)
+		echo "the message does not tell the reader that waiting is pointless: $output"
 		return 1
 		;;
 	esac
@@ -277,11 +289,17 @@ STUB
 }
 
 @test "hook-ack: the suffix works under the callers' OWN shell options" {
-	# The reason the bug was invisible: without `pipefail` the old pipeline
-	# returned a random string and looked fine. Every real caller sets
-	# `set -uo pipefail`, and _in_lib does too — so this test would have
-	# failed before the fix and passes after it. Pinned explicitly because
-	# "works when I try it in a shell" was the false signal.
+	# THIS TEST USED TO PROVE NOTHING, and said in its own comment that it
+	# "would have failed before the fix". It would not have: the old code
+	# caught its own pipeline failure with `|| rand_suffix="$$"` and
+	# returned 0, so asserting rc 0 passes on the broken library exactly as
+	# it does on the fixed one. A phase-1 agent reproduced that against the
+	# pre-fix blob rather than taking the comment's word for it.
+	#
+	# What the fixture IS good for is the shell options, so it keeps that
+	# job and adds the assertion that discriminates: the suffix must not be
+	# the pid. Under pipefail the old code produced `$$` every time — that
+	# is the observable difference, not the exit status.
 	_in_lib 'set -o | grep -q "pipefail.*on" || { echo "FIXTURE-NO-PIPEFAIL"; exit 1; }
 		hook_ack_diagnostic_write h reason "body"'
 	[ "$status" -eq 0 ]
@@ -291,6 +309,17 @@ STUB
 		return 1
 		;;
 	esac
+	local base suffix
+	base=$(basename "$output" .txt)
+	suffix=${base##*-}
+	[ "$suffix" != "$$" ] || {
+		echo "the suffix is this process's pid under pipefail — the regression is back: $output"
+		return 1
+	}
+	[ ${#suffix} -eq 6 ] || {
+		echo "suffix is ${#suffix} chars, expected mktemp's 6: $suffix"
+		return 1
+	}
 }
 
 # ---- the core contract ---------------------------------------------------
@@ -390,6 +419,17 @@ STUB
 	# filter run on it for exactly this reason.
 	_in_lib 'hook_ack_diagnostic_write "../../../etc/evil" r "body"' || true
 	# Either it refuses, or it writes INSIDE the ack root — never outside.
+	#
+	# THE LOCATIONS MATTER. The first version checked
+	# $WORK/.claude/.session-state/etc and $TEST_TMP/etc, and `../../../`
+	# from the ack dir ($WORK/.claude/.session-state/hook-ack/<hook>/) lands
+	# on $WORK — so neither of those paths would be created whether the
+	# sanitization worked or not, and both assertions were free. The escape
+	# this input actually attempts is $WORK/etc.
+	[ ! -e "$WORK/etc" ] || {
+		echo "a traversing hook name escaped to $WORK/etc"
+		return 1
+	}
 	[ ! -e "$WORK/.claude/.session-state/etc" ] || {
 		echo "a traversing hook name created a directory outside the ack root"
 		return 1
@@ -398,7 +438,20 @@ STUB
 		echo "a traversing hook name escaped the fixture repo entirely"
 		return 1
 	}
-	if [ "$status" -eq 0 ] && [ -n "$output" ]; then
+	# The containment check is UNCONDITIONAL on success. Gating it behind
+	# `[ "$status" -eq 0 ]` meant any write failure skipped the only
+	# assertion doing real work, leaving the whole test vacuous — and a
+	# refusal is a legitimate outcome here, so the status is checked
+	# explicitly rather than used to opt out.
+	if [ "$status" -ne 0 ]; then
+		# Refused outright: acceptable, and nothing to contain.
+		return 0
+	fi
+	[ -n "$output" ] || {
+		echo "reported success but named no path"
+		return 1
+	}
+	if true; then
 		# RESOLVED on both sides. macOS $TMPDIR is /var/folders/... while the
 		# library resolves through git, which reports /private/var/... — two
 		# spellings of one directory. Comparing them raw fails on a path that

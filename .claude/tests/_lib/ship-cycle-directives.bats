@@ -38,7 +38,10 @@ teardown() {
 # emitted it any more, and a directive arm that no call site reaches is the
 # same "looks live, is not" shape this epic exists to remove.
 #
-# Retargeted to `phase2-preread`, which has four live call sites. The
+# Retargeted to `merge-gate` (one live call site, and an advisory arm
+# whose ack file_path is a generated diagnostic — a PREREAD arm such as
+# phase2-preread returns through _emit_preread_ack under a different hook
+# name, so the ship-pr-cycle-next assertion below would not hold for it). The
 # properties under test are the machinery's, not that label's: prints to
 # stdout, registers an ack under the right hook name, and is suppressed
 # inside cmd_resume.
@@ -57,9 +60,20 @@ teardown() {
 	# is unreachable code wearing the shape of enforcement, and the removed
 	# `two-step-phase1` arm sat that way from the moment cmd_next stopped
 	# calling it.
-	local lib="${BATS_TEST_DIRNAME}/../../../_lib/ship-cycle-directives.sh"
+	# setup() already resolves this path once; a second spelling of it is
+	# a second thing to keep in sync.
+	local lib="$LIB"
 	local cycle="${BATS_TEST_DIRNAME}/../../../scripts/ship-pr-cycle.sh"
 	local label n dead=""
+	# A reformat of the case-arm indentation empties this list, the loop
+	# body never runs, and the test reports green having checked nothing.
+	# The drift test below guards exactly this; so does this one now.
+	local _arms
+	_arms=$(grep -oE '^\t[a-z0-9][a-z0-9-]*\)' "$lib" | tr -d '\t)' | sort -u)
+	[ -n "$_arms" ] || {
+		echo "no case arms matched in $lib — the extraction regex is stale, so this test checked nothing"
+		return 1
+	}
 	for label in $(grep -oE '^	[a-z0-9-]+\)' "$lib" | tr -d '\t)'); do
 		n=$(grep -c "_emit_stage_directive $label" "$cycle" || true)
 		[ "$n" -gt 0 ] || dead="$dead $label"

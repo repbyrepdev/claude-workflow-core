@@ -1297,17 +1297,23 @@ _p1_zero_backed_by_state() {
 
 _phase05_round_cap() {
 	# (#2641) Phase 0.5 was the ONLY review stage with no round cap. Phase 1
-	# caps at 3 and graduates on coverage; phase 2 has its own twin. Phase
-	# 0.5 simply re-ran on every new HEAD — and since the way you clear a
-	# phase-0.5 finding is to commit a fix, every round MINTS the next one.
-	# A branch converges only if a 5-agent panel returns zero findings on a
-	# diff it has already reviewed several times, which for a panel that
-	# reports low-confidence nits is not a thing that reliably happens.
-	# Measured on the branch that added this: four successive HEADs, each
-	# round triggered by the fix for the round before it.
+	# caps and graduates on coverage; phase 2 has its twin. Phase 0.5 simply
+	# re-ran on every new HEAD — and since the way you clear a phase-0.5
+	# finding is to COMMIT a fix, every round MINTS the next one. A branch
+	# converges only if a 5-agent panel returns zero findings on a diff it
+	# has already reviewed several times, which for a panel that reports
+	# low-confidence nits does not reliably happen. Measured on the branch
+	# that added this: three rounds, 26 findings, a fourth queued.
 	#
-	# Same shape as the phase-1 cap, deliberately: bound the rounds, and let
-	# the branch out on positive coverage evidence rather than on silence.
+	# NOT scaler-sized, unlike the phase-1/phase-2 caps, and deliberately.
+	# The scaler sizes rounds by diff surface because a bigger diff has more
+	# to find. This cap is not bounding how much there is to find; it is
+	# bounding a FEEDBACK LOOP whose length is independent of diff size —
+	# each round is minted by the fix for the previous one, so a one-line
+	# diff loops exactly as long as a thousand-line one. Sizing it by
+	# surface would give the biggest diffs the longest loops, which is
+	# backwards. The exit is coverage, and coverage scales with findings on
+	# its own.
 	local cap=${PHASE05_ROUND_CAP:-3}
 	case "$cap" in '' | *[!0-9]*)
 		echo "ship-pr-cycle: ERROR: PHASE05_ROUND_CAP must be a non-negative integer, got '$cap'" >&2
@@ -1317,20 +1323,34 @@ _phase05_round_cap() {
 	printf '%s\n' "$cap"
 }
 
+_phase05_log_readable() {
+	# One place decides what an unreadable log means, because two helpers
+	# disagreeing about the same file is how one of them ends up scoring a
+	# permissions problem as "clean". rc 0 = present and readable, rc 1 =
+	# absent (legitimately nothing spent yet), rc 2 = present but unreadable.
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
+	[ -e "$jsonl" ] || return 1
+	[ -r "$jsonl" ] || {
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — $jsonl exists but is unreadable; refusing to score it as zero" >&2
+		return 2
+	}
+	return 0
+}
+
 _phase05_branch_round_count() {
 	# DISTINCT branch shas carrying a phase-0.5 row. Per-branch, not
 	# per-sha, for the same reason the phase-1 counter is: a fix commit must
 	# not reset the count, or the cap is unreachable by construction.
-	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl" branch_shas
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl" branch_shas _rc=0
 	branch_shas=$(_p1_branch_shas) || return 2
-	if [ ! -f "$jsonl" ]; then
+	_phase05_log_readable || _rc=$?
+	case "$_rc" in
+	1)
 		printf '0\n'
 		return 0
-	fi
-	if [ ! -r "$jsonl" ]; then
-		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — $jsonl exists but is unreadable; cannot count rounds" >&2
-		return 2
-	fi
+		;;
+	2) return 2 ;;
+	esac
 	local _sha n=0
 	for _sha in $branch_shas; do
 		# jq on the parsed row, not grep: a substring match would also count
@@ -1342,82 +1362,147 @@ _phase05_branch_round_count() {
 	printf '%s\n' "$n"
 }
 
-_phase05_findings_total() {
-	# Sum, across branch shas, of the findings each REPORTED — taking the
-	# MAX over a sha's rows rather than their sum, because re-running the
-	# prefilter on an unchanged sha appends an identical row and summing
-	# would inflate the bar until it could never be met.
-	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl" branch_shas
+_phase05_findings_for_sha() {
+	# Findings REPORTED for one sha, from the terminal aggregate row.
+	#
+	# The authority is {agent:"<all>", status:"emitted"} — _lib/phase05-
+	# dedupe.sh writes one row per agent BEFORE emission and that aggregate
+	# only at a genuine terminal, and its own comment says consumers must
+	# key on it precisely because per-agent rows survive a crashed emit.
+	#
+	# The first version took the MAX over a sha's rows. Measured against the
+	# real log that is wrong by up to 4x and wrong in both directions:
+	# af2ea771 -> 5 where its agent rows sum to 14, 5bfe2353 -> 9 vs 23,
+	# b2715ada -> 4 vs 18, and on this branch f6f1218 -> 9 where the
+	# aggregate says 8. A bar that low prints "all N covered" over a
+	# fraction of them. Two phase-1 agents found it independently.
+	#
+	# Echoes the count, or "unknown" when the sha has rows but no terminal
+	# aggregate — never a guess. Summing pre-emission rows would count
+	# findings that were never emitted, the laundering class the dedupe
+	# library names. rc 2 on a real read failure.
+	local _sha="$1"
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
+	local _agg _any _nonterm jq_err jq_rc=0
+	jq_err=$(mktemp -t ship-cycle-p05-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 findings jq stderr failed"
+	# Newest terminal aggregate wins: re-running the prefilter on an
+	# unchanged sha appends a second one.
+	_agg=$(jq -r -R --arg s "$_sha" \
+		'fromjson? | select(.sha == $s and .agent == "<all>" and .status == "emitted") | .findings // 0' \
+		"$jsonl" 2>"$jq_err" | tail -1) || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed reading $jsonl: $(head -c 300 "$jq_err"); a jq failure must never be coerced to zero findings (it would SHRINK the graduation bar)" >&2
+		rm -f "$jq_err"
+		return 2
+	fi
+	rm -f "$jq_err"
+	if [ -n "$_agg" ]; then
+		case "$_agg" in '' | *[!0-9]*)
+			printf 'unknown\n'
+			return 0
+			;;
+		esac
+		printf '%s\n' "$_agg"
+		return 0
+	fi
+	_any=$(jq -r -R --arg s "$_sha" 'fromjson? | select(.sha == $s) | .status // "?"' "$jsonl" 2>/dev/null)
+	if [ -z "$_any" ]; then
+		printf '0\n'
+		return 0
+	fi
+	# A run-level skip is a legitimate terminal that found nothing.
+	_nonterm=$(printf '%s\n' "$_any" | grep -cv '^skipped-' || true)
+	if [ "${_nonterm:-0}" -gt 0 ]; then
+		printf 'unknown\n'
+		return 0
+	fi
+	printf '0\n'
+}
+
+_phase05_covered_map() {
+	# Covers per sha, for EVERY branch sha, in ONE pass over the ledger.
+	# Emits "<sha><TAB><covers>" lines; shas with no records are omitted.
+	#
+	# Was one full ledger walk per sha. The ledger is a single file, so
+	# unlike the phase-1 counter (which batches because it opens N separate
+	# review-log files) there is nothing here to gain from repeating it —
+	# it was N reads of the same thing.
+	#
+	# Deliberately NOT merged with the findings reader, which stays per-sha.
+	# The two have different failure modes and each must be able to return
+	# rc 2 naming its own file: this one distinguishes an unreadable ledger
+	# from an empty one, while the findings reader distinguishes a missing
+	# terminal aggregate (undeterminable) from a legitimate zero. Encoding
+	# both in one output shape and one exit status is how the earlier
+	# version of this gate lost the ability to tell "no findings" from
+	# "could not tell".
+	local audit="$REPO_ROOT/.claude/audit/prove-yourself.jsonl"
+	local branch_shas
 	branch_shas=$(_p1_branch_shas) || return 2
+	if [ ! -e "$audit" ]; then
+		return 0
+	fi
+	if [ ! -r "$audit" ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — $audit exists but is unreadable; refusing to score coverage as zero" >&2
+		return 2
+	fi
+	local shas_json jq_err jq_rc=0 out
+	# shellcheck disable=SC2086
+	shas_json=$(printf '%s\n' $branch_shas | jq -R . | jq -sc .) || {
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — could not encode the branch sha list" >&2
+		return 2
+	}
+	jq_err=$(mktemp -t ship-cycle-p05-cov-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 coverage jq stderr failed"
+	# `source` must be phase0.5 — the ledger also holds cr and phase1 rows,
+	# and counting those would open this gate on another stage's evidence.
+	# covered_sha is a SHORT sha, so the full branch sha is the one that
+	# startswith it.
+	out=$(jq -rs --argjson shas "$shas_json" '
+		[ .[]
+		  | select(.source == "phase0.5")
+		  | . as $r
+		  | select((($r.covered_sha // "") | length) > 0)
+		  | ($shas[] | select(startswith($r.covered_sha))) as $full
+		  | {sha: $full, n: ($r.covers_count // 1)}
+		]
+		| group_by(.sha)
+		| .[]
+		| "\(.[0].sha)\t\([.[].n] | add)"
+	' "$audit" 2>"$jq_err") || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed reading $audit: $(head -c 300 "$jq_err"); coverage is UNDETERMINABLE and doubt never graduates" >&2
+		rm -f "$jq_err"
+		return 2
+	fi
+	rm -f "$jq_err"
+	printf '%s\n' "$out"
+}
+
+_phase05_log_corrupt_lines() {
+	# Lines the log holds that are not JSON at all.
+	#
+	# `fromjson?` silently drops them, and every consumer here uses it — so
+	# a truncated or hand-edited row LOWERS the findings bar while leaving
+	# coverage untouched, i.e. corruption makes graduation EASIER. The
+	# phase-1 gate has an undeterminable path for exactly this; this is
+	# phase 0.5's.
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
 	[ -r "$jsonl" ] || {
 		printf '0\n'
 		return 0
 	}
-	local _sha _f total=0
-	for _sha in $branch_shas; do
-		_f=$(jq -r -R --arg s "$_sha" 'fromjson? | select(.sha == $s) | .findings // 0' "$jsonl" 2>/dev/null |
-			sort -rn | head -1)
-		case "$_f" in '' | null | *[!0-9]*) _f=0 ;; esac
-		total=$((total + _f))
-	done
-	printf '%s\n' "$total"
-}
-
-_phase05_covered_total() {
-	# Sum of covers_count over THIS BRANCH'S phase-0.5 prove-yourself
-	# records.
-	#
-	# The branch window is load-bearing and was missing from the first
-	# draft. The session-state ledger is not reset between branches in
-	# practice — measured on the branch that added this, it held 142
-	# phase-0.5 covers against 26 findings, nearly all of them from earlier
-	# branches in the same session. An unwindowed sum makes the cap door
-	# open on somebody else's evidence, which is worse than having no cap:
-	# it would report a graduation that nothing on this branch earned.
-	#
-	# The window is the branch's first commit, which git answers directly
-	# and which needs no state file (a new HEAD has none until `next` runs).
-	local pdir="$REPO_ROOT/.claude/.session-state/prove-yourself"
-	local covered=0 _rec _c _ts _since _root
-	_root=$(git rev-list "$BASE_BRANCH..HEAD" 2>/dev/null | tail -1)
-	if [ -z "$_root" ]; then
-		# No commits of our own yet — nothing on this branch can be covered.
+	local total parsed
+	total=$(grep -c . "$jsonl" 2>/dev/null || true)
+	case "$total" in '' | *[!0-9]*) total=0 ;; esac
+	parsed=$(jq -r -R 'fromjson? | 1' "$jsonl" 2>/dev/null | grep -c . || true)
+	case "$parsed" in '' | *[!0-9]*) parsed=0 ;; esac
+	if [ "$parsed" -gt "$total" ]; then
 		printf '0\n'
 		return 0
 	fi
-	# UTC, in the ledger's own Z format. %cI would emit the committer's
-	# local offset (-04:00 here), and comparing "...T10:00:00Z" against
-	# "...T09:03:29-04:00" lexically gives the WRONG answer whenever the
-	# two fall on the same date — the offset is not part of the ordering.
-	# Same class as stamping a fixture with `date -u` and aging it with
-	# `touch -t`, which reads local time.
-	# format-LOCAL under TZ=UTC. Plain `--date=format:` renders the commit
-	# in its OWN recorded offset and then this format string staples a "Z"
-	# on it — 09:03:29-04:00 came back as "09:03:29Z", four hours early and
-	# labelled as UTC. Only format-local honours TZ. Verified against
-	# `%cI` on this branch's root: -04:00 09:03:29 -> 13:03:29Z.
-	_since=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$_root" 2>/dev/null) || _since=""
-	if [ -z "$_since" ]; then
-		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — cannot date the branch root $_root; refusing to total coverage over an unbounded window" >&2
-		return 2
-	fi
-	[ -d "$pdir" ] || {
-		printf '0\n'
-		return 0
-	}
-	for _rec in "$pdir"/*.json; do
-		[ -f "$_rec" ] || continue
-		_ts=$(jq -r 'select(.source == "phase0.5") | .ts // empty' "$_rec" 2>/dev/null) || continue
-		[ -n "$_ts" ] || continue
-		# ISO-8601 UTC sorts lexically, which is the whole reason this repo
-		# stamps that format; no date-parsing needed and none available
-		# portably anyway (BSD date has no -d).
-		[ "$_ts" \> "$_since" ] || continue
-		_c=$(jq -r 'select(.source == "phase0.5") | .covers_count // 0' "$_rec" 2>/dev/null) || _c=""
-		case "$_c" in '' | null | *[!0-9]*) continue ;; esac
-		covered=$((covered + _c))
-	done
-	printf '%s\n' "$covered"
+	printf '%s\n' "$((total - parsed))"
 }
 
 _phase05_cap_gate() {
@@ -1425,26 +1510,64 @@ _phase05_cap_gate() {
 	# re-dispatches straight into it); rc 2 = refused, naming what is
 	# missing.
 	#
-	# Graduation needs POSITIVE evidence, exactly like the phase-1 gate:
-	# every finding this branch's phase-0.5 rounds reported must be covered
-	# by a prove-yourself record. "The panel went quiet" is not evidence —
-	# an errored panel is also quiet.
+	# PER SHA, not in aggregate. The first version compared summed totals,
+	# which lets coverage recorded against one sha's findings launder
+	# uncovered findings on every other sha — the exact defect the phase-1
+	# gate's own r1 hardening comment says it was rewritten to close. Same
+	# contract as that gate:
+	#   rc 0 -> EVERY findings-bearing branch sha is fully covered, AND at
+	#           least one such sha exists (all-zero at the cap means the
+	#           panels errored or never ran; silence is not evidence).
+	#   rc 2 -> uncovered findings, no positive evidence, or coverage
+	#           undeterminable anywhere. Doubt never graduates.
 	local cap="$1" runs="$2"
-	local total covered
-	total=$(_phase05_findings_total) || return 2
-	covered=$(_phase05_covered_total) || return 2
+	local branch_shas _sha _f _c _cov_map
+	local _findings_shas=0 _covered_shas=0 _total=0 _detail="" _undeterminable=""
+	branch_shas=$(_p1_branch_shas) || return 2
+	_cov_map=$(_phase05_covered_map) || return 2
 
-	if [ "$total" -gt 0 ] && [ "$covered" -ge "$total" ]; then
+	local _corrupt
+	_corrupt=$(_phase05_log_corrupt_lines) || return 2
+	if [ "$_corrupt" -gt 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — .claude/logs/phase0.5-run.jsonl holds $_corrupt unparseable line(s). Every reader here skips them, so corruption LOWERS the findings bar while coverage is untouched: it would make graduation easier, not harder. Repair the log, then re-run." >&2
+		return 2
+	fi
+
+	for _sha in $branch_shas; do
+		_f=$(_phase05_findings_for_sha "$_sha") || return 2
+		if [ "$_f" = "unknown" ]; then
+			_undeterminable="$_undeterminable ${_sha:0:7}(no-terminal-aggregate)"
+			continue
+		fi
+		[ "$_f" -gt 0 ] || continue
+		_findings_shas=$((_findings_shas + 1))
+		_total=$((_total + _f))
+		# Look the sha up in the one-pass map. Absent = no records = 0.
+		_c=$(printf '%s\n' "$_cov_map" | awk -F'\t' -v s="$_sha" '$1 == s {print $2; found=1} END {if (!found) print 0}' | tail -1)
+		case "$_c" in '' | *[!0-9]*) _c=0 ;; esac
+		if [ "$_c" -ge "$_f" ]; then
+			_covered_shas=$((_covered_shas + 1))
+		else
+			_detail="$_detail ${_sha:0:7}=$_c/$_f"
+		fi
+	done
+
+	if [ -z "$_undeterminable" ] && [ "$_findings_shas" -gt 0 ] &&
+		[ "$_covered_shas" -eq "$_findings_shas" ]; then
 		_set_stage "phase1"
-		echo "→ phase0.5 round-cap reached ($runs/$cap) + all $total finding(s) across this branch covered by prove-yourself ($covered recorded); GRADUATED to phase1 WITHOUT another prefilter round (#2641)"
+		echo "→ phase0.5 round-cap reached ($runs/$cap) + every finding on all $_findings_shas findings-bearing branch sha(s) covered by prove-yourself ($_total total); GRADUATED to phase1 WITHOUT another prefilter round (#2641)"
 		_SHIP_NEXT_REDISPATCH=1
 		return 0
 	fi
-	if [ "$total" -eq 0 ]; then
-		echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings are recorded on any branch sha — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run." >&2
+	if [ -n "$_undeterminable" ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but coverage is UNDETERMINABLE on:$_undeterminable — those shas carry phase-0.5 rows with no terminal {agent:\"<all>\",status:\"emitted\"} aggregate, which means a round that did not finish. Summing their pre-emission per-agent rows would count findings that were never emitted. Re-run the prefilter there, or PIPELINE_GATE_SKIP=1 to override (audited)." >&2
 		return 2
 	fi
-	echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with $covered/$total finding(s) covered. Record the remainder via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)." >&2
+	if [ "$_findings_shas" -eq 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings-bearing sha exists on this branch — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run." >&2
+		return 2
+	fi
+	echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)." >&2
 	return 2
 }
 
@@ -1917,57 +2040,80 @@ _cmd_next_once() {
 		local sha jsonl
 		sha=$(_current_sha)
 		jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
+		# Is this HEAD already logged? Answered ONCE, here, because both the
+		# round cap and the advance decision below need it and the first
+		# draft asked twice — the cap's copy collapsing parse errors into
+		# "no match", which is exactly the conflation the advance decision's
+		# own comment says must not happen.
+		#
+		# jq -e exit codes: 0 = matched, 1 = matched value was null/false,
+		# 4 = no result produced (our "no match"), 2/5 = real errors (parse /
+		# uncaught). 1 and 4 both mean not-logged; anything else is a refusal.
+		local jq_err="" jq_rc=0 head_logged=0
+		if [ ! -e "$jsonl" ]; then
+			jq_rc=4
+		elif [ ! -r "$jsonl" ]; then
+			echo "ship-pr-cycle: ERROR: $jsonl exists but is unreadable" >&2
+			return 2
+		else
+			jq_err=$(jq -e -R --arg sha "$sha" 'fromjson? | select(.sha == $sha)' "$jsonl" 2>&1 >/dev/null) || jq_rc=$?
+		fi
+		case "$jq_rc" in
+		0) head_logged=1 ;;
+		1 | 4) head_logged=0 ;;
+		*)
+			echo "ship-pr-cycle: ERROR: jq failed walking $jsonl (rc=$jq_rc): $jq_err" >&2
+			return 2
+			;;
+		esac
 		# (#2641) The round cap, checked BEFORE demanding a log for this
 		# HEAD — because demanding one is exactly what arms the next round,
 		# and at the cap that is the thing being refused.
 		local _p05_cap _p05_runs
 		_p05_cap=$(_phase05_round_cap) || return 2
+		if [ "$_p05_cap" -eq 0 ]; then
+			# Loud, like the PIPELINE_GATE_SKIP arm below. A bound that
+			# disappears because of an inherited or stale env var, with
+			# nothing on stderr, is the same unaudited bypass.
+			echo "ship-pr-cycle: WARN: phase0.5 round-cap DISABLED by PHASE05_ROUND_CAP=0 — prefilter rounds are unbounded on this branch" >&2
+		fi
 		if [ "$_p05_cap" -gt 0 ]; then
 			_p05_runs=$(_phase05_branch_round_count) || return 2
-			if [ "$_p05_runs" -ge "$_p05_cap" ] &&
-				! jq -e -R --arg s "$sha" 'fromjson? | select(.sha == $s)' "$jsonl" >/dev/null 2>&1; then
+			if [ "$_p05_runs" -ge "$_p05_cap" ] && [ "$head_logged" -eq 0 ]; then
 				if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
-					echo "ship-pr-cycle: WARN: phase0.5 round-cap ($_p05_runs/$_p05_cap) OVERRIDDEN by PIPELINE_GATE_SKIP=1 — arming another prefilter round" >&2
+					# Same fail-closed contract the phase-1 and phase-2 caps
+					# use (#2565): "audit-logged" is a PRECONDITION, not an
+					# aspiration. One env var must not mean two different
+					# things depending on which gate reads it — this was the
+					# only one of the three overrides that just echoed and
+					# proceeded.
+					if ! command -v pipeline_skip_log >/dev/null 2>&1; then
+						echo "ship-pr-cycle: ERROR: _lib/pipeline-skip.sh unavailable — refusing an UNLOGGED phase0.5 cap override (fix the plugin install, or drop PIPELINE_GATE_SKIP)" >&2
+						return 2
+					fi
+					if ! pipeline_skip_log "phase05-round-cap"; then
+						echo "ship-pr-cycle: ERROR: phase0.5 cap-override audit append FAILED (see writer error above) — refusing to spend another prefilter round UNLOGGED" >&2
+						return 2
+					fi
+					echo "ship-pr-cycle: WARN: phase0.5 round-cap ($_p05_runs/$_p05_cap) OVERRIDDEN by PIPELINE_GATE_SKIP=1 — arming another prefilter round (audit-logged)" >&2
 				else
 					_phase05_cap_gate "$_p05_cap" "$_p05_runs"
 					return $?
 				fi
 			fi
 		fi
-		if [ ! -f "$jsonl" ]; then
-			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
-			return 1
-		fi
-		if [ ! -r "$jsonl" ]; then
-			echo "ship-pr-cycle: ERROR: $jsonl exists but is unreadable" >&2
-			return 2
-		fi
-		# Capture jq stderr to distinguish parse errors (rc>=2) from a
-		# legitimate "no record matched" (rc=1). Without this split a
-		# truncated log + permission issue + actual no-match all collapse
-		# to "phase0.5 not yet logged" — identical observable, divergent
-		# remediation.
-		local jq_err jq_rc=0
-		jq_err=$(jq -e -R --arg sha "$sha" 'fromjson? | select(.sha == $sha)' "$jsonl" 2>&1 >/dev/null) || jq_rc=$?
-		# jq -e exit codes: 0 = matched, 1 = matched value was null/false,
-		# 4 = no result produced (the "no match" case for our filter), 2/5 =
-		# real errors (parse / uncaught). 1+4 both route to "not yet logged".
-		case "$jq_rc" in
-		0)
+		# The advance decision, reading the same single answer computed
+		# above. The parse-error / permissions / genuine-no-match split that
+		# used to live here now happens once, before the cap.
+		if [ "$head_logged" -eq 1 ]; then
 			_set_stage "phase1"
 			echo "→ phase0.5 logged for $sha; advanced to phase1"
 			# Continue into the phase1 arm in this same call (#2641).
 			_SHIP_NEXT_REDISPATCH=1
-			;;
-		1 | 4)
+		else
 			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
 			return 1
-			;;
-		*)
-			echo "ship-pr-cycle: ERROR: jq failed walking $jsonl (rc=$jq_rc): $jq_err" >&2
-			return 2
-			;;
-		esac
+		fi
 		;;
 	phase1)
 		# Phase 1 firing itself is operator-driven (Claude invokes the
@@ -3298,10 +3444,19 @@ EOF
 cmd_next() {
 	# _SHIP_NEXT_REDISPATCH is the one channel between the arms and this
 	# wrapper. It is a global by necessity — bash cannot return a value and
-	# a status from one call — so it is reset HERE on every iteration and
-	# written in exactly one place (the phase0.5 arm). Anything else setting
-	# it trips the refusal below. Named with the SHIP_ prefix so it cannot
-	# collide with an arm's own locals.
+	# a status from one call — so it is reset HERE on every iteration.
+	#
+	# It is set only on the phase0.5 -> phase1 edge, but at THREE sites on
+	# that edge: the per-sha log match, the already-graduated short-circuit,
+	# and _phase05_cap_gate. An earlier version of this comment said "one
+	# place (the phase0.5 arm)" and was already stale within its own branch.
+	#
+	# It also said anything else setting it "trips the refusal below", which
+	# was never true: the refusal fires on a SECOND request within one
+	# `next`, so a stray arm setting it on the first pass re-dispatches
+	# without complaint. The bound is on looping, not on provenance.
+	#
+	# Named with the SHIP_ prefix so it cannot collide with an arm's locals.
 	local _redispatched=0 _rc=0
 	while :; do
 		_SHIP_NEXT_REDISPATCH=0

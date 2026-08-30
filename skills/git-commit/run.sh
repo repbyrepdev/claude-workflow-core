@@ -333,30 +333,12 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 		# implementation, whose uniqueness comes from mktemp, cannot drift
 		# from the library's format or miss its next fix.
 		#
-		# The library is therefore sourced BEFORE the body is built, since
-		# the write is now a function call rather than a redirect.
-		# Sourcing errors are CAPTURED, not discarded: a syntax error or a
-		# permissions problem in the library is the actual reason the
-		# diagnostic will not be written, and reporting only the generic
-		# "failed to persist" downstream would hide it. Still non-fatal —
-		# the operator-facing stderr below must land either way.
-		# NOT `_ack_src_err=$(source ...)`. Command substitution runs the
-		# source in a SUBSHELL, so every function it defines is discarded
-		# the moment it returns — the library appears to load and then
-		# nothing is defined. Caught by the tests immediately, which is the
-		# only reason it is not in this file. stderr goes to a temp file so
-		# the sourcing still happens in THIS shell.
-		_ack_src_err=""
-		_ack_src_err_f=$(mktemp -t git-commit-src.XXXXXX 2>/dev/null) || _ack_src_err_f=""
-		if [ -n "$_ack_src_err_f" ]; then
-			# shellcheck source=../../_lib/hook-ack.sh
-			source "$HOOK_ACK_LIB" 2>"$_ack_src_err_f" || true
-			[ -s "$_ack_src_err_f" ] && _ack_src_err=$(head -c 400 "$_ack_src_err_f")
-			rm -f "$_ack_src_err_f"
-		else
-			# shellcheck source=../../_lib/hook-ack.sh
-			source "$HOOK_ACK_LIB" 2>/dev/null || true
-		fi
+		# THE BODY IS BUILT FIRST, then the library is sourced. The
+		# security pass noted that sourcing before the body meant a
+		# tampered consumer-repo hook-ack.sh could redefine the commands
+		# used to build it. Same trust domain either way, but there is no
+		# reason to hand it that window: nothing in the body needs the
+		# library.
 		ACK_BODY=$(
 			echo "Commit attempt aborted — HEAD did not advance."
 			echo ""
@@ -382,19 +364,42 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			echo "=== Last 80 lines of pre-commit output ==="
 			tail -80 "$COMMIT_OUT" 2>/dev/null
 		)
+		# Sourcing errors are CAPTURED, not discarded: a syntax error or a
+		# permissions problem in the library is the actual reason the
+		# diagnostic will not be written, and reporting only the generic
+		# "failed to persist" downstream would hide it. Non-fatal — the
+		# operator-facing stderr below must land either way.
+		#
+		# NOT `_ack_src_err=$(source ...)`. Command substitution runs the
+		# source in a SUBSHELL, so every function it defines is discarded
+		# the moment it returns — the library appears to load and then
+		# nothing is defined. The tests caught that immediately, which is
+		# the only reason it is not still in this file.
+		#
+		# The mktemp-or-give-up pattern is the repo's /dev/null idiom
+		# (scripts/ship-pr-cycle.sh does the same): a failed mktemp yields
+		# "/dev/null", the redirect is unconditional, and the read is
+		# guarded by the sentinel — `[ -s /dev/null ]` is already false, so
+		# no duplicated call and no second else-arm.
+		_ack_src_err=""
+		_ack_src_err_f=$(mktemp -t git-commit-src.XXXXXX 2>/dev/null) || _ack_src_err_f="/dev/null"
+		# shellcheck source=../../_lib/hook-ack.sh
+		source "$HOOK_ACK_LIB" 2>"$_ack_src_err_f" || true
+		if [ "$_ack_src_err_f" != "/dev/null" ]; then
+			[ -s "$_ack_src_err_f" ] && _ack_src_err=$(head -c 400 "$_ack_src_err_f")
+			rm -f "$_ack_src_err_f"
+		fi
 		ACK_FILE_ABS=""
 		_ack_write_err=""
 		if command -v hook_ack_diagnostic_write >/dev/null 2>&1; then
 			# stderr to a temp, not /dev/null: the library says exactly what
 			# broke (mktemp in which directory, or the rename), and that is
 			# the difference between a fixable report and "it didn't work".
-			_ack_err_f=$(mktemp -t git-commit-ack.XXXXXX 2>/dev/null) || _ack_err_f=""
-			if [ -n "$_ack_err_f" ]; then
-				ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>"$_ack_err_f") || ACK_FILE_ABS=""
+			_ack_err_f=$(mktemp -t git-commit-ack.XXXXXX 2>/dev/null) || _ack_err_f="/dev/null"
+			ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>"$_ack_err_f") || ACK_FILE_ABS=""
+			if [ "$_ack_err_f" != "/dev/null" ]; then
 				[ -s "$_ack_err_f" ] && _ack_write_err=$(head -c 400 "$_ack_err_f")
 				rm -f "$_ack_err_f"
-			else
-				ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>/dev/null) || ACK_FILE_ABS=""
 			fi
 		else
 			_ack_write_err="hook_ack_diagnostic_write not defined after sourcing $HOOK_ACK_LIB${_ack_src_err:+ (source said: $_ack_src_err)}"

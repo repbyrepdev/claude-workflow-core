@@ -315,8 +315,11 @@ Covers diagnostic uniqueness across repeated blocked commits.
 
 Co-Authored-By: Tester <t@example.com>
 EOF
-	# Same second, deliberately — the timestamp component is identical, so
-	# only the suffix can distinguish them.
+	# Back-to-back, usually inside one second — but NOT guaranteed: each
+	# invocation runs a full commit plus pre-commit hooks and can straddle a
+	# second boundary, at which point the %H%M%S stem alone separates them
+	# and the suffix stops being exercised. The timestamp prefixes are
+	# therefore compared below, so a straddle is visible rather than silent.
 	bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt" >/dev/null 2>&1 || true
 	bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt" >/dev/null 2>&1 || true
 
@@ -326,6 +329,18 @@ EOF
 		echo "expected 2 distinct diagnostics after 2 aborts, found $n"
 		ls -la "$SANDBOX/.claude/.session-state/hook-ack/git-commit" 2>&1
 		return 1
+	}
+	# The suffix is only under test when the TIMESTAMPS collide — otherwise
+	# the %H%M%S stem alone separates the two names and this proves nothing
+	# about uniqueness. Two invocations each run a full commit, so a second
+	# boundary can fall between them; when it does, say so rather than
+	# reporting a pass the run did not earn.
+	local stems
+	stems=$(find "$SANDBOX/.claude/.session-state/hook-ack/git-commit" -name '*.txt' -type f 2>/dev/null |
+		sed 's#.*/##; s/-commit-aborted-.*//' | sort -u | wc -l | tr -d ' ')
+	[ "$stems" -eq 1 ] || {
+		echo "SKIP-WORTHY: the two aborts straddled a second boundary, so their timestamps differ and the suffix was not exercised"
+		return 0
 	}
 	# Both must be non-empty — two names pointing at one truncated file
 	# would satisfy a count-only assertion.

@@ -76,13 +76,29 @@ hook_ack_append() {
 	while ! mkdir "$lockdir" 2>/dev/null; do
 		# A lock that cannot be TAKEN and a lock that is HELD are different
 		# problems with different fixes, and this loop reported both as the
-		# latter. An unwritable state directory spins the full 2s and then
-		# blames a concurrent hook that does not exist — which sent a test
-		# in this very commit chasing the wrong branch. If the lock is not
-		# there, nobody holds it, and waiting cannot help.
-		if [ ! -d "$lockdir" ]; then
-			echo "hook_ack_append: cannot create $lockdir — the state directory is not writable, so no lock is held and waiting will not help" >&2
-			return 1
+		# latter — an unwritable state directory spun the full 2s and then
+		# blamed a concurrent hook that does not exist.
+		#
+		# But "mkdir failed and the path is absent" is NOT proof of that:
+		# a holder that rmdir'd between the failed mkdir and this test
+		# leaves the path absent too, and concluding "unwritable" there
+		# would fail an append that a single retry would have completed —
+		# a fail-open triggerable by exactly the concurrency the lock
+		# exists for. Two phase-1 agents flagged the window independently.
+		#
+		# So: retry ONCE. If a second mkdir also fails with nothing at the
+		# path, the path is genuinely not creatable and waiting cannot
+		# help. The message is hedged accordingly — a stale regular file
+		# sitting at the lock path lands here too, and that is not an
+		# unwritable directory either.
+		if [ ! -e "$lockdir" ]; then
+			if mkdir "$lockdir" 2>/dev/null; then
+				break
+			fi
+			if [ ! -e "$lockdir" ]; then
+				echo "hook_ack_append: cannot create $lockdir and nothing is there after a retry — the lock path is not one we can create (most often an unwritable state directory, or a stale non-directory at that path). No lock is held, so waiting will not help." >&2
+				return 1
+			fi
 		fi
 		_lock_tries=$((_lock_tries + 1))
 		[ "$_lock_tries" -lt 200 ] || {
@@ -192,8 +208,13 @@ hook_ack_diagnostic_write() {
 	#     rand_suffix=$(... </dev/urandom | head -c 6) || rand_suffix="$$"
 	#
 	# `head -c 6` exits as soon as it has six bytes and SIGPIPEs `tr`. Under
-	# `set -o pipefail` — which EVERY caller of this library sets — the
-	# pipeline therefore reports failure and the fallback always fires. All
+	# `set -o pipefail`, the pipeline therefore reports failure and the
+	# fallback always fires.
+	#
+	# (Not every caller sets pipefail — lint-dispatch.sh, hook-ack-clear.sh,
+	# stale-state-gate.sh, ship-cycle-directives.sh and task-queue.sh all
+	# source this under `set -u` alone. The earlier claim that every one did
+	# was wrong and is not what carries the argument.) All
 	# 511 diagnostics on disk at the time of this fix carried a `$$` suffix;
 	# not one had a random one. And `$$` is the process id, stable across
 	# subshells, so two calls in the same second from one process produced
@@ -231,19 +252,31 @@ hook_ack_diagnostic_write() {
 		return 1
 	}
 	diag_path="${diag_stem}.txt"
-	mv -f "$diag_stem" "$diag_path" || {
-		echo "hook_ack_diagnostic_write: cannot name $diag_path" >&2
-		rm -f "$diag_stem"
-		return 1
-	}
+	# WRITE FIRST, RENAME SECOND. The other order writes through
+	# "${stem}.txt", a path nothing created exclusively, and `>` follows
+	# symlinks — so anything able to write this directory could swap that
+	# name for a link in the window and receive the diagnostic body. The
+	# stem, by contrast, is mktemp's own exclusive creation. Writing there
+	# and renaming afterwards keeps the content on a descriptor no one else
+	# could have substituted, and `mv -f` onto a planted symlink replaces
+	# the link rather than following it.
+	#
+	# It also means a failed write leaves no half-written .txt for
+	# hook-ack-clear.sh to glob.
 	{
 		printf 'Hook:      %s\n' "$hook"
 		printf 'Reason:    %s\n' "$reason"
 		printf 'Timestamp: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		printf '\n'
 		printf '%s\n' "$body"
-	} >"$diag_path" 2>/dev/null || {
-		echo "hook_ack_diagnostic_write: cannot write $diag_path" >&2
+	} >"$diag_stem" 2>/dev/null || {
+		echo "hook_ack_diagnostic_write: cannot write $diag_stem" >&2
+		rm -f "$diag_stem"
+		return 1
+	}
+	mv -f "$diag_stem" "$diag_path" || {
+		echo "hook_ack_diagnostic_write: cannot name $diag_path" >&2
+		rm -f "$diag_stem"
 		return 1
 	}
 	printf '%s\n' "$diag_path"
