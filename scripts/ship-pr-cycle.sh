@@ -1421,7 +1421,22 @@ _phase05_findings_for_sha() {
 		printf '%s\n' "$_agg"
 		return 0
 	fi
-	_any=$(jq -r -R --arg s "$_sha" 'fromjson? | select(.sha == $s) | .status // "?"' "$jsonl" 2>/dev/null)
+	# Same rc + stderr handling as the aggregate read above. `2>/dev/null`
+	# with no rc capture made a jq failure here look like "this sha has no
+	# rows at all", which routes to a clean 0 — the opposite of what an
+	# unreadable log should mean, and inconsistent with the reader 18 lines
+	# up that refuses on exactly this.
+	local _any_err _any_rc=0
+	_any_err=$(mktemp -t ship-cycle-p05-any-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 status-scan jq stderr failed"
+	_any=$(jq -r -R --arg s "$_sha" 'fromjson? | select(.sha == $s) | .status // "?"' \
+		"$jsonl" 2>"$_any_err") || _any_rc=$?
+	if [ "$_any_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed scanning statuses in $jsonl: $(head -c 300 "$_any_err"); refusing to score ${_sha:0:7}" >&2
+		rm -f "$_any_err"
+		return 2
+	fi
+	rm -f "$_any_err"
 	if [ -z "$_any" ]; then
 		printf '0\n'
 		return 0

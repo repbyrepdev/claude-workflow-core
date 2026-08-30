@@ -63,7 +63,11 @@ teardown() {
 	# setup() already resolves this path once; a second spelling of it is
 	# a second thing to keep in sync.
 	local lib="$LIB"
-	local cycle="${BATS_TEST_DIRNAME}/../../../scripts/ship-pr-cycle.sh"
+	# ALL repo shell files, not just the orchestrator. An arm emitted from a
+	# hook or another script is live too, and scanning one file would report
+	# it dead — a false alarm that invites deleting a reachable arm. Tests
+	# are excluded: a label named in a fixture is not a production caller.
+	local repo="${BATS_TEST_DIRNAME}/../../.."
 	local label n dead=""
 	# A reformat of the case-arm indentation empties this list, the loop
 	# body never runs, and the test reports green having checked nothing.
@@ -78,7 +82,14 @@ teardown() {
 	# grep here is a second spelling of the same extraction, and two
 	# spellings can silently disagree.
 	for label in $_arms; do
-		n=$(grep -c "_emit_stage_directive $label" "$cycle" || true)
+		# WORD-ANCHORED. A bare substring lets a longer label satisfy a
+		# shorter one's check — `merge-gate` would be counted live by an
+		# emitter for a hypothetical `merge-gate-retry`, so removing the
+		# real caller would go unnoticed.
+		n=$(grep -rhcE "_emit_stage_directive[[:space:]]+${label}([[:space:]]|\"|'|\$|$)" \
+			--include='*.sh' "$repo" 2>/dev/null |
+			awk '{t += $0} END {print t + 0}')
+		case "$n" in '' | *[!0-9]*) n=0 ;; esac
 		[ "$n" -gt 0 ] || dead="$dead $label"
 	done
 	[ -z "$dead" ] || {
