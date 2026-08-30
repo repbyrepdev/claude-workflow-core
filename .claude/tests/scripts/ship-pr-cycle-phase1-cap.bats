@@ -421,20 +421,81 @@ _seed_phase05_log() {
 	cd "$TEST_TMP" || return 1
 	export STUB_ROUNDS=3
 	run bash "$SCRIPT" next
-	[ "$status" -eq 0 ] || [ "$status" -eq 2 ]
+	# PINNED, not "0 or 2". Phase 0.5 round 2 was right that accepting
+	# either outcome asserts almost nothing: rc 2 is this script's refusal
+	# code, so a run that hit the refusal — the very thing a sibling test
+	# exists to prove is reachable — would satisfy the loose form and hide
+	# a regression that made the ordinary path refuse. A single sanctioned
+	# re-dispatch is an ordinary advance and returns 0.
+	[ "$status" -eq 0 ] || {
+		echo "one sanctioned re-dispatch returned $status, expected 0: $output"
+		return 1
+	}
 
 	# The phase1 arm announces itself exactly once. Twice would mean the
 	# loop re-entered it, which the cap exists to prevent.
 	local n
 	n=$(printf '%s\n' "$output" | grep -c 'current stage = ' || true)
-	[ "$n" -le 2 ] || {
-		echo "cmd_next dispatched $n times in one invocation (cap is 2): $output"
+	# EXACTLY 2, not "at most 2". `-le` has no floor, so it is satisfied by
+	# a run that never re-dispatched at all — which is precisely how the
+	# sibling graduated-branch test passed with the collapse mutated OUT.
+	# One sanctioned re-dispatch means the dispatcher ran twice: once for
+	# phase0.5, once for the phase1 arm it collapsed into. Both the ceiling
+	# (no walk) and the floor (the collapse happened) are the claim.
+	[ "$n" -eq 2 ] || {
+		echo "cmd_next dispatched $n times in one invocation, expected exactly 2: $output"
 		return 1
 	}
 	case "$(_cur_stage)" in
 	phase1 | phase2) ;;
 	*)
 		echo "one next landed at an unexpected stage: $(_cur_stage)"
+		return 1
+		;;
+	esac
+}
+
+@test "the GRADUATED phase0.5 branch collapses too, and only once" {
+	# There are two call sites that set _SHIP_NEXT_REDISPATCH: the per-sha
+	# phase0.5-log match, and this one — a branch already graduated past
+	# phase 0.5/1, which short-circuits before the log check. Every other
+	# test here stubs graduation_check to rc 1, so this second entry into
+	# the new machinery had no coverage at all: the collapse could have
+	# been wired on one path and not the other, or wired on BOTH in a way
+	# that asked twice, and nothing would have said so.
+	cat >"$ROOT/.claude/_lib/phase-graduation.sh" <<'STUB'
+graduation_check() { return 0; }
+STUB
+	_seed_stage_phase05
+	# Deliberately NO phase0.5 log: the graduated path must not need one.
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "the graduated collapse returned $status, expected 0: $output"
+		return 1
+	}
+	# It must actually reach the phase1 arm in this one call, not stop at
+	# the stage flip — that flip alone is what the old two-step did.
+	case "$(_cur_stage)" in
+	phase1 | phase2) ;;
+	*)
+		echo "the graduated branch did not advance past phase0.5: $(_cur_stage)"
+		return 1
+		;;
+	esac
+	local n
+	n=$(printf '%s\n' "$output" | grep -c 'current stage = ' || true)
+	[ "$n" -eq 2 ] || {
+		echo "the graduated branch dispatched $n times in one invocation, expected exactly 2 (1 = the collapse did not happen): $output"
+		return 1
+	}
+	# And it must NOT have gone the long way round: a two-step would have
+	# told the operator to run next again.
+	case "$output" in
+	*two-step-phase1*)
+		echo "the graduated branch still emits the two-step directive: $output"
 		return 1
 		;;
 	esac

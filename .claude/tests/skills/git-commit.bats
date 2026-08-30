@@ -135,6 +135,66 @@ EOF
 	}
 }
 
+@test "#2641: a library that cannot write the diagnostic WARNS, and claims nothing" {
+	# The branch that runs when hook_ack_diagnostic_write is missing or
+	# fails. Two ways to get this wrong, both silent: claim a diagnostic
+	# that was never written (the operator goes looking for a file that is
+	# not there), or say nothing at all (the operator never learns the
+	# mandatory-read block is not in place). It must do neither.
+	#
+	# Forced with a library present but incomplete — the shape a partial
+	# sync or a half-finished edit actually produces, which is why
+	# `[ -f "$HOOK_ACK_LIB" ]` alone is not enough of a guard.
+	mkdir -p "$SANDBOX/.claude/_lib"
+	cat >"$SANDBOX/.claude/_lib/hook-ack.sh" <<'EOF'
+#!/bin/bash
+# Incomplete on purpose: hook_ack_diagnostic_write is absent.
+hook_ack_append() { return 0; }
+EOF
+	cat >"$SANDBOX/.git/hooks/pre-commit" <<'EOF'
+#!/bin/bash
+echo "- hook id: fakehook"
+echo "Failed"
+exit 1
+EOF
+	chmod +x "$SANDBOX/.git/hooks/pre-commit"
+	echo "content" >"$SANDBOX/file.txt"
+	git -C "$SANDBOX" add file.txt
+	cat >"$SANDBOX/msg.txt" <<'EOF'
+test: exercise the diagnostic fallback path
+
+Covers the branch where the hook-ack library cannot write a diagnostic.
+
+Co-Authored-By: Tester <t@example.com>
+EOF
+	run bash -c "cd '$SANDBOX' && COPILOT_DRAFT_OFF=1 '$WRAPPER' --no-copilot --message-file msg.txt"
+	[ "$status" -ne 0 ]
+
+	# It must say the persistence failed.
+	[[ $output == *"failed to persist hook-ack diagnostic"* ]] || {
+		echo "the fallback is silent about the missing diagnostic: $output"
+		return 1
+	}
+	# It must NOT claim a file it did not write.
+	[[ $output != *"diagnostic written to"* ]] || {
+		echo "the wrapper reported a diagnostic it never wrote: $output"
+		return 1
+	}
+	# The real reason for the commit failing still has to reach the operator
+	# — losing the diagnostic must not also lose the hook name.
+	[[ $output == *"fakehook"* ]] || {
+		echo "the failing hook was lost along with the diagnostic: $output"
+		return 1
+	}
+	# And nothing was left behind pretending to be one.
+	local n
+	n=$(find "$SANDBOX/.claude/.session-state/hook-ack" -type f 2>/dev/null | wc -l | tr -d ' ')
+	[ "$n" -eq 0 ] || {
+		echo "the failed path still left $n file(s) behind"
+		return 1
+	}
+}
+
 @test "#2641: back-to-back aborts do not overwrite each other's diagnostic" {
 	# The library's uniqueness suffix is the thing under test. Two aborted
 	# commits must leave two readable diagnostics: an operator who is

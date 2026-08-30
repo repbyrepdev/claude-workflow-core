@@ -22,9 +22,12 @@ set -u
 #
 # Bodies live here (one `case` arm each) so a directive is defined ONCE even
 # when emitted from multiple call sites. IMPLEMENTED arms:
-# push-to-pr, merge-conflict, merge-gate, pr-create-preread, phase2-preread.
+# push-to-pr, merge-conflict, merge-gate, pr-create-preread, phase2-preread,
+# cr-thread-reply.
 # Add an arm per NEW stage/edge as #283 expands (round-complete, skill-usage,
-# efficiency-grouping, ...).
+# efficiency-grouping, ...). KEEP THIS LIST IN SYNC — it drifted once already
+# (cr-thread-reply shipped without being listed), and the list is what a
+# reader consults before adding an arm that already exists.
 #
 # PREREAD ARMS (#223, epics #1375/#1384) — pr-create-preread, phase2-preread:
 # a CREATION-TIME enforcement gate. Unlike the advisory arms above (whose

@@ -370,8 +370,18 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			# Report the repo-relative path; the operator Reads either form,
 			# and the relative one is what the rest of this script prints.
 			ACK_FILE=${ACK_FILE_ABS#"$REPO_ROOT/"}
+			# The append is what actually BLOCKS the next tool call. A
+			# diagnostic on disk that was never registered is a file
+			# nobody is made to read — the enforcement silently degrades
+			# to a suggestion, which is the failure mode this whole epic
+			# is about. So its failure is reported, with the stderr it
+			# produced, and the operator is pointed at the file directly.
 			if command -v hook_ack_append >/dev/null 2>&1; then
-				hook_ack_append "git-commit" "commit-aborted" "$ACK_FILE_ABS" 2>/dev/null || true
+				_ack_err=$(hook_ack_append "git-commit" "commit-aborted" "$ACK_FILE_ABS" 2>&1) || {
+					echo "git-commit: WARN: the diagnostic was written but could NOT be registered for mandatory read${_ack_err:+ ($_ack_err)} — nothing will block on it. Read $ACK_FILE_ABS yourself." >&2
+				}
+			else
+				echo "git-commit: WARN: hook_ack_append missing after sourcing $HOOK_ACK_LIB — the diagnostic at $ACK_FILE_ABS will not block anything. Read it yourself." >&2
 			fi
 		else
 			echo "git-commit: WARN: failed to persist hook-ack diagnostic under .claude/.session-state/hook-ack/git-commit" >&2

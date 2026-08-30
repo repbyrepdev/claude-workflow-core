@@ -121,6 +121,52 @@ _in_lib() { # $1 = shell snippet
 	esac
 }
 
+@test "hook-ack: a failing RENAME after mktemp fails loudly and leaves no stem" {
+	# mktemp creates the file; the rename onto .txt is a second syscall with
+	# its own failure. If it were allowed to fall through, the caller would
+	# get an empty path AND an orphan extensionless file in the ack dir that
+	# hook-ack-clear.sh (which globs *.txt) can never clear — a directory
+	# that grows files nothing will ever remove.
+	#
+	# Forced by shadowing `mv` with a failing stub earlier in PATH, since
+	# after a successful mktemp the real mv has no reason to fail.
+	mkdir -p "$TEST_TMP/bin"
+	cat >"$TEST_TMP/bin/mv" <<'STUB'
+#!/bin/bash
+echo "mv: stubbed failure" >&2
+exit 1
+STUB
+	chmod +x "$TEST_TMP/bin/mv"
+	# PATH is built HERE, not inside the snippet: a quoted "$PATH" written
+	# into the inner shell does not expand, and the resulting PATH of just
+	# the stub dir makes every command fail — which looks like the rename
+	# failing and would have passed a laxer assertion.
+	run env PATH="$TEST_TMP/bin:$PATH" bash -c "set -uo pipefail
+		cd '$WORK'
+		export HOOK_ACK_BATS_SKIP=0
+		. '$LIB'
+		hook_ack_diagnostic_write h r 'body'"
+	[ "$status" -ne 0 ] || {
+		echo "a failed rename reported success: $output"
+		return 1
+	}
+	case "$output" in
+	*"cannot name"*) ;;
+	*)
+		echo "the failure does not say the rename is what broke: $output"
+		return 1
+		;;
+	esac
+	# The stem must be cleaned up — not left behind unreachable.
+	local leftovers
+	leftovers=$(find "$DIAG_ROOT" -type f ! -name '*.txt' 2>/dev/null | wc -l | tr -d ' ')
+	[ "$leftovers" -eq 0 ] || {
+		echo "a failed rename left $leftovers orphan stem(s) nothing can clear:"
+		find "$DIAG_ROOT" -type f 2>/dev/null
+		return 1
+	}
+}
+
 @test "hook-ack: a FAILED dedup rewrite refuses and does not append" {
 	# The if/else rewrite distinguishes an awk failure from an mv failure.
 	# Neither may leave a half-deduped sentinel or fall through to the
