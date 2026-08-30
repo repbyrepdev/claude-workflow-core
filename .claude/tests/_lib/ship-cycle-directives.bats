@@ -74,7 +74,10 @@ teardown() {
 		echo "no case arms matched in $lib — the extraction regex is stale, so this test checked nothing"
 		return 1
 	}
-	for label in $(grep -oE '^	[a-z0-9-]+\)' "$lib" | tr -d '\t)'); do
+	# Iterate the list already extracted and validated above — a second
+	# grep here is a second spelling of the same extraction, and two
+	# spellings can silently disagree.
+	for label in $_arms; do
 		n=$(grep -c "_emit_stage_directive $label" "$cycle" || true)
 		[ "$n" -gt 0 ] || dead="$dead $label"
 	done

@@ -335,12 +335,26 @@ EOF
 	# about uniqueness. Two invocations each run a full commit, so a second
 	# boundary can fall between them; when it does, say so rather than
 	# reporting a pass the run did not earn.
+	# NO early return. An earlier version bailed with `return 0` when the
+	# two runs straddled a second boundary, which meant the count and
+	# non-empty assertions below were skipped on exactly the runs where
+	# something might have gone wrong — a test that opts out of itself.
+	# The names must differ either way; the straddle only changes WHICH
+	# component distinguishes them, and that is reported, not excused.
+	# (The same-second case, where only the suffix can separate them, is
+	# covered directly against the library in hook-ack.bats.)
 	local stems
 	stems=$(find "$SANDBOX/.claude/.session-state/hook-ack/git-commit" -name '*.txt' -type f 2>/dev/null |
 		sed 's#.*/##; s/-commit-aborted-.*//' | sort -u | wc -l | tr -d ' ')
-	[ "$stems" -eq 1 ] || {
-		echo "SKIP-WORTHY: the two aborts straddled a second boundary, so their timestamps differ and the suffix was not exercised"
-		return 0
+	if [ "$stems" -ne 1 ]; then
+		echo "note: the two aborts straddled a second boundary, so the timestamp stems differ; the suffix was not the distinguishing component this run"
+	fi
+	local names
+	names=$(find "$SANDBOX/.claude/.session-state/hook-ack/git-commit" -name '*.txt' -type f 2>/dev/null |
+		sed 's#.*/##' | sort -u | wc -l | tr -d ' ')
+	[ "$names" -eq 2 ] || {
+		echo "the two aborts did not produce two distinct names (got $names distinct)"
+		return 1
 	}
 	# Both must be non-empty — two names pointing at one truncated file
 	# would satisfy a count-only assertion.

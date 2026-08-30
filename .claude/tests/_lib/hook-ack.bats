@@ -300,7 +300,14 @@ STUB
 	# job and adds the assertion that discriminates: the suffix must not be
 	# the pid. Under pipefail the old code produced `$$` every time — that
 	# is the observable difference, not the exit status.
+	# The fixture reports the INNER shell's pid. `$$` in this bats function
+	# is the TEST runner's pid, not the pid of the `bash -c` that actually
+	# ran the library — so comparing the suffix against `$$` compared it
+	# against a number the old code would never have produced either, and
+	# the assertion was free. Caught by CR-CLI on the very commit that
+	# added it.
 	_in_lib 'set -o | grep -q "pipefail.*on" || { echo "FIXTURE-NO-PIPEFAIL"; exit 1; }
+		echo "INNERPID=$$"
 		hook_ack_diagnostic_write h reason "body"'
 	[ "$status" -eq 0 ]
 	case "$output" in
@@ -309,11 +316,18 @@ STUB
 		return 1
 		;;
 	esac
-	local base suffix
-	base=$(basename "$output" .txt)
+	local innerpid path base suffix
+	innerpid=$(printf '%s\n' "$output" | sed -n 's/^INNERPID=//p' | tail -1)
+	[ -n "$innerpid" ] || {
+		echo "the fixture did not report its pid — the comparison below would be against nothing: $output"
+		return 1
+	}
+	# The path is the LAST line; INNERPID= precedes it.
+	path=$(printf '%s\n' "$output" | tail -1)
+	base=$(basename "$path" .txt)
 	suffix=${base##*-}
-	[ "$suffix" != "$$" ] || {
-		echo "the suffix is this process's pid under pipefail — the regression is back: $output"
+	[ "$suffix" != "$innerpid" ] || {
+		echo "the suffix is the writing process's pid under pipefail — the regression is back: $path"
 		return 1
 	}
 	[ ${#suffix} -eq 6 ] || {

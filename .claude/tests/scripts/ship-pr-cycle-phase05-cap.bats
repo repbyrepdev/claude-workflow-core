@@ -522,3 +522,46 @@ _seed_cover() { # $1 = sha, $2 = covers_count, $3 = source (default phase0.5)
 		;;
 	esac
 }
+
+@test "every cap-gate CALL SITE captures rc instead of calling bare" {
+	# Under this script's `set -euo pipefail`, a BARE `_phase05_cap_gate ...`
+	# followed by `return $?` never returns: errexit sees the refusal's
+	# non-zero and EXITS the shell, so cmd_next's wrapper never runs and
+	# cmd_resume dies instead of handling the refusal.
+	#
+	# No behavioural test can see this. exit(2) and return 2 both reach
+	# bats' `run` as status 2, and cmd_resume captures cmd_next with
+	# `|| rc=$?` so it reports the same number either way. CR-CLI caught it
+	# by reading, on the commit that introduced it — the tests were green.
+	#
+	# So the PATTERN is what gets enforced, across all three gates: a call
+	# site must capture the status. This also fails if a fourth gate is
+	# added later and copies the bare form, which is the shape of mistake
+	# that produced this one.
+	local script="${BATS_TEST_DIRNAME}/../../../scripts/ship-pr-cycle.sh"
+	[ -r "$script" ]
+	local bad="" line n=0
+	while IFS= read -r line; do
+		n=$((n + 1))
+		# Definitions and comments are not call sites.
+		case "$line" in
+		*'_cap_gate() {'* | *'#'*) continue ;;
+		esac
+		# A call site must pipe its status somewhere: `|| rc=$?`, an `if`,
+		# or a `!` test. Anything else lets errexit swallow the refusal.
+		case "$line" in
+		*'|| '*'=$?'* | 'if '* | *'if !'* | *' if '*) continue ;;
+		esac
+		bad="$bad
+    $line"
+	done < <(grep -nE '_phase(05|1|2)_cap_gate[[:space:]]+"' "$script" || true)
+
+	[ "$n" -gt 0 ] || {
+		echo "no cap-gate call sites matched — the grep is stale, so this test checked nothing"
+		return 1
+	}
+	[ -z "$bad" ] || {
+		echo "cap-gate call site(s) do not capture the status, so errexit will exit instead of returning:$bad"
+		return 1
+	}
+}

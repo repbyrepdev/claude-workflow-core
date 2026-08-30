@@ -1351,11 +1351,26 @@ _phase05_branch_round_count() {
 		;;
 	2) return 2 ;;
 	esac
-	local _sha n=0
+	# ONE pass, and jq's failure is NOT swallowed. The per-sha form used
+	# `jq -e ... >/dev/null 2>&1` and treated every non-zero as "this sha
+	# has no row" — so a jq error, or jq missing entirely, silently LOWERED
+	# the round count, which arms another prefilter round rather than
+	# refusing. Wrong direction for a bound: a failure that cannot be read
+	# must never buy more rounds.
+	local _sha n=0 _logged _jq_err _jq_rc=0
+	_jq_err=$(mktemp -t ship-cycle-p05-count-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 round-count jq stderr failed"
+	_logged=$(jq -r -R 'fromjson? | .sha // empty' "$jsonl" 2>"$_jq_err") || _jq_rc=$?
+	if [ "$_jq_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed reading $jsonl: $(head -c 300 "$_jq_err"); a jq failure must never be coerced to a lower round count (it would arm another prefilter round)" >&2
+		rm -f "$_jq_err"
+		return 2
+	fi
+	rm -f "$_jq_err"
 	for _sha in $branch_shas; do
-		# jq on the parsed row, not grep: a substring match would also count
-		# a sha appearing in some other field.
-		if jq -e -R --arg s "$_sha" 'fromjson? | select(.sha == $s)' "$jsonl" >/dev/null 2>&1; then
+		# Exact match on the PARSED .sha field, never a substring of the raw
+		# line — a substring would also match a sha appearing elsewhere.
+		if printf '%s\n' "$_logged" | grep -qxF "$_sha"; then
 			n=$((n + 1))
 		fi
 	done
@@ -2097,8 +2112,17 @@ _cmd_next_once() {
 					fi
 					echo "ship-pr-cycle: WARN: phase0.5 round-cap ($_p05_runs/$_p05_cap) OVERRIDDEN by PIPELINE_GATE_SKIP=1 — arming another prefilter round (audit-logged)" >&2
 				else
-					_phase05_cap_gate "$_p05_cap" "$_p05_runs"
-					return $?
+					# `|| rc=$?`, matching _phase1_cap_gate's call site. A
+					# BARE call here is fatal under this script's `set -e`:
+					# the refusal path returns 2, errexit sees a non-zero
+					# command, and the shell EXITS instead of returning —
+					# cmd_next's wrapper never runs and cmd_resume dies
+					# rather than handling the refusal. The bats tests could
+					# not see it, because an exit(2) and a return 2 both
+					# reach `run` as status 2.
+					local p05gate_rc=0
+					_phase05_cap_gate "$_p05_cap" "$_p05_runs" || p05gate_rc=$?
+					return "$p05gate_rc"
 				fi
 			fi
 		fi
