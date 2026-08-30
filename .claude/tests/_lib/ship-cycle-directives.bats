@@ -55,6 +55,15 @@ teardown() {
 	[ -n "$output" ]
 }
 
+# THE case-arm extraction, in one place. Two sites needed it — the
+# live-call-site check and the comment-drift check — and they had drifted
+# into two different regexes (`^\t[a-z0-9-]+\)` vs `^\t[a-z0-9][a-z0-9-]*\)`).
+# Two spellings of one extraction can silently disagree, which is the exact
+# failure the drift check exists to catch, reproduced in the checker.
+_directive_arms() {
+	grep -oE '^\t[a-z0-9][a-z0-9-]*\)' "$LIB" | tr -d '\t)' | sort -u
+}
+
 @test "every IMPLEMENTED directive arm has at least one live call site" {
 	# The check that would have caught the dead arm. A label with no emitter
 	# is unreachable code wearing the shape of enforcement, and the removed
@@ -73,7 +82,7 @@ teardown() {
 	# body never runs, and the test reports green having checked nothing.
 	# The drift test below guards exactly this; so does this one now.
 	local _arms
-	_arms=$(grep -oE '^\t[a-z0-9][a-z0-9-]*\)' "$lib" | tr -d '\t)' | sort -u)
+	_arms=$(_directive_arms)
 	[ -n "$_arms" ] || {
 		echo "no case arms matched in $lib — the extraction regex is stale, so this test checked nothing"
 		return 1
@@ -276,7 +285,7 @@ teardown() {
 	listed=$(sed -n '/^# when emitted from multiple call sites\. IMPLEMENTED arms:/,/^# Add an arm per NEW/p' "$LIB" |
 		sed -e 's/^# when emitted.*IMPLEMENTED arms://' -e 's/^# Add an arm per NEW.*//' -e 's/^#//' |
 		tr ',' '\n' | tr -d ' .' | grep -v '^$' | sort -u)
-	actual=$(grep -oE '^\t[a-z0-9][a-z0-9-]*\)' "$LIB" | tr -d '\t)' | sort -u)
+	actual=$(_directive_arms)
 
 	[ -n "$listed" ] || {
 		echo "could not parse the IMPLEMENTED list out of $LIB — the comment shape changed"

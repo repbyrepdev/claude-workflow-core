@@ -594,7 +594,9 @@ case "\$_extracted" in
 	exit 99
 	;;
 esac
-eval "\$(sed -n '/^_cmd_next_once()/,/^}\$/p' '$SCRIPT')" 2>/dev/null || true
+# (No eval of the real _cmd_next_once here: the shim redefines it on the
+# very next line, so extracting and running the real definition first was
+# dead work that only obscured what the shim controls.)
 _cmd_next_once() {
 	echo "ship-pr-cycle: current stage = stub"
 	_SHIP_NEXT_REDISPATCH=1

@@ -565,3 +565,40 @@ _seed_cover() { # $1 = sha, $2 = covers_count, $3 = source (default phase0.5)
 		return 1
 	}
 }
+
+@test "the cap refusal is ROUTED THROUGH hook-ack, not just printed" {
+	# stderr scrolls. The phase-1 and phase-2 caps both register their
+	# refusal as a hook-ack diagnostic so the next tool call is blocked
+	# until the operator reads it; this one printed to stderr alone, which
+	# is the difference between a refusal that must be acknowledged and one
+	# that can be missed.
+	#
+	# hook_ack_append short-circuits under bats by design, so what is
+	# asserted is the DIAGNOSTIC — written for real, into the sandbox.
+	_seed_stage_phase05
+	_seed_p05_round "$SHA_PREV" 7
+	_seed_cover "$SHA_PREV" 2
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ]
+
+	local dir="$ROOT/.claude/.session-state/hook-ack/ship-pr-cycle-p05cap"
+	[ -d "$dir" ] || {
+		echo "no hook-ack diagnostic directory — the refusal is stderr-only"
+		ls -la "$ROOT/.claude/.session-state/hook-ack" 2>&1
+		return 1
+	}
+	local f
+	f=$(find "$dir" -name '*.txt' -type f 2>/dev/null | tail -1)
+	[ -n "$f" ] && [ -s "$f" ] || {
+		echo "the diagnostic is missing or empty in $dir"
+		return 1
+	}
+	# It must carry the SAME message the operator saw, not a stub — a file
+	# that exists but says nothing still blocks, and tells them nothing.
+	grep -q '=2/7' "$f" || {
+		echo "the diagnostic does not carry the shortfall: $(cat "$f")"
+		return 1
+	}
+}

@@ -1442,7 +1442,17 @@ _phase05_findings_for_sha() {
 		return 0
 	fi
 	# A run-level skip is a legitimate terminal that found nothing.
-	_nonterm=$(printf '%s\n' "$_any" | grep -cv '^skipped-' || true)
+	# grep's rc 1 means "no lines matched" — legitimate, and here it means
+	# every status was a run-level skip. rc > 1 is a REAL failure, and
+	# `|| true` flattened both into "zero non-skipped statuses", which
+	# routes to a clean 0 findings. Same shape as the jq coercions above.
+	local _nonterm_rc=0
+	_nonterm=$(printf '%s\n' "$_any" | grep -cv '^skipped-') || _nonterm_rc=$?
+	if [ "$_nonterm_rc" -gt 1 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — grep failed (rc=$_nonterm_rc) scanning statuses for ${_sha:0:7}; refusing to score this sha rather than reading the failure as 'nothing but skips'" >&2
+		return 2
+	fi
+	case "$_nonterm" in '' | *[!0-9]*) _nonterm=0 ;; esac
 	if [ "${_nonterm:-0}" -gt 0 ]; then
 		printf 'unknown\n'
 		return 0
@@ -1493,7 +1503,7 @@ _phase05_covered_map() {
 		[ .[]
 		  | select(.source == "phase0.5")
 		  | . as $r
-		  | select((($r.covered_sha // "") | length) > 0)
+		  | select((($r.covered_sha // "") | length) >= 7)
 		  | ($shas[] | select(startswith($r.covered_sha))) as $full
 		  | {sha: $full, n: ($r.covers_count // 1)}
 		]
@@ -1589,15 +1599,29 @@ _phase05_cap_gate() {
 		_SHIP_NEXT_REDISPATCH=1
 		return 0
 	fi
+	# ONE message, built once, then routed through BOTH channels — stderr
+	# so it is visible now, and hook-ack so it cannot be scrolled past.
+	# The sibling phase-1 and phase-2 caps both do this; only this one
+	# printed to stderr alone, which is the difference between a refusal
+	# the operator must acknowledge and one they can miss. Best-effort by
+	# design: an absent ack library degrades to stderr + rc 2, because the
+	# refusal must never depend on ack plumbing.
+	local _cap_body
 	if [ -n "$_undeterminable" ]; then
-		echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but coverage is UNDETERMINABLE on:$_undeterminable — those shas carry phase-0.5 rows with no terminal {agent:\"<all>\",status:\"emitted\"} aggregate, which means a round that did not finish. Summing their pre-emission per-agent rows would count findings that were never emitted. Re-run the prefilter there, or PIPELINE_GATE_SKIP=1 to override (audited)." >&2
-		return 2
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but coverage is UNDETERMINABLE on:$_undeterminable — those shas carry phase-0.5 rows with no terminal {agent:\"<all>\",status:\"emitted\"} aggregate, which means a round that did not finish. Summing their pre-emission per-agent rows would count findings that were never emitted. Re-run the prefilter there, or PIPELINE_GATE_SKIP=1 to override (audited)."
+	elif [ "$_findings_shas" -eq 0 ]; then
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings-bearing sha exists on this branch — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run."
+	else
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)."
 	fi
-	if [ "$_findings_shas" -eq 0 ]; then
-		echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings-bearing sha exists on this branch — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run." >&2
-		return 2
+	printf '%s\n' "$_cap_body" >&2
+	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
+		command -v hook_ack_append >/dev/null 2>&1; then
+		local _cap_diag
+		if _cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_body"); then
+			hook_ack_append "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_diag" || true
+		fi
 	fi
-	echo "ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)." >&2
 	return 2
 }
 
