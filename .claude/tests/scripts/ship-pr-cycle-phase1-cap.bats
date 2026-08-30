@@ -615,3 +615,199 @@ SHIM
 		;;
 	esac
 }
+
+# ---- #2641: the phase-0.5 round cap -------------------------------------
+#
+# Phase 0.5 was the only review stage with no cap. Because the way you clear
+# a phase-0.5 finding is to COMMIT a fix, and a new HEAD demands a fresh
+# prefilter run, every round minted the next one. The branch that added this
+# spent four rounds that way before anyone counted.
+
+_seed_p05_log() { # $1..$n = shas that have a phase-0.5 row; findings via P05_FINDINGS
+	mkdir -p "$ROOT/.claude/logs"
+	: >"$ROOT/.claude/logs/phase0.5-run.jsonl"
+	local _s
+	for _s in "$@"; do
+		printf '{"ts":"2026-01-01T00:00:00Z","sha":"%s","phase":0.5,"agent":"<all>","findings":%s,"status":"emitted"}\n' \
+			"$_s" "${P05_FINDINGS:-4}" >>"$ROOT/.claude/logs/phase0.5-run.jsonl"
+	done
+}
+
+_seed_p05_coverage() { # $1 = covers_count, dated AFTER the branch root
+	mkdir -p "$ROOT/.claude/.session-state/prove-yourself"
+	printf '{"finding_id":"t","kind":"fix","source":"phase0.5","covers_count":%s,"ts":"2099-01-01T00:00:00Z"}\n' \
+		"$1" >"$ROOT/.claude/.session-state/prove-yourself/seeded.json"
+}
+
+@test "#2641: phase0.5 rounds are COUNTED per branch, not per sha" {
+	# Per-sha would make the cap unreachable: every fix commit resets it.
+	_seed_stage_phase05
+	_seed_p05_log "$SHA" "$SHA_PREV"
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" next
+	# Two branch shas carry a row, so two rounds are spent — under a cap of
+	# 3 this must still proceed normally, not refuse.
+	[ "$status" -ne 2 ] || {
+		echo "two rounds under a cap of three was refused: $output"
+		return 1
+	}
+}
+
+@test "#2641: at the cap with every finding covered, the branch GRADUATES" {
+	# The exit door. It opens on positive evidence — coverage — never on
+	# the panel happening to go quiet, because an errored panel is quiet too.
+	_seed_stage_phase05
+	P05_FINDINGS=4 _seed_p05_log "$SHA_PREV" "$(cd "$TEST_TMP" && git rev-parse HEAD~2 2>/dev/null || echo "$SHA_PREV")"
+	_seed_p05_coverage 99
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "a fully covered branch at the cap did not graduate (rc $status): $output"
+		return 1
+	}
+	case "$output" in
+	*"GRADUATED to phase1"*) ;;
+	*)
+		echo "the graduation is not announced: $output"
+		return 1
+		;;
+	esac
+	case "$(_cur_stage)" in
+	phase1 | phase2) ;;
+	*)
+		echo "graduated but the stage did not advance: $(_cur_stage)"
+		return 1
+		;;
+	esac
+}
+
+@test "#2641: at the cap with findings UNCOVERED, it refuses rc 2" {
+	# The other half. Capping without the coverage requirement would just
+	# be a way to skip review; the cap bounds the ROUNDS, not the work.
+	_seed_stage_phase05
+	P05_FINDINGS=7 _seed_p05_log "$SHA_PREV"
+	_seed_p05_coverage 2
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ] || {
+		echo "an uncovered branch at the cap returned $status, expected 2: $output"
+		return 1
+	}
+	case "$output" in
+	*"2/7 finding(s) covered"*) ;;
+	*)
+		echo "the refusal does not say how much is missing: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "#2641: at the cap with NO findings recorded, it refuses rather than graduating" {
+	# All-zero at the cap means the panels errored or never ran. Silence is
+	# not coverage, and this is the door an errored pipeline would otherwise
+	# walk straight through.
+	_seed_stage_phase05
+	P05_FINDINGS=0 _seed_p05_log "$SHA_PREV"
+	_seed_p05_coverage 50
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ] || {
+		echo "an all-zero branch at the cap returned $status, expected 2: $output"
+		return 1
+	}
+	case "$output" in
+	*"NO findings are recorded"*) ;;
+	*)
+		echo "the refusal does not name the missing evidence: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "#2641: coverage from BEFORE this branch does not open the cap door" {
+	# The bug the first draft of this gate had. The prove-yourself ledger is
+	# not reset between branches — measured at 142 covers against 26
+	# findings on the branch that added this, nearly all of them earned
+	# elsewhere. Counting them would report a graduation nothing on this
+	# branch paid for, which is worse than having no cap at all.
+	_seed_stage_phase05
+	P05_FINDINGS=9 _seed_p05_log "$SHA_PREV"
+	mkdir -p "$ROOT/.claude/.session-state/prove-yourself"
+	printf '{"finding_id":"old","kind":"fix","source":"phase0.5","covers_count":500,"ts":"1999-01-01T00:00:00Z"}\n' \
+		>"$ROOT/.claude/.session-state/prove-yourself/ancient.json"
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ] || {
+		echo "pre-branch coverage opened the cap door (rc $status): $output"
+		return 1
+	}
+	case "$output" in
+	*"0/9 finding(s) covered"*) ;;
+	*)
+		echo "the stale records were counted: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "#2641: PIPELINE_GATE_SKIP overrides the cap, and says so" {
+	# Every gate in this repo has one audited escape. A cap with no override
+	# is a cap that gets removed the first time it is inconvenient.
+	_seed_stage_phase05
+	P05_FINDINGS=9 _seed_p05_log "$SHA_PREV"
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	export PIPELINE_GATE_SKIP=1
+	run bash "$SCRIPT" next
+	[ "$status" -ne 2 ] || {
+		echo "the override did not override: $output"
+		return 1
+	}
+	case "$output" in
+	*"OVERRIDDEN by PIPELINE_GATE_SKIP"*) ;;
+	*)
+		echo "the override is silent — an unaudited bypass: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "#2641: PHASE05_ROUND_CAP=0 disables the cap entirely" {
+	# The documented off switch. 0 must mean "no cap", not "cap of zero",
+	# which would refuse every branch immediately.
+	_seed_stage_phase05
+	P05_FINDINGS=9 _seed_p05_log "$SHA_PREV"
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=0
+	run bash "$SCRIPT" next
+	[ "$status" -ne 2 ] || {
+		echo "a cap of 0 refused instead of disabling: $output"
+		return 1
+	}
+}
+
+@test "#2641: a non-numeric PHASE05_ROUND_CAP fails loudly, not silently" {
+	# A typo'd cap must not read as "unlimited" — that is how a bound
+	# disappears without anyone noticing.
+	_seed_stage_phase05
+	_seed_p05_log "$SHA_PREV"
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=three
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ] || {
+		echo "a non-numeric cap returned $status, expected 2: $output"
+		return 1
+	}
+	case "$output" in
+	*"must be a non-negative integer"*) ;;
+	*)
+		echo "the refusal does not name the bad value: $output"
+		return 1
+		;;
+	esac
+}
