@@ -1,7 +1,10 @@
 #!/bin/bash
 set -uo pipefail
 # event: PostToolUse
-# enforcement: inform
+# enforcement: enforce — the task-stale path calls hook_ack_append,
+# which registers a sentinel that stale-state-gate.sh reads to DENY
+# the next tool call. Blocking, not advisory. Same #2638 mislabel as
+# its sibling task-issue-reconcile.sh.
 # auto-register: true
 #
 # (#2554) The staleness CLOCK for the task-queue nudges. Every tool call ticks

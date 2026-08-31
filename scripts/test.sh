@@ -199,6 +199,20 @@ fi
 
 cd "$REPO_ROOT" || exit 2
 
+# (#2642) The bats-scope SSOT. Four lines, identical in all three
+# consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
+# scripts/test.sh). Something must find _lib/ before anything in _lib/ can
+# run — resolve-plugin-helper.sh lives there too, so it shares the problem —
+# but everything ELSE the block used to do (capture stderr, warn on a
+# partial load) now happens inside the library, which is where it belongs.
+# Flagged three rounds running as duplication; this is the irreducible part.
+_scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
+	! command -v bats_in_scope >/dev/null 2>&1 && . "$_scope_self/.claude/_lib/bats-scope.sh"
+
 # --coverage: inventory mode, doesn't run tests.
 if [ "$MODE" = "coverage" ]; then
 	echo "=== bats coverage inventory ==="
@@ -207,15 +221,58 @@ if [ "$MODE" = "coverage" ]; then
 	# `find | wc -l` pipeline inherits that rc=1 and `set -e` aborts the
 	# script. CR-CLI flagged this on #51 (plugin root ships no .claude/
 	# scripts or .claude/hooks).
-	_existing_sh_roots=()
-	for r in .claude/scripts .claude/hooks .claude/skills .claude/local-backups scripts; do
-		[ -d "$r" ] && _existing_sh_roots+=("$r")
-	done
-	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
-		sh_count=$(find "${_existing_sh_roots[@]}" -name "*.sh" | wc -l | tr -d ' ')
+	# (#2642) Roots from _lib/bats-scope.sh. This denominator counted the
+	# same consumer-only paths as the two gates, so --coverage reported a
+	# percentage over 22% of the repo — printing exactly 60% (30 of the 50
+	# files it could see) while the true figure across all 229 was 58.95%.
+	# That near-coincidence is why the wrong denominator went unnoticed for
+	# so long.
+	#
+	# (58.5% appeared here originally and does not reproduce. The PR flags
+	# that figure as wrong elsewhere; this copy was missed, which is its
+	# own small instance of the same thing.)
+	if ! [ "$(type -t bats_scope_files 2>/dev/null)" = "function" ]; then
+		# Refuse rather than invent a denominator. A coverage percentage
+		# over an unknown scope is the defect this issue is about: the old
+		# copy of the list here reported ~60% over 22% of the repo, and the
+		# near-coincidence with the true 58.95% is why it went unnoticed.
+		echo "test.sh: ERROR: _lib/bats-scope.sh did not load — refusing to print a coverage figure over an unknown denominator. Fix the plugin install." >&2
+		exit 2
+	fi
+	# Tracked files, from git — not a filesystem walk. See bats_scope_files.
+	_scope_files=$(bats_scope_files) || exit 2
+	# A misconfigured scope is refused; a legitimately empty selection is
+	# not. Those are different, and the first version of this guard
+	# conflated them with a BROADER test than the gates use: it refused
+	# whenever the selection was empty and ANY tracked .sh existed anywhere
+	# in the repo.
+	#
+	# The backup reviewer found the false positive that produces: a
+	# consumer with a real but currently-empty `scripts/`, plus a tracked
+	# `vendor/thing.sh` outside every scope root. bats_scope_is_unusable
+	# correctly calls that USABLE — a configured directory exists — so both
+	# gates proceed, while --coverage hard-refused the same valid setup.
+	# The coverage tool disagreeing with the gates it was modelled on is
+	# the shape of defect this whole issue is about.
+	#
+	# Same criterion as the gates now: is any configured root real?
+	if bats_scope_is_unusable 2>/dev/null; then
+		echo "test.sh: ERROR: BATS_SCOPE_DIRS points at NO directory that exists here ('${BATS_SCOPE_DIRS-<unset>}') — check for a typo. Refusing to report coverage over a scope that cannot select anything." >&2
+		exit 2
+	fi
+	if [ -n "$_scope_files" ]; then
+		sh_count=$(printf '%s\n' "$_scope_files" | grep -c . || true)
 	else
 		sh_count=0
 	fi
+	case "$sh_count" in '' | *[!0-9]*)
+		# Refuse, do not coerce. A corrupted count silently becoming 0
+		# reports "zero files in scope", which reads as a clean inventory
+		# of an empty repo rather than as a failure to count.
+		echo "test.sh: ERROR: could not count in-scope files (got '$sh_count') — refusing to report coverage over it" >&2
+		exit 2
+		;;
+	esac
 	if [ -d .claude/tests ]; then
 		bats_count=$(find .claude/tests -name "*.bats" | wc -l | tr -d ' ')
 		# Scan bats files for explicit "# covers: <path>" declarations (SSOT).
@@ -243,7 +300,9 @@ if [ "$MODE" = "coverage" ]; then
 	echo ""
 	covered=0
 	uncovered=0
-	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
+	# Same tracked list the denominator used — one source, so numerator and
+	# denominator cannot disagree about what is in scope.
+	if [ -n "$_scope_files" ]; then
 		while IFS= read -r sh; do
 			[ -z "$sh" ] && continue
 			# Normalize to relative path matching covers: declarations
@@ -252,7 +311,7 @@ if [ "$MODE" = "coverage" ]; then
 			else
 				uncovered=$((uncovered + 1))
 			fi
-		done < <(find "${_existing_sh_roots[@]}" -name "*.sh")
+		done < <(printf '%s\n' "$_scope_files")
 	fi
 	echo "Covered (referenced in some .bats): $covered"
 	echo "Uncovered:                           $uncovered"

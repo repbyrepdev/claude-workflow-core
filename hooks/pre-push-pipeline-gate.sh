@@ -245,6 +245,36 @@ _is_comments_only() {
 # drift). Resolved via the symlink-safe PPG_DIR preamble (top of file) so it
 # works whether the gate is executed (pre-push — including through a
 # `.git/hooks/pre-push` symlink) or sourced-for-test under bats.
+# (#2642) The bats-scope SSOT. Four lines, identical in all three
+# consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
+# scripts/test.sh). Something must find _lib/ before anything in _lib/ can
+# run — resolve-plugin-helper.sh lives there too, so it shares the problem —
+# but everything ELSE the block used to do (capture stderr, warn on a
+# partial load) now happens inside the library, which is where it belongs.
+# Flagged three rounds running as duplication; this is the irreducible part.
+# PPG_DIR, not $0. This file spends 27 lines at the top resolving its own
+# location through a bounded symlink-following loop (#2252) precisely
+# BECAUSE $0 is unreliable here, and every other library load uses it.
+# Under the `.git/hooks/pre-push` symlink shape this file's own comment
+# documents, $0 is .git/hooks/pre-push, so `dirname $0/..` is <repo>/.git,
+# neither candidate exists, and the new fail-closed guard then refuses
+# EVERY PUSH with a message naming the wrong cause. Three phase-1 agents
+# reproduced it independently.
+# An empty PPG_DIR would make this `cd /..` — which succeeds, lands on /,
+# and then probes /_lib/bats-scope.sh. Not found, so it fails closed rather
+# than loading something unexpected; but "/" is a nonsense answer to
+# "where is the plugin" and the guard below would blame the install.
+if [ -n "${PPG_DIR:-}" ]; then
+	_scope_self=$(cd "$PPG_DIR/.." 2>/dev/null && pwd) || _scope_self=""
+else
+	_scope_self=""
+fi
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
+	! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ] && . "$_scope_self/.claude/_lib/bats-scope.sh"
+
 _ppg_cov_lib="$PPG_DIR/../_lib/cr-phase2-coverage.sh"
 if [ -r "$_ppg_cov_lib" ]; then
 	# shellcheck source=../_lib/cr-phase2-coverage.sh
@@ -767,18 +797,35 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 	# if INSCOPE_SH is already non-empty — avoids the leading-blank-line
 	# that the prior `INSCOPE_SH="${INSCOPE_SH}${sh}\n"` pattern produced.
 	INSCOPE_SH=""
+	# (#2642) Scope from _lib/bats-scope.sh. The local copy here listed
+	# consumer paths, so this gate — which hashes the blob and demands a
+	# recorded pass at THAT content, the strongest check in the repo — was
+	# guarding 22% of production.
+	#
+	# FAIL CLOSED: an unloadable predicate would leave INSCOPE_SH empty,
+	# and an empty in-scope set reads as "nothing needs verifying", which
+	# passes every push.
+	if ! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ]; then
+		echo "pre-push-pipeline-gate: ERROR: _lib/bats-scope.sh did not load — refusing to push with an unknown scope (an empty scope would pass every push silently). Fix the plugin install." >&2
+		FAILED=1
+		continue
+	fi
+	# Empty OR useless — see the same pair in pre-commit-hooks/bats-gate.sh.
+	if bats_scope_is_empty || bats_scope_is_unusable; then
+		echo "pre-push-pipeline-gate: ERROR: BATS_SCOPE_DIRS points at NO directory that exists here ('${BATS_SCOPE_DIRS-<unset>}') — every changed script would pass unverified, with no recorded bypass. Check for a typo. Use the audited PIPELINE_GATE_SKIP if that is deliberate." >&2
+		FAILED=1
+		continue
+	fi
 	while IFS= read -r sh; do
 		[ -z "$sh" ] && continue
-		case "$sh" in
-		.claude/scripts/* | .claude/hooks/* | .claude/skills/* | .claude/local-backups/* | scripts/*)
+		if bats_in_scope "$sh"; then
 			if [ -z "$INSCOPE_SH" ]; then
 				INSCOPE_SH="$sh"
 			else
 				INSCOPE_SH="$INSCOPE_SH
 $sh"
 			fi
-			;;
-		esac
+		fi
 	done <<<"$CHANGED_SH"
 	if [ -n "$INSCOPE_SH" ] && [ ! -f "$BATS_LOG" ]; then
 		echo "pre-push-pipeline-gate: v4.23-J check 5 — .sh files changed but $BATS_LOG missing" >&2

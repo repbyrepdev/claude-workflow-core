@@ -46,6 +46,41 @@ LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 LIB_CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
 # shellcheck source=../_lib/canonical-consumer-skip.sh
 [ -f "$LIB_CCS" ] && source "$LIB_CCS"
+# (#2642) The bats-scope SSOT. Four lines, identical in all three
+# consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
+# scripts/test.sh). Something must find _lib/ before anything in _lib/ can
+# run — resolve-plugin-helper.sh lives there too, so it shares the problem —
+# but everything ELSE the block used to do (capture stderr, warn on a
+# partial load) now happens inside the library, which is where it belongs.
+# Flagged three rounds running as duplication; this is the irreducible part.
+_scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
+	! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ] && . "$_scope_self/.claude/_lib/bats-scope.sh"
+# FAIL CLOSED, once, here — not per file. An unloadable scope predicate must
+# not silently mean "nothing is in scope", which is the gate quietly
+# switching itself off and would look exactly like a passing commit. Checked
+# at load rather than inside the per-file loop: the condition cannot change
+# between files, and a guard that fires on the first file reads as a
+# property of that file.
+# `type -t` == function, NOT `command -v`. command -v also finds
+# EXECUTABLES on PATH, so a stray file named bats_in_scope anywhere on
+# $PATH would satisfy this guard and then BE the scope predicate — an
+# external program deciding what the gate enforces. Requiring a shell
+# function means only the sourced library can satisfy it.
+if ! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ]; then
+	echo "bats-gate: ERROR: _lib/bats-scope.sh did not load — refusing to run with an unknown scope (an empty scope would pass every commit silently). Fix the plugin install." >&2
+	exit 2
+fi
+# Empty OR useless. A non-empty list that selects nothing — a typo, which
+# is likelier than the deliberate off switch — produces the identical
+# silent pass, so the RESULT is what gets checked, not the spelling.
+if bats_scope_is_empty || bats_scope_is_unusable; then
+	echo "bats-gate: ERROR: BATS_SCOPE_DIRS points at NO directory that exists here ('${BATS_SCOPE_DIRS-<unset>}') — every staged script would pass with no test and no recorded bypass. Check for a typo. To disable the gate deliberately, use TEST_GATE_SKIP=1 TEST_GATE_SKIP_REASON=\"...\", which is audited." >&2
+	exit 2
+fi
 _bats_gate_ack() {
 	command -v hook_ack_append >/dev/null 2>&1 &&
 		hook_ack_append "bats-gate" "$1" "$2"
@@ -94,13 +129,11 @@ check_sh_gate() {
 		return 0
 	fi
 
-	# Only gate scripts in scope (same dirs as --coverage counts)
-	case "$sh" in
-	.claude/scripts/* | .claude/hooks/* | .claude/skills/* | .claude/local-backups/* | scripts/*) ;;
-	*)
-		return 0
-		;;
-	esac
+	# (#2642) Scope comes from _lib/bats-scope.sh, not a local copy. The
+	# copy that used to live here listed consumer paths only, so in this
+	# repo it matched `scripts/` and nothing else — 22% of production.
+	#
+	bats_in_scope "$sh" || return 0
 
 	# Find a .bats that `# covers:` this script. -print0/NUL-delimited
 	# read so filenames containing newlines don't break the loop.
