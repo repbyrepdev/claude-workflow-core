@@ -341,3 +341,79 @@ STUB
 		return 1
 	}
 }
+
+@test "scheduler: the CRON entry it writes is complete and correct" {
+	# Phase 0.5 conf 6: the cron branch's status was checked but its CONTENT
+	# never was, so a CRON_LINE missing TEST_SH_FULL_OK — which a bare
+	# scripts/test.sh is refused without — would install a job that can
+	# never succeed, weekly, silently. The stub records what was written,
+	# which is what makes this assertable at all.
+	_stub_crontab
+	local fakehome="$WORK/home"
+	mkdir -p "$fakehome"
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' _FORCE_CRON=1 '$SCRIPT' --install"
+	[ "$status" -eq 0 ] || {
+		echo "--install failed: $output"
+		return 1
+	}
+	if [ "$(uname -s)" != "Darwin" ]; then
+		[ -s "$CRONTAB_FILE" ] || {
+			echo "the cron branch wrote nothing"
+			return 1
+		}
+		grep -q 'TEST_SH_FULL_OK=1' "$CRONTAB_FILE" || {
+			echo "the cron entry omits TEST_SH_FULL_OK — a bare scripts/test.sh is refused, so this job could never succeed: $(cat "$CRONTAB_FILE")"
+			return 1
+		}
+		grep -q -- '--baseline' "$CRONTAB_FILE" || {
+			echo "the cron entry does not pass --baseline, so its rows would not satisfy the push gate: $(cat "$CRONTAB_FILE")"
+			return 1
+		}
+	fi
+}
+
+@test "scheduler: both back-ends schedule the SAME time" {
+	# The schedule was written twice — CRON_LINE and the plist's
+	# StartCalendarInterval — with nothing comparing them, so a change to
+	# one would have left the platforms on different weeks. Both now derive
+	# from SCHED_*; this asserts they agree, by reading the script itself.
+	local weekday hour minute
+	weekday=$(grep -m1 '^SCHED_WEEKDAY=' "$SCRIPT" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
+	hour=$(grep -m1 '^SCHED_HOUR=' "$SCRIPT" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
+	minute=$(grep -m1 '^SCHED_MINUTE=' "$SCRIPT" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
+	[ -n "$weekday" ] && [ -n "$hour" ] && [ -n "$minute" ] || {
+		echo "could not read the schedule constants — this test checked nothing"
+		return 1
+	}
+	# Neither back-end may carry its own literal any more.
+	grep -qE '^CRON_LINE=.*\$SCHED_MINUTE .*\$SCHED_HOUR .*\$SCHED_WEEKDAY' "$SCRIPT" || {
+		echo "CRON_LINE does not derive from the shared schedule constants"
+		return 1
+	}
+	grep -q 'Weekday</key><integer>${SCHED_WEEKDAY}' "$SCRIPT" || {
+		echo "the plist does not derive from the shared schedule constants"
+		return 1
+	}
+}
+
+@test "scheduler: a jq failure is UNDETERMINABLE, not 'never run'" {
+	# Same empty last_ts either way, completely different remedy: one is
+	# "install the scheduler", the other is "install jq". Reporting the
+	# first for the second sends the operator down the wrong path.
+	#
+	# Forced with a jq stub that fails, earlier on PATH than the real one.
+	mkdir -p "$WORK/bin"
+	printf '#!/bin/bash\necho "jq: simulated failure" >&2\nexit 5\n' >"$WORK/bin/jq"
+	chmod +x "$WORK/bin/jq"
+	printf '{"ts":"2099-01-01T00:00:00Z","baseline":true}\n' >"$RUN_LOG"
+	run bash -c "cd '$WORK' && PATH='$WORK/bin:$PATH' '$SCRIPT' --verify"
+	[ "$status" -ne 0 ]
+	[[ $output == *UNDETERMINABLE* ]] || {
+		echo "a jq failure was reported as a missing baseline: $output"
+		return 1
+	}
+	[[ $output == *"NOT the same as"* ]] || {
+		echo "the message does not distinguish the two cases: $output"
+		return 1
+	}
+}

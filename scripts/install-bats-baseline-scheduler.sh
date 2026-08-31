@@ -5,10 +5,14 @@ set -euo pipefail
 # TWO HOOKS HAVE CITED THIS FILE AS THE REMEDY SINCE v4.23-V, AND IT DID
 # NOT EXIST:
 #
-#   hooks/pre-push-pipeline-gate.sh:859  "rely on weekly baseline cron
+#   hooks/pre-push-pipeline-gate.sh      "rely on weekly baseline cron
 #                                         (check: ... --verify)"
-#   hooks/session-start-report.sh:561    "install via ..."
-#   hooks/session-start-report.sh:576    "cron may be broken. Verify: ..."
+#   hooks/session-start-report.sh        "install via ..."
+#   hooks/session-start-report.sh        "cron may be broken. Verify: ..."
+#
+# (Line numbers deliberately omitted: the first version cited :859 and
+# this same diff pushed that line to :884. A citation that drifts is worse
+# than none — it sends the reader to the wrong place with confidence.)
 #
 # So the push gate's 7-day baseline fallback (its CUTOFF_7D arm) has never
 # once fired — `grep -c '"baseline":true' .claude/logs/bats-run.jsonl`
@@ -50,7 +54,16 @@ LOG_DIR="$REPO_ROOT/.claude/logs"
 BASELINE_LOG="$LOG_DIR/bats-baseline.log"
 RUN_LOG="$LOG_DIR/bats-run.jsonl"
 # Sunday 03:00 local. Weekly, matching the push gate's 7-day window.
-CRON_LINE="0 3 * * 0 cd $REPO_ROOT && TEST_SH_FULL_OK=1 scripts/test.sh --baseline --full >>$BASELINE_LOG 2>&1"
+#
+# ONE definition, consumed by both back-ends. It was written twice — once
+# in CRON_LINE and once in the plist's StartCalendarInterval — so a change
+# to one would have silently left the platforms on different schedules,
+# and nothing compares them.
+SCHED_WEEKDAY=0 # 0 = Sunday, in both cron's and launchd's numbering
+SCHED_HOUR=3
+SCHED_MINUTE=0
+SCHED_CMD="TEST_SH_FULL_OK=1 scripts/test.sh --baseline --full"
+CRON_LINE="$SCHED_MINUTE $SCHED_HOUR * * $SCHED_WEEKDAY cd $REPO_ROOT && $SCHED_CMD >>$BASELINE_LOG 2>&1"
 CRON_TAG="# claude-workflow-core bats baseline (#2642)"
 
 _usage() {
@@ -79,13 +92,13 @@ _plist_body() {
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>cd ${REPO_ROOT} &amp;&amp; TEST_SH_FULL_OK=1 scripts/test.sh --baseline --full</string>
+    <string>cd ${REPO_ROOT} &amp;&amp; ${SCHED_CMD}</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Weekday</key><integer>0</integer>
-    <key>Hour</key><integer>3</integer>
-    <key>Minute</key><integer>0</integer>
+    <key>Weekday</key><integer>${SCHED_WEEKDAY}</integer>
+    <key>Hour</key><integer>${SCHED_HOUR}</integer>
+    <key>Minute</key><integer>${SCHED_MINUTE}</integer>
   </dict>
   <key>StandardOutPath</key><string>${BASELINE_LOG}</string>
   <key>StandardErrorPath</key><string>${BASELINE_LOG}</string>
@@ -120,10 +133,14 @@ _install() {
 		# bootout first so a re-install replaces rather than erroring on a
 		# duplicate label; its failure when nothing is loaded is expected.
 		launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-		if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
-			echo "install-bats-baseline-scheduler: wrote $PLIST but launchctl bootstrap failed." >&2
+		_lc_err=$(mktemp -t sched-lc.XXXXXX) || _lc_err="/dev/null"
+		if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>"$_lc_err"; then
+			_lc_detail=""
+			[ "$_lc_err" != "/dev/null" ] && [ -s "$_lc_err" ] && _lc_detail=" launchctl said: $(head -c 200 "$_lc_err")"
+			echo "install-bats-baseline-scheduler: wrote $PLIST but launchctl bootstrap failed.${_lc_detail}" >&2
 			echo "  The job will load at next login. To load now: launchctl bootstrap gui/$(id -u) $PLIST" >&2
 		fi
+		[ "$_lc_err" != "/dev/null" ] && rm -f "$_lc_err"
 		echo "✓ installed launchd agent $LABEL (Sundays 03:00)"
 		echo "  plist: $PLIST"
 		;;
@@ -205,7 +222,22 @@ _verify() {
 	local last_ts
 	# The newest row with baseline:true. `fromjson?` skips malformed lines
 	# rather than aborting the walk.
-	last_ts=$(jq -r -R 'fromjson? | select(.baseline == true) | .ts // empty' "$RUN_LOG" 2>/dev/null | tail -1)
+	local jq_err jq_rc=0
+	jq_err=$(mktemp -t sched-jq.XXXXXX) || jq_err="/dev/null"
+	last_ts=$(jq -r -R 'fromjson? | select(.baseline == true) | .ts // empty' "$RUN_LOG" 2>"$jq_err" | tail -1) || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		# jq missing, jq broken, log unreadable — every one of those yields
+		# an empty last_ts, identical to a log with no baseline row. Same
+		# observable, completely different remedy: one is "install the
+		# scheduler", the other is "install jq". Reporting the first for the
+		# second sends the operator down the wrong path entirely.
+		local detail=""
+		[ "$jq_err" != "/dev/null" ] && [ -s "$jq_err" ] && detail=" — jq said: $(head -c 200 "$jq_err")"
+		echo "baseline:   UNDETERMINABLE — jq failed reading $RUN_LOG (rc=$jq_rc)${detail}. This is NOT the same as 'never run'." >&2
+		[ "$jq_err" != "/dev/null" ] && rm -f "$jq_err"
+		return 1
+	fi
+	[ "$jq_err" != "/dev/null" ] && rm -f "$jq_err"
 	if [ -z "$last_ts" ]; then
 		echo "baseline:   NEVER RUN — no row in $RUN_LOG carries baseline:true." >&2
 		echo "            The push gate's 7-day fallback has therefore never fired." >&2

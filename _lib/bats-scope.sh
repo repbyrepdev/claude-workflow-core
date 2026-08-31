@@ -153,3 +153,14 @@ bats_scope_files() {
 	rm -f "$tmp"
 	return 0
 }
+
+# Self-check, at source time. The consumers used to each wrap the `source`
+# in a stderr capture so a partial load could be reported; that is 30 lines
+# of boilerplate in three places to describe a condition this file is
+# better placed to notice. If the definitions below did not all land, say
+# so HERE — once — and let each consumer's `command -v` guard do the
+# refusing.
+if ! command -v bats_in_scope >/dev/null 2>&1 ||
+	! command -v bats_scope_files >/dev/null 2>&1; then
+	echo "bats-scope: ERROR: ${BASH_SOURCE[0]} loaded but did not define its predicates — the file is truncated or was edited mid-write. Callers will refuse." >&2
+fi

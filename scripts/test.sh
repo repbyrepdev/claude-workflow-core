@@ -199,45 +199,19 @@ fi
 
 cd "$REPO_ROOT" || exit 2
 
-# (#2642) The bats-scope SSOT. THIS BLOCK IS IDENTICAL in all three
+# (#2642) The bats-scope SSOT. Four lines, identical in all three
 # consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
-# scripts/test.sh) — deliberately, and it is the closest to a single copy
-# that is reachable.
-#
-# The library cannot resolve its own location for its callers: something
-# has to find _lib/ before anything in _lib/ can run. resolve-plugin-helper.sh
-# lives in _lib/ too, so it has the same bootstrap problem. What CAN be
-# fixed is the three consumers each doing it differently — phase 0.5 found
-# a fixed relative path, a two-path symlink-safe fallback, and a
-# script-dir-based probe, which is three chances for one of them to drift
-# wrong and no way to notice.
-#
-# All three sit one directory below the plugin root, so one form serves
-# them all. The consumer layout (.claude/_lib/) is checked second.
-#
-# Errors during the source are CAPTURED, not discarded: the `command -v`
-# guard at the use site still fails closed, but a bare `|| true` leaves the
-# operator knowing only that the scope is unknown, not that the library has
-# a syntax error.
+# scripts/test.sh). Something must find _lib/ before anything in _lib/ can
+# run — resolve-plugin-helper.sh lives there too, so it shares the problem —
+# but everything ELSE the block used to do (capture stderr, warn on a
+# partial load) now happens inside the library, which is where it belongs.
+# Flagged three rounds running as duplication; this is the irreducible part.
 _scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
-_scope_lib=""
-for _scope_c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scope.sh"; do
-	if [ -n "$_scope_self" ] && [ -r "$_scope_c" ]; then
-		_scope_lib="$_scope_c"
-		break
-	fi
-done
-if [ -n "$_scope_lib" ]; then
-	_scope_err=$(mktemp -t bats-scope-src.XXXXXX 2>/dev/null) || _scope_err="/dev/null"
-	# shellcheck source=../_lib/bats-scope.sh
-	. "$_scope_lib" 2>"$_scope_err" || true
-	if [ "$_scope_err" != "/dev/null" ]; then
-		if [ -s "$_scope_err" ]; then
-			echo "bats-scope: WARN: $_scope_lib emitted errors while loading: $(head -c 300 "$_scope_err")" >&2
-		fi
-		rm -f "$_scope_err"
-	fi
-fi
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
+# shellcheck source=../_lib/bats-scope.sh
+[ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
+	! command -v bats_in_scope >/dev/null 2>&1 && . "$_scope_self/.claude/_lib/bats-scope.sh"
 
 # --coverage: inventory mode, doesn't run tests.
 if [ "$MODE" = "coverage" ]; then
