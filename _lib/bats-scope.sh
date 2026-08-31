@@ -78,6 +78,24 @@
 # BATS_SCOPE_DIRS='' to turn the discipline OFF would silently get the full
 # default list back, which is the opposite of what they asked for and
 # indistinguishable from the variable being ignored. Only UNSET falls back.
+# Was it OVERRIDDEN? Recorded before the default is applied, because the
+# two cases want opposite treatment and are otherwise indistinguishable
+# afterwards:
+#
+#   operator set it, and it names nothing real   -> a TYPO. Refuse: the
+#       gates would otherwise pass every file silently.
+#   default, and it names nothing real           -> a repo that has no
+#       shell yet, or none in the usual places. Nothing to gate, and
+#       refusing every commit there would be absurd.
+#
+# The first version of the unusable check did not draw this distinction
+# and refused both, which broke the #53 contract that --coverage prints
+# "Coverage: N/A" and exits 0 on a repo with no scope roots at all.
+if [ "${BATS_SCOPE_DIRS+set}" = "set" ]; then
+	_BATS_SCOPE_OVERRIDDEN=1
+else
+	_BATS_SCOPE_OVERRIDDEN=0
+fi
 BATS_SCOPE_DIRS=${BATS_SCOPE_DIRS-"hooks _lib pre-commit-hooks skills scripts .claude/scripts .claude/hooks .claude/skills .claude/_lib .claude/pre-commit-hooks .claude/local-backups"}
 
 # bats_scope_is_empty
@@ -158,6 +176,10 @@ bats_scope_is_empty() {
 #   whether ANY configured directory is present, not whether any file was
 #   selected.
 bats_scope_is_unusable() {
+	# Only an EXPLICIT override can be "unusable". The default naming
+	# nothing real means the repo has no shell in the usual places — a
+	# correct answer, not a misconfiguration.
+	[ "${_BATS_SCOPE_OVERRIDDEN:-0}" = "1" ] || return 1
 	local d
 	while IFS= read -r d; do
 		[ -n "$d" ] || continue

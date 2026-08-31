@@ -550,3 +550,59 @@ _scope() { # $1 = snippet
 		return 1
 	}
 }
+
+@test "bats-scope: only an EXPLICIT override can be unusable" {
+	# The backup reviewer found the false positive the first version made:
+	# --coverage refused whenever the selection was empty and ANY tracked
+	# .sh existed anywhere, while the gates asked a narrower question. A
+	# consumer with a real but empty scripts/ and a tracked vendor/thing.sh
+	# is a VALID configuration — the gates proceed, so the coverage tool
+	# must not hard-error on it.
+	#
+	# And a repo with no scope roots at all is not misconfigured either;
+	# refusing there broke the #53 contract that --coverage prints N/A and
+	# exits 0. What distinguishes a typo is that somebody SET the variable
+	# and it names nothing real.
+	local tmp
+	tmp=$(mktemp -d -t bats-scope-override.XXXXXX)
+	mkdir -p "$tmp/scripts" "$tmp/vendor"
+
+	# (a) real-but-empty root + out-of-scope file, DEFAULT scope: usable.
+	run bash -c "set -uo pipefail
+		cd '$tmp'
+		. '$LIB'
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo UNUSABLE ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
+	[[ $output == *USABLE* ]] || {
+		echo "a real-but-empty scope root was called unusable: $output"
+		return 1
+	}
+
+	# (b) NO roots at all, DEFAULT scope: still usable — nothing to gate is
+	# a correct answer, and the #53 contract depends on it.
+	local bare
+	bare=$(mktemp -d -t bats-scope-bare.XXXXXX)
+	run bash -c "set -uo pipefail
+		cd '$bare'
+		. '$LIB'
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo UNUSABLE ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
+	rm -rf "$bare"
+	[[ $output == *USABLE* ]] || {
+		echo "a repo with no scope roots was called unusable — this breaks the #53 N/A contract: $output"
+		return 1
+	}
+
+	# (c) the SAME empty selection, but EXPLICITLY overridden: a typo.
+	run bash -c "set -uo pipefail
+		cd '$tmp'
+		export BATS_SCOPE_DIRS='hooks_typo'
+		. '$LIB'
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo UNUSABLE ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
+	rm -rf "$tmp"
+	[[ $output == *UNUSABLE* ]] || {
+		echo "an explicit override naming nothing real was accepted: $output"
+		return 1
+	}
+}

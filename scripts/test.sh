@@ -223,27 +223,41 @@ if [ "$MODE" = "coverage" ]; then
 	# scripts or .claude/hooks).
 	# (#2642) Roots from _lib/bats-scope.sh. This denominator counted the
 	# same consumer-only paths as the two gates, so --coverage reported a
-	# percentage over 22% of the repo — and printed ~60% while the true
-	# figure across everything was 58.5%. That near-coincidence is why the
-	# wrong denominator went unnoticed for so long.
+	# percentage over 22% of the repo — printing exactly 60% (30 of the 50
+	# files it could see) while the true figure across all 229 was 58.95%.
+	# That near-coincidence is why the wrong denominator went unnoticed for
+	# so long.
+	#
+	# (58.5% appeared here originally and does not reproduce. The PR flags
+	# that figure as wrong elsewhere; this copy was missed, which is its
+	# own small instance of the same thing.)
 	if ! [ "$(type -t bats_scope_files 2>/dev/null)" = "function" ]; then
 		# Refuse rather than invent a denominator. A coverage percentage
 		# over an unknown scope is the defect this issue is about: the old
 		# copy of the list here reported ~60% over 22% of the repo, and the
-		# near-coincidence with the true 58.5% is why it went unnoticed.
+		# near-coincidence with the true 58.95% is why it went unnoticed.
 		echo "test.sh: ERROR: _lib/bats-scope.sh did not load — refusing to print a coverage figure over an unknown denominator. Fix the plugin install." >&2
 		exit 2
 	fi
 	# Tracked files, from git — not a filesystem walk. See bats_scope_files.
 	_scope_files=$(bats_scope_files) || exit 2
-	# ZERO is not a clean inventory when the repo demonstrably has shell
-	# files. It is what a mis-set BATS_SCOPE_DIRS produces — a typo, not
-	# just the documented empty opt-out — and every gate then treats the
-	# whole repo as out of scope while --coverage prints a tidy "N/A". The
-	# denominator being empty is the loudest possible symptom of the defect
-	# this issue is about, so it is refused rather than formatted.
-	if [ -z "$_scope_files" ] && git ls-files --error-unmatch -- '*.sh' >/dev/null 2>&1; then
-		echo "test.sh: ERROR: the repo has tracked .sh files but NONE are in scope. BATS_SCOPE_DIRS='${BATS_SCOPE_DIRS-<unset>}' — a typo there disables every gate silently. Refusing to report coverage over an empty scope." >&2
+	# A misconfigured scope is refused; a legitimately empty selection is
+	# not. Those are different, and the first version of this guard
+	# conflated them with a BROADER test than the gates use: it refused
+	# whenever the selection was empty and ANY tracked .sh existed anywhere
+	# in the repo.
+	#
+	# The backup reviewer found the false positive that produces: a
+	# consumer with a real but currently-empty `scripts/`, plus a tracked
+	# `vendor/thing.sh` outside every scope root. bats_scope_is_unusable
+	# correctly calls that USABLE — a configured directory exists — so both
+	# gates proceed, while --coverage hard-refused the same valid setup.
+	# The coverage tool disagreeing with the gates it was modelled on is
+	# the shape of defect this whole issue is about.
+	#
+	# Same criterion as the gates now: is any configured root real?
+	if bats_scope_is_unusable 2>/dev/null; then
+		echo "test.sh: ERROR: BATS_SCOPE_DIRS points at NO directory that exists here ('${BATS_SCOPE_DIRS-<unset>}') — check for a typo. Refusing to report coverage over a scope that cannot select anything." >&2
 		exit 2
 	fi
 	if [ -n "$_scope_files" ]; then

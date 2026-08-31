@@ -18,7 +18,7 @@
     "_lib/bash-safety-check.sh": "8b02ff4595ef404ea2f33fa9f09ce5439cfb6e59e2df2e51a67334578327ed4a",
     "_lib/bash4-features-check.sh": "3d0a27aa98d369e7fa482472eba8192128f4e4db42d275b1b7096d9610a18dbc",
     "_lib/bats-assertion-check.sh": "29932eb7cd7aee09134c14719b6248eb2d2e345392c5e046775dccc3037793b5",
-    "_lib/bats-scope.sh": "a4b67dca81f5aa8f8537fb0dae478fff14b1d5e11232a8fc524fb8a4db262e49",
+    "_lib/bats-scope.sh": "bbbe95bf42116772b74de096bbd9171604899a01ed9b181be1cedd6c214f0c31",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",
     "_lib/branch-convention.sh": "33888bc01b55ef03977857de076b3548583fb574e158cd43e2401a47725292da",
     "_lib/canonical-consumer-skip.sh": "020d05b3ee1578456219c25d907a880f6830dc069d790c72f4404831b0649901",
