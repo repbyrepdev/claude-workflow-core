@@ -416,3 +416,53 @@ _scope() { # $1 = snippet
 		return 1
 	}
 }
+
+@test "bats-scope: a TYPO'd scope is caught, not just an empty one" {
+	# `bats_scope_is_empty` only asks whether the list has non-empty tokens,
+	# so `BATS_SCOPE_DIRS=hooks_typo` sails past it while selecting nothing
+	# — indistinguishable, to every gate, from the empty case it was written
+	# to catch. And a typo is far likelier than the deliberate off switch.
+	#
+	# The honest question is whether the scope points at anything REAL.
+	# "Selects no FILE" was the first answer and it was wrong: a repo can
+	# legitimately have shell none of which is in scope, and refusing there
+	# turns a correct answer into a hard error — an existing test caught it.
+	run bash -c "set -uo pipefail
+		cd '$REPO_ROOT'
+		export BATS_SCOPE_DIRS='hooks_typo'
+		. '$LIB'
+		bats_scope_is_empty && echo EMPTY || echo NOT-EMPTY
+		bats_scope_is_unusable && echo USELESS || echo USABLE"
+	[ "$status" -eq 0 ]
+	[[ $output == *NOT-EMPTY* ]] || {
+		echo "a typo'd list was reported as empty, so this proves nothing: $output"
+		return 1
+	}
+	[[ $output == *USELESS* ]] || {
+		echo "a typo'd scope naming no existing directory was accepted: $output"
+		return 1
+	}
+	# And the real list must still be usable, or the check is just broken.
+	run bash -c "set -uo pipefail
+		cd '$REPO_ROOT'
+		. '$LIB'
+		bats_scope_is_unusable && echo USELESS || echo USABLE"
+	[[ $output == *USABLE* ]] || {
+		echo "the DEFAULT scope was reported as unusable: $output"
+		return 1
+	}
+	# And a repo whose shell is legitimately all out of scope is NOT
+	# unusable — that is a correct answer, not a misconfiguration.
+	local tmp
+	tmp=$(mktemp -d -t bats-scope-vendor.XXXXXX)
+	mkdir -p "$tmp/scripts" "$tmp/vendor"
+	run bash -c "set -uo pipefail
+		cd '$tmp'
+		. '$LIB'
+		bats_scope_is_unusable && echo USELESS || echo USABLE"
+	rm -rf "$tmp"
+	[[ $output == *USABLE* ]] || {
+		echo "a repo with a real scripts/ dir was called unusable: $output"
+		return 1
+	}
+}

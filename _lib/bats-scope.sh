@@ -99,6 +99,38 @@ bats_scope_is_empty() {
 	return 0
 }
 
+# bats_scope_is_unusable
+#   rc 0 when NOT ONE of the configured scope directories exists in this
+#   repo — the signature of a typo or a stale override. rc 1 otherwise.
+#
+#   Checking that the list has non-empty tokens is not enough:
+#   `BATS_SCOPE_DIRS=hooks_typo` passes that and selects nothing, which is
+#   indistinguishable to every gate from the empty case. A typo is also far
+#   likelier than the deliberate off switch.
+#
+#   But "selects no FILE" is the wrong test, and the first version used it.
+#   A repo can legitimately have shell files none of which are in scope — a
+#   consumer whose only .sh is vendored, or the bats-gate's own fixture,
+#   where the sole tracked script is under vendor/. Refusing there turns a
+#   correct answer ("nothing here needs gating") into a hard error, which
+#   an existing test caught immediately.
+#
+#   What distinguishes a typo from a legitimately-empty selection is
+#   whether the scope points at anything REAL: `hooks_typo` names a
+#   directory that does not exist, while a consumer with only vendored
+#   shell still has `scripts/` or `hooks/` on disk. So the question is
+#   whether ANY configured directory is present, not whether any file was
+#   selected.
+bats_scope_is_unusable() {
+	local d
+	for d in ${BATS_SCOPE_DIRS-}; do
+		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
+		[ -n "$d" ] || continue
+		[ -d "$d" ] && return 1
+	done
+	return 0
+}
+
 # bats_in_scope <path>
 #   rc 0 = the bats discipline applies to this file
 #   rc 1 = out of scope

@@ -74,8 +74,11 @@ if ! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ]; then
 	echo "bats-gate: ERROR: _lib/bats-scope.sh did not load — refusing to run with an unknown scope (an empty scope would pass every commit silently). Fix the plugin install." >&2
 	exit 2
 fi
-if bats_scope_is_empty; then
-	echo "bats-gate: ERROR: BATS_SCOPE_DIRS matches nothing ('${BATS_SCOPE_DIRS-<unset>}') — every staged script would pass with no test and no recorded bypass. To disable the gate deliberately, use TEST_GATE_SKIP=1 TEST_GATE_SKIP_REASON=\"...\", which is audited." >&2
+# Empty OR useless. A non-empty list that selects nothing — a typo, which
+# is likelier than the deliberate off switch — produces the identical
+# silent pass, so the RESULT is what gets checked, not the spelling.
+if bats_scope_is_empty || bats_scope_is_unusable; then
+	echo "bats-gate: ERROR: BATS_SCOPE_DIRS points at NO directory that exists here ('${BATS_SCOPE_DIRS-<unset>}') — every staged script would pass with no test and no recorded bypass. Check for a typo. To disable the gate deliberately, use TEST_GATE_SKIP=1 TEST_GATE_SKIP_REASON=\"...\", which is audited." >&2
 	exit 2
 fi
 _bats_gate_ack() {

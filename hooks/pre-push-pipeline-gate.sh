@@ -810,8 +810,9 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 		FAILED=1
 		continue
 	fi
-	if bats_scope_is_empty; then
-		echo "pre-push-pipeline-gate: ERROR: BATS_SCOPE_DIRS matches nothing ('${BATS_SCOPE_DIRS-<unset>}') — every changed script would pass unverified, with no recorded bypass. Use the audited PIPELINE_GATE_SKIP if that is deliberate." >&2
+	# Empty OR useless — see the same pair in pre-commit-hooks/bats-gate.sh.
+	if bats_scope_is_empty || bats_scope_is_unusable; then
+		echo "pre-push-pipeline-gate: ERROR: BATS_SCOPE_DIRS points at NO directory that exists here ('${BATS_SCOPE_DIRS-<unset>}') — every changed script would pass unverified, with no recorded bypass. Check for a typo. Use the audited PIPELINE_GATE_SKIP if that is deliberate." >&2
 		FAILED=1
 		continue
 	fi

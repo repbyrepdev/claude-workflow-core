@@ -603,7 +603,14 @@ STUB
 
 	SCHED_PLATFORM=cron
 	_sched --install
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || {
+		echo "the cron install failed (rc $status): $output"
+		return 1
+	}
+	[[ $output == *installed* ]] || {
+		echo "the cron install did not report what it did: $output"
+		return 1
+	}
 	local cron_line
 	cron_line=$(grep -F "claude-workflow-core" -A1 "$CRONTAB_FILE" | tail -1)
 	[ -n "$cron_line" ] || {
@@ -617,6 +624,18 @@ STUB
 
 	SCHED_PLATFORM=launchd
 	_sched --install
+	# ASSERT THE STATUS TOO. A failed `launchctl bootstrap` still writes the
+	# plist, so the artifact checks below would pass after an install that
+	# did not take — which is exactly the written-but-not-loaded state this
+	# script now exits 1 for.
+	[ "$status" -eq 0 ] || {
+		echo "the launchd install failed (rc $status): $output"
+		return 1
+	}
+	[[ $output == *installed* ]] || {
+		echo "the launchd install did not report what it did: $output"
+		return 1
+	}
 	local plist="$FAKEHOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
 	[ -s "$plist" ] || {
 		echo "no plist was written"
