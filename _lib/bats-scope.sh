@@ -90,13 +90,33 @@ BATS_SCOPE_DIRS=${BATS_SCOPE_DIRS-"hooks _lib pre-commit-hooks skills scripts .c
 #   in-scope list, with no bypass recorded and nothing said. That is the
 #   discipline switching itself off, which is the one outcome this library
 #   exists to prevent. Turning it off is fine; doing so invisibly is not.
-bats_scope_is_empty() {
-	local d
+# _bats_scope_each
+#   Echoes the configured scope entries, one per line, normalised — trailing
+#   slashes stripped, empties dropped, and GLOBBING DISABLED.
+#
+#   One iterator for every consumer, because the three that existed had
+#   already drifted: bats_in_scope disabled globbing and the validators did
+#   not, so `BATS_SCOPE_DIRS='hooks*'` expanded to a real directory during
+#   validation (reported usable) while the matcher treated the wildcard
+#   literally and selected nothing. Both gates then permitted every changed
+#   script. Two predicates disagreeing about what the list SAYS is the same
+#   class of defect as the three copies this whole file replaced.
+_bats_scope_each() {
+	local d _glob_was_off=0
+	case "$-" in *f*) _glob_was_off=1 ;; esac
+	set -f
 	for d in ${BATS_SCOPE_DIRS-}; do
 		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
-		[ -n "$d" ] && return 1
+		[ -n "$d" ] && printf '%s\n' "$d"
 	done
+	[ "$_glob_was_off" -eq 1 ] || set +f
 	return 0
+}
+
+bats_scope_is_empty() {
+	local first
+	first=$(_bats_scope_each | head -1)
+	[ -z "$first" ]
 }
 
 # bats_scope_is_unusable
@@ -123,11 +143,15 @@ bats_scope_is_empty() {
 #   selected.
 bats_scope_is_unusable() {
 	local d
-	for d in ${BATS_SCOPE_DIRS-}; do
-		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
+	while IFS= read -r d; do
 		[ -n "$d" ] || continue
+		# `[ -d "$d" ]` on the LITERAL entry — _bats_scope_each already
+		# suppressed globbing, so a wildcard entry is tested as the literal
+		# string it is, which is how bats_in_scope will treat it too.
 		[ -d "$d" ] && return 1
-	done
+	done <<EOF
+$(_bats_scope_each)
+EOF
 	return 0
 }
 
@@ -148,29 +172,17 @@ bats_in_scope() {
 	case "$p" in
 	.claude/tests/* | .git/* | node_modules/*) return 1 ;;
 	esac
+	# Same iterator as the validators, so all three agree about what the
+	# list says — normalised, unglobbed, empties dropped.
 	local d
-	# UNQUOTED on purpose (word-splitting is how the list is parsed), but
-	# globbing is NOT wanted: an entry containing * would otherwise be
-	# expanded against the current directory, making the effective scope
-	# depend on cwd contents. noglob for the duration of the loop.
-	local _glob_was_off=0
-	case "$-" in *f*) _glob_was_off=1 ;; esac
-	set -f
-	for d in $BATS_SCOPE_DIRS; do
-		# Strip trailing slashes before matching. The variable is
-		# operator-facing, so `hooks/` is a spelling somebody will use, and
-		# without this it builds the pattern `hooks//*` and silently matches
-		# nothing — an entry that looks present and does nothing.
-		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
+	while IFS= read -r d; do
 		[ -n "$d" ] || continue
 		case "$p" in
-		"$d"/*)
-			[ "$_glob_was_off" -eq 1 ] || set +f
-			return 0
-			;;
+		"$d"/*) return 0 ;;
 		esac
-	done
-	[ "$_glob_was_off" -eq 1 ] || set +f
+	done <<EOF
+$(_bats_scope_each)
+EOF
 	return 1
 }
 

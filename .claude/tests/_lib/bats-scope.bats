@@ -431,8 +431,10 @@ _scope() { # $1 = snippet
 		cd '$REPO_ROOT'
 		export BATS_SCOPE_DIRS='hooks_typo'
 		. '$LIB'
-		bats_scope_is_empty && echo EMPTY || echo NOT-EMPTY
-		bats_scope_is_unusable && echo USELESS || echo USABLE"
+		erc=0; bats_scope_is_empty || erc=\$?
+		case \$erc in 0) echo EMPTY ;; 1) echo NOT-EMPTY ;; *) echo \"UNEXPECTED-ERC=\$erc\" ;; esac
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo USELESS ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
 	[ "$status" -eq 0 ]
 	[[ $output == *NOT-EMPTY* ]] || {
 		echo "a typo'd list was reported as empty, so this proves nothing: $output"
@@ -446,7 +448,8 @@ _scope() { # $1 = snippet
 	run bash -c "set -uo pipefail
 		cd '$REPO_ROOT'
 		. '$LIB'
-		bats_scope_is_unusable && echo USELESS || echo USABLE"
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo USELESS ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
 	[[ $output == *USABLE* ]] || {
 		echo "the DEFAULT scope was reported as unusable: $output"
 		return 1
@@ -459,10 +462,37 @@ _scope() { # $1 = snippet
 	run bash -c "set -uo pipefail
 		cd '$tmp'
 		. '$LIB'
-		bats_scope_is_unusable && echo USELESS || echo USABLE"
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo USELESS ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
 	rm -rf "$tmp"
 	[[ $output == *USABLE* ]] || {
 		echo "a repo with a real scripts/ dir was called unusable: $output"
+		return 1
+	}
+}
+
+@test "bats-scope: a WILDCARD entry is unusable AND matches nothing — consistently" {
+	# The two predicates parsed the list differently: bats_in_scope disabled
+	# globbing, the validator did not. So `BATS_SCOPE_DIRS='hooks*'` expanded
+	# to a real directory during validation (reported usable) while the
+	# matcher treated the wildcard literally and selected nothing — and both
+	# gates then permitted every changed script with no test.
+	#
+	# One iterator now. This asserts they AGREE: unusable, and not matching.
+	run bash -c "set -uo pipefail
+		cd '$REPO_ROOT'
+		export BATS_SCOPE_DIRS='hooks*'
+		. '$LIB'
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo UNUSABLE ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac
+		bats_in_scope hooks/x.sh && echo MATCHED || echo NOT-MATCHED"
+	[ "$status" -eq 0 ]
+	[[ $output == *UNUSABLE* ]] || {
+		echo "a wildcard entry was reported usable — the validator globbed where the matcher does not: $output"
+		return 1
+	}
+	[[ $output == *NOT-MATCHED* ]] || {
+		echo "the matcher expanded the wildcard, so the two disagree again: $output"
 		return 1
 	}
 }
