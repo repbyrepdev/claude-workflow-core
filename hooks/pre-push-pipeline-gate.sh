@@ -256,8 +256,20 @@ elif [ -r "$PPG_DIR/../../_lib/bats-scope.sh" ]; then
 	_ppg_scope_lib="$PPG_DIR/../../_lib/bats-scope.sh"
 fi
 if [ -n "$_ppg_scope_lib" ]; then
+	# The sourcing error is CAPTURED, not discarded. `|| true` left the
+	# later `command -v` guard to fail closed, which is correct but mute:
+	# the operator learns the scope is unknown and not that the library has
+	# a syntax error on line 40. Same reasoning as the hook-ack source in
+	# skills/git-commit/run.sh (#2641).
+	_ppg_scope_err=$(mktemp -t ppg-scope-src.XXXXXX 2>/dev/null) || _ppg_scope_err="/dev/null"
 	# shellcheck source=../_lib/bats-scope.sh
-	. "$_ppg_scope_lib" || true
+	. "$_ppg_scope_lib" 2>"$_ppg_scope_err" || true
+	if [ "$_ppg_scope_err" != "/dev/null" ]; then
+		if [ -s "$_ppg_scope_err" ]; then
+			echo "pre-push-pipeline-gate: WARN: $_ppg_scope_lib emitted errors while loading: $(head -c 300 "$_ppg_scope_err")" >&2
+		fi
+		rm -f "$_ppg_scope_err"
+	fi
 fi
 
 _ppg_cov_lib="$PPG_DIR/../_lib/cr-phase2-coverage.sh"

@@ -53,8 +53,14 @@ set -u
 #   node_modules/*    vendored anything
 
 # Override for consumers that want a different set. Space-separated
-# directory prefixes, no trailing slash.
-BATS_SCOPE_DIRS=${BATS_SCOPE_DIRS:-"hooks _lib pre-commit-hooks skills scripts .claude/scripts .claude/hooks .claude/skills .claude/_lib .claude/pre-commit-hooks .claude/local-backups"}
+# directory prefixes; a trailing slash is tolerated.
+#
+# `${VAR-default}`, NOT `${VAR:-default}`. The colon form substitutes the
+# default when the variable is empty OR unset — so an operator who sets
+# BATS_SCOPE_DIRS='' to turn the discipline OFF would silently get the full
+# default list back, which is the opposite of what they asked for and
+# indistinguishable from the variable being ignored. Only UNSET falls back.
+BATS_SCOPE_DIRS=${BATS_SCOPE_DIRS-"hooks _lib pre-commit-hooks skills scripts .claude/scripts .claude/hooks .claude/skills .claude/_lib .claude/pre-commit-hooks .claude/local-backups"}
 
 # bats_in_scope <path>
 #   rc 0 = the bats discipline applies to this file
@@ -75,6 +81,12 @@ bats_in_scope() {
 	esac
 	local d
 	for d in $BATS_SCOPE_DIRS; do
+		# Strip trailing slashes before matching. The variable is
+		# operator-facing, so `hooks/` is a spelling somebody will use, and
+		# without this it builds the pattern `hooks//*` and silently matches
+		# nothing — an entry that looks present and does nothing.
+		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
+		[ -n "$d" ] || continue
 		case "$p" in
 		"$d"/*) return 0 ;;
 		esac
@@ -87,10 +99,64 @@ bats_in_scope() {
 #   `find` and friends. `find` returns rc 1 on a missing starting path,
 #   and under pipefail that aborts the caller (v0.9.4 #53 fixed exactly
 #   that bug in scripts/test.sh); filtering first is what keeps it fixed.
+#
+#   Prefer bats_scope_files below. This stays for callers that genuinely
+#   want directories rather than a file list.
 bats_scope_roots() {
 	local d
 	for d in $BATS_SCOPE_DIRS; do
 		[ -d "$d" ] && printf '%s\n' "$d"
 	done
+	return 0
+}
+
+# bats_scope_files
+#   Echoes, one per line, every TRACKED .sh in scope. rc 2 if git cannot
+#   answer — never a silent empty list, which would read as "no files to
+#   cover" and report 100% of nothing.
+#
+#   ASKS GIT, does not walk the filesystem. The authoritative answer to
+#   "what shell files does this repo have" is `git ls-files`, and this
+#   whole issue is a case study in why: the broken scope list was proven
+#   wrong by `git ls-files .claude/hooks` returning 0 entries for a
+#   directory that EXISTS on disk. A `find` over directories answers a
+#   different question and gets it wrong in two ways —
+#
+#     .claude/hooks here is a SYMLINK to ../hooks. find does not follow
+#     it, so today the two agree by accident. On a consumer where that
+#     path is a real directory, find would count the same files twice.
+#
+#     find also counts UNTRACKED files: build output, a colleague's
+#     scratch script, an editor backup. None of those can carry a
+#     covering test and none belong in a coverage denominator.
+#
+#   Phase 0.5 raised this twice, from two agents, against the derivation
+#   rule: do not re-compute what an authoritative source already provides.
+bats_scope_files() {
+	# NUL-delimited, through a TEMP FILE rather than a command substitution.
+	# `out=$(git ls-files -z ...)` silently drops every NUL — bash cannot
+	# hold them in a variable — so the whole listing collapses into one
+	# concatenated string, `read -d ''` finds no delimiter, and the function
+	# returns NOTHING. Which reads as "no shell files in scope", i.e. a
+	# coverage denominator of zero and a gate with nothing to gate. Caught
+	# because --coverage printed 0 files immediately after the switch; had
+	# it printed a plausible number this would have shipped.
+	local tmp rc=0
+	tmp=$(mktemp -t bats-scope-files.XXXXXX) || {
+		echo "bats_scope_files: mktemp failed" >&2
+		return 2
+	}
+	git ls-files -z -- '*.sh' >"$tmp" 2>/dev/null || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "bats_scope_files: git ls-files failed (rc=$rc) — refusing to report an empty file set, which would read as full coverage of nothing" >&2
+		rm -f "$tmp"
+		return 2
+	fi
+	local f
+	while IFS= read -r -d '' f; do
+		[ -n "$f" ] || continue
+		bats_in_scope "$f" && printf '%s\n' "$f"
+	done <"$tmp"
+	rm -f "$tmp"
 	return 0
 }

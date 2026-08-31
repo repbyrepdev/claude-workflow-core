@@ -195,7 +195,7 @@ _scope() { # $1 = snippet
 	for f in pre-commit-hooks/bats-gate.sh hooks/pre-push-pipeline-gate.sh scripts/test.sh; do
 		grep -q 'bats-scope\.sh' "$REPO_ROOT/$f" || missing="$missing $f(no-source)"
 		# It must react to the ABSENCE, not merely source it.
-		grep -qE 'command -v (bats_in_scope|bats_scope_roots)' "$REPO_ROOT/$f" ||
+		grep -qE 'command -v (bats_in_scope|bats_scope_roots|bats_scope_files)' "$REPO_ROOT/$f" ||
 			missing="$missing $f(no-guard)"
 	done
 	[ -z "$missing" ] || {
@@ -214,6 +214,126 @@ _scope() { # $1 = snippet
 	[ -z "$hits" ] || {
 		echo "a CI workflow now references bats/test.sh — the enforcement is deliberately LOCAL:"
 		printf '%s\n' "$hits"
+		return 1
+	}
+}
+
+# ---- the file list, from git ---------------------------------------------
+
+@test "bats-scope: files come from GIT, not a filesystem walk" {
+	# The authoritative source. `find` over directories answers a different
+	# question: .claude/hooks here is a SYMLINK to ../hooks, which find does
+	# not follow — so the two agree by accident today and would double-count
+	# on a consumer where that path is a real directory. find also counts
+	# UNTRACKED files, none of which can carry a covering test.
+	local tmp
+	tmp=$(mktemp -d -t bats-scope-git.XXXXXX)
+	(
+		cd "$tmp"
+		git init -q
+		mkdir -p hooks
+		printf '#!/bin/bash\n' >hooks/tracked.sh
+		printf '#!/bin/bash\n' >hooks/untracked.sh
+		git add hooks/tracked.sh
+		git -c user.email=t@t -c user.name=t commit -qm init
+	)
+	run bash -c "set -uo pipefail
+		cd '$tmp'
+		. '$LIB'
+		bats_scope_files"
+	rm -rf "$tmp"
+	[ "$status" -eq 0 ] || {
+		echo "bats_scope_files failed: $output"
+		return 1
+	}
+	[[ $output == *hooks/tracked.sh* ]] || {
+		echo "the tracked file is missing from the list: $output"
+		return 1
+	}
+	[[ $output != *untracked* ]] || {
+		echo "an UNTRACKED file was counted — it cannot carry a covering test: $output"
+		return 1
+	}
+}
+
+@test "bats-scope: the file list is not silently emptied by NUL handling" {
+	# The trap this hit on its first run. `out=\$(git ls-files -z ...)` drops
+	# every NUL, because bash cannot hold them in a variable — the listing
+	# collapses to one string, `read -d ''` finds no delimiter, and the
+	# function returns NOTHING. Which reads as "no shell files in scope":
+	# a denominator of zero and a gate with nothing to gate.
+	#
+	# This repo has 200+ in-scope files, so a near-empty answer is proof of
+	# that bug and nothing else.
+	run bash -c "set -uo pipefail
+		cd '$REPO_ROOT'
+		. '$LIB'
+		bats_scope_files | grep -c ."
+	[ "$status" -eq 0 ]
+	[ "$output" -gt 100 ] || {
+		echo "only $output in-scope files — the listing collapsed (NUL handling?)"
+		return 1
+	}
+}
+
+@test "bats-scope: files REFUSES rather than reporting an empty set on git failure" {
+	# An empty list is indistinguishable from "this repo has no shell
+	# files", and reads downstream as full coverage of nothing. Outside a
+	# git repo the answer is not zero, it is unknown.
+	local tmp
+	tmp=$(mktemp -d -t bats-scope-nogit.XXXXXX)
+	run bash -c "set -uo pipefail
+		cd '$tmp'
+		. '$LIB'
+		bats_scope_files"
+	rm -rf "$tmp"
+	[ "$status" -eq 2 ] || {
+		echo "outside a git repo, bats_scope_files returned $status (expected 2): $output"
+		return 1
+	}
+	[[ $output == *"refusing"* ]] || {
+		echo "the refusal does not say why: $output"
+		return 1
+	}
+}
+
+# ---- BATS_SCOPE_DIRS edge cases ------------------------------------------
+
+@test "bats-scope: a trailing slash in BATS_SCOPE_DIRS still matches" {
+	# The variable is operator-facing, so 'hooks/' is a spelling somebody
+	# will use. It must not silently match nothing.
+	run bash -c "set -uo pipefail
+		export BATS_SCOPE_DIRS='hooks/'
+		. '$LIB'
+		bats_in_scope 'hooks/x.sh'"
+	[ "$status" -eq 0 ] || {
+		echo "a trailing slash silently disabled the entry"
+		return 1
+	}
+}
+
+@test "bats-scope: the directory itself, with no file under it, is not in scope" {
+	# `hooks` is not a shell file; only things beneath it are candidates.
+	_scope "bats_in_scope 'hooks'"
+	[ "$status" -ne 0 ]
+	_scope "bats_in_scope 'hooks.sh'"
+	[ "$status" -ne 0 ] || {
+		echo "a file merely PREFIXED by a scope dir name was matched"
+		return 1
+	}
+}
+
+@test "bats-scope: an empty BATS_SCOPE_DIRS puts nothing in scope, quietly" {
+	# Deliberate: it is the documented way to turn the discipline off for a
+	# repo. It must not error — but the CONSUMERS must still fail closed on
+	# a missing library, which is a different condition and tested there.
+	run bash -c "set -uo pipefail
+		export BATS_SCOPE_DIRS=''
+		. '$LIB'
+		bats_in_scope 'hooks/x.sh' && echo IN || echo OUT"
+	[ "$status" -eq 0 ]
+	[[ $output == *OUT* ]] || {
+		echo "an empty scope list still matched: $output"
 		return 1
 	}
 }

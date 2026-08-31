@@ -216,8 +216,18 @@ for _c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scop
 	fi
 done
 if [ -n "$_scope_lib" ]; then
+	# Capture rather than discard — see the identical reasoning in
+	# hooks/pre-push-pipeline-gate.sh. The `command -v` guard below still
+	# fails closed; this only makes the CAUSE visible.
+	_scope_err=$(mktemp -t test-scope-src.XXXXXX 2>/dev/null) || _scope_err="/dev/null"
 	# shellcheck source=../_lib/bats-scope.sh
-	. "$_scope_lib" || true
+	. "$_scope_lib" 2>"$_scope_err" || true
+	if [ "$_scope_err" != "/dev/null" ]; then
+		if [ -s "$_scope_err" ]; then
+			echo "test.sh: WARN: $_scope_lib emitted errors while loading: $(head -c 300 "$_scope_err")" >&2
+		fi
+		rm -f "$_scope_err"
+	fi
 fi
 
 # --coverage: inventory mode, doesn't run tests.
@@ -233,8 +243,7 @@ if [ "$MODE" = "coverage" ]; then
 	# percentage over 22% of the repo — and printed ~60% while the true
 	# figure across everything was 58.5%. That near-coincidence is why the
 	# wrong denominator went unnoticed for so long.
-	_existing_sh_roots=()
-	if ! command -v bats_scope_roots >/dev/null 2>&1; then
+	if ! command -v bats_scope_files >/dev/null 2>&1; then
 		# Refuse rather than invent a denominator. A coverage percentage
 		# over an unknown scope is the defect this issue is about: the old
 		# copy of the list here reported ~60% over 22% of the repo, and the
@@ -242,14 +251,14 @@ if [ "$MODE" = "coverage" ]; then
 		echo "test.sh: ERROR: _lib/bats-scope.sh did not load — refusing to print a coverage figure over an unknown denominator. Fix the plugin install." >&2
 		exit 2
 	fi
-	while IFS= read -r r; do
-		[ -n "$r" ] && _existing_sh_roots+=("$r")
-	done < <(bats_scope_roots)
-	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
-		sh_count=$(find "${_existing_sh_roots[@]}" -name "*.sh" | wc -l | tr -d ' ')
+	# Tracked files, from git — not a filesystem walk. See bats_scope_files.
+	_scope_files=$(bats_scope_files) || exit 2
+	if [ -n "$_scope_files" ]; then
+		sh_count=$(printf '%s\n' "$_scope_files" | grep -c . || true)
 	else
 		sh_count=0
 	fi
+	case "$sh_count" in '' | *[!0-9]*) sh_count=0 ;; esac
 	if [ -d .claude/tests ]; then
 		bats_count=$(find .claude/tests -name "*.bats" | wc -l | tr -d ' ')
 		# Scan bats files for explicit "# covers: <path>" declarations (SSOT).
@@ -277,7 +286,9 @@ if [ "$MODE" = "coverage" ]; then
 	echo ""
 	covered=0
 	uncovered=0
-	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
+	# Same tracked list the denominator used — one source, so numerator and
+	# denominator cannot disagree about what is in scope.
+	if [ -n "$_scope_files" ]; then
 		while IFS= read -r sh; do
 			[ -z "$sh" ] && continue
 			# Normalize to relative path matching covers: declarations
@@ -286,7 +297,7 @@ if [ "$MODE" = "coverage" ]; then
 			else
 				uncovered=$((uncovered + 1))
 			fi
-		done < <(find "${_existing_sh_roots[@]}" -name "*.sh")
+		done < <(printf '%s\n' "$_scope_files")
 	fi
 	echo "Covered (referenced in some .bats): $covered"
 	echo "Uncovered:                           $uncovered"

@@ -153,9 +153,26 @@ _uninstall() {
 		echo "✓ removed launchd agent $LABEL"
 		;;
 	cron)
-		local current
+		local current filtered
 		current=$(crontab -l 2>/dev/null || true)
-		printf '%s\n' "$current" | grep -vF "$CRON_TAG" | grep -vF "$CRON_LINE" | crontab - || true
+		# grep rc 1 means "nothing left after filtering", which is a normal
+		# outcome here (the entry was the only line). Only rc >1 is a real
+		# failure. `|| true` on the whole pipeline flattened both, and then
+		# printed success regardless of whether the crontab was written —
+		# _install checks the same command and errors on it, so this half
+		# was claiming a removal it had not verified.
+		filtered=$(printf '%s\n' "$current" | grep -vF "$CRON_TAG" | grep -vF "$CRON_LINE") || {
+			local grc=$?
+			if [ "$grc" -gt 1 ]; then
+				echo "install-bats-baseline-scheduler: grep failed (rc=$grc) filtering the crontab — NOT writing it back" >&2
+				exit 2
+			fi
+			filtered=""
+		}
+		if ! printf '%s\n' "$filtered" | crontab -; then
+			echo "install-bats-baseline-scheduler: crontab write FAILED — the entry was NOT removed" >&2
+			exit 2
+		fi
 		echo "✓ removed cron entry"
 		;;
 	esac

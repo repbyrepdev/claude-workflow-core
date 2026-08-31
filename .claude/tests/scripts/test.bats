@@ -33,6 +33,24 @@ setup() {
 	# exported would silently redirect our isolated logging).
 	unset BATS_LOG SHA256_WARNED
 	export TEST_REPO_ROOT="$TEST_TMP"
+	# (#2642) The fixture is a GIT REPO now, because --coverage asks git
+	# which shell files exist rather than walking the filesystem. That is
+	# the point of the change: `find` over directories counts untracked
+	# files and, on a consumer where .claude/hooks is a real directory
+	# rather than the symlink it is here, counts the same file twice.
+	#
+	# Every assertion below keeps its meaning: an empty repo has zero
+	# tracked .sh, so "Shell scripts in scope: 0" and "Coverage: N/A" still
+	# describe the missing-roots case they were written for (#53).
+	git -C "$TEST_TMP" init -q
+	git -C "$TEST_TMP" config user.email t@t
+	git -C "$TEST_TMP" config user.name t
+}
+
+# Stage whatever the test just created, so git can see it. Coverage counts
+# TRACKED files; an unstaged fixture is invisible by design, not by accident.
+_track() {
+	git -C "$TEST_TMP" add -A 2>/dev/null || true
 }
 
 teardown() {
@@ -68,6 +86,7 @@ teardown() {
 	# #53: find rc=1 on missing starting paths + set -o pipefail aborted
 	# the script. With ALL roots missing, --coverage must still emit
 	# Coverage: N/A and exit 0.
+	_track
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"Shell scripts in scope: 0"* ]] || return 1
@@ -91,6 +110,7 @@ teardown() {
 		# covers: scripts/foo.sh
 		@test "noop" { true; }
 	EOF
+	_track
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"TEST_REPO_ROOT override active"* ]] || return 1
@@ -112,6 +132,7 @@ teardown() {
 		# covers: scripts/a.sh
 		@test "x" { true; }
 	EOF
+	_track
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"Shell scripts in scope: 2"* ]] || return 1
@@ -122,6 +143,7 @@ teardown() {
 	# Edge: scripts/ dir exists but is empty. find produces no output,
 	# the while-loop must iterate zero times (no spurious covered/uncovered++).
 	mkdir -p "$TEST_TMP/scripts"
+	_track
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"Shell scripts in scope: 0"* ]] || return 1
@@ -135,6 +157,7 @@ teardown() {
 	mkdir -p "$TEST_TMP/scripts"
 	echo "#!/bin/bash" >"$TEST_TMP/scripts/foo.sh"
 	chmod +x "$TEST_TMP/scripts/foo.sh"
+	_track
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"Bats test files:"*"0"* ]] || return 1
@@ -153,6 +176,7 @@ teardown() {
 	done
 	mkdir -p "$TEST_TMP/.claude/tests"
 	echo '@test "x" { true; }' >"$TEST_TMP/.claude/tests/sample.bats"
+	_track
 	run "$SCRIPT" --coverage
 	[ "$status" -eq 0 ]
 	[[ $output == *"Shell scripts in scope: 5"* ]] || return 1
@@ -353,6 +377,35 @@ teardown() {
 	run "$SCRIPT" --no-log "$TEST_TMP/.claude/tests/marker.bats"
 	[ "$status" -ne 0 ] || {
 		echo "the marker was set without --shell — the probe proves nothing"
+		return 1
+	}
+}
+
+@test "#2642: --coverage REFUSES when the scope library cannot load" {
+	# The dangerous default. Without the predicate, the old code would have
+	# produced a denominator from whatever roots happened to exist — a
+	# coverage figure over an unknown scope, which is the exact defect this
+	# issue documents (~60% printed over 22% of the repo, near enough to the
+	# true 58.5% that nobody looked twice).
+	#
+	# A copy of the script with no library beside it is the shape a broken
+	# plugin install actually takes.
+	local fake="$TEST_TMP/fakeplugin"
+	mkdir -p "$fake/scripts" "$fake/_lib"
+	cp "$SCRIPT" "$fake/scripts/test.sh"
+	chmod +x "$fake/scripts/test.sh"
+	# Deliberately NOT copying _lib/bats-scope.sh.
+	run bash -c "cd '$TEST_TMP' && TEST_SH_FULL_OK=1 '$fake/scripts/test.sh' --coverage"
+	[ "$status" -eq 2 ] || {
+		echo "a missing scope library produced a coverage figure anyway (rc $status): $output"
+		return 1
+	}
+	[[ $output == *"bats-scope"* ]] || {
+		echo "the refusal does not name the missing library: $output"
+		return 1
+	}
+	[[ $output != *"Coverage:"* ]] || {
+		echo "it printed a percentage despite refusing: $output"
 		return 1
 	}
 }

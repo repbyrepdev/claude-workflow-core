@@ -210,3 +210,104 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 		return 1
 	}
 }
+
+# ---- --install / --uninstall, exercised for real but harmlessly ----------
+#
+# Phase 0.5 was right that "untested by design" is a poor answer for the
+# half of a script that mutates the machine. The reason it looked
+# unavoidable was HOME: the plist path is $HOME/Library/LaunchAgents/...,
+# so a naive test writes into the operator's real login agents.
+#
+# HOME is just a variable. Pointed at a temp dir, the write path is fully
+# exercised and lands somewhere disposable. `launchctl bootstrap` still
+# runs and still fails there (the plist is outside the real LaunchAgents
+# dir) — which is exactly why the script treats that failure as non-fatal
+# and says the job will load at next login.
+
+@test "scheduler: --install writes a plist and reports where" {
+	local fakehome="$WORK/home"
+	mkdir -p "$fakehome"
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	[ "$status" -eq 0 ] || {
+		echo "--install failed (rc $status): $output"
+		return 1
+	}
+	local plist="$fakehome/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	if [ "$(uname -s)" = "Darwin" ]; then
+		[ -s "$plist" ] || {
+			echo "--install reported success but wrote no plist at $plist"
+			return 1
+		}
+		# The scheduled command must carry the env a full run REQUIRES; a
+		# bare scripts/test.sh is refused by design, so a plist missing it
+		# would install a job that can never succeed.
+		grep -q 'TEST_SH_FULL_OK=1' "$plist" || {
+			echo "the installed job omits TEST_SH_FULL_OK — it would be refused every week: $(cat "$plist")"
+			return 1
+		}
+		grep -q -- '--baseline' "$plist" || {
+			echo "the installed job does not pass --baseline, so its rows would not satisfy the push gate: $(cat "$plist")"
+			return 1
+		}
+		# And it must run in THIS repo, not wherever launchd starts.
+		grep -qF "$WORK" "$plist" || {
+			echo "the installed job does not cd into the repo: $(cat "$plist")"
+			return 1
+		}
+	fi
+	[[ $output == *installed* ]] || {
+		echo "--install did not say what it did: $output"
+		return 1
+	}
+}
+
+@test "scheduler: --install is idempotent" {
+	# Re-running must replace, not duplicate or error. The launchd path
+	# bootouts first for exactly this reason.
+	local fakehome="$WORK/home"
+	mkdir -p "$fakehome"
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	[ "$status" -eq 0 ]
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	[ "$status" -eq 0 ] || {
+		echo "a second --install failed (rc $status): $output"
+		return 1
+	}
+}
+
+@test "scheduler: --uninstall removes what --install wrote" {
+	local fakehome="$WORK/home"
+	mkdir -p "$fakehome"
+	local plist="$fakehome/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	[ "$status" -eq 0 ]
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --uninstall"
+	[ "$status" -eq 0 ] || {
+		echo "--uninstall failed (rc $status): $output"
+		return 1
+	}
+	if [ "$(uname -s)" = "Darwin" ]; then
+		[ ! -f "$plist" ] || {
+			echo "--uninstall reported success but the plist is still there"
+			return 1
+		}
+	fi
+}
+
+@test "scheduler: --verify sees the agent that --install wrote" {
+	# The two halves must agree. An installer whose own verify cannot find
+	# its work is how "cron may be broken" becomes unfalsifiable.
+	local fakehome="$WORK/home"
+	mkdir -p "$fakehome"
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	[ "$status" -eq 0 ]
+	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --verify"
+	[[ $output == *"scheduler:  installed"* ]] || {
+		echo "verify cannot see the agent install just wrote: $output"
+		return 1
+	}
+	[[ $output != *"NOT INSTALLED"* ]] || {
+		echo "verify reports NOT INSTALLED right after a successful install: $output"
+		return 1
+	}
+}
