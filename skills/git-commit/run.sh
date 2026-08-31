@@ -312,13 +312,34 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 	HOOK_ACK_LIB="$REPO_ROOT/.claude/_lib/hook-ack.sh"
 	ACK_FILE=""
 	if [ -f "$HOOK_ACK_LIB" ]; then
-		# Write the failure diagnostic to a sentinel file the operator
-		# Reads to ack. Filename includes timestamp so multiple commit
-		# attempts in a session don't collide.
-		ACK_DIR=".claude/.session-state/hook-ack/git-commit"
-		ACK_FILE="$ACK_DIR/$(date -u +%Y%m%dT%H%M%SZ)-commit-aborted-$$.txt"
-		ACK_FILE_ABS="$REPO_ROOT/$ACK_FILE"
-		if mkdir -p "$ACK_DIR" >/dev/null 2>&1 && {
+		# (#2641) This block used to build the diagnostic path by hand:
+		#
+		#     ACK_FILE="$ACK_DIR/$(date -u +...)-commit-aborted-$$.txt"
+		#
+		# which is hook_ack_diagnostic_write's job, re-derived — the same
+		# shape of defect the library itself was just fixed for, in the one
+		# caller (of seven that source this library) that builds its own
+		# path instead of registering an existing file.
+		#
+		# NOT a live collision here, and the first draft of this comment
+		# wrongly said it was: this wrapper is always executed, never
+		# sourced, so `$$` is a fresh pid per invocation and two aborted
+		# commits do get distinct names. The reason to change it is that
+		# the guarantee is accidental rather than owned. The library's
+		# identical-looking `$$` WAS a real collision, because there it ran
+		# inside long-lived hook processes that call it repeatedly; a
+		# reader cannot tell the two apart by looking, and the next person
+		# to copy this line into a loop inherits the bug. One
+		# implementation, whose uniqueness comes from mktemp, cannot drift
+		# from the library's format or miss its next fix.
+		#
+		# THE BODY IS BUILT FIRST, then the library is sourced. The
+		# security pass noted that sourcing before the body meant a
+		# tampered consumer-repo hook-ack.sh could redefine the commands
+		# used to build it. Same trust domain either way, but there is no
+		# reason to hand it that window: nothing in the body needs the
+		# library.
+		ACK_BODY=$(
 			echo "Commit attempt aborted — HEAD did not advance."
 			echo ""
 			echo "HEAD before: $HEAD_BEFORE"
@@ -328,11 +349,13 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			echo "=== Common causes + fixes ==="
 			echo "1. pre-commit auto-fix conflict (shfmt/shellcheck/semgrep rewrote a"
 			echo "   staged file): re-stage the file (git add ...) and retry."
-			echo "2. memory-index-valid: feedback memory missing **Why:** or **How to"
+			echo "2. NOTHING STAGED: the wrapper commits the INDEX, so unstaged edits"
+			echo "   produce an all-Skipped run and no commit. git add the files."
+			echo "3. memory-index-valid: feedback memory missing **Why:** or **How to"
 			echo "   apply:** sections. Fix the memory file content."
-			echo "3. bats-gate assertion-weakening: tests removed/weakened assertions."
+			echo "4. bats-gate assertion-weakening: tests removed/weakened assertions."
 			echo "   Fix tests OR set TEST_GATE_WEAKEN_OK=1 with a recorded reason."
-			echo "4. Commit-message validation drift: subject >70 chars, missing"
+			echo "5. Commit-message validation drift: subject >70 chars, missing"
 			echo "   Co-Authored-By, etc."
 			echo ""
 			echo "=== FAILING HOOK(S) (extracted) ==="
@@ -340,14 +363,66 @@ if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
 			echo ""
 			echo "=== Last 80 lines of pre-commit output ==="
 			tail -80 "$COMMIT_OUT" 2>/dev/null
-		} >"$ACK_FILE_ABS" 2>/dev/null; then
-			# shellcheck source=../../_lib/hook-ack.sh
-			source "$HOOK_ACK_LIB" 2>/dev/null || true
-			if command -v hook_ack_append >/dev/null 2>&1; then
-				hook_ack_append "git-commit" "commit-aborted" "$ACK_FILE_ABS" 2>/dev/null || true
+		)
+		# Sourcing errors are CAPTURED, not discarded: a syntax error or a
+		# permissions problem in the library is the actual reason the
+		# diagnostic will not be written, and reporting only the generic
+		# "failed to persist" downstream would hide it. Non-fatal — the
+		# operator-facing stderr below must land either way.
+		#
+		# NOT `_ack_src_err=$(source ...)`. Command substitution runs the
+		# source in a SUBSHELL, so every function it defines is discarded
+		# the moment it returns — the library appears to load and then
+		# nothing is defined. The tests caught that immediately, which is
+		# the only reason it is not still in this file.
+		#
+		# The mktemp-or-give-up pattern is the repo's /dev/null idiom
+		# (scripts/ship-pr-cycle.sh does the same): a failed mktemp yields
+		# "/dev/null", the redirect is unconditional, and the read is
+		# guarded by the sentinel — `[ -s /dev/null ]` is already false, so
+		# no duplicated call and no second else-arm.
+		_ack_src_err=""
+		_ack_src_err_f=$(mktemp -t git-commit-src.XXXXXX 2>/dev/null) || _ack_src_err_f="/dev/null"
+		# shellcheck source=../../_lib/hook-ack.sh
+		source "$HOOK_ACK_LIB" 2>"$_ack_src_err_f" || true
+		if [ "$_ack_src_err_f" != "/dev/null" ]; then
+			[ -s "$_ack_src_err_f" ] && _ack_src_err=$(head -c 400 "$_ack_src_err_f")
+			rm -f "$_ack_src_err_f"
+		fi
+		ACK_FILE_ABS=""
+		_ack_write_err=""
+		if command -v hook_ack_diagnostic_write >/dev/null 2>&1; then
+			# stderr to a temp, not /dev/null: the library says exactly what
+			# broke (mktemp in which directory, or the rename), and that is
+			# the difference between a fixable report and "it didn't work".
+			_ack_err_f=$(mktemp -t git-commit-ack.XXXXXX 2>/dev/null) || _ack_err_f="/dev/null"
+			ACK_FILE_ABS=$(hook_ack_diagnostic_write "git-commit" "commit-aborted" "$ACK_BODY" 2>"$_ack_err_f") || ACK_FILE_ABS=""
+			if [ "$_ack_err_f" != "/dev/null" ]; then
+				[ -s "$_ack_err_f" ] && _ack_write_err=$(head -c 400 "$_ack_err_f")
+				rm -f "$_ack_err_f"
 			fi
 		else
-			echo "git-commit: WARN: failed to persist hook-ack diagnostic at $ACK_FILE_ABS" >&2
+			_ack_write_err="hook_ack_diagnostic_write not defined after sourcing $HOOK_ACK_LIB${_ack_src_err:+ (source said: $_ack_src_err)}"
+		fi
+		if [ -n "$ACK_FILE_ABS" ] && [ -f "$ACK_FILE_ABS" ]; then
+			# Report the repo-relative path; the operator Reads either form,
+			# and the relative one is what the rest of this script prints.
+			ACK_FILE=${ACK_FILE_ABS#"$REPO_ROOT/"}
+			# The append is what actually BLOCKS the next tool call. A
+			# diagnostic on disk that was never registered is a file
+			# nobody is made to read — the enforcement silently degrades
+			# to a suggestion, which is the failure mode this whole epic
+			# is about. So its failure is reported, with the stderr it
+			# produced, and the operator is pointed at the file directly.
+			if command -v hook_ack_append >/dev/null 2>&1; then
+				_ack_err=$(hook_ack_append "git-commit" "commit-aborted" "$ACK_FILE_ABS" 2>&1) || {
+					echo "git-commit: WARN: the diagnostic was written but could NOT be registered for mandatory read${_ack_err:+ ($_ack_err)} — nothing will block on it. Read $ACK_FILE_ABS yourself." >&2
+				}
+			else
+				echo "git-commit: WARN: hook_ack_append missing after sourcing $HOOK_ACK_LIB — the diagnostic at $ACK_FILE_ABS will not block anything. Read it yourself." >&2
+			fi
+		else
+			echo "git-commit: WARN: failed to persist hook-ack diagnostic under .claude/.session-state/hook-ack/git-commit${_ack_write_err:+ — $_ack_write_err}" >&2
 			ACK_FILE=""
 		fi
 	fi

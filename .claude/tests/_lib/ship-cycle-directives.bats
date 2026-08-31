@@ -32,28 +32,91 @@ teardown() {
 	return 0
 }
 
-@test "two-step-phase1 directive prints to stdout (status 0)" {
-	run _emit_stage_directive two-step-phase1
+# (#2641) These three exercised the generic _emit_stage_directive machinery
+# through the `two-step-phase1` label. That arm has been REMOVED — cmd_next
+# now continues from phase0.5 into phase1 within one invocation, so nothing
+# emitted it any more, and a directive arm that no call site reaches is the
+# same "looks live, is not" shape this epic exists to remove.
+#
+# Retargeted to `merge-gate` (one live call site, and an advisory arm
+# whose ack file_path is a generated diagnostic — a PREREAD arm such as
+# phase2-preread returns through _emit_preread_ack under a different hook
+# name, so the ship-pr-cycle-next assertion below would not hold for it). The
+# properties under test are the machinery's, not that label's: prints to
+# stdout, registers an ack under the right hook name, and is suppressed
+# inside cmd_resume.
+@test "a stage directive prints to stdout (status 0)" {
+	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
-	[[ $output == *"do NOT skip"* ]] || return 1
-	[[ $output == *"AGAIN"* ]] || return 1
-	[[ $output == *"two-step"* ]] || return 1
-	# F3 (#253 r1 pr-test-analyzer): lock the load-bearing trap instruction, not
-	# just the word "two-step" — a body rewrite that drops the warning must fail.
-	[[ $output == *"Do NOT fire phase1 agents"* ]] || return 1
-	[[ $output == *"2nd next"* ]]
+	# Lock the load-bearing instruction, not merely that something printed —
+	# a body rewrite that drops the "APPROVE=1, never a *_SKIP" rule must fail.
+	[[ $output == *"ONLY operator merge gate"* ]] || return 1
+	[[ $output == *"never a *_SKIP"* ]] || return 1
+	[ -n "$output" ]
+}
+
+# THE case-arm extraction, in one place. Two sites needed it — the
+# live-call-site check and the comment-drift check — and they had drifted
+# into two different regexes (`^\t[a-z0-9-]+\)` vs `^\t[a-z0-9][a-z0-9-]*\)`).
+# Two spellings of one extraction can silently disagree, which is the exact
+# failure the drift check exists to catch, reproduced in the checker.
+_directive_arms() {
+	grep -oE '^\t[a-z0-9][a-z0-9-]*\)' "$LIB" | tr -d '\t)' | sort -u
+}
+
+@test "every IMPLEMENTED directive arm has at least one live call site" {
+	# The check that would have caught the dead arm. A label with no emitter
+	# is unreachable code wearing the shape of enforcement, and the removed
+	# `two-step-phase1` arm sat that way from the moment cmd_next stopped
+	# calling it.
+	# setup() already resolves this path once; a second spelling of it is
+	# a second thing to keep in sync.
+	local lib="$LIB"
+	# ALL repo shell files, not just the orchestrator. An arm emitted from a
+	# hook or another script is live too, and scanning one file would report
+	# it dead — a false alarm that invites deleting a reachable arm. Tests
+	# are excluded: a label named in a fixture is not a production caller.
+	local repo="${BATS_TEST_DIRNAME}/../../.."
+	local label n dead=""
+	# A reformat of the case-arm indentation empties this list, the loop
+	# body never runs, and the test reports green having checked nothing.
+	# The drift test below guards exactly this; so does this one now.
+	local _arms
+	_arms=$(_directive_arms)
+	[ -n "$_arms" ] || {
+		echo "no case arms matched in $lib — the extraction regex is stale, so this test checked nothing"
+		return 1
+	}
+	# Iterate the list already extracted and validated above — a second
+	# grep here is a second spelling of the same extraction, and two
+	# spellings can silently disagree.
+	for label in $_arms; do
+		# WORD-ANCHORED. A bare substring lets a longer label satisfy a
+		# shorter one's check — `merge-gate` would be counted live by an
+		# emitter for a hypothetical `merge-gate-retry`, so removing the
+		# real caller would go unnoticed.
+		n=$(grep -rhcE "_emit_stage_directive[[:space:]]+${label}([[:space:]]|\"|'|\$|$)" \
+			--include='*.sh' "$repo" 2>/dev/null |
+			awk '{t += $0} END {print t + 0}')
+		case "$n" in '' | *[!0-9]*) n=0 ;; esac
+		[ "$n" -gt 0 ] || dead="$dead $label"
+	done
+	[ -z "$dead" ] || {
+		echo "directive arm(s) with no call site:$dead"
+		return 1
+	}
 }
 
 @test "calls hook_ack_append with the label (not in resume)" {
-	run _emit_stage_directive two-step-phase1
+	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
 	grep -q 'ship-pr-cycle-next' "$CALLS"
-	grep -q 'two-step-phase1' "$CALLS"
+	grep -q 'merge-gate' "$CALLS"
 }
 
 @test "SHIP_PR_IN_RESUME=1 (exported) suppresses the ack-pending (stdout still prints)" {
 	export SHIP_PR_IN_RESUME=1
-	run _emit_stage_directive two-step-phase1
+	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]
 	[[ $output == *"do NOT skip"* ]] || return 1 # stdout still emitted during resume
 	[ ! -s "$CALLS" ]                            # hook_ack_append NOT called
@@ -65,7 +128,7 @@ teardown() {
 	# Prove a `local` in a caller is visible to _emit_stage_directive.
 	_outer() {
 		local SHIP_PR_IN_RESUME=1
-		_emit_stage_directive two-step-phase1
+		_emit_stage_directive phase2-preread
 	}
 	run _outer
 	[ "$status" -eq 0 ]
@@ -207,4 +270,39 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ $output == *"SERVER-SIDE"* ]] || return 1
 	[ ! -s "$CALLS" ]
+}
+
+@test "#2641: the IMPLEMENTED-arms comment matches the arms that exist" {
+	# The header comment enumerates the implemented directive arms, and a
+	# reader consults it before adding one. It drifted: cr-thread-reply
+	# shipped implemented and unlisted, and phase 0.5 found it by reading
+	# rather than by any check. A hand-maintained list next to the thing it
+	# describes will drift again unless something compares them.
+	#
+	# Both sides are derived from the file, so this cannot be satisfied by
+	# editing only one of them.
+	local listed actual
+	listed=$(sed -n '/^# when emitted from multiple call sites\. IMPLEMENTED arms:/,/^# Add an arm per NEW/p' "$LIB" |
+		sed -e 's/^# when emitted.*IMPLEMENTED arms://' -e 's/^# Add an arm per NEW.*//' -e 's/^#//' |
+		tr ',' '\n' | tr -d ' .' | grep -v '^$' | sort -u)
+	actual=$(_directive_arms)
+
+	[ -n "$listed" ] || {
+		echo "could not parse the IMPLEMENTED list out of $LIB — the comment shape changed"
+		return 1
+	}
+	[ -n "$actual" ] || {
+		echo "could not find any case arms in $LIB — the arm shape changed"
+		return 1
+	}
+	[ "$listed" = "$actual" ] || {
+		echo "the IMPLEMENTED-arms comment and the actual arms disagree."
+		echo "--- listed in the comment:"
+		printf '%s\n' "$listed"
+		echo "--- actually implemented:"
+		printf '%s\n' "$actual"
+		echo "--- only in one of them:"
+		diff <(printf '%s\n' "$listed") <(printf '%s\n' "$actual") || true
+		return 1
+	}
 }

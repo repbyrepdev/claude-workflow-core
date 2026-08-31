@@ -21,10 +21,13 @@ set -u
 # no parallel system (#283).
 #
 # Bodies live here (one `case` arm each) so a directive is defined ONCE even
-# when emitted from multiple call sites. IMPLEMENTED arms: two-step-phase1,
-# push-to-pr, merge-conflict, merge-gate, pr-create-preread, phase2-preread.
+# when emitted from multiple call sites. IMPLEMENTED arms:
+# push-to-pr, merge-conflict, merge-gate, pr-create-preread, phase2-preread,
+# cr-thread-reply.
 # Add an arm per NEW stage/edge as #283 expands (round-complete, skill-usage,
-# efficiency-grouping, ...).
+# efficiency-grouping, ...). KEEP THIS LIST IN SYNC — it drifted once already
+# (cr-thread-reply shipped without being listed), and the list is what a
+# reader consults before adding an arm that already exists.
 #
 # PREREAD ARMS (#223, epics #1375/#1384) — pr-create-preread, phase2-preread:
 # a CREATION-TIME enforcement gate. Unlike the advisory arms above (whose
@@ -62,9 +65,6 @@ _emit_preread_ack() {
 _emit_stage_directive() {
 	local label=${1:-} body preread=""
 	case "$label" in
-	two-step-phase1)
-		body="Run 'scripts/ship-pr-cycle.sh next' AGAIN now. Advancing INTO phase1 and EMITTING the phase1 agent directive are SEPARATE next calls (the two-step trap). Do NOT fire phase1 agents yet — the 2nd next creates the directive + sentinel; agents fired before it are rejected ('outside active directive'). After that 2nd next: fire 5 READ-ONLY pr-review-toolkit agents + semgrep — run the bundled OFFLINE ruleset (the public registry is unreachable in some envs): semgrep scan --config .semgrep/phase1.yml --metrics off --disable-version-check <changed .sh files> (a SINGLE bare command — no pipe, no command-substitution; list files explicitly; do NOT use --config auto/p-pack, those need semgrep.dev) + security-review (Agent subagent_type=general-purpose, NOT Skill), then review-log.sh each."
-		;;
 	push-to-pr)
 		body="PR is pushed. Run 'scripts/ship-pr-cycle.sh next' again to watch CR-in-CI to terminal (it auto-polls). CR-in-CI is the SERVER-SIDE GitHub bot, INDEPENDENT of the 10/hr local CR-CLI budget — it posts findings as PR review COMMENTS (not always a required-check failure), so poll the PR comments + the summary comment, not just 'gh pr checks'. The CR summary comment flips to 'No actionable comments 🎉' when clean — read THAT. If you step away, ScheduleWakeup ~270s. NEVER post '@coderabbitai review' (no-op + noise)."
 		;;

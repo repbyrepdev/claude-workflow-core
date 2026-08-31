@@ -348,3 +348,278 @@ _seed_coverage() { # $1 = full sha, $2 = covers_count
 	[[ $output == *"no parseable ROUNDS=N line"* ]] || return 1
 	[[ $output == *"DIRECTIVE FOR OPERATOR"* ]]
 }
+
+# ---- (#2641) the phase0.5 -> phase1 collapse ----------------------------
+
+_seed_stage_phase05() {
+	printf '{"version":1,"stage":"phase0.5","branch":"feat-2575-cap","sha":"%s","history":[]}\n' \
+		"$SHA" >"$STATE_DIR/$SHA.json"
+}
+
+_seed_phase05_log() {
+	# The phase0.5 arm's gate: a logged prefilter row for this sha.
+	mkdir -p "$ROOT/.claude/logs"
+	printf '{"sha":"%s","findings":0,"status":"ok"}\n' "$SHA" \
+		>"$ROOT/.claude/logs/phase0.5-run.jsonl"
+}
+
+@test "one next at phase0.5 lands BOTH the stage flip and the phase1 directive" {
+	# THE COLLAPSE. Flipping to phase1 used to consume the whole invocation,
+	# so the phase1 arm — which writes the directive marker + nonce and
+	# prints the agent directive — could only run on a SECOND call. That
+	# second call was byte-identical and argument-free, and the hook-ack
+	# nagging the operator into typing it accounted for 246 of 511 recorded
+	# blocks.
+	#
+	# Asserted on BOTH halves. Checking only the stage would pass on the old
+	# two-call behaviour; checking only the directive would not prove the
+	# stage advanced.
+	_seed_stage_phase05
+	_seed_phase05_log
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+
+	[ "$(_cur_stage)" = "phase1" ] || {
+		echo "stage did not advance: $(_cur_stage)"
+		return 1
+	}
+	# The phase1 arm ran in the SAME call — it either printed its directive
+	# or took a documented phase1 exit (cap/graduation). What it must NOT do
+	# is stop after the flip having produced neither.
+	case "$output" in
+	*"DIRECTIVE FOR OPERATOR"* | *"GRADUATED to phase2"* | *"round-cap ENFORCED"*) ;;
+	*)
+		echo "the phase1 arm never ran in this invocation: $output"
+		return 1
+		;;
+	esac
+	# And the two-step nag is gone for good.
+	case "$output" in
+	*"two-step"* | *"AGAIN"*)
+		echo "the two-step directive is still being emitted: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "the collapse does NOT turn next into an unbounded walk" {
+	# Scoped to one edge, capped at a single re-dispatch. cmd_resume is the
+	# thing that walks many stages, deliberately and with its own
+	# suppression rules.
+	#
+	# ASSERTS THE COUNT, not just the destination. Phase 0.5 pointed out
+	# that checking only "the final stage is one of phase0.5/phase1/phase2"
+	# would still pass if the loop re-dispatched several times and happened
+	# to land inside that set — which is most of the machine. The bound is
+	# what is under test, so the bound is what is measured: exactly one
+	# re-dispatch, evidenced by the phase1 arm running exactly once.
+	_seed_stage_phase05
+	_seed_phase05_log
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	# PINNED, not "0 or 2". Phase 0.5 round 2 was right that accepting
+	# either outcome asserts almost nothing: rc 2 is this script's refusal
+	# code, so a run that hit the refusal — the very thing a sibling test
+	# exists to prove is reachable — would satisfy the loose form and hide
+	# a regression that made the ordinary path refuse. A single sanctioned
+	# re-dispatch is an ordinary advance and returns 0.
+	[ "$status" -eq 0 ] || {
+		echo "one sanctioned re-dispatch returned $status, expected 0: $output"
+		return 1
+	}
+
+	# The dispatcher announces itself once per dispatch, so a collapsed
+	# `next` prints the line twice: once entering phase0.5, once entering
+	# the phase1 arm it collapsed into. Three would mean the loop re-entered
+	# past the single sanctioned re-dispatch, which the cap exists to
+	# prevent; one would mean the collapse never happened.
+	local n
+	n=$(printf '%s\n' "$output" | grep -c 'current stage = ' || true)
+	# EXACTLY 2, not "at most 2". `-le` has no floor, so it is satisfied by
+	# a run that never re-dispatched at all — which is precisely how the
+	# sibling graduated-branch test passed with the collapse mutated OUT.
+	# One sanctioned re-dispatch means the dispatcher ran twice: once for
+	# phase0.5, once for the phase1 arm it collapsed into. Both the ceiling
+	# (no walk) and the floor (the collapse happened) are the claim.
+	[ "$n" -eq 2 ] || {
+		echo "cmd_next dispatched $n times in one invocation, expected exactly 2: $output"
+		return 1
+	}
+	case "$(_cur_stage)" in
+	phase1 | phase2) ;;
+	*)
+		echo "one next landed at an unexpected stage: $(_cur_stage)"
+		return 1
+		;;
+	esac
+}
+
+@test "the GRADUATED phase0.5 branch collapses too, and only once" {
+	# This is one of the sites that set _SHIP_NEXT_REDISPATCH — a branch
+	# already graduated past phase 0.5/1, short-circuiting before the log
+	# check. (An earlier version of this comment counted them, and the count
+	# went stale inside this same branch when the round-cap gate added
+	# another. The set is enumerated once, in cmd_next.) Every other
+	# test here stubs graduation_check to rc 1, so this second entry into
+	# the new machinery had no coverage at all: the collapse could have
+	# been wired on one path and not the other, or wired on BOTH in a way
+	# that asked twice, and nothing would have said so.
+	cat >"$ROOT/.claude/_lib/phase-graduation.sh" <<'STUB'
+graduation_check() { return 0; }
+STUB
+	_seed_stage_phase05
+	# Deliberately NO phase0.5 log: the graduated path must not need one.
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || {
+		echo "the graduated collapse returned $status, expected 0: $output"
+		return 1
+	}
+	# It must actually reach the phase1 arm in this one call, not stop at
+	# the stage flip — that flip alone is what the old two-step did.
+	case "$(_cur_stage)" in
+	phase1 | phase2) ;;
+	*)
+		echo "the graduated branch did not advance past phase0.5: $(_cur_stage)"
+		return 1
+		;;
+	esac
+	local n
+	n=$(printf '%s\n' "$output" | grep -c 'current stage = ' || true)
+	[ "$n" -eq 2 ] || {
+		echo "the graduated branch dispatched $n times in one invocation, expected exactly 2 (1 = the collapse did not happen): $output"
+		return 1
+	}
+	# And it must NOT have gone the long way round: a two-step would have
+	# told the operator to run next again.
+	case "$output" in
+	*two-step-phase1*)
+		echo "the graduated branch still emits the two-step directive: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a dispatch that FAILS does not re-dispatch, even having asked to" {
+	# The wrapper checks the rc before the flag. That order is the whole
+	# safety property: an arm that both errored and set the flag must
+	# surface its error, not be retried into a stage it could not reach.
+	# Reversed, a failing gate would be re-entered on the strength of a
+	# flag it set before failing — the exact shape of a gate that refuses
+	# and gets run again anyway.
+	cd "$TEST_TMP" || return 1
+	cat >"$TEST_TMP/fail-and-ask.sh" <<SHIM
+#!/bin/bash
+set -uo pipefail
+_extracted=\$(sed -n '/^cmd_next()/,/^}\$/p' '$SCRIPT')
+case "\$_extracted" in
+*_SHIP_NEXT_REDISPATCH*) ;;
+*)
+	echo "SHIM: could not extract cmd_next" >&2
+	exit 99
+	;;
+esac
+_calls=0
+_cmd_next_once() {
+	_calls=\$((_calls + 1))
+	echo "dispatch \$_calls"
+	_SHIP_NEXT_REDISPATCH=1
+	return 3
+}
+eval "\$_extracted"
+cmd_next
+_rc=\$?
+echo "rc=\$_rc calls=\$_calls"
+exit "\$_rc"
+SHIM
+	run bash "$TEST_TMP/fail-and-ask.sh"
+	# The arm's own rc must reach the caller unchanged — not 0, not 2.
+	[ "$status" -eq 3 ] || {
+		echo "a failing dispatch returned $status, expected its own rc 3: $output"
+		return 1
+	}
+	# And it must have run exactly once.
+	case "$output" in
+	*"dispatch 2"*)
+		echo "a failing dispatch was re-dispatched anyway: $output"
+		return 1
+		;;
+	esac
+	case "$output" in
+	*"dispatch 1"*) ;;
+	*)
+		echo "the shim never dispatched at all: $output"
+		return 1
+		;;
+	esac
+}
+
+@test "a SECOND re-dispatch request in one next is REFUSED, not warned past" {
+	# The defensive arm, which had no coverage: only the phase0.5 edge may
+	# request a re-dispatch, and a second request means some other arm set
+	# the flag — a broken state machine, not a slow path.
+	#
+	# It returns 2, not 0. Reporting success would let a caller and CI treat
+	# a violated invariant as a clean advance, which is the silent
+	# degradation this whole epic is about.
+	#
+	# Forced by wrapping the script with a shim that sets the flag from a
+	# stage arm that must never set it.
+	_seed_stage_phase05
+	_seed_phase05_log
+	_seed_rounds "$SHA" 1 1 0
+	cd "$TEST_TMP" || return 1
+	export STUB_ROUNDS=3
+	cat >"$TEST_TMP/force-redispatch.sh" <<SHIM
+#!/bin/bash
+set -uo pipefail
+# Source the orchestrator's functions without running main, then make the
+# inner dispatcher always ask to re-dispatch.
+# The two function bodies are lifted out of the script by range-extract
+# rather than sourced, because sourcing runs main. That is brittle to a
+# reformat of the function headers — so it is CHECKED: an empty extract
+# would otherwise leave cmd_next undefined and the run would fail with
+# status 127, which an "expected non-zero" assertion would happily accept.
+_extracted=\$(sed -n '/^cmd_next()/,/^}\$/p' '$SCRIPT')
+case "\$_extracted" in
+*_SHIP_NEXT_REDISPATCH*) ;;
+*)
+	echo "SHIM: could not extract cmd_next from $SCRIPT — the range-extract needs updating" >&2
+	exit 99
+	;;
+esac
+# (No eval of the real _cmd_next_once here: the shim redefines it on the
+# very next line, so extracting and running the real definition first was
+# dead work that only obscured what the shim controls.)
+_cmd_next_once() {
+	echo "ship-pr-cycle: current stage = stub"
+	_SHIP_NEXT_REDISPATCH=1
+	return 0
+}
+eval "\$_extracted"
+cmd_next
+SHIM
+	chmod +x "$TEST_TMP/force-redispatch.sh"
+	run bash "$TEST_TMP/force-redispatch.sh"
+	[ "$status" -eq 2 ] || {
+		echo "a repeated re-dispatch request returned $status, expected 2: $output"
+		return 1
+	}
+	case "$output" in
+	*"more than one stage re-dispatch"*) ;;
+	*)
+		echo "the refusal does not name the invariant it caught: $output"
+		return 1
+		;;
+	esac
+}
+
+# The phase-0.5 round-cap tests live in ship-pr-cycle-phase05-cap.bats —
+# one file per gate, so test-touched.sh maps a changed gate to the suite
+# that covers it.

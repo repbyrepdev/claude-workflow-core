@@ -1117,7 +1117,7 @@ _count_unresolved_threads() {
 	[ -s "$pageinfo_err_file" ] && pageinfo_err=$(cat "$pageinfo_err_file")
 	rm -f "$pageinfo_err_file"
 	if [ "$pageinfo_rc" -ne 0 ]; then
-		echo "_count_unresolved_threads: jq pageInfo parse failed (rc=$pageinfo_rc): ${pageinfo_err:-<no stderr>}; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
+		echo "_count_unresolved_threads: jq pageInfo parse failed (rc=$pageinfo_rc): ${pageinfo_err:-<no stderr>}; response snippet: ${paginated_response:0:200}" >&2
 		return 2
 	fi
 	# CR PR #790 r9 phase2: guard .data.node=null (PR deleted race, perms
@@ -1126,7 +1126,7 @@ _count_unresolved_threads() {
 	local node_exists
 	node_exists=$(printf '%s' "$paginated_response" | jq -r '.data.node != null' 2>/dev/null)
 	if [ "$node_exists" != "true" ]; then
-		echo "_count_unresolved_threads: .data.node is null — PR may have been deleted or is inaccessible; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
+		echo "_count_unresolved_threads: .data.node is null — PR may have been deleted or is inaccessible; response snippet: ${paginated_response:0:200}" >&2
 		return 2
 	fi
 	if [ "$has_next" = "true" ]; then
@@ -1142,7 +1142,7 @@ _count_unresolved_threads() {
 	[ -s "$count_err_file" ] && count_err=$(cat "$count_err_file")
 	rm -f "$count_err_file"
 	if [ "$count_rc" -ne 0 ]; then
-		echo "_count_unresolved_threads: jq count parse failed (rc=$count_rc): ${count_err:-<no stderr>}; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
+		echo "_count_unresolved_threads: jq count parse failed (rc=$count_rc): ${count_err:-<no stderr>}; response snippet: ${paginated_response:0:200}" >&2
 		return 2
 	fi
 	if ! [[ $unresolved_count =~ ^[0-9]+$ ]]; then
@@ -1293,6 +1293,354 @@ _p1_zero_backed_by_state() {
 	fi
 	echo "ship-pr-cycle: NOTE: phase1 round-cap — $_ctx and state records 0 rounds; counting 0 (legit first round)" >&2
 	return 0
+}
+
+_phase05_round_cap() {
+	# (#2641) Phase 0.5 was the ONLY review stage with no round cap. Phase 1
+	# caps and graduates on coverage; phase 2 has its twin. Phase 0.5 simply
+	# re-ran on every new HEAD — and since the way you clear a phase-0.5
+	# finding is to COMMIT a fix, every round MINTS the next one. A branch
+	# converges only if a 5-agent panel returns zero findings on a diff it
+	# has already reviewed several times, which for a panel that reports
+	# low-confidence nits does not reliably happen. Measured on the branch
+	# that added this: three rounds, 26 findings, a fourth queued.
+	#
+	# NOT scaler-sized, unlike the phase-1/phase-2 caps, and deliberately.
+	# The scaler sizes rounds by diff surface because a bigger diff has more
+	# to find. This cap is not bounding how much there is to find; it is
+	# bounding a FEEDBACK LOOP whose length is independent of diff size —
+	# each round is minted by the fix for the previous one, so a one-line
+	# diff loops exactly as long as a thousand-line one. Sizing it by
+	# surface would give the biggest diffs the longest loops, which is
+	# backwards. The exit is coverage, and coverage scales with findings on
+	# its own.
+	local cap=${PHASE05_ROUND_CAP:-3}
+	case "$cap" in '' | *[!0-9]*)
+		echo "ship-pr-cycle: ERROR: PHASE05_ROUND_CAP must be a non-negative integer, got '$cap'" >&2
+		return 2
+		;;
+	esac
+	printf '%s\n' "$cap"
+}
+
+_phase05_log_readable() {
+	# One place decides what an unreadable log means, because two helpers
+	# disagreeing about the same file is how one of them ends up scoring a
+	# permissions problem as "clean". rc 0 = present and readable, rc 1 =
+	# absent (legitimately nothing spent yet), rc 2 = present but unreadable.
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
+	[ -e "$jsonl" ] || return 1
+	[ -r "$jsonl" ] || {
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — $jsonl exists but is unreadable; refusing to score it as zero" >&2
+		return 2
+	}
+	return 0
+}
+
+_phase05_branch_round_count() {
+	# DISTINCT branch shas carrying a phase-0.5 row. Per-branch, not
+	# per-sha, for the same reason the phase-1 counter is: a fix commit must
+	# not reset the count, or the cap is unreachable by construction.
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl" branch_shas _rc=0
+	branch_shas=$(_p1_branch_shas) || return 2
+	_phase05_log_readable || _rc=$?
+	case "$_rc" in
+	1)
+		printf '0\n'
+		return 0
+		;;
+	2) return 2 ;;
+	esac
+	# ONE pass, and jq's failure is NOT swallowed. The per-sha form used
+	# `jq -e ... >/dev/null 2>&1` and treated every non-zero as "this sha
+	# has no row" — so a jq error, or jq missing entirely, silently LOWERED
+	# the round count, which arms another prefilter round rather than
+	# refusing. Wrong direction for a bound: a failure that cannot be read
+	# must never buy more rounds.
+	local _sha n=0 _logged _jq_err _jq_rc=0
+	_jq_err=$(mktemp -t ship-cycle-p05-count-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 round-count jq stderr failed"
+	_logged=$(jq -r -R 'fromjson? | .sha // empty' "$jsonl" 2>"$_jq_err") || _jq_rc=$?
+	if [ "$_jq_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed reading $jsonl: $(head -c 300 "$_jq_err"); a jq failure must never be coerced to a lower round count (it would arm another prefilter round)" >&2
+		rm -f "$_jq_err"
+		return 2
+	fi
+	rm -f "$_jq_err"
+	for _sha in $branch_shas; do
+		# Exact match on the PARSED .sha field, never a substring of the raw
+		# line — a substring would also match a sha appearing elsewhere.
+		# HERE-STRING, not a pipeline. `grep -q` exits at its first match, so
+		# under this script's `set -o pipefail` a still-writing `printf`
+		# takes SIGPIPE and the pipeline reports failure — the sha goes
+		# UNCOUNTED, the round count drops, and another prefilter round is
+		# armed. That is the exact defect class this PR exists to fix
+		# (`head -c 6` SIGPIPEing `tr` in hook-ack), reintroduced two
+		# commits ago in the fix for a different reader. The window opens
+		# once $_logged exceeds the pipe buffer, which a long-lived
+		# phase0.5-run.jsonl reaches.
+		if grep -qxF "$_sha" <<<"$_logged"; then
+			n=$((n + 1))
+		fi
+	done
+	printf '%s\n' "$n"
+}
+
+_phase05_findings_for_sha() {
+	# Findings REPORTED for one sha, from the terminal aggregate row.
+	#
+	# The authority is {agent:"<all>", status:"emitted"} — _lib/phase05-
+	# dedupe.sh writes one row per agent BEFORE emission and that aggregate
+	# only at a genuine terminal, and its own comment says consumers must
+	# key on it precisely because per-agent rows survive a crashed emit.
+	#
+	# The first version took the MAX over a sha's rows. Measured against the
+	# real log that is wrong by up to 4x and wrong in both directions:
+	# af2ea771 -> 5 where its agent rows sum to 14, 5bfe2353 -> 9 vs 23,
+	# b2715ada -> 4 vs 18, and on this branch f6f1218 -> 9 where the
+	# aggregate says 8. A bar that low prints "all N covered" over a
+	# fraction of them. Two phase-1 agents found it independently.
+	#
+	# Echoes the count, or "unknown" when the sha has rows but no terminal
+	# aggregate — never a guess. Summing pre-emission rows would count
+	# findings that were never emitted, the laundering class the dedupe
+	# library names. rc 2 on a real read failure.
+	local _sha="$1"
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
+	local _agg _any _nonterm jq_err jq_rc=0
+	jq_err=$(mktemp -t ship-cycle-p05-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 findings jq stderr failed"
+	# Newest terminal aggregate wins: re-running the prefilter on an
+	# unchanged sha appends a second one.
+	_agg=$(jq -r -R --arg s "$_sha" \
+		'fromjson? | select(.sha == $s and .agent == "<all>" and .status == "emitted") | .findings // 0' \
+		"$jsonl" 2>"$jq_err" | tail -1) || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed reading $jsonl: $(head -c 300 "$jq_err"); a jq failure must never be coerced to zero findings (it would SHRINK the graduation bar)" >&2
+		rm -f "$jq_err"
+		return 2
+	fi
+	rm -f "$jq_err"
+	if [ -n "$_agg" ]; then
+		case "$_agg" in '' | *[!0-9]*)
+			printf 'unknown\n'
+			return 0
+			;;
+		esac
+		printf '%s\n' "$_agg"
+		return 0
+	fi
+	# Same rc + stderr handling as the aggregate read above. `2>/dev/null`
+	# with no rc capture made a jq failure here look like "this sha has no
+	# rows at all", which routes to a clean 0 — the opposite of what an
+	# unreadable log should mean, and inconsistent with the reader 18 lines
+	# up that refuses on exactly this.
+	local _any_err _any_rc=0
+	_any_err=$(mktemp -t ship-cycle-p05-any-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 status-scan jq stderr failed"
+	_any=$(jq -r -R --arg s "$_sha" 'fromjson? | select(.sha == $s) | .status // "?"' \
+		"$jsonl" 2>"$_any_err") || _any_rc=$?
+	if [ "$_any_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed scanning statuses in $jsonl: $(head -c 300 "$_any_err"); refusing to score ${_sha:0:7}" >&2
+		rm -f "$_any_err"
+		return 2
+	fi
+	rm -f "$_any_err"
+	if [ -z "$_any" ]; then
+		printf '0\n'
+		return 0
+	fi
+	# A run-level skip is a legitimate terminal that found nothing.
+	# grep's rc 1 means "no lines matched" — legitimate, and here it means
+	# every status was a run-level skip. rc > 1 is a REAL failure, and
+	# `|| true` flattened both into "zero non-skipped statuses", which
+	# routes to a clean 0 findings. Same shape as the jq coercions above.
+	local _nonterm_rc=0
+	_nonterm=$(printf '%s\n' "$_any" | grep -cv '^skipped-') || _nonterm_rc=$?
+	if [ "$_nonterm_rc" -gt 1 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — grep failed (rc=$_nonterm_rc) scanning statuses for ${_sha:0:7}; refusing to score this sha rather than reading the failure as 'nothing but skips'" >&2
+		return 2
+	fi
+	case "$_nonterm" in '' | *[!0-9]*) _nonterm=0 ;; esac
+	if [ "${_nonterm:-0}" -gt 0 ]; then
+		printf 'unknown\n'
+		return 0
+	fi
+	printf '0\n'
+}
+
+_phase05_covered_map() {
+	# Covers per sha, for EVERY branch sha, in ONE pass over the ledger.
+	# Emits "<sha><TAB><covers>" lines; shas with no records are omitted.
+	#
+	# Was one full ledger walk per sha. The ledger is a single file, so
+	# unlike the phase-1 counter (which batches because it opens N separate
+	# review-log files) there is nothing here to gain from repeating it —
+	# it was N reads of the same thing.
+	#
+	# Deliberately NOT merged with the findings reader, which stays per-sha.
+	# The two have different failure modes and each must be able to return
+	# rc 2 naming its own file: this one distinguishes an unreadable ledger
+	# from an empty one, while the findings reader distinguishes a missing
+	# terminal aggregate (undeterminable) from a legitimate zero. Encoding
+	# both in one output shape and one exit status is how the earlier
+	# version of this gate lost the ability to tell "no findings" from
+	# "could not tell".
+	local audit="$REPO_ROOT/.claude/audit/prove-yourself.jsonl"
+	local branch_shas
+	branch_shas=$(_p1_branch_shas) || return 2
+	if [ ! -e "$audit" ]; then
+		return 0
+	fi
+	if [ ! -r "$audit" ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — $audit exists but is unreadable; refusing to score coverage as zero" >&2
+		return 2
+	fi
+	local shas_json jq_err jq_rc=0 out
+	# shellcheck disable=SC2086
+	shas_json=$(printf '%s\n' $branch_shas | jq -R . | jq -sc .) || {
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — could not encode the branch sha list" >&2
+		return 2
+	}
+	jq_err=$(mktemp -t ship-cycle-p05-cov-err.XXXXXX) ||
+		scm_fail "mktemp for phase0.5 coverage jq stderr failed"
+	# `source` must be phase0.5 — the ledger also holds cr and phase1 rows,
+	# and counting those would open this gate on another stage's evidence.
+	# covered_sha is a SHORT sha, so the full branch sha is the one that
+	# startswith it.
+	out=$(jq -rs --argjson shas "$shas_json" '
+		[ .[]
+		  | select(.source == "phase0.5")
+		  | . as $r
+		  | select((($r.covered_sha // "") | length) >= 7)
+		  | ($shas[] | select(startswith($r.covered_sha))) as $full
+		  | {sha: $full, n: ($r.covers_count // 1)}
+		]
+		| group_by(.sha)
+		| .[]
+		| "\(.[0].sha)\t\([.[].n] | add)"
+	' "$audit" 2>"$jq_err") || jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — jq failed reading $audit: $(head -c 300 "$jq_err"); coverage is UNDETERMINABLE and doubt never graduates" >&2
+		rm -f "$jq_err"
+		return 2
+	fi
+	rm -f "$jq_err"
+	printf '%s\n' "$out"
+}
+
+_phase05_log_corrupt_lines() {
+	# Lines the log holds that are not JSON at all.
+	#
+	# `fromjson?` silently drops them, and every consumer here uses it — so
+	# a truncated or hand-edited row LOWERS the findings bar while leaving
+	# coverage untouched, i.e. corruption makes graduation EASIER. The
+	# phase-1 gate has an undeterminable path for exactly this; this is
+	# phase 0.5's.
+	local jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
+	[ -r "$jsonl" ] || {
+		printf '0\n'
+		return 0
+	}
+	local total parsed
+	total=$(grep -c . "$jsonl" 2>/dev/null || true)
+	case "$total" in '' | *[!0-9]*) total=0 ;; esac
+	parsed=$(jq -r -R 'fromjson? | 1' "$jsonl" 2>/dev/null | grep -c . || true)
+	case "$parsed" in '' | *[!0-9]*) parsed=0 ;; esac
+	if [ "$parsed" -gt "$total" ]; then
+		printf '0\n'
+		return 0
+	fi
+	printf '%s\n' "$((total - parsed))"
+}
+
+_phase05_cap_gate() {
+	# The at-cap decision. rc 0 = GRADUATED to phase1 (and the caller
+	# re-dispatches straight into it); rc 2 = refused, naming what is
+	# missing.
+	#
+	# PER SHA, not in aggregate. The first version compared summed totals,
+	# which lets coverage recorded against one sha's findings launder
+	# uncovered findings on every other sha — the exact defect the phase-1
+	# gate's own r1 hardening comment says it was rewritten to close. Same
+	# contract as that gate:
+	#   rc 0 -> EVERY findings-bearing branch sha is fully covered, AND at
+	#           least one such sha exists (all-zero at the cap means the
+	#           panels errored or never ran; silence is not evidence).
+	#   rc 2 -> uncovered findings, no positive evidence, or coverage
+	#           undeterminable anywhere. Doubt never graduates.
+	local cap="$1" runs="$2"
+	local branch_shas _sha _f _c _cov_map
+	local _findings_shas=0 _covered_shas=0 _total=0 _detail="" _undeterminable=""
+	branch_shas=$(_p1_branch_shas) || return 2
+	_cov_map=$(_phase05_covered_map) || return 2
+
+	local _corrupt
+	_corrupt=$(_phase05_log_corrupt_lines) || return 2
+	if [ "$_corrupt" -gt 0 ]; then
+		echo "ship-pr-cycle: ERROR: phase0.5 round-cap — .claude/logs/phase0.5-run.jsonl holds $_corrupt unparseable line(s). Every reader here skips them, so corruption LOWERS the findings bar while coverage is untouched: it would make graduation easier, not harder. Repair the log, then re-run." >&2
+		return 2
+	fi
+
+	for _sha in $branch_shas; do
+		_f=$(_phase05_findings_for_sha "$_sha") || return 2
+		if [ "$_f" = "unknown" ]; then
+			_undeterminable="$_undeterminable ${_sha:0:7}(no-terminal-aggregate)"
+			continue
+		fi
+		[ "$_f" -gt 0 ] || continue
+		_findings_shas=$((_findings_shas + 1))
+		_total=$((_total + _f))
+		# Look the sha up in the one-pass map. Absent = no records = 0.
+		_c=$(printf '%s\n' "$_cov_map" | awk -F'\t' -v s="$_sha" '$1 == s {print $2; found=1} END {if (!found) print 0}' | tail -1)
+		case "$_c" in '' | *[!0-9]*) _c=0 ;; esac
+		if [ "$_c" -ge "$_f" ]; then
+			_covered_shas=$((_covered_shas + 1))
+		else
+			_detail="$_detail ${_sha:0:7}=$_c/$_f"
+		fi
+	done
+
+	if [ -z "$_undeterminable" ] && [ "$_findings_shas" -gt 0 ] &&
+		[ "$_covered_shas" -eq "$_findings_shas" ]; then
+		_set_stage "phase1"
+		echo "→ phase0.5 round-cap reached ($runs/$cap) + every finding on all $_findings_shas findings-bearing branch sha(s) covered by prove-yourself ($_total total); GRADUATED to phase1 WITHOUT another prefilter round (#2641)"
+		_SHIP_NEXT_REDISPATCH=1
+		return 0
+	fi
+	# ONE message, built once, then routed through BOTH channels — stderr
+	# so it is visible now, and hook-ack so it cannot be scrolled past.
+	# The sibling phase-1 and phase-2 caps both do this; only this one
+	# printed to stderr alone, which is the difference between a refusal
+	# the operator must acknowledge and one they can miss. Best-effort by
+	# design: an absent ack library degrades to stderr + rc 2, because the
+	# refusal must never depend on ack plumbing.
+	local _cap_body
+	if [ -n "$_undeterminable" ]; then
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but coverage is UNDETERMINABLE on:$_undeterminable — those shas carry phase-0.5 rows with no terminal {agent:\"<all>\",status:\"emitted\"} aggregate, which means a round that did not finish. Summing their pre-emission per-agent rows would count findings that were never emitted. Re-run the prefilter there, or PIPELINE_GATE_SKIP=1 to override (audited)."
+	elif [ "$_findings_shas" -eq 0 ]; then
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings-bearing sha exists on this branch — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run."
+	else
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)."
+	fi
+	printf '%s\n' "$_cap_body" >&2
+	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
+		command -v hook_ack_append >/dev/null 2>&1; then
+		# A writer that is PRESENT but FAILS (unwritable .session-state,
+		# mktemp failure) has to say so. The bare `if` form swallowed it,
+		# and this gate's whole point is that the refusal must not be
+		# scrollable past — silently degrading to stderr-only is precisely
+		# the outcome it exists to prevent. _phase1_cap_gate warns here;
+		# so does this one now.
+		local _cap_diag _diag_rc=0
+		_cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_body") || _diag_rc=$?
+		if [ "$_diag_rc" -eq 0 ] && [ -n "$_cap_diag" ]; then
+			hook_ack_append "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_diag" || true
+		else
+			echo "ship-pr-cycle: WARN: could not write the phase0.5 cap-refusal diagnostic (rc=$_diag_rc) — this refusal is stderr-only and nothing will block on it." >&2
+		fi
+	fi
+	return 2
 }
 
 _phase1_branch_round_count() {
@@ -1603,8 +1951,9 @@ cmd_status() {
 	esac
 }
 
-cmd_next() {
-	# Advance one stage. Caller-driven (one transition per invocation).
+# The single-stage dispatcher. Callers use cmd_next (below), which re-enters
+# this exactly once for the phase0.5 -> phase1 edge.
+_cmd_next_once() {
 	local stage
 	stage=$(_get_stage)
 	echo "ship-pr-cycle: current stage = $stage"
@@ -1732,7 +2081,8 @@ cmd_next() {
 					_set_stage "phase1"
 					echo "ship-pr-cycle: branch $_grad_branch already graduated past Phase 0.5/1 — skipping phase0.5 prefilter for this SHA"
 					echo "→ advanced to phase1"
-					_emit_stage_directive two-step-phase1
+					# Continue into the phase1 arm in this same call (#2641).
+					_SHIP_NEXT_REDISPATCH=1
 					[ "$_grad_src_err" != "/dev/null" ] && rm -f "$_grad_src_err"
 					return 0
 				fi
@@ -1762,39 +2112,89 @@ cmd_next() {
 		local sha jsonl
 		sha=$(_current_sha)
 		jsonl="$REPO_ROOT/.claude/logs/phase0.5-run.jsonl"
-		if [ ! -f "$jsonl" ]; then
-			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
-			return 1
-		fi
-		if [ ! -r "$jsonl" ]; then
+		# Is this HEAD already logged? Answered ONCE, here, because both the
+		# round cap and the advance decision below need it and the first
+		# draft asked twice — the cap's copy collapsing parse errors into
+		# "no match", which is exactly the conflation the advance decision's
+		# own comment says must not happen.
+		#
+		# jq -e exit codes: 0 = matched, 1 = matched value was null/false,
+		# 4 = no result produced (our "no match"), 2/5 = real errors (parse /
+		# uncaught). 1 and 4 both mean not-logged; anything else is a refusal.
+		local jq_err="" jq_rc=0 head_logged=0
+		if [ ! -e "$jsonl" ]; then
+			jq_rc=4
+		elif [ ! -r "$jsonl" ]; then
 			echo "ship-pr-cycle: ERROR: $jsonl exists but is unreadable" >&2
 			return 2
+		else
+			jq_err=$(jq -e -R --arg sha "$sha" 'fromjson? | select(.sha == $sha)' "$jsonl" 2>&1 >/dev/null) || jq_rc=$?
 		fi
-		# Capture jq stderr to distinguish parse errors (rc>=2) from a
-		# legitimate "no record matched" (rc=1). Without this split a
-		# truncated log + permission issue + actual no-match all collapse
-		# to "phase0.5 not yet logged" — identical observable, divergent
-		# remediation.
-		local jq_err jq_rc=0
-		jq_err=$(jq -e -R --arg sha "$sha" 'fromjson? | select(.sha == $sha)' "$jsonl" 2>&1 >/dev/null) || jq_rc=$?
-		# jq -e exit codes: 0 = matched, 1 = matched value was null/false,
-		# 4 = no result produced (the "no match" case for our filter), 2/5 =
-		# real errors (parse / uncaught). 1+4 both route to "not yet logged".
 		case "$jq_rc" in
-		0)
-			_set_stage "phase1"
-			echo "→ phase0.5 logged for $sha; advanced to phase1"
-			_emit_stage_directive two-step-phase1
-			;;
-		1 | 4)
-			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
-			return 1
-			;;
+		0) head_logged=1 ;;
+		1 | 4) head_logged=0 ;;
 		*)
 			echo "ship-pr-cycle: ERROR: jq failed walking $jsonl (rc=$jq_rc): $jq_err" >&2
 			return 2
 			;;
 		esac
+		# (#2641) The round cap, checked BEFORE demanding a log for this
+		# HEAD — because demanding one is exactly what arms the next round,
+		# and at the cap that is the thing being refused.
+		local _p05_cap _p05_runs
+		_p05_cap=$(_phase05_round_cap) || return 2
+		if [ "$_p05_cap" -eq 0 ]; then
+			# Loud, like the PIPELINE_GATE_SKIP arm below. A bound that
+			# disappears because of an inherited or stale env var, with
+			# nothing on stderr, is the same unaudited bypass.
+			echo "ship-pr-cycle: WARN: phase0.5 round-cap DISABLED by PHASE05_ROUND_CAP=0 — prefilter rounds are unbounded on this branch" >&2
+		fi
+		if [ "$_p05_cap" -gt 0 ]; then
+			_p05_runs=$(_phase05_branch_round_count) || return 2
+			if [ "$_p05_runs" -ge "$_p05_cap" ] && [ "$head_logged" -eq 0 ]; then
+				if [ "${PIPELINE_GATE_SKIP:-0}" = "1" ]; then
+					# Same fail-closed contract the phase-1 and phase-2 caps
+					# use (#2565): "audit-logged" is a PRECONDITION, not an
+					# aspiration. One env var must not mean two different
+					# things depending on which gate reads it — this was the
+					# only one of the three overrides that just echoed and
+					# proceeded.
+					if ! command -v pipeline_skip_log >/dev/null 2>&1; then
+						echo "ship-pr-cycle: ERROR: _lib/pipeline-skip.sh unavailable — refusing an UNLOGGED phase0.5 cap override (fix the plugin install, or drop PIPELINE_GATE_SKIP)" >&2
+						return 2
+					fi
+					if ! pipeline_skip_log "phase05-round-cap"; then
+						echo "ship-pr-cycle: ERROR: phase0.5 cap-override audit append FAILED (see writer error above) — refusing to spend another prefilter round UNLOGGED" >&2
+						return 2
+					fi
+					echo "ship-pr-cycle: WARN: phase0.5 round-cap ($_p05_runs/$_p05_cap) OVERRIDDEN by PIPELINE_GATE_SKIP=1 — arming another prefilter round (audit-logged)" >&2
+				else
+					# `|| rc=$?`, matching _phase1_cap_gate's call site. A
+					# BARE call here is fatal under this script's `set -e`:
+					# the refusal path returns 2, errexit sees a non-zero
+					# command, and the shell EXITS instead of returning —
+					# cmd_next's wrapper never runs and cmd_resume dies
+					# rather than handling the refusal. The bats tests could
+					# not see it, because an exit(2) and a return 2 both
+					# reach `run` as status 2.
+					local p05gate_rc=0
+					_phase05_cap_gate "$_p05_cap" "$_p05_runs" || p05gate_rc=$?
+					return "$p05gate_rc"
+				fi
+			fi
+		fi
+		# The advance decision, reading the same single answer computed
+		# above. The parse-error / permissions / genuine-no-match split that
+		# used to live here now happens once, before the cap.
+		if [ "$head_logged" -eq 1 ]; then
+			_set_stage "phase1"
+			echo "→ phase0.5 logged for $sha; advanced to phase1"
+			# Continue into the phase1 arm in this same call (#2641).
+			_SHIP_NEXT_REDISPATCH=1
+		else
+			echo "ship-pr-cycle: phase0.5 not yet logged for $sha"
+			return 1
+		fi
 		;;
 	phase1)
 		# Phase 1 firing itself is operator-driven (Claude invokes the
@@ -3086,6 +3486,78 @@ EOF
 		return 2
 		;;
 	esac
+}
+
+# (#2641) Advance one stage per invocation — EXCEPT the phase0.5 -> phase1
+# edge, which continues into the phase1 arm within the same call.
+#
+# WHY. Flipping the stage to phase1 used to consume the whole invocation,
+# because `_cmd_next_once` is one `case` with no loop. The phase1 arm — which
+# writes the directive marker + nonce and prints the real agent directive —
+# could then only run on a SUBSEQUENT call, so the phase0.5 arm emitted a
+# `two-step-phase1` hook-ack telling the operator to type the same
+# argument-free command again.
+#
+# That directive accounted for 246 of 511 recorded hook-ack blocks, 239 of
+# them byte-identical, each costing a denied tool call + a Read + a retry.
+# It was never designed: `_set_stage "phase1"` landed in 121bd43 (#20) and
+# the directive was added nine days later in 2184197 (#283), whose own
+# message calls it "the two-step-next trap that cost the most this
+# convergence". A directive documenting a footgun is not a justification for
+# one.
+#
+# NOTHING happened between the two calls. Same sha; the marker path and
+# nonce are sha-keyed; the phase1 arm's inputs (clean streak, scaler cap,
+# round count) are all final the moment the flip returns. No operator
+# judgement, no new information.
+#
+# This also CLOSES a hazard rather than opening one: there was a window where
+# the stage read `phase1` while no marker existed, so an agent fired in it was
+# denied by hooks/ship-cycle-guard.sh ("outside an active Phase 1 directive").
+# Under re-dispatch the marker exists the instant the directive prints.
+#
+# Deliberately NOT a general loop. `_SHIP_NEXT_REDISPATCH` is set at exactly
+# one edge, and the counter caps re-entry at one, so a future arm that sets
+# it cannot turn `next` into an unbounded walk. cmd_resume remains the thing
+# that walks many stages.
+#
+# bash 3.2 target (see the shebang), so `;&` case fall-through is unavailable.
+cmd_next() {
+	# _SHIP_NEXT_REDISPATCH is the one channel between the arms and this
+	# wrapper. It is a global by necessity — bash cannot return a value and
+	# a status from one call — so it is reset HERE on every iteration.
+	#
+	# It is set only on the phase0.5 -> phase1 edge, but at THREE sites on
+	# that edge: the per-sha log match, the already-graduated short-circuit,
+	# and _phase05_cap_gate. An earlier version of this comment said "one
+	# place (the phase0.5 arm)" and was already stale within its own branch.
+	#
+	# It also said anything else setting it "trips the refusal below", which
+	# was never true: the refusal fires on a SECOND request within one
+	# `next`, so a stray arm setting it on the first pass re-dispatches
+	# without complaint. The bound is on looping, not on provenance.
+	#
+	# Named with the SHIP_ prefix so it cannot collide with an arm's locals.
+	local _redispatched=0 _rc=0
+	while :; do
+		_SHIP_NEXT_REDISPATCH=0
+		_cmd_next_once || _rc=$?
+		[ "$_rc" -eq 0 ] || return "$_rc"
+		[ "${_SHIP_NEXT_REDISPATCH:-0}" = "1" ] || return 0
+		if [ "$_redispatched" -ge 1 ]; then
+			# A second request means an arm OTHER than the single sanctioned
+			# edge set the flag — an invariant violation, not a slow path.
+			#
+			# Returns 2, not 0. Warning and reporting success would let a
+			# caller (and CI) treat a broken state machine as a clean
+			# advance, which is the silent-degradation shape this whole
+			# epic is about. rc 2 is this script's established "could not
+			# proceed" code.
+			echo "ship-pr-cycle: ERROR: more than one stage re-dispatch requested in a single 'next' — only the phase0.5→phase1 edge may request one. Refusing rather than looping." >&2
+			return 2
+		fi
+		_redispatched=$((_redispatched + 1))
+	done
 }
 
 cmd_resume() {
