@@ -106,8 +106,24 @@ _bats_scope_each() {
 	case "$-" in *f*) _glob_was_off=1 ;; esac
 	set -f
 	for d in ${BATS_SCOPE_DIRS-}; do
+		# Trailing slashes: `hooks/` would build `hooks//*` and match
+		# nothing while looking present.
 		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
-		[ -n "$d" ] && printf '%s\n' "$d"
+		# LEADING `./`: `./hooks` is a real directory, so it validated as
+		# usable — but the matcher then built `./hooks/*`, and `git
+		# ls-files` emits canonical paths with no `./` prefix, so it
+		# matched nothing. Usable and matching nothing is precisely the
+		# combination that skips enforcement silently.
+		while [ "${d#./}" != "$d" ]; do d=${d#./}; done
+		# A bare `.` survives that as the empty string. It reads as "the
+		# whole repo", so it is kept as an explicit ROOT marker rather than
+		# dropped — dropping it would make the scope empty, and the gates
+		# would refuse a configuration the operator meant as "gate
+		# everything".
+		case "$d" in
+		'' | .) printf '%s\n' '.' ;;
+		*) printf '%s\n' "$d" ;;
+		esac
 	done
 	[ "$_glob_was_off" -eq 1 ] || set +f
 	return 0
@@ -145,9 +161,11 @@ bats_scope_is_unusable() {
 	local d
 	while IFS= read -r d; do
 		[ -n "$d" ] || continue
-		# `[ -d "$d" ]` on the LITERAL entry — _bats_scope_each already
-		# suppressed globbing, so a wildcard entry is tested as the literal
-		# string it is, which is how bats_in_scope will treat it too.
+		# `.` is the root marker and always usable — the repo is always
+		# there. Anything else is tested as the LITERAL entry:
+		# _bats_scope_each already suppressed globbing, so a wildcard is
+		# checked as the string it is, which is how the matcher treats it.
+		[ "$d" = "." ] && return 1
 		[ -d "$d" ] && return 1
 	done <<EOF
 $(_bats_scope_each)
@@ -177,6 +195,10 @@ bats_in_scope() {
 	local d
 	while IFS= read -r d; do
 		[ -n "$d" ] || continue
+		# `.` is the root marker: every path is under it. The exclusions
+		# above (.claude/tests, .git, node_modules) still apply, so "gate
+		# everything" never means gating the tests themselves.
+		[ "$d" = "." ] && return 0
 		case "$p" in
 		"$d"/*) return 0 ;;
 		esac

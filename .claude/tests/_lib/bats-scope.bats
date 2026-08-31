@@ -496,3 +496,57 @@ _scope() { # $1 = snippet
 		return 1
 	}
 }
+
+@test "bats-scope: a './' prefix is normalised, not silently non-matching" {
+	# `./hooks` is a real directory, so it validated as USABLE — but the
+	# matcher built `./hooks/*`, and `git ls-files` emits canonical paths
+	# with no `./`, so it matched nothing. Usable and matching nothing is
+	# exactly the combination that skips enforcement without saying so.
+	run bash -c "set -uo pipefail
+		cd '$REPO_ROOT'
+		export BATS_SCOPE_DIRS='./hooks'
+		. '$LIB'
+		bats_in_scope hooks/x.sh && echo MATCHED || echo NOT-MATCHED
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo UNUSABLE ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
+	[ "$status" -eq 0 ]
+	[[ $output == *"MATCHED"* ]] && [[ $output != *"NOT-MATCHED"* ]] || {
+		echo "'./hooks' did not match the canonical path git reports: $output"
+		return 1
+	}
+	[[ $output == *USABLE* ]] || {
+		echo "'./hooks' was called unusable: $output"
+		return 1
+	}
+}
+
+@test "bats-scope: a bare '.' gates everything EXCEPT the exclusions" {
+	# `.` reads as "the whole repo". Stripping './' leaves it empty, and
+	# dropping an empty entry would make the scope empty — so the gates
+	# would refuse a configuration the operator meant as "gate everything".
+	# It is kept as an explicit root marker instead.
+	#
+	# The exclusions must still hold: "gate everything" never means gating
+	# the test files themselves, which is a loop.
+	run bash -c "set -uo pipefail
+		cd '$REPO_ROOT'
+		export BATS_SCOPE_DIRS='.'
+		. '$LIB'
+		bats_in_scope hooks/x.sh && echo ROOT-MATCHED || echo ROOT-MISSED
+		bats_in_scope .claude/tests/x.sh && echo TESTS-GATED || echo TESTS-EXCLUDED
+		rc=0; bats_scope_is_unusable || rc=\$?
+		case \$rc in 0) echo UNUSABLE ;; 1) echo USABLE ;; *) echo \"UNEXPECTED-RC=\$rc\" ;; esac"
+	[ "$status" -eq 0 ]
+	[[ $output == *ROOT-MATCHED* ]] || {
+		echo "a bare '.' matched nothing: $output"
+		return 1
+	}
+	[[ $output == *TESTS-EXCLUDED* ]] || {
+		echo "'.' gated the test files — Layer 2 owns those: $output"
+		return 1
+	}
+	[[ $output == *USABLE* ]] || {
+		echo "'.' was reported unusable, so the gates would refuse it: $output"
+		return 1
+	}
+}
