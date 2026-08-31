@@ -59,8 +59,12 @@ _run_gate() {
 	_stage hooks/thing.sh '#!/bin/bash
 echo hi'
 	_run_gate
-	[ "$status" -ne 0 ] || {
-		echo "a touched hooks/*.sh with no covering test was ALLOWED: $output"
+	# EXACTLY 1. "not zero" is also true of rc 2, which is the gate's
+	# could-not-proceed code — so a run that refused for a completely
+	# different reason (a missing library, say) would satisfy the assertion
+	# while proving nothing about scope.
+	[ "$status" -eq 1 ] || {
+		echo "a touched hooks/*.sh with no covering test returned $status, expected 1: $output"
 		return 1
 	}
 	[[ $output == *thing.sh* ]] || {
@@ -195,7 +199,13 @@ echo hi'
 	# Provide the other libs it sources, but NOT bats-scope.sh.
 	local l
 	for l in hook-ack.sh canonical-consumer-skip.sh; do
-		[ -r "$REPO_ROOT/_lib/$l" ] && cp "$REPO_ROOT/_lib/$l" "$fake/_lib/$l"
+		# `[ -r ] && cp` as the LAST command of a loop body makes the loop's
+		# status that of the test when the file is absent — which under
+		# bats' set -e fails the whole test for a sibling library that is
+		# not even the subject here.
+		if [ -r "$REPO_ROOT/_lib/$l" ]; then
+			cp "$REPO_ROOT/_lib/$l" "$fake/_lib/$l"
+		fi
 	done
 	_stage hooks/thing.sh '#!/bin/bash
 echo hi'

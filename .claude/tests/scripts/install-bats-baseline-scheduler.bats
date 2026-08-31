@@ -94,13 +94,24 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 	# way and needs no skip. (The commit gate refused the bare skip for
 	# want of an issue ref, which was the right call for the wrong
 	# reason — the skip should not have been there at all.)
-	local plist="$HOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	# WATCH THE PATH THE RUN ACTUALLY USES. _in_repo now redirects HOME to
+	# $FAKEHOME, so a before/after on the REAL $HOME plist compares a file
+	# the run could never touch — always equal, always passing, whatever
+	# --dry-run does. The stubs must be initialised first so FAKEHOME
+	# exists, hence _stub_scheduler before the snapshot.
+	_stub_scheduler
+	local plist="$FAKEHOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
 	local before after
 	before=$([ -f "$plist" ] && cksum <"$plist" || echo absent)
 	_in_repo --dry-run
 	after=$([ -f "$plist" ] && cksum <"$plist" || echo absent)
 	[ "$before" = "$after" ] || {
-		echo "--dry-run changed the launchd agent on this machine (before=$before after=$after)"
+		echo "--dry-run wrote the agent plist (before=$before after=$after)"
+		return 1
+	}
+	# And nothing registered with the (stubbed) launchd either.
+	[ ! -s "$LAUNCHCTL_STATE" ] || {
+		echo "--dry-run registered a job: $(cat "$LAUNCHCTL_STATE")"
 		return 1
 	}
 }
@@ -608,7 +619,10 @@ STUB
 	printf '#!/bin/bash\necho "jq: simulated failure" >&2\nexit 5\n' >"$WORK/bin/jq"
 	chmod +x "$WORK/bin/jq"
 	printf '{"ts":"2099-01-01T00:00:00Z","baseline":true}\n' >"$RUN_LOG"
-	run bash -c "cd '$WORK' && PATH='$WORK/bin:$PATH' '$SCRIPT' --verify"
+	# Through _sched, so the jq stub sits on the SAME contained PATH every
+	# other invocation uses — a bare `bash -c` here rebuilt the environment
+	# by hand and reached the real launchd through _install_state.
+	_sched --verify
 	[ "$status" -ne 0 ]
 	[[ $output == *UNDETERMINABLE* ]] || {
 		echo "a jq failure was reported as a missing baseline: $output"

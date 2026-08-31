@@ -260,7 +260,15 @@ _is_comments_only() {
 # neither candidate exists, and the new fail-closed guard then refuses
 # EVERY PUSH with a message naming the wrong cause. Three phase-1 agents
 # reproduced it independently.
-_scope_self=$(cd "$PPG_DIR/.." 2>/dev/null && pwd) || _scope_self=""
+# An empty PPG_DIR would make this `cd /..` — which succeeds, lands on /,
+# and then probes /_lib/bats-scope.sh. Not found, so it fails closed rather
+# than loading something unexpected; but "/" is a nonsense answer to
+# "where is the plugin" and the guard below would blame the install.
+if [ -n "${PPG_DIR:-}" ]; then
+	_scope_self=$(cd "$PPG_DIR/.." 2>/dev/null && pwd) || _scope_self=""
+else
+	_scope_self=""
+fi
 # shellcheck source=../_lib/bats-scope.sh
 [ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
 # shellcheck source=../_lib/bats-scope.sh

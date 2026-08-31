@@ -198,8 +198,17 @@ PLIST
 _install_state() {
 	case "$PLATFORM" in
 	launchd)
-		if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+		# launchctl's rc distinguishes "no such service" from "could not
+		# ask" — 113 is the not-found code, anything else means the query
+		# itself failed and the answer is UNKNOWN, not absent. Collapsing
+		# them would report a job as missing when launchctl is simply
+		# unavailable, and the remedy for those differs.
+		local lrc=0
+		launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || lrc=$?
+		if [ "$lrc" -eq 0 ]; then
 			printf 'loaded\n'
+		elif [ "$lrc" -ne 113 ] && ! command -v launchctl >/dev/null 2>&1; then
+			printf 'unknown\n'
 		elif [ -f "$PLIST" ]; then
 			printf 'written-not-loaded\n'
 		else
@@ -412,6 +421,15 @@ _verify() {
 		return 1
 	fi
 	age_d=$(((now_s - last_s) / 86400))
+	if [ "$age_d" -lt 0 ]; then
+		# A row dated in the future is not fresh, it is wrong — a clock
+		# skew, a hand-edited log, or a fabricated entry. Reporting "-4000d
+		# old" as healthy would let any such row satisfy the freshness
+		# check forever, which is the easiest possible way to fake a
+		# baseline that never ran.
+		echo "baseline:   INVALID — '$last_ts' is in the FUTURE (${age_d}d). A future timestamp cannot be a record of a run that happened." >&2
+		return 1
+	fi
 	echo "baseline:   ${age_d}d old"
 	if [ "$age_d" -gt 14 ]; then
 		echo "baseline:   STALE (>14d, two missed cadences) — the scheduler may be broken." >&2

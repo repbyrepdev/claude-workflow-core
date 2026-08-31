@@ -45,6 +45,11 @@ setup() {
 	git -C "$TEST_TMP" init -q
 	git -C "$TEST_TMP" config user.email t@t
 	git -C "$TEST_TMP" config user.name t
+	# The fixture must not inherit the developer's global excludes. A
+	# ~/.gitignore listing, say, `scripts/` would make `git add -A` stage
+	# nothing here and the coverage counts would measure the machine
+	# rather than the code.
+	git -C "$TEST_TMP" config core.excludesFile /dev/null
 }
 
 # Stage whatever the test just created, so git can see it. Coverage counts
