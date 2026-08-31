@@ -46,12 +46,45 @@ LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 LIB_CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
 # shellcheck source=../_lib/canonical-consumer-skip.sh
 [ -f "$LIB_CCS" ] && source "$LIB_CCS"
-# (#2642) SSOT for which files the discipline covers — see the scope check
-# in _bats_gate_needs_test below, which refuses rather than defaulting if
-# this did not load.
-LIB_SCOPE="$(dirname "$0")/../_lib/bats-scope.sh"
-# shellcheck source=../_lib/bats-scope.sh
-[ -f "$LIB_SCOPE" ] && source "$LIB_SCOPE"
+# (#2642) The bats-scope SSOT. THIS BLOCK IS IDENTICAL in all three
+# consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
+# scripts/test.sh) — deliberately, and it is the closest to a single copy
+# that is reachable.
+#
+# The library cannot resolve its own location for its callers: something
+# has to find _lib/ before anything in _lib/ can run. resolve-plugin-helper.sh
+# lives in _lib/ too, so it has the same bootstrap problem. What CAN be
+# fixed is the three consumers each doing it differently — phase 0.5 found
+# a fixed relative path, a two-path symlink-safe fallback, and a
+# script-dir-based probe, which is three chances for one of them to drift
+# wrong and no way to notice.
+#
+# All three sit one directory below the plugin root, so one form serves
+# them all. The consumer layout (.claude/_lib/) is checked second.
+#
+# Errors during the source are CAPTURED, not discarded: the `command -v`
+# guard at the use site still fails closed, but a bare `|| true` leaves the
+# operator knowing only that the scope is unknown, not that the library has
+# a syntax error.
+_scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
+_scope_lib=""
+for _scope_c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scope.sh"; do
+	if [ -n "$_scope_self" ] && [ -r "$_scope_c" ]; then
+		_scope_lib="$_scope_c"
+		break
+	fi
+done
+if [ -n "$_scope_lib" ]; then
+	_scope_err=$(mktemp -t bats-scope-src.XXXXXX 2>/dev/null) || _scope_err="/dev/null"
+	# shellcheck source=../_lib/bats-scope.sh
+	. "$_scope_lib" 2>"$_scope_err" || true
+	if [ "$_scope_err" != "/dev/null" ]; then
+		if [ -s "$_scope_err" ]; then
+			echo "bats-scope: WARN: $_scope_lib emitted errors while loading: $(head -c 300 "$_scope_err")" >&2
+		fi
+		rm -f "$_scope_err"
+	fi
+fi
 _bats_gate_ack() {
 	command -v hook_ack_append >/dev/null 2>&1 &&
 		hook_ack_append "bats-gate" "$1" "$2"

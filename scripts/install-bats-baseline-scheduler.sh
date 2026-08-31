@@ -149,7 +149,15 @@ _uninstall() {
 	case "$(_platform)" in
 	launchd)
 		launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+		# `rm -f` succeeds on a missing file, which is the intent — but it
+		# can still FAIL on a read-only directory, and printing "removed"
+		# after that is a claim the script did not verify. Same defect the
+		# cron branch had.
 		rm -f "$PLIST"
+		if [ -e "$PLIST" ]; then
+			echo "install-bats-baseline-scheduler: could not remove $PLIST — the agent is still installed" >&2
+			exit 2
+		fi
 		echo "✓ removed launchd agent $LABEL"
 		;;
 	cron)

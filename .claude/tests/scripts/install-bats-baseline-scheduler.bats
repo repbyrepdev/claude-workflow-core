@@ -223,11 +223,37 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 # runs and still fails there (the plist is outside the real LaunchAgents
 # dir) — which is exactly why the script treats that failure as non-fatal
 # and says the job will load at next login.
+#
+# CRONTAB IS NOT LIKE HOME. On a non-Darwin runner these same tests take
+# the cron branch, which calls `crontab -` and would REWRITE THE
+# DEVELOPER'S ACTUAL CRONTAB. Phase 0.5 caught that in the first version,
+# where the plist assertions were Darwin-guarded but the invocation was
+# not — the guard protected the assertion and not the side effect.
+#
+# So a stub `crontab` goes on PATH for every mutating test. It records
+# what it was asked to do into the fixture, which is also what makes the
+# cron path assertable at all rather than merely unexercised.
+_stub_crontab() {
+	mkdir -p "$WORK/bin"
+	cat >"$WORK/bin/crontab" <<'STUB'
+#!/bin/bash
+# Records instead of mutating. -l prints the fake table; `-` reads a new one.
+FAKE="${CRONTAB_FILE:?stub needs CRONTAB_FILE}"
+case "${1:-}" in
+-l) [ -f "$FAKE" ] && cat "$FAKE" || exit 1 ;;
+-) cat >"$FAKE" ;;
+*) exit 2 ;;
+esac
+STUB
+	chmod +x "$WORK/bin/crontab"
+	export CRONTAB_FILE="$WORK/fake-crontab"
+}
 
 @test "scheduler: --install writes a plist and reports where" {
 	local fakehome="$WORK/home"
 	mkdir -p "$fakehome"
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	_stub_crontab
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
 	[ "$status" -eq 0 ] || {
 		echo "--install failed (rc $status): $output"
 		return 1
@@ -266,9 +292,11 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 	# bootouts first for exactly this reason.
 	local fakehome="$WORK/home"
 	mkdir -p "$fakehome"
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	_stub_crontab
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
 	[ "$status" -eq 0 ]
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	_stub_crontab
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
 	[ "$status" -eq 0 ] || {
 		echo "a second --install failed (rc $status): $output"
 		return 1
@@ -279,9 +307,10 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 	local fakehome="$WORK/home"
 	mkdir -p "$fakehome"
 	local plist="$fakehome/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	_stub_crontab
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
 	[ "$status" -eq 0 ]
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --uninstall"
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --uninstall"
 	[ "$status" -eq 0 ] || {
 		echo "--uninstall failed (rc $status): $output"
 		return 1
@@ -299,9 +328,10 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 	# its work is how "cron may be broken" becomes unfalsifiable.
 	local fakehome="$WORK/home"
 	mkdir -p "$fakehome"
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --install"
+	_stub_crontab
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
 	[ "$status" -eq 0 ]
-	run bash -c "cd '$WORK' && HOME='$fakehome' '$SCRIPT' --verify"
+	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --verify"
 	[[ $output == *"scheduler:  installed"* ]] || {
 		echo "verify cannot see the agent install just wrote: $output"
 		return 1

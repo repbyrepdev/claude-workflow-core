@@ -94,22 +94,6 @@ bats_in_scope() {
 	return 1
 }
 
-# bats_scope_roots
-#   Echoes, one per line, the scope directories that EXIST here — for
-#   `find` and friends. `find` returns rc 1 on a missing starting path,
-#   and under pipefail that aborts the caller (v0.9.4 #53 fixed exactly
-#   that bug in scripts/test.sh); filtering first is what keeps it fixed.
-#
-#   Prefer bats_scope_files below. This stays for callers that genuinely
-#   want directories rather than a file list.
-bats_scope_roots() {
-	local d
-	for d in $BATS_SCOPE_DIRS; do
-		[ -d "$d" ] && printf '%s\n' "$d"
-	done
-	return 0
-}
-
 # bats_scope_files
 #   Echoes, one per line, every TRACKED .sh in scope. rc 2 if git cannot
 #   answer — never a silent empty list, which would read as "no files to
@@ -146,12 +130,21 @@ bats_scope_files() {
 		echo "bats_scope_files: mktemp failed" >&2
 		return 2
 	}
-	git ls-files -z -- '*.sh' >"$tmp" 2>/dev/null || rc=$?
+	# git's own stderr is kept: "not a git repository" and "index file
+	# corrupt" want completely different responses, and an rc alone cannot
+	# tell them apart.
+	local errf
+	errf=$(mktemp -t bats-scope-err.XXXXXX) || errf="/dev/null"
+	git ls-files -z -- '*.sh' >"$tmp" 2>"$errf" || rc=$?
 	if [ "$rc" -ne 0 ]; then
-		echo "bats_scope_files: git ls-files failed (rc=$rc) — refusing to report an empty file set, which would read as full coverage of nothing" >&2
+		local detail=""
+		[ "$errf" != "/dev/null" ] && [ -s "$errf" ] && detail=" — git said: $(head -c 200 "$errf")"
+		echo "bats_scope_files: git ls-files failed (rc=$rc)${detail}. Refusing to report an empty file set, which would read as full coverage of nothing." >&2
 		rm -f "$tmp"
+		[ "$errf" != "/dev/null" ] && rm -f "$errf"
 		return 2
 	fi
+	[ "$errf" != "/dev/null" ] && rm -f "$errf"
 	local f
 	while IFS= read -r -d '' f; do
 		[ -n "$f" ] || continue

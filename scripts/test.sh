@@ -199,32 +199,41 @@ fi
 
 cd "$REPO_ROOT" || exit 2
 
-# (#2642) The bats-scope SSOT.
+# (#2642) The bats-scope SSOT. THIS BLOCK IS IDENTICAL in all three
+# consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
+# scripts/test.sh) — deliberately, and it is the closest to a single copy
+# that is reachable.
 #
-# Resolved from THIS SCRIPT'S OWN directory, not from the repo being
-# inspected. $REPO_ROOT is overridable via TEST_REPO_ROOT so --coverage can
-# be pointed at a fixture, and the first version of this block probed there
-# — so every fixture-based coverage test lost the library and took the
-# refusal path. The library ships beside the script; where the script is
-# asked to look is a different question entirely.
+# The library cannot resolve its own location for its callers: something
+# has to find _lib/ before anything in _lib/ can run. resolve-plugin-helper.sh
+# lives in _lib/ too, so it has the same bootstrap problem. What CAN be
+# fixed is the three consumers each doing it differently — phase 0.5 found
+# a fixed relative path, a two-path symlink-safe fallback, and a
+# script-dir-based probe, which is three chances for one of them to drift
+# wrong and no way to notice.
+#
+# All three sit one directory below the plugin root, so one form serves
+# them all. The consumer layout (.claude/_lib/) is checked second.
+#
+# Errors during the source are CAPTURED, not discarded: the `command -v`
+# guard at the use site still fails closed, but a bare `|| true` leaves the
+# operator knowing only that the scope is unknown, not that the library has
+# a syntax error.
 _scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
 _scope_lib=""
-for _c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scope.sh"; do
-	if [ -n "$_scope_self" ] && [ -r "$_c" ]; then
-		_scope_lib="$_c"
+for _scope_c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scope.sh"; do
+	if [ -n "$_scope_self" ] && [ -r "$_scope_c" ]; then
+		_scope_lib="$_scope_c"
 		break
 	fi
 done
 if [ -n "$_scope_lib" ]; then
-	# Capture rather than discard — see the identical reasoning in
-	# hooks/pre-push-pipeline-gate.sh. The `command -v` guard below still
-	# fails closed; this only makes the CAUSE visible.
-	_scope_err=$(mktemp -t test-scope-src.XXXXXX 2>/dev/null) || _scope_err="/dev/null"
+	_scope_err=$(mktemp -t bats-scope-src.XXXXXX 2>/dev/null) || _scope_err="/dev/null"
 	# shellcheck source=../_lib/bats-scope.sh
 	. "$_scope_lib" 2>"$_scope_err" || true
 	if [ "$_scope_err" != "/dev/null" ]; then
 		if [ -s "$_scope_err" ]; then
-			echo "test.sh: WARN: $_scope_lib emitted errors while loading: $(head -c 300 "$_scope_err")" >&2
+			echo "bats-scope: WARN: $_scope_lib emitted errors while loading: $(head -c 300 "$_scope_err")" >&2
 		fi
 		rm -f "$_scope_err"
 	fi
@@ -258,7 +267,14 @@ if [ "$MODE" = "coverage" ]; then
 	else
 		sh_count=0
 	fi
-	case "$sh_count" in '' | *[!0-9]*) sh_count=0 ;; esac
+	case "$sh_count" in '' | *[!0-9]*)
+		# Refuse, do not coerce. A corrupted count silently becoming 0
+		# reports "zero files in scope", which reads as a clean inventory
+		# of an empty repo rather than as a failure to count.
+		echo "test.sh: ERROR: could not count in-scope files (got '$sh_count') — refusing to report coverage over it" >&2
+		exit 2
+		;;
+	esac
 	if [ -d .claude/tests ]; then
 		bats_count=$(find .claude/tests -name "*.bats" | wc -l | tr -d ' ')
 		# Scan bats files for explicit "# covers: <path>" declarations (SSOT).

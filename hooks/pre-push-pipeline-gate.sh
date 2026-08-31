@@ -245,30 +245,43 @@ _is_comments_only() {
 # drift). Resolved via the symlink-safe PPG_DIR preamble (top of file) so it
 # works whether the gate is executed (pre-push — including through a
 # `.git/hooks/pre-push` symlink) or sourced-for-test under bats.
-# (#2642) The bats-scope SSOT, sourced beside the other shared libs. The
-# consumer install keeps it at .claude/_lib/; the plugin's own repo at
-# top-level _lib/. Absence is NOT silently tolerated — the check-5 block
-# below refuses the push rather than treating an unknown scope as empty.
-_ppg_scope_lib=""
-if [ -r "$PPG_DIR/../_lib/bats-scope.sh" ]; then
-	_ppg_scope_lib="$PPG_DIR/../_lib/bats-scope.sh"
-elif [ -r "$PPG_DIR/../../_lib/bats-scope.sh" ]; then
-	_ppg_scope_lib="$PPG_DIR/../../_lib/bats-scope.sh"
-fi
-if [ -n "$_ppg_scope_lib" ]; then
-	# The sourcing error is CAPTURED, not discarded. `|| true` left the
-	# later `command -v` guard to fail closed, which is correct but mute:
-	# the operator learns the scope is unknown and not that the library has
-	# a syntax error on line 40. Same reasoning as the hook-ack source in
-	# skills/git-commit/run.sh (#2641).
-	_ppg_scope_err=$(mktemp -t ppg-scope-src.XXXXXX 2>/dev/null) || _ppg_scope_err="/dev/null"
+# (#2642) The bats-scope SSOT. THIS BLOCK IS IDENTICAL in all three
+# consumers (pre-commit-hooks/bats-gate.sh, hooks/pre-push-pipeline-gate.sh,
+# scripts/test.sh) — deliberately, and it is the closest to a single copy
+# that is reachable.
+#
+# The library cannot resolve its own location for its callers: something
+# has to find _lib/ before anything in _lib/ can run. resolve-plugin-helper.sh
+# lives in _lib/ too, so it has the same bootstrap problem. What CAN be
+# fixed is the three consumers each doing it differently — phase 0.5 found
+# a fixed relative path, a two-path symlink-safe fallback, and a
+# script-dir-based probe, which is three chances for one of them to drift
+# wrong and no way to notice.
+#
+# All three sit one directory below the plugin root, so one form serves
+# them all. The consumer layout (.claude/_lib/) is checked second.
+#
+# Errors during the source are CAPTURED, not discarded: the `command -v`
+# guard at the use site still fails closed, but a bare `|| true` leaves the
+# operator knowing only that the scope is unknown, not that the library has
+# a syntax error.
+_scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
+_scope_lib=""
+for _scope_c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scope.sh"; do
+	if [ -n "$_scope_self" ] && [ -r "$_scope_c" ]; then
+		_scope_lib="$_scope_c"
+		break
+	fi
+done
+if [ -n "$_scope_lib" ]; then
+	_scope_err=$(mktemp -t bats-scope-src.XXXXXX 2>/dev/null) || _scope_err="/dev/null"
 	# shellcheck source=../_lib/bats-scope.sh
-	. "$_ppg_scope_lib" 2>"$_ppg_scope_err" || true
-	if [ "$_ppg_scope_err" != "/dev/null" ]; then
-		if [ -s "$_ppg_scope_err" ]; then
-			echo "pre-push-pipeline-gate: WARN: $_ppg_scope_lib emitted errors while loading: $(head -c 300 "$_ppg_scope_err")" >&2
+	. "$_scope_lib" 2>"$_scope_err" || true
+	if [ "$_scope_err" != "/dev/null" ]; then
+		if [ -s "$_scope_err" ]; then
+			echo "bats-scope: WARN: $_scope_lib emitted errors while loading: $(head -c 300 "$_scope_err")" >&2
 		fi
-		rm -f "$_ppg_scope_err"
+		rm -f "$_scope_err"
 	fi
 fi
 

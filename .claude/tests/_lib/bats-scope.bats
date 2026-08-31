@@ -117,56 +117,10 @@ _scope() { # $1 = snippet
 	}
 }
 
-# ---- the roots helper ----------------------------------------------------
-
-@test "bats-scope: roots lists only directories that EXIST" {
-	# find returns rc 1 on a missing starting path, and under pipefail that
-	# aborts the caller — the exact bug v0.9.4 (#53) fixed in test.sh.
-	# Filtering here is what keeps it fixed for every caller.
-	run bash -c "set -uo pipefail
-		cd '$REPO_ROOT'
-		. '$LIB'
-		bats_scope_roots"
-	[ "$status" -eq 0 ]
-	[ -n "$output" ] || {
-		echo "no roots at all in the plugin repo — the list cannot be right"
-		return 1
-	}
-	local r
-	while IFS= read -r r; do
-		[ -n "$r" ] || continue
-		[ -d "$REPO_ROOT/$r" ] || {
-			echo "roots listed a directory that does not exist: $r"
-			return 1
-		}
-	done <<<"$output"
-	# And it must actually include this repo's own production dirs, or the
-	# coverage denominator is back where it started.
-	[[ $output == *hooks* ]] || {
-		echo "roots omits hooks/: $output"
-		return 1
-	}
-}
-
-@test "bats-scope: roots succeeds in a repo with none of the dirs" {
-	# rc 0 with empty output, not rc 1 — callers use it under `set -e`.
-	local tmp
-	tmp=$(mktemp -d -t bats-scope.XXXXXX)
-	run bash -c "set -euo pipefail
-		cd '$tmp'
-		. '$LIB'
-		bats_scope_roots
-		echo REACHED"
-	rm -rf "$tmp"
-	[ "$status" -eq 0 ] || {
-		echo "roots failed in a bare directory (rc $status): $output"
-		return 1
-	}
-	[[ $output == *REACHED* ]] || {
-		echo "the caller did not survive an empty root set: $output"
-		return 1
-	}
-}
+# (bats_scope_roots was removed with its tests: once every consumer moved
+# to bats_scope_files, nothing called it. Dead code carrying its own
+# dedicated coverage is worse than no code — the tests keep passing and
+# read as evidence that something is exercised.)
 
 # ---- the thing that keeps it ONE copy ------------------------------------
 
@@ -291,8 +245,16 @@ _scope() { # $1 = snippet
 		echo "outside a git repo, bats_scope_files returned $status (expected 2): $output"
 		return 1
 	}
-	[[ $output == *"refusing"* ]] || {
-		echo "the refusal does not say why: $output"
+	[[ $output == *"efusing"* ]] || {
+		echo "the refusal does not say what it is refusing to do: $output"
+		return 1
+	}
+	# GIT'S OWN WORDS must survive. "not a git repository" and "index file
+	# corrupt" want completely different responses, and an rc alone cannot
+	# tell them apart — the first version sent git's stderr to /dev/null and
+	# reported a bare rc=128.
+	[[ $output == *"not a git repository"* ]] || {
+		echo "git's own diagnosis was discarded; only an rc survived: $output"
 		return 1
 	}
 }
@@ -334,6 +296,89 @@ _scope() { # $1 = snippet
 	[ "$status" -eq 0 ]
 	[[ $output == *OUT* ]] || {
 		echo "an empty scope list still matched: $output"
+		return 1
+	}
+}
+
+# ---- the consumers' fail-closed paths, exercised ------------------------
+
+# NOT TESTED BEHAVIOURALLY, and saying so rather than pretending.
+#
+# Phase 0.5 (conf 8) asked for a behavioural test of the push gate's
+# fail-closed path, matching the one the commit gate has. It is not
+# reachable at proportionate cost: pre-push-pipeline-gate.sh exits at an
+# earlier check (cr_phase2_clean_for_sha, which wants a completed CR review
+# on record for the pushed sha) long before it reaches the scope block, so
+# a fixture would have to fake the whole CR ledger to get there.
+#
+# What IS enforced is structural, in "every consumer of the scope FAILS
+# CLOSED without the library" above: that test greps each of the three
+# consumers for both the source and a `command -v` guard reacting to its
+# absence, so a consumer that stopped refusing would fail it. That is
+# weaker than executing the branch and is recorded as such — an
+# almost-behavioural test that quietly exercised an earlier exit would be
+# worse than an honest structural one.
+
+@test "#2642: the CONSUMER layout (.claude/_lib) is a real fallback" {
+	# Second entry in every consumer's probe, and untested. A plugin
+	# installed under .claude/ resolves there; if that arm were broken the
+	# library would be 'missing' for every consumer repo while working
+	# perfectly in this one, which is the hardest kind of bug to see from
+	# here.
+	local fake="$BATS_TEST_TMPDIR/consumer"
+	mkdir -p "$fake/scripts" "$fake/.claude/_lib"
+	cp "$LIB" "$fake/.claude/_lib/bats-scope.sh"
+	[ ! -e "$fake/_lib/bats-scope.sh" ] || return 1
+	# Resolve exactly as the consumers do, from the script's own dir.
+	run bash -c "set -uo pipefail
+		_scope_self=\$(cd '$fake/scripts/..' && pwd)
+		for c in \"\$_scope_self/_lib/bats-scope.sh\" \"\$_scope_self/.claude/_lib/bats-scope.sh\"; do
+			[ -r \"\$c\" ] && { . \"\$c\"; break; }
+		done
+		command -v bats_in_scope >/dev/null && echo RESOLVED"
+	[ "$status" -eq 0 ] || {
+		echo "the consumer-layout probe failed: $output"
+		return 1
+	}
+	[[ $output == *RESOLVED* ]] || {
+		echo "the .claude/_lib fallback did not resolve the library: $output"
+		return 1
+	}
+}
+
+@test "bats-scope: the SCOPE FILTER applies to the git listing too" {
+	# bats_scope_files asks git for every *.sh and then filters. If the
+	# filter were skipped there, the denominator would include test helpers
+	# and vendored shell — files that cannot carry a covering test and would
+	# push measured coverage down for no reason anyone could act on.
+	local tmp
+	tmp=$(mktemp -d -t bats-scope-filter.XXXXXX)
+	(
+		cd "$tmp"
+		git init -q
+		mkdir -p hooks .claude/tests vendor
+		printf '#!/bin/bash\n' >hooks/in.sh
+		printf '#!/bin/bash\n' >.claude/tests/helper.sh
+		printf '#!/bin/bash\n' >vendor/out.sh
+		git add -A
+		git -c user.email=t@t -c user.name=t commit -qm init
+	)
+	run bash -c "set -uo pipefail
+		cd '$tmp'
+		. '$LIB'
+		bats_scope_files"
+	rm -rf "$tmp"
+	[ "$status" -eq 0 ]
+	[[ $output == *hooks/in.sh* ]] || {
+		echo "an in-scope tracked file is missing: $output"
+		return 1
+	}
+	[[ $output != *helper.sh* ]] || {
+		echo "a test helper was counted — Layer 2 owns those, and gating a test on having its own test is a loop: $output"
+		return 1
+	}
+	[[ $output != *vendor/out.sh* ]] || {
+		echo "vendored shell was counted: $output"
 		return 1
 	}
 }
