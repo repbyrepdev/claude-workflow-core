@@ -273,7 +273,7 @@ fi
 [ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
 # shellcheck source=../_lib/bats-scope.sh
 [ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
-	! command -v bats_in_scope >/dev/null 2>&1 && . "$_scope_self/.claude/_lib/bats-scope.sh"
+	! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ] && . "$_scope_self/.claude/_lib/bats-scope.sh"
 
 _ppg_cov_lib="$PPG_DIR/../_lib/cr-phase2-coverage.sh"
 if [ -r "$_ppg_cov_lib" ]; then
@@ -805,8 +805,13 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 	# FAIL CLOSED: an unloadable predicate would leave INSCOPE_SH empty,
 	# and an empty in-scope set reads as "nothing needs verifying", which
 	# passes every push.
-	if ! command -v bats_in_scope >/dev/null 2>&1; then
+	if ! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ]; then
 		echo "pre-push-pipeline-gate: ERROR: _lib/bats-scope.sh did not load — refusing to push with an unknown scope (an empty scope would pass every push silently). Fix the plugin install." >&2
+		FAILED=1
+		continue
+	fi
+	if bats_scope_is_empty; then
+		echo "pre-push-pipeline-gate: ERROR: BATS_SCOPE_DIRS matches nothing ('${BATS_SCOPE_DIRS-<unset>}') — every changed script would pass unverified, with no recorded bypass. Use the audited PIPELINE_GATE_SKIP if that is deliberate." >&2
 		FAILED=1
 		continue
 	fi

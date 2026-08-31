@@ -58,15 +58,24 @@ _scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
 [ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
 # shellcheck source=../_lib/bats-scope.sh
 [ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
-	! command -v bats_in_scope >/dev/null 2>&1 && . "$_scope_self/.claude/_lib/bats-scope.sh"
+	! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ] && . "$_scope_self/.claude/_lib/bats-scope.sh"
 # FAIL CLOSED, once, here — not per file. An unloadable scope predicate must
 # not silently mean "nothing is in scope", which is the gate quietly
 # switching itself off and would look exactly like a passing commit. Checked
 # at load rather than inside the per-file loop: the condition cannot change
 # between files, and a guard that fires on the first file reads as a
 # property of that file.
-if ! command -v bats_in_scope >/dev/null 2>&1; then
+# `type -t` == function, NOT `command -v`. command -v also finds
+# EXECUTABLES on PATH, so a stray file named bats_in_scope anywhere on
+# $PATH would satisfy this guard and then BE the scope predicate — an
+# external program deciding what the gate enforces. Requiring a shell
+# function means only the sourced library can satisfy it.
+if ! [ "$(type -t bats_in_scope 2>/dev/null)" = "function" ]; then
 	echo "bats-gate: ERROR: _lib/bats-scope.sh did not load — refusing to run with an unknown scope (an empty scope would pass every commit silently). Fix the plugin install." >&2
+	exit 2
+fi
+if bats_scope_is_empty; then
+	echo "bats-gate: ERROR: BATS_SCOPE_DIRS matches nothing ('${BATS_SCOPE_DIRS-<unset>}') — every staged script would pass with no test and no recorded bypass. To disable the gate deliberately, use TEST_GATE_SKIP=1 TEST_GATE_SKIP_REASON=\"...\", which is audited." >&2
 	exit 2
 fi
 _bats_gate_ack() {

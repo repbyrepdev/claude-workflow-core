@@ -226,7 +226,7 @@ if [ "$MODE" = "coverage" ]; then
 	# percentage over 22% of the repo — and printed ~60% while the true
 	# figure across everything was 58.5%. That near-coincidence is why the
 	# wrong denominator went unnoticed for so long.
-	if ! command -v bats_scope_files >/dev/null 2>&1; then
+	if ! [ "$(type -t bats_scope_files 2>/dev/null)" = "function" ]; then
 		# Refuse rather than invent a denominator. A coverage percentage
 		# over an unknown scope is the defect this issue is about: the old
 		# copy of the list here reported ~60% over 22% of the repo, and the

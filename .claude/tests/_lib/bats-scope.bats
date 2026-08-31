@@ -164,10 +164,17 @@ _scope() { # $1 = snippet
 	for f in pre-commit-hooks/bats-gate.sh hooks/pre-push-pipeline-gate.sh scripts/test.sh; do
 		grep -q 'bats-scope\.sh' "$REPO_ROOT/$f" || missing="$missing $f(no-source)"
 		# It must react to the ABSENCE, not merely source it.
-		# bats_scope_roots is NOT an accepted alternative — it was deleted.
-		# Leaving it in the alternation meant a consumer could satisfy this
-		# guard by naming a function that no longer exists.
-		grep -qE 'command -v (bats_in_scope|bats_scope_files)' "$REPO_ROOT/$f" ||
+		# `type -t ... = function`, NOT `command -v`. command -v also finds
+		# EXECUTABLES on PATH, so a stray file named bats_in_scope anywhere
+		# on $PATH would satisfy a consumer's guard and then BE the scope
+		# predicate — an external program deciding what the gate enforces.
+		# Requiring a shell function means only the sourced library can
+		# satisfy it, and this test requires the consumers to require that.
+		#
+		# (bats_scope_roots is not an accepted alternative: it was deleted,
+		# and leaving it in the alternation let a consumer satisfy the guard
+		# by naming a function that no longer exists.)
+		grep -qE 'type -t (bats_in_scope|bats_scope_files).*function' "$REPO_ROOT/$f" ||
 			missing="$missing $f(no-guard)"
 	done
 	[ -z "$missing" ] || {

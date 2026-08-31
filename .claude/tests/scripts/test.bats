@@ -32,6 +32,11 @@ setup() {
 	# into fixture runs (a developer or CI runner with BATS_LOG=/some/path
 	# exported would silently redirect our isolated logging).
 	unset BATS_LOG SHA256_WARNED
+	# Inherited git env would point the fixture at a DIFFERENT repository:
+	# GIT_DIR redirects init, GIT_WORK_TREE can make it fail outright, and
+	# GIT_INDEX_FILE would stage into somebody else's index. The counts
+	# below would then describe whatever that repo contains.
+	unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 	export TEST_REPO_ROOT="$TEST_TMP"
 	# (#2642) The fixture is a GIT REPO now, because --coverage asks git
 	# which shell files exist rather than walking the filesystem. That is

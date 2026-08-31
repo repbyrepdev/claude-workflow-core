@@ -207,7 +207,12 @@ _install_state() {
 		launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || lrc=$?
 		if [ "$lrc" -eq 0 ]; then
 			printf 'loaded\n'
-		elif [ "$lrc" -ne 113 ] && ! command -v launchctl >/dev/null 2>&1; then
+		elif [ "$lrc" -ne 113 ]; then
+			# ANY rc other than 0 or 113 means the QUERY failed, not that the
+			# job is absent — no gui domain over ssh, denied, broken launchd.
+			# The first version additionally required launchctl to be MISSING,
+			# which made this arm nearly unreachable and sent every real query
+			# failure to the absent/written branches instead.
 			printf 'unknown\n'
 		elif [ -f "$PLIST" ]; then
 			printf 'written-not-loaded\n'
@@ -258,6 +263,14 @@ _install() {
 			[ "$_lc_err" != "/dev/null" ] && [ -s "$_lc_err" ] && _lc_detail=" launchctl said: $(head -c 200 "$_lc_err")"
 			echo "install-bats-baseline-scheduler: wrote $PLIST but launchctl bootstrap failed.${_lc_detail}" >&2
 			echo "  The job will load at next login. To load now: launchctl bootstrap gui/$(id -u) $PLIST" >&2
+			[ "$_lc_err" != "/dev/null" ] && rm -f "$_lc_err"
+			# NOT "✓ installed". _verify classifies this exact state as
+			# written-not-loaded and returns 1; --install claiming success
+			# for a job launchd never accepted is the two halves of one
+			# script disagreeing about the same fact, and the operator
+			# believes the half that said it worked.
+			echo "install-bats-baseline-scheduler: plist written but NOT LOADED — the weekly baseline will not fire until it is." >&2
+			exit 1
 		fi
 		[ "$_lc_err" != "/dev/null" ] && rm -f "$_lc_err"
 		printf '✓ installed launchd agent %s (weekday=%s %02d:%02d)\n' "$LABEL" "$SCHED_WEEKDAY" "$SCHED_HOUR" "$SCHED_MINUTE"
@@ -319,14 +332,19 @@ _uninstall() {
 		# printed success regardless of whether the crontab was written —
 		# _install checks the same command and errors on it, so this half
 		# was claiming a removal it had not verified.
-		filtered=$(printf '%s\n' "$current" | grep -vF "$CRON_TAG" | grep -vF "$CRON_LINE") || {
-			local grc=$?
-			if [ "$grc" -gt 1 ]; then
-				echo "install-bats-baseline-scheduler: grep failed (rc=$grc) filtering the crontab — NOT writing it back" >&2
-				exit 2
-			fi
-			filtered=""
-		}
+		# ONE grep, not two piped. With two stages under `set -o pipefail`,
+		# a hard failure in the FIRST (rc 2) produces no output, so the
+		# second selects nothing and exits 1 — and pipefail reports the
+		# rightmost non-zero status, which is that 1. The failure reads as
+		# "no lines matched", `filtered` becomes empty, and an EMPTY
+		# crontab is written over the operator's jobs. A single grep -v
+		# with two patterns has one status to read.
+		local grc=0
+		filtered=$(printf '%s\n' "$current" | grep -vF -e "$CRON_TAG" -e "$CRON_LINE") || grc=$?
+		if [ "$grc" -gt 1 ]; then
+			echo "install-bats-baseline-scheduler: grep failed (rc=$grc) filtering the crontab — NOT writing it back" >&2
+			exit 2
+		fi
 		if ! printf '%s\n' "$filtered" | crontab -; then
 			echo "install-bats-baseline-scheduler: crontab write FAILED — the entry was NOT removed" >&2
 			exit 2

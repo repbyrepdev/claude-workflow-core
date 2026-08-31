@@ -80,6 +80,25 @@
 # indistinguishable from the variable being ignored. Only UNSET falls back.
 BATS_SCOPE_DIRS=${BATS_SCOPE_DIRS-"hooks _lib pre-commit-hooks skills scripts .claude/scripts .claude/hooks .claude/skills .claude/_lib .claude/pre-commit-hooks .claude/local-backups"}
 
+# bats_scope_is_empty
+#   rc 0 when the configured scope matches nothing at all. The gates use it
+#   to refuse rather than to pass every file silently.
+#
+#   BATS_SCOPE_DIRS='' is documented as the off switch, but a TYPO produces
+#   the identical state — and an empty scope makes the commit gate return
+#   success for every staged script and the push gate build an empty
+#   in-scope list, with no bypass recorded and nothing said. That is the
+#   discipline switching itself off, which is the one outcome this library
+#   exists to prevent. Turning it off is fine; doing so invisibly is not.
+bats_scope_is_empty() {
+	local d
+	for d in ${BATS_SCOPE_DIRS-}; do
+		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
+		[ -n "$d" ] && return 1
+	done
+	return 0
+}
+
 # bats_in_scope <path>
 #   rc 0 = the bats discipline applies to this file
 #   rc 1 = out of scope

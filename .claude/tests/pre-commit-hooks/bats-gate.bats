@@ -81,8 +81,16 @@ echo hi'
 		_stage "$d/thing.sh" '#!/bin/bash
 echo hi'
 		_run_gate
-		[ "$status" -ne 0 ] || {
-			echo "$d/thing.sh was allowed with no covering test: $output"
+		# EXACTLY 1, and the output must NAME the file. rc 2 is the gate's
+		# could-not-proceed code, so accepting any non-zero lets a refusal
+		# that happened BEFORE this file was ever examined satisfy a test
+		# about that file being in scope.
+		[ "$status" -eq 1 ] || {
+			echo "$d/thing.sh returned $status, expected 1: $output"
+			return 1
+		}
+		[[ $output == *"$d/thing.sh"* ]] || {
+			echo "the refusal does not name $d/thing.sh: $output"
 			return 1
 		}
 		git -C "$WORK" rm -f --cached "$d/thing.sh" -q

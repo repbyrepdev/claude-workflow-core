@@ -372,6 +372,13 @@ _stub_scheduler() {
 }
 
 _sched() { # $1 = args; runs with every side effect contained
+	# SELF-ARMING. bats runs each @test in its own process, so a test that
+	# forgot _stub_scheduler reaches here with FAKEHOME unset — and then
+	# passes HOME="" with no launchctl stub on PATH, so _install_state
+	# queries the operator's REAL launchd. That is how a live agent ended
+	# up registered on the development machine, and one test still had the
+	# hole after the first fix. Arming here removes the chance to forget.
+	[ -n "${FAKEHOME:-}" ] || _stub_scheduler
 	# PATH is built HERE and passed via `env`, not written into the inner
 	# shell's command string. A quoted "$PATH" inside that string does not
 	# expand, leaving the stub dir as the ENTIRE path — every real command
@@ -586,25 +593,46 @@ STUB
 }
 
 @test "scheduler: both back-ends schedule the SAME time" {
-	# The schedule was written twice — CRON_LINE and the plist's
-	# StartCalendarInterval — with nothing comparing them, so a change to
-	# one would have left the platforms on different weeks. Both now derive
-	# from SCHED_*; this asserts they agree, by reading the script itself.
-	local weekday hour minute
-	weekday=$(grep -m1 '^SCHED_WEEKDAY=' "$SCRIPT" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
-	hour=$(grep -m1 '^SCHED_HOUR=' "$SCRIPT" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
-	minute=$(grep -m1 '^SCHED_MINUTE=' "$SCRIPT" | sed 's/[^0-9]*\([0-9]*\).*/\1/')
-	[ -n "$weekday" ] && [ -n "$hour" ] && [ -n "$minute" ] || {
-		echo "could not read the schedule constants — this test checked nothing"
+	# ASSERT THE ARTIFACTS, not the script's text. Every assertion here used
+	# to be a grep over $SCRIPT — which passes for a script that never runs,
+	# fails for any equivalent refactor, and (as CR pointed out) would still
+	# pass with Hour and Minute transposed in the plist, since it only
+	# checked that the constants were REFERENCED. The stubs record both
+	# artifacts, so the two back-ends can be compared on real output.
+	_stub_scheduler
+
+	SCHED_PLATFORM=cron
+	_sched --install
+	[ "$status" -eq 0 ]
+	local cron_line
+	cron_line=$(grep -F "claude-workflow-core" -A1 "$CRONTAB_FILE" | tail -1)
+	[ -n "$cron_line" ] || {
+		echo "no cron line was written: $(cat "$CRONTAB_FILE")"
 		return 1
 	}
-	# Neither back-end may carry its own literal any more.
-	grep -qE '^CRON_LINE=.*\$SCHED_MINUTE .*\$SCHED_HOUR .*\$SCHED_WEEKDAY' "$SCRIPT" || {
-		echo "CRON_LINE does not derive from the shared schedule constants"
+	local c_min c_hour c_wday
+	c_min=$(printf '%s\n' "$cron_line" | awk '{print $1}')
+	c_hour=$(printf '%s\n' "$cron_line" | awk '{print $2}')
+	c_wday=$(printf '%s\n' "$cron_line" | awk '{print $5}')
+
+	SCHED_PLATFORM=launchd
+	_sched --install
+	local plist="$FAKEHOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	[ -s "$plist" ] || {
+		echo "no plist was written"
 		return 1
 	}
-	grep -q 'Weekday</key><integer>${SCHED_WEEKDAY}' "$SCRIPT" || {
-		echo "the plist does not derive from the shared schedule constants"
+	local p_min p_hour p_wday
+	p_wday=$(sed -n 's:.*<key>Weekday</key><integer>\([0-9]*\)</integer>.*:\1:p' "$plist" | head -1)
+	p_hour=$(sed -n 's:.*<key>Hour</key><integer>\([0-9]*\)</integer>.*:\1:p' "$plist" | head -1)
+	p_min=$(sed -n 's:.*<key>Minute</key><integer>\([0-9]*\)</integer>.*:\1:p' "$plist" | head -1)
+
+	[ -n "$p_wday" ] && [ -n "$p_hour" ] && [ -n "$p_min" ] || {
+		echo "could not parse the schedule out of the plist: $(cat "$plist")"
+		return 1
+	}
+	[ "$c_min" = "$p_min" ] && [ "$c_hour" = "$p_hour" ] && [ "$c_wday" = "$p_wday" ] || {
+		echo "the two back-ends schedule DIFFERENT times — cron=${c_wday} ${c_hour}:${c_min}, launchd=${p_wday} ${p_hour}:${p_min}"
 		return 1
 	}
 }
