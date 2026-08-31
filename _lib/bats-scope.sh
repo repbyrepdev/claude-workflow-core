@@ -1,38 +1,51 @@
 #!/bin/bash
-# bats-required: 0
 set -u
 # (#2642) SSOT for "which shell files does the bats discipline apply to".
 #
 # WHY THIS EXISTS
 #
-# The answer lived in three places, byte-identical, and was wrong in all
-# three:
+# The same directory SET lived in three places and was wrong in all three:
 #
-#   pre-commit-hooks/bats-gate.sh:99      the COMMIT gate
-#   hooks/pre-push-pipeline-gate.sh:773   the PUSH gate
-#   scripts/test.sh:211                   the --coverage denominator
+#   pre-commit-hooks/bats-gate.sh       the COMMIT gate
+#   hooks/pre-push-pipeline-gate.sh     the PUSH gate
+#   scripts/test.sh                     the --coverage denominator
 #
-#     .claude/scripts/* | .claude/hooks/* | .claude/skills/* |
-#     .claude/local-backups/* | scripts/*
+# NOT byte-identical, and an earlier version of this comment said they were
+# while quoting the case-glob spelling as if it were shared text. Two were
+# `case` arms over `.claude/scripts/* | ... | scripts/*` (differing in
+# indent and in whether they ended `;;`); the third was a space-separated
+# word list with no globs at all. Only the SET of directories matched — a
+# reader grepping test.sh for the quoted glob would have found nothing.
 #
 # Those are CONSUMER paths. In the plugin's own repo, production lives at
-# hooks/, _lib/, pre-commit-hooks/, skills/ and scripts/, and the .claude/*
-# equivalents are untracked symlinks into the root — `git ls-files
-# .claude/hooks` returns zero entries. So the list matched `scripts/` and
-# nothing else: 50 of 229 production files, 22%.
+# hooks/, _lib/, pre-commit-hooks/, skills/ and scripts/. Of the six
+# .claude/* entries the list named, three exist here as symlinks to the
+# corresponding root directories (_lib, hooks, scripts) and three do not
+# exist at all — and `git ls-files .claude/hooks` returns zero entries
+# either way, because the tree is gitignored. So the list matched
+# `scripts/` and nothing else: 50 of 229 production files, 22%.
 #
 # The consequences were not symmetric. The commit gate silently allowed a
 # touched `hooks/*.sh` with no covering test. The push gate — which hashes
 # the blob and demands a pass row recorded at THAT content, the strongest
 # check in the repo — never looked at 78% of what it was guarding. And
 # --coverage reported a percentage over the same wrong denominator, which
-# is why the scope defect stayed invisible: it printed ~60%, and the true
-# figure across everything was 58.5%. A near-coincidence hid it.
+# is why the scope defect stayed invisible: it printed exactly 60% (30 of
+# the 50 files it could see), while the true figure across all 229 was
+# 58.95%. A near-coincidence hid it.
+#
+# (58.5% appeared here first and does not reproduce — 135/229 is 58.95%.
+# Recomputed rather than rounded, because a measured claim that cannot be
+# replayed is the kind of thing this file is about.)
 #
 # Three copies is also how it stayed wrong. Fixing any one of them leaves
-# the other two lying, and nothing compared them. One predicate now; the
-# duplicate-arm check in .claude/tests/_lib/bats-scope.bats is what keeps
-# it one.
+# the other two lying, and nothing compared them. One predicate now.
+#
+# The duplicate-arm check in .claude/tests/_lib/bats-scope.bats narrows the
+# ways a fourth copy can reappear; it does not make it impossible, and an
+# earlier version of this comment claimed it did. It catches a re-introduced
+# CASE-GLOB copy. It would not have caught the third copy this change
+# removed, which was a word list.
 #
 # SCOPE CHOICE
 #
@@ -80,6 +93,13 @@ bats_in_scope() {
 	.claude/tests/* | .git/* | node_modules/*) return 1 ;;
 	esac
 	local d
+	# UNQUOTED on purpose (word-splitting is how the list is parsed), but
+	# globbing is NOT wanted: an entry containing * would otherwise be
+	# expanded against the current directory, making the effective scope
+	# depend on cwd contents. noglob for the duration of the loop.
+	local _glob_was_off=0
+	case "$-" in *f*) _glob_was_off=1 ;; esac
+	set -f
 	for d in $BATS_SCOPE_DIRS; do
 		# Strip trailing slashes before matching. The variable is
 		# operator-facing, so `hooks/` is a spelling somebody will use, and
@@ -88,9 +108,13 @@ bats_in_scope() {
 		while [ "${d%/}" != "$d" ]; do d=${d%/}; done
 		[ -n "$d" ] || continue
 		case "$p" in
-		"$d"/*) return 0 ;;
+		"$d"/*)
+			[ "$_glob_was_off" -eq 1 ] || set +f
+			return 0
+			;;
 		esac
 	done
+	[ "$_glob_was_off" -eq 1 ] || set +f
 	return 1
 }
 
@@ -106,9 +130,10 @@ bats_in_scope() {
 #   directory that EXISTS on disk. A `find` over directories answers a
 #   different question and gets it wrong in two ways —
 #
-#     .claude/hooks here is a SYMLINK to ../hooks. find does not follow
-#     it, so today the two agree by accident. On a consumer where that
-#     path is a real directory, find would count the same files twice.
+#     .claude/hooks here is a SYMLINK (to an absolute path, not ../hooks).
+#     find does not follow it, so today the two agree by accident. On a
+#     consumer where that path is a real directory, find would count the
+#     same files twice.
 #
 #     find also counts UNTRACKED files: build output, a colleague's
 #     scratch script, an editor backup. None of those can carry a
@@ -154,13 +179,11 @@ bats_scope_files() {
 	return 0
 }
 
-# Self-check, at source time. The consumers used to each wrap the `source`
-# in a stderr capture so a partial load could be reported; that is 30 lines
-# of boilerplate in three places to describe a condition this file is
-# better placed to notice. If the definitions below did not all land, say
-# so HERE — once — and let each consumer's `command -v` guard do the
-# refusing.
-if ! command -v bats_in_scope >/dev/null 2>&1 ||
-	! command -v bats_scope_files >/dev/null 2>&1; then
-	echo "bats-scope: ERROR: ${BASH_SOURCE[0]} loaded but did not define its predicates — the file is truncated or was edited mid-write. Callers will refuse." >&2
-fi
+# (No load-time self-check. An earlier version ended the file with one,
+# reasoning that a truncated or half-written library should announce
+# itself. It cannot: the check is the LAST statement, both definitions
+# above it are unconditional, so any flow that reaches it has already
+# executed both — and a genuinely truncated file does not contain the
+# check either. Two agents showed the condition is unfalsifiable. The
+# mechanism is the `command -v` guard each of the three consumers carries;
+# reassurance the file cannot deliver is worse than none.)

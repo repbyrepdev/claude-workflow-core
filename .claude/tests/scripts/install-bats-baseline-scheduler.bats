@@ -2,8 +2,9 @@
 # covers: scripts/install-bats-baseline-scheduler.sh
 #
 # (#2642) Two hooks have pointed at this script since v4.23-V and it did
-# not exist — pre-push-pipeline-gate.sh:859 and session-start-report.sh
-# at :561 and :576. So the push gate's 7-day baseline fallback never fired
+# not exist — pre-push-pipeline-gate.sh and session-start-report.sh, three
+# citations between them. (Line numbers omitted: this branch moved the
+# pre-push one twice while open. Grep for the message.) So the push gate's 7-day baseline fallback never fired
 # (zero rows in bats-run.jsonl carry baseline:true) and session-start has
 # been telling the operator to run a command that would answer "No such
 # file". An error message pointing at nothing reads as a supported path.
@@ -13,6 +14,10 @@
 # suite that did that would be modifying the machine it runs on. Only the
 # read-only paths are exercised, and --verify is pointed at fixture logs
 # via a fake repo root.
+#
+# shellcheck disable=SC2030,SC2031  # bats runs each @test in a subshell;
+# SCHED_PLATFORM is set in the test body and read by _sched in that same
+# shell, which is the intent — the warning describes bats, not a bug.
 
 setup() {
 	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
@@ -145,6 +150,63 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 	}
 }
 
+@test "scheduler: --verify returns 0 when installed AND fresh" {
+	# NO test asserted --verify's success path. Every one asserted rc 1 or
+	# rc != 0, so `_verify` could have been mutated to `return 1`
+	# unconditionally and the whole suite would still have passed — while
+	# the documented contract is "0 ok" and session-start-report tells the
+	# operator to run it.
+	SCHED_PLATFORM=cron
+	_stub_scheduler
+	_sched --install
+	[ "$status" -eq 0 ]
+	local now
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"ts":"%s","sha":"abc","status":"pass","baseline":true}\n' "$now" >"$RUN_LOG"
+	_sched --verify
+	[ "$status" -eq 0 ] || {
+		echo "verify on an installed, fresh scheduler returned $status, expected 0: $output"
+		return 1
+	}
+}
+
+@test "scheduler: an UNPARSEABLE timestamp is not reported as healthy" {
+	# When neither date(1) dialect parses the row, the first version printed
+	# "(age unknown)" and returned the installed-rc — 0. Freshness is the
+	# entire point of --verify, and not knowing it is not the same as it
+	# being fine. The jq path already returns 1 for the same class.
+	SCHED_PLATFORM=cron
+	_stub_scheduler
+	_sched --install
+	[ "$status" -eq 0 ]
+	printf '{"ts":"not-a-timestamp","baseline":true}\n' >"$RUN_LOG"
+	_sched --verify
+	[ "$status" -ne 0 ] || {
+		echo "an unparseable baseline timestamp was reported as healthy: $output"
+		return 1
+	}
+}
+
+@test "scheduler: an UNREADABLE log is undeterminable, not 'never ran'" {
+	# `[ ! -r ]` was true both when the log was absent and when it existed
+	# but could not be read, and both printed "nothing has ever run" — an
+	# assertion about history the script had not verified, sending the
+	# operator to --install when the fix is a permission.
+	SCHED_PLATFORM=cron
+	_stub_scheduler
+	printf '{"ts":"2099-01-01T00:00:00Z","baseline":true}\n' >"$RUN_LOG"
+	chmod 000 "$RUN_LOG"
+	_sched --verify
+	chmod 644 "$RUN_LOG" 2>/dev/null || true
+	if [ "$(id -u)" -eq 0 ]; then
+		skip "runs as root (#2642): chmod 000 does not deny, so this cannot fail"
+	fi
+	[[ $output != *"nothing has ever run"* ]] || {
+		echo "an unreadable log was reported as never-run: $output"
+		return 1
+	}
+}
+
 @test "scheduler: --verify reports a STALE baseline, and fails" {
 	# >14 days is two missed weekly cadences — the signal session-start
 	# surfaces. It must be non-zero, or nothing downstream can act on it.
@@ -218,11 +280,24 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 # unavoidable was HOME: the plist path is $HOME/Library/LaunchAgents/...,
 # so a naive test writes into the operator's real login agents.
 #
-# HOME is just a variable. Pointed at a temp dir, the write path is fully
-# exercised and lands somewhere disposable. `launchctl bootstrap` still
-# runs and still fails there (the plist is outside the real LaunchAgents
-# dir) — which is exactly why the script treats that failure as non-fatal
-# and says the job will load at next login.
+# HOME redirects the plist FILE. It does NOT redirect the launchd DOMAIN.
+#
+# The first version of this comment claimed `launchctl bootstrap` "still
+# fails there". It does not: bootstrap takes an arbitrary plist path, and
+# the domain target is `gui/$(id -u)` — the operator's real one. A phase-1
+# agent found a LIVE LaunchAgent registered on the development machine,
+# pointing at a bats fixture temp dir that had already been deleted. The
+# suite installed it and teardown removed only the file.
+#
+# Worse than residue: if the operator has actually installed the scheduler
+# — the entire point of this change — running the suite would `bootout`
+# their real agent, and `--verify` (which then checked only for the plist
+# FILE) would keep reporting "installed" while the weekly baseline silently
+# stopped firing. The exact never-fired failure this script exists to fix,
+# caused by its own tests.
+#
+# So launchctl is STUBBED, exactly as crontab is. Neither back-end may
+# reach the machine.
 #
 # CRONTAB IS NOT LIKE HOME. On a non-Darwin runner these same tests take
 # the cron branch, which calls `crontab -` and would REWRITE THE
@@ -233,6 +308,57 @@ _in_repo() { # runs the script with $WORK as the git toplevel
 # So a stub `crontab` goes on PATH for every mutating test. It records
 # what it was asked to do into the fixture, which is also what makes the
 # cron path assertable at all rather than merely unexercised.
+_stub_launchctl() {
+	mkdir -p "$WORK/bin"
+	cat >"$WORK/bin/launchctl" <<'STUB'
+#!/bin/bash
+# Records instead of touching the real launchd domain.
+FAKE="${LAUNCHCTL_STATE:?stub needs LAUNCHCTL_STATE}"
+case "${1:-}" in
+bootstrap)
+	# $3 is the plist path; register it.
+	printf '%s
+' "${3:-}" >"$FAKE"
+	;;
+bootout)
+	rm -f "$FAKE"
+	;;
+print)
+	[ -s "$FAKE" ] || exit 113
+	printf 'stub: loaded from %s
+' "$(cat "$FAKE")"
+	;;
+*) exit 2 ;;
+esac
+STUB
+	chmod +x "$WORK/bin/launchctl"
+	export LAUNCHCTL_STATE="$WORK/fake-launchd"
+}
+
+# Both back-ends stubbed, plus a redirected HOME. Used by every test that
+# invokes --install or --uninstall.
+_stub_scheduler() {
+	_stub_crontab
+	_stub_launchctl
+	FAKEHOME="$WORK/home"
+	mkdir -p "$FAKEHOME"
+}
+
+_sched() { # $1 = args; runs with every side effect contained
+	# PATH is built HERE and passed via `env`, not written into the inner
+	# shell's command string. A quoted "$PATH" inside that string does not
+	# expand, leaving the stub dir as the ENTIRE path — every real command
+	# then fails with "uname: command not found" and the test reports the
+	# script broken. Second time this exact trap has fired in this session.
+	run env \
+		HOME="$FAKEHOME" \
+		PATH="$WORK/bin:$PATH" \
+		CRONTAB_FILE="$CRONTAB_FILE" \
+		LAUNCHCTL_STATE="$LAUNCHCTL_STATE" \
+		SCHED_PLATFORM="${SCHED_PLATFORM:-}" \
+		bash -c "cd '$WORK' && '$SCRIPT' $1"
+}
+
 _stub_crontab() {
 	mkdir -p "$WORK/bin"
 	cat >"$WORK/bin/crontab" <<'STUB'
@@ -250,15 +376,13 @@ STUB
 }
 
 @test "scheduler: --install writes a plist and reports where" {
-	local fakehome="$WORK/home"
-	mkdir -p "$fakehome"
-	_stub_crontab
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
+	_stub_scheduler
+	_sched --install
 	[ "$status" -eq 0 ] || {
 		echo "--install failed (rc $status): $output"
 		return 1
 	}
-	local plist="$fakehome/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	local plist="$FAKEHOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
 	if [ "$(uname -s)" = "Darwin" ]; then
 		[ -s "$plist" ] || {
 			echo "--install reported success but wrote no plist at $plist"
@@ -287,30 +411,37 @@ STUB
 	}
 }
 
-@test "scheduler: --install is idempotent" {
-	# Re-running must replace, not duplicate or error. The launchd path
-	# bootouts first for exactly this reason.
-	local fakehome="$WORK/home"
-	mkdir -p "$fakehome"
-	_stub_crontab
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
+@test "scheduler: --install is idempotent — one entry, not two" {
+	# The title says "not duplicate or error" and the first version asserted
+	# only the "not error" half: rc 0 twice. Remove the already-installed
+	# early return from the cron branch and a second run appends a second
+	# tag and line — and that test still passed, because nothing read the
+	# crontab back. The duplication is the claim, so the duplication is what
+	# gets counted.
+	SCHED_PLATFORM=cron
+	_stub_scheduler
+	_sched --install
 	[ "$status" -eq 0 ]
-	_stub_crontab
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
+	_sched --install
 	[ "$status" -eq 0 ] || {
 		echo "a second --install failed (rc $status): $output"
+		return 1
+	}
+	local n
+	n=$(grep -cF "claude-workflow-core bats baseline" "$CRONTAB_FILE" 2>/dev/null || true)
+	[ "$n" -eq 1 ] || {
+		echo "two --install runs left $n entries, expected exactly 1: $(cat "$CRONTAB_FILE")"
 		return 1
 	}
 }
 
 @test "scheduler: --uninstall removes what --install wrote" {
-	local fakehome="$WORK/home"
-	mkdir -p "$fakehome"
-	local plist="$fakehome/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	_stub_scheduler
+	local plist="$FAKEHOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
 	_stub_crontab
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
+	_sched --install
 	[ "$status" -eq 0 ]
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --uninstall"
+	_sched --uninstall
 	[ "$status" -eq 0 ] || {
 		echo "--uninstall failed (rc $status): $output"
 		return 1
@@ -323,15 +454,73 @@ STUB
 	fi
 }
 
+@test "scheduler: --uninstall removes the CRON entry, and nothing else" {
+	# The cron removal was asserted on no platform: skipped on Darwin,
+	# executed-but-uninspected on Linux — and it is the branch whose own
+	# comment records that it once "claimed a removal it had not verified".
+	# It is also the half that mutates operator state, where the failure
+	# mode is a scheduler the operator believes is gone.
+	SCHED_PLATFORM=cron
+	_stub_scheduler
+	# A pre-existing unrelated job, which must survive.
+	printf '%s\n' "0 9 * * 1 echo somebody-elses-job" >"$CRONTAB_FILE"
+	_sched --install
+	[ "$status" -eq 0 ]
+	grep -qF "claude-workflow-core bats baseline" "$CRONTAB_FILE" || {
+		echo "install did not write the entry: $(cat "$CRONTAB_FILE")"
+		return 1
+	}
+	_sched --uninstall
+	[ "$status" -eq 0 ] || {
+		echo "--uninstall failed (rc $status): $output"
+		return 1
+	}
+	grep -qF "claude-workflow-core bats baseline" "$CRONTAB_FILE" && {
+		echo "--uninstall reported success but the entry is still there: $(cat "$CRONTAB_FILE")"
+		return 1
+	}
+	grep -qF "somebody-elses-job" "$CRONTAB_FILE" || {
+		echo "--uninstall deleted an UNRELATED job: $(cat "$CRONTAB_FILE")"
+		return 1
+	}
+}
+
+@test "scheduler: an unreadable crontab REFUSES rather than replacing it" {
+	# `crontab -l` rc 1 means "no crontab yet" — a normal empty start. Any
+	# other rc means we do not know the contents, and writing back from an
+	# assumed-empty string replaces every job the operator has with ours.
+	# The uninstall path was hardened for grep's rc while the read that
+	# PRODUCES its input was not.
+	SCHED_PLATFORM=cron
+	_stub_scheduler
+	# A stub whose -l fails hard (rc 2), as a denied or broken spool does.
+	cat >"$WORK/bin/crontab" <<'STUB'
+#!/bin/bash
+case "${1:-}" in
+-l) echo "crontab: cannot read" >&2; exit 2 ;;
+-) cat >"${CRONTAB_FILE:?}" ;;
+esac
+STUB
+	chmod +x "$WORK/bin/crontab"
+	printf '%s\n' "0 9 * * 1 echo precious" >"$CRONTAB_FILE"
+	_sched --install
+	[ "$status" -eq 2 ] || {
+		echo "an unreadable crontab did not refuse (rc $status): $output"
+		return 1
+	}
+	grep -qF precious "$CRONTAB_FILE" || {
+		echo "the operator's crontab was REPLACED despite the read failing: $(cat "$CRONTAB_FILE")"
+		return 1
+	}
+}
+
 @test "scheduler: --verify sees the agent that --install wrote" {
 	# The two halves must agree. An installer whose own verify cannot find
 	# its work is how "cron may be broken" becomes unfalsifiable.
-	local fakehome="$WORK/home"
-	mkdir -p "$fakehome"
-	_stub_crontab
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --install"
+	_stub_scheduler
+	_sched --install
 	[ "$status" -eq 0 ]
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' '$SCRIPT' --verify"
+	_sched --verify
 	[[ $output == *"scheduler:  installed"* ]] || {
 		echo "verify cannot see the agent install just wrote: $output"
 		return 1
@@ -343,20 +532,19 @@ STUB
 }
 
 @test "scheduler: the CRON entry it writes is complete and correct" {
+	SCHED_PLATFORM=cron
 	# Phase 0.5 conf 6: the cron branch's status was checked but its CONTENT
 	# never was, so a CRON_LINE missing TEST_SH_FULL_OK — which a bare
 	# scripts/test.sh is refused without — would install a job that can
 	# never succeed, weekly, silently. The stub records what was written,
 	# which is what makes this assertable at all.
-	_stub_crontab
-	local fakehome="$WORK/home"
-	mkdir -p "$fakehome"
-	run bash -c "cd '$WORK' && HOME='$fakehome' PATH='$WORK/bin:$PATH' CRONTAB_FILE='$CRONTAB_FILE' _FORCE_CRON=1 '$SCRIPT' --install"
+	_stub_scheduler
+	_sched --install
 	[ "$status" -eq 0 ] || {
 		echo "--install failed: $output"
 		return 1
 	}
-	if [ "$(uname -s)" != "Darwin" ]; then
+	if true; then
 		[ -s "$CRONTAB_FILE" ] || {
 			echo "the cron branch wrote nothing"
 			return 1

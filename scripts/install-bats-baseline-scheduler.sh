@@ -10,9 +10,11 @@ set -euo pipefail
 #   hooks/session-start-report.sh        "install via ..."
 #   hooks/session-start-report.sh        "cron may be broken. Verify: ..."
 #
-# (Line numbers deliberately omitted: the first version cited :859 and
-# this same diff pushed that line to :884. A citation that drifts is worse
-# than none — it sends the reader to the wrong place with confidence.)
+# (Line numbers deliberately omitted. The first version cited :859; this
+# branch then moved that line twice, to :884 and back to :858, so the
+# correction drifted as fast as the thing it corrected. A citation that
+# drifts is worse than none — it sends the reader somewhere wrong with
+# confidence. Grep for the message instead.)
 #
 # So the push gate's 7-day baseline fallback (its CUTOFF_7D arm) has never
 # once fired — `grep -c '"baseline":true' .claude/logs/bats-run.jsonl`
@@ -48,6 +50,35 @@ set -euo pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$REPO_ROOT" || exit 2
 
+# The repo path is interpolated into an XML document AND into a crontab
+# line AND into a `bash -lc` command string. Each has different
+# metacharacters, and the security pass demonstrated all three: a path
+# containing `</string>` injects extra ProgramArguments that launchd then
+# executes weekly; a path containing a newline injects a whole additional
+# crontab entry; `;` or `$(...)` is shell injection into the scheduled
+# command. A `%` truncates a cron command, and a bare space breaks the `cd`
+# so the job silently never runs.
+#
+# Escaping correctly for three grammars at once is the kind of thing that
+# is wrong in one of them. REFUSING is the honest move: these characters do
+# not belong in a repository path, the operator can see the problem
+# immediately, and nothing is scheduled from an ambiguous string.
+#
+# Stated as an ALLOW-LIST, not a deny-list. The first version enumerated
+# the dangerous characters and got the bracket-expression escaping wrong,
+# refusing this repo's own perfectly ordinary path — a deny-list has to be
+# exhaustive across three grammars AND correctly escaped, and it was
+# neither. An allow-list is wrong only in the safe direction: it refuses a
+# path it could have handled, and says so.
+case "$REPO_ROOT" in
+*[!a-zA-Z0-9/._-]*)
+	echo "install-bats-baseline-scheduler: REFUSING — the repository path contains a character that cannot be safely written into a launchd plist or a crontab line:" >&2
+	echo "  $REPO_ROOT" >&2
+	echo "  Scheduling from it risks injecting extra arguments or an extra cron entry. Move the repo to a path without spaces, quotes, or shell/XML metacharacters." >&2
+	exit 2
+	;;
+esac
+
 LABEL="com.repbyrep.claude-workflow-core.bats-baseline"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$REPO_ROOT/.claude/logs"
@@ -67,16 +98,54 @@ CRON_LINE="$SCHED_MINUTE $SCHED_HOUR * * $SCHED_WEEKDAY cd $REPO_ROOT && $SCHED_
 CRON_TAG="# claude-workflow-core bats baseline (#2642)"
 
 _usage() {
-	sed -n '4,40p' "$0" >&2
+	# A here-doc, not `sed -n '4,40p' "$0"`. The range was already wrong —
+	# it stopped at the "# Usage:" header and printed none of the usage —
+	# and a hand-maintained line range over the file's own comments is the
+	# same drifting-citation defect the header of this file complains
+	# about, one screen further down.
+	cat >&2 <<'USAGE'
+install-bats-baseline-scheduler.sh — weekly bats baseline scheduler
+
+  --install     schedule it (launchd on macOS, cron elsewhere)
+  --verify      is it scheduled, and did it actually run? (default)
+  --uninstall   remove it
+  --dry-run     print what would be scheduled, change nothing
+
+Env:
+  SCHED_PLATFORM=launchd|cron   force a back-end (testing)
+
+Exit: 0 ok · 1 verify found a problem · 2 usage/precondition
+USAGE
 	exit 2
 }
 
+# SCHED_PLATFORM overrides the auto-detected back-end. It exists so the
+# cron path can be exercised on a macOS developer machine — without it the
+# entire cron half is unreachable on the only platform this suite runs on,
+# and the tests that claim to check it assert nothing. The test suite
+# passed a `_FORCE_CRON` that this script never read, which is exactly that
+# failure wearing the appearance of coverage.
 _platform() {
+	case "${SCHED_PLATFORM:-}" in
+	launchd | cron)
+		printf '%s\n' "$SCHED_PLATFORM"
+		return 0
+		;;
+	'') ;;
+	*)
+		echo "install-bats-baseline-scheduler: SCHED_PLATFORM must be 'launchd' or 'cron', got '$SCHED_PLATFORM'" >&2
+		exit 2
+		;;
+	esac
 	case "$(uname -s)" in
 	Darwin) printf 'launchd\n' ;;
 	*) printf 'cron\n' ;;
 	esac
 }
+
+# Resolved ONCE. It cannot change within a run, and it was being recomputed
+# through a command substitution seven times.
+PLATFORM=$(_platform)
 
 _plist_body() {
 	# StartCalendarInterval, not StartInterval: a laptop that was asleep at
@@ -108,11 +177,41 @@ _plist_body() {
 PLIST
 }
 
-_is_installed() {
-	case "$(_platform)" in
-	launchd) [ -f "$PLIST" ] ;;
-	cron) crontab -l 2>/dev/null | grep -qF "$CRON_TAG" ;;
+# Three states, not two. "the plist is on disk" is a PROXY for "launchd
+# knows about this job", and they come apart on the path this script itself
+# creates: _install treats a failed `launchctl bootstrap` as non-fatal and
+# leaves the plist behind, after which a file check reports "installed"
+# for a job launchd has never heard of — the unfalsifiable "cron may be
+# broken" state this script exists to end.
+#
+# Echoes: loaded | written-not-loaded | absent | unknown
+_install_state() {
+	case "$PLATFORM" in
+	launchd)
+		if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+			printf 'loaded\n'
+		elif [ -f "$PLIST" ]; then
+			printf 'written-not-loaded\n'
+		else
+			printf 'absent\n'
+		fi
+		;;
+	cron)
+		local out crc=0
+		out=$(crontab -l 2>/dev/null) || crc=$?
+		if [ "$crc" -gt 1 ]; then
+			printf 'unknown\n'
+		elif printf '%s\n' "$out" | grep -qF "$CRON_TAG"; then
+			printf 'loaded\n'
+		else
+			printf 'absent\n'
+		fi
+		;;
 	esac
+}
+
+_is_installed() {
+	[ "$(_install_state)" = "loaded" ]
 }
 
 _install() {
@@ -120,7 +219,7 @@ _install() {
 		echo "install-bats-baseline-scheduler: cannot create $LOG_DIR" >&2
 		exit 2
 	}
-	case "$(_platform)" in
+	case "$PLATFORM" in
 	launchd)
 		mkdir -p "$(dirname "$PLIST")" || {
 			echo "install-bats-baseline-scheduler: cannot create $(dirname "$PLIST")" >&2
@@ -141,12 +240,22 @@ _install() {
 			echo "  The job will load at next login. To load now: launchctl bootstrap gui/$(id -u) $PLIST" >&2
 		fi
 		[ "$_lc_err" != "/dev/null" ] && rm -f "$_lc_err"
-		echo "✓ installed launchd agent $LABEL (Sundays 03:00)"
+		printf '✓ installed launchd agent %s (weekday=%s %02d:%02d)\n' "$LABEL" "$SCHED_WEEKDAY" "$SCHED_HOUR" "$SCHED_MINUTE"
 		echo "  plist: $PLIST"
 		;;
 	cron)
-		local current
-		current=$(crontab -l 2>/dev/null || true)
+		local current crc=0
+		# rc 1 = "no crontab for user", a normal empty start. Anything else
+		# (127 = crontab missing, denied by cron.deny, broken spool) means
+		# we do NOT know the current contents — and writing back from an
+		# assumed-empty string would delete every other job the operator
+		# has. The uninstall path was hardened for grep's rc and this read,
+		# which produces its input, was not.
+		current=$(crontab -l 2>/dev/null) || crc=$?
+		if [ "$crc" -gt 1 ]; then
+			echo "install-bats-baseline-scheduler: cannot read the current crontab (rc=$crc) — REFUSING to write one, which would replace any other scheduled jobs" >&2
+			exit 2
+		fi
 		if printf '%s\n' "$current" | grep -qF "$CRON_TAG"; then
 			echo "✓ already installed (cron)"
 			return 0
@@ -155,15 +264,15 @@ _install() {
 			echo "install-bats-baseline-scheduler: crontab write failed" >&2
 			exit 2
 		}
-		echo "✓ installed cron entry (Sundays 03:00)"
+		printf '✓ installed cron entry (weekday=%s %02d:%02d)\n' "$SCHED_WEEKDAY" "$SCHED_HOUR" "$SCHED_MINUTE"
 		;;
 	esac
-	echo "  runs: TEST_SH_FULL_OK=1 scripts/test.sh --baseline --full"
+	echo "  runs: $SCHED_CMD"
 	echo "  log:  $BASELINE_LOG"
 }
 
 _uninstall() {
-	case "$(_platform)" in
+	case "$PLATFORM" in
 	launchd)
 		launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 		# `rm -f` succeeds on a missing file, which is the intent — but it
@@ -178,8 +287,12 @@ _uninstall() {
 		echo "✓ removed launchd agent $LABEL"
 		;;
 	cron)
-		local current filtered
-		current=$(crontab -l 2>/dev/null || true)
+		local current filtered crc=0
+		current=$(crontab -l 2>/dev/null) || crc=$?
+		if [ "$crc" -gt 1 ]; then
+			echo "install-bats-baseline-scheduler: cannot read the current crontab (rc=$crc) — REFUSING to write one, which would delete every other scheduled job" >&2
+			exit 2
+		fi
 		# grep rc 1 means "nothing left after filtering", which is a normal
 		# outcome here (the entry was the only line). Only rc >1 is a real
 		# failure. `|| true` on the whole pipeline flattened both, and then
@@ -209,14 +322,23 @@ _verify() {
 	# fixes, and collapsing them is how a broken cron reads as healthy.
 	local rc=0
 	if _is_installed; then
-		echo "scheduler:  installed ($(_platform))"
+		echo "scheduler:  installed ($PLATFORM)"
 	else
 		echo "scheduler:  NOT INSTALLED — run: scripts/install-bats-baseline-scheduler.sh --install" >&2
 		rc=1
 	fi
 
-	if [ ! -r "$RUN_LOG" ]; then
+	# ABSENT and UNREADABLE are different facts with different fixes, and
+	# `[ ! -r ]` was true of both — so a permissions problem was reported as
+	# "nothing has ever run", an assertion about history the script had not
+	# verified, sending the operator to --install when the fix is a chmod.
+	# The jq branch below already draws this distinction; this one did not.
+	if [ ! -e "$RUN_LOG" ]; then
 		echo "baseline:   no $RUN_LOG yet — nothing has ever run" >&2
+		return 1
+	fi
+	if [ ! -r "$RUN_LOG" ]; then
+		echo "baseline:   UNDETERMINABLE — $RUN_LOG exists but cannot be read (permissions?). This is NOT the same as never run." >&2
 		return 1
 	fi
 	local last_ts
@@ -253,8 +375,12 @@ _verify() {
 	last_s=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$last_ts" +%s 2>/dev/null ||
 		date -u -d "$last_ts" +%s 2>/dev/null || printf '')
 	if [ -z "$last_s" ]; then
-		echo "baseline:   (could not parse '$last_ts' with either date(1) dialect — age unknown)" >&2
-		return "$rc"
+		# NOT `return $rc` — which is 0 whenever the scheduler is installed,
+		# reporting healthy for a freshness question that was never
+		# answered. Freshness is the whole point of --verify, and the jq
+		# branch above already returns 1 for the same class of not-knowing.
+		echo "baseline:   UNDETERMINABLE — could not parse '$last_ts' with either date(1) dialect, so the age is unknown. This is NOT the same as fresh." >&2
+		return 1
 	fi
 	age_d=$(((now_s - last_s) / 86400))
 	echo "baseline:   ${age_d}d old"
@@ -270,10 +396,10 @@ case "${1:---verify}" in
 --uninstall) _uninstall ;;
 --verify) _verify ;;
 --dry-run)
-	echo "platform: $(_platform)"
-	echo "would schedule (Sundays 03:00):"
-	echo "  TEST_SH_FULL_OK=1 scripts/test.sh --baseline --full"
-	case "$(_platform)" in
+	echo "platform: $PLATFORM"
+	printf 'would schedule (weekday=%s %02d:%02d):\n' "$SCHED_WEEKDAY" "$SCHED_HOUR" "$SCHED_MINUTE"
+	echo "  $SCHED_CMD"
+	case "$PLATFORM" in
 	launchd) echo "  via launchd agent at $PLIST" ;;
 	cron) echo "  via cron: $CRON_LINE" ;;
 	esac

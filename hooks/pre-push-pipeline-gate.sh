@@ -252,7 +252,15 @@ _is_comments_only() {
 # but everything ELSE the block used to do (capture stderr, warn on a
 # partial load) now happens inside the library, which is where it belongs.
 # Flagged three rounds running as duplication; this is the irreducible part.
-_scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
+# PPG_DIR, not $0. This file spends 27 lines at the top resolving its own
+# location through a bounded symlink-following loop (#2252) precisely
+# BECAUSE $0 is unreliable here, and every other library load uses it.
+# Under the `.git/hooks/pre-push` symlink shape this file's own comment
+# documents, $0 is .git/hooks/pre-push, so `dirname $0/..` is <repo>/.git,
+# neither candidate exists, and the new fail-closed guard then refuses
+# EVERY PUSH with a message naming the wrong cause. Three phase-1 agents
+# reproduced it independently.
+_scope_self=$(cd "$PPG_DIR/.." 2>/dev/null && pwd) || _scope_self=""
 # shellcheck source=../_lib/bats-scope.sh
 [ -n "$_scope_self" ] && [ -r "$_scope_self/_lib/bats-scope.sh" ] && . "$_scope_self/_lib/bats-scope.sh"
 # shellcheck source=../_lib/bats-scope.sh

@@ -4,13 +4,15 @@
 # (#2642) The scope predicate, and the checks that keep it a single one.
 #
 # The answer to "does the bats discipline apply to this file" lived in three
-# byte-identical copies and was wrong in all three: it listed CONSUMER paths
-# (.claude/scripts, .claude/hooks, ...) which in this repo are untracked
-# symlinks holding zero tracked files, so it matched `scripts/` alone —
-# 50 of 229 production files. The commit gate allowed untested hooks/,
-# the push gate hashed blobs it never looked at, and --coverage reported a
-# percentage over the wrong denominator (~60% printed, 58.5% true across
-# everything, which is precisely why nobody noticed).
+# places — the same directory SET, though not byte-identical: two case-globs
+# and one word list. It listed CONSUMER paths (.claude/scripts,
+# .claude/hooks, ...), of which three exist here as symlinks and three do
+# not exist at all, and the whole .claude tree is gitignored — so it matched
+# `scripts/` alone: 50 of 229 production files. The commit gate allowed
+# untested hooks/, the push gate hashed blobs it never looked at, and
+# --coverage reported over the wrong denominator: exactly 60% printed
+# (30/50) against 58.95% true across all 229, which is precisely why
+# nobody noticed.
 
 setup() {
 	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
