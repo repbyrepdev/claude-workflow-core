@@ -1117,7 +1117,7 @@ _count_unresolved_threads() {
 	[ -s "$pageinfo_err_file" ] && pageinfo_err=$(cat "$pageinfo_err_file")
 	rm -f "$pageinfo_err_file"
 	if [ "$pageinfo_rc" -ne 0 ]; then
-		echo "_count_unresolved_threads: jq pageInfo parse failed (rc=$pageinfo_rc): ${pageinfo_err:-<no stderr>}; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
+		echo "_count_unresolved_threads: jq pageInfo parse failed (rc=$pageinfo_rc): ${pageinfo_err:-<no stderr>}; response snippet: ${paginated_response:0:200}" >&2
 		return 2
 	fi
 	# CR PR #790 r9 phase2: guard .data.node=null (PR deleted race, perms
@@ -1126,7 +1126,7 @@ _count_unresolved_threads() {
 	local node_exists
 	node_exists=$(printf '%s' "$paginated_response" | jq -r '.data.node != null' 2>/dev/null)
 	if [ "$node_exists" != "true" ]; then
-		echo "_count_unresolved_threads: .data.node is null — PR may have been deleted or is inaccessible; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
+		echo "_count_unresolved_threads: .data.node is null — PR may have been deleted or is inaccessible; response snippet: ${paginated_response:0:200}" >&2
 		return 2
 	fi
 	if [ "$has_next" = "true" ]; then
@@ -1142,7 +1142,7 @@ _count_unresolved_threads() {
 	[ -s "$count_err_file" ] && count_err=$(cat "$count_err_file")
 	rm -f "$count_err_file"
 	if [ "$count_rc" -ne 0 ]; then
-		echo "_count_unresolved_threads: jq count parse failed (rc=$count_rc): ${count_err:-<no stderr>}; response snippet: $(printf '%s' "$paginated_response" | head -c 200)" >&2
+		echo "_count_unresolved_threads: jq count parse failed (rc=$count_rc): ${count_err:-<no stderr>}; response snippet: ${paginated_response:0:200}" >&2
 		return 2
 	fi
 	if ! [[ $unresolved_count =~ ^[0-9]+$ ]]; then
@@ -1370,7 +1370,16 @@ _phase05_branch_round_count() {
 	for _sha in $branch_shas; do
 		# Exact match on the PARSED .sha field, never a substring of the raw
 		# line — a substring would also match a sha appearing elsewhere.
-		if printf '%s\n' "$_logged" | grep -qxF "$_sha"; then
+		# HERE-STRING, not a pipeline. `grep -q` exits at its first match, so
+		# under this script's `set -o pipefail` a still-writing `printf`
+		# takes SIGPIPE and the pipeline reports failure — the sha goes
+		# UNCOUNTED, the round count drops, and another prefilter round is
+		# armed. That is the exact defect class this PR exists to fix
+		# (`head -c 6` SIGPIPEing `tr` in hook-ack), reintroduced two
+		# commits ago in the fix for a different reader. The window opens
+		# once $_logged exceeds the pipe buffer, which a long-lived
+		# phase0.5-run.jsonl reaches.
+		if grep -qxF "$_sha" <<<"$_logged"; then
 			n=$((n + 1))
 		fi
 	done
@@ -1617,9 +1626,18 @@ _phase05_cap_gate() {
 	printf '%s\n' "$_cap_body" >&2
 	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
 		command -v hook_ack_append >/dev/null 2>&1; then
-		local _cap_diag
-		if _cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_body"); then
+		# A writer that is PRESENT but FAILS (unwritable .session-state,
+		# mktemp failure) has to say so. The bare `if` form swallowed it,
+		# and this gate's whole point is that the refusal must not be
+		# scrollable past — silently degrading to stderr-only is precisely
+		# the outcome it exists to prevent. _phase1_cap_gate warns here;
+		# so does this one now.
+		local _cap_diag _diag_rc=0
+		_cap_diag=$(hook_ack_diagnostic_write "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_body") || _diag_rc=$?
+		if [ "$_diag_rc" -eq 0 ] && [ -n "$_cap_diag" ]; then
 			hook_ack_append "ship-pr-cycle-p05cap" "phase05-round-cap-enforced" "$_cap_diag" || true
+		else
+			echo "ship-pr-cycle: WARN: could not write the phase0.5 cap-refusal diagnostic (rc=$_diag_rc) — this refusal is stderr-only and nothing will block on it." >&2
 		fi
 	fi
 	return 2

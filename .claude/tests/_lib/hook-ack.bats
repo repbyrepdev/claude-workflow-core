@@ -48,6 +48,15 @@ teardown() {
 # Runs a snippet with the library sourced, in the fixture repo, under the
 # SAME shell options every real caller uses. `HOOK_ACK_BATS_SKIP=0` forces
 # the real append path (it short-circuits under bats by default).
+# chmod-based negative tests are vacuous as root: EUID 0 ignores the DAC
+# bits, so mktemp/mkdir/the sentinel write all SUCCEED and the test asserts
+# a failure that never happened. Skip rather than pass — a green test that
+# exercised nothing is worse than an absent one, and CI containers commonly
+# run as root.
+_skip_if_root() {
+	[ "$(id -u)" -ne 0 ] || skip "runs as root (EUID 0): chmod 500 does not deny, so this negative test cannot fail"
+}
+
 _in_lib() { # $1 = shell snippet
 	run bash -c "set -uo pipefail
 		cd '$WORK'
@@ -94,6 +103,7 @@ _in_lib() { # $1 = shell snippet
 }
 
 @test "hook-ack: a diagnostic write into an UNWRITABLE dir fails loudly" {
+	_skip_if_root
 	# mktemp is now the uniqueness authority, so its failure is the write's
 	# failure. It must return non-zero and say where — a silent empty return
 	# would hand the caller an empty path, and every caller in this repo
@@ -122,6 +132,7 @@ _in_lib() { # $1 = shell snippet
 }
 
 @test "hook-ack: an unwritable state dir is not reported as a stuck lock" {
+	_skip_if_root
 	# It waited the full 2s and then blamed "another hook may be stuck",
 	# for a directory nothing could write to and no lock existed in. The
 	# wrong diagnosis sends the reader looking for a process; the right one
@@ -306,7 +317,14 @@ STUB
 	# against a number the old code would never have produced either, and
 	# the assertion was free. Caught by CR-CLI on the very commit that
 	# added it.
-	_in_lib 'set -o | grep -q "pipefail.*on" || { echo "FIXTURE-NO-PIPEFAIL"; exit 1; }
+	# `[[ -o pipefail ]]`, not `set -o | grep -q`. The pipeline form is the
+	# SAME construct this file was written to expose: grep -q exits at its
+	# first match, and under pipefail a SIGPIPE on `set -o` makes the
+	# pipeline non-zero — so the fixture would report FIXTURE-NO-PIPEFAIL on
+	# a shell that HAS pipefail on. `set -o` output is small so it is
+	# unlikely, but it would present as a flake in the one test guarding
+	# this regression. The shell's own option test needs no pipeline.
+	_in_lib '[[ -o pipefail ]] || { echo "FIXTURE-NO-PIPEFAIL"; exit 1; }
 		echo "INNERPID=$$"
 		hook_ack_diagnostic_write h reason "body"'
 	[ "$status" -eq 0 ]

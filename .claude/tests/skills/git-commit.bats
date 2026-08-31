@@ -236,10 +236,27 @@ EOF
 		echo "the append's own error was discarded: $output"
 		return 1
 	}
-	# The file still exists and is still named, since reading it manually is
-	# the remaining remedy.
-	[[ $output == *"Read"* ]] || {
-		echo "the operator is not told to read it anyway: $output"
+	# The file still exists and is still NAMED, since reading it manually is
+	# the remaining remedy — and that is what gets asserted.
+	#
+	# `$output == *"Read"*` could not fail: the assertion above already
+	# matched "could NOT be registered for mandatory read", and the wrapper
+	# emits that text as "... nothing will block on it. Read $ACK_FILE_ABS
+	# yourself." — so the substring is guaranteed present the moment the
+	# earlier assertion passes. It claimed the file exists and is named, and
+	# proved neither.
+	local named
+	named=$(printf '%s\n' "$output" | sed -n 's/.*Read \(.*\) yourself\..*/\1/p' | tail -1)
+	[ -n "$named" ] || {
+		echo "the warning does not name a file to read: $output"
+		return 1
+	}
+	[ -s "$named" ] || {
+		echo "the named diagnostic does not exist or is empty: $named"
+		return 1
+	}
+	grep -q 'fakehook' "$named" || {
+		echo "the named diagnostic does not carry the failing hook: $(cat "$named")"
 		return 1
 	}
 }

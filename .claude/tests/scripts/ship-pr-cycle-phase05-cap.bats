@@ -602,3 +602,42 @@ _seed_cover() { # $1 = sha, $2 = covers_count, $3 = source (default phase0.5)
 		return 1
 	}
 }
+
+@test "no short-circuiting reader sits downstream of a pipe under pipefail" {
+	# THE BUG THIS PR STARTED FROM, and it has now recurred three times.
+	#
+	# `grep -q` and `head -c N` exit as soon as they have what they need,
+	# SIGPIPE-ing whatever is still writing upstream. Under `set -o
+	# pipefail` — which both these files set — the pipeline then reports
+	# FAILURE even though the read succeeded. In hook-ack that made every
+	# diagnostic filename fall back to the pid, for 511 files. In the round
+	# counter it would have left a sha uncounted, LOWERING the count and
+	# arming another prefilter round.
+	#
+	# No practical test reproduces it: the window only opens once the
+	# upstream output exceeds the pipe buffer, so fixtures pass either way
+	# and CR-in-CI caught the recurrence by reading. The SHAPE is therefore
+	# what gets enforced, in the two files that have carried it.
+	#
+	# The fix each time is a here-string or a redirect — no pipeline, so no
+	# exit status to misread.
+	local f hits="" found repo="${BATS_TEST_DIRNAME}/../../.."
+	for f in "$repo/scripts/ship-pr-cycle.sh" "$repo/_lib/hook-ack.sh"; do
+		[ -r "$f" ] || {
+			echo "expected file missing, so this test checked nothing: $f"
+			return 1
+		}
+		# Code only — a comment describing the anti-pattern is not the
+		# anti-pattern, and both files are full of such comments now.
+		found=$(grep -nE '\|[[:space:]]*(grep -q|head -c)' "$f" |
+			grep -vE '^[0-9]+:[[:space:]]*#' || true)
+		[ -z "$found" ] || hits="$hits
+  ${f##*/}:
+$found"
+	done
+	[ -z "$hits" ] || {
+		echo "short-circuiting reader downstream of a pipe (SIGPIPE under pipefail):$hits"
+		echo "Use a here-string or a redirect instead — no pipeline, no status to misread."
+		return 1
+	}
+}
