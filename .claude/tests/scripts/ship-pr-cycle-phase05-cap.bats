@@ -641,3 +641,53 @@ $found"
 		return 1
 	}
 }
+
+@test "the round counter survives a log larger than the pipe buffer" {
+	# THE BEHAVIOURAL REPRODUCTION, as CR-in-CI asked for. The sibling
+	# source-shape guard cannot see a newline-formatted pipeline; this one
+	# does not care how the code is spelled, only what it does.
+	#
+	# The defect: `printf '%s\n' "$_logged" | grep -qxF "$_sha"`. grep -q
+	# exits at its FIRST match, so if the wanted sha appears early and a
+	# lot follows it, printf is still writing when the pipe closes, takes
+	# SIGPIPE, and under `set -o pipefail` the whole pipeline reports
+	# failure — the sha goes UNCOUNTED. That lowers the round count, which
+	# ARMS another prefilter round: the cap silently stops capping.
+	#
+	# So: put the branch sha FIRST, then flood the log past the 64KiB pipe
+	# buffer. With the bug the count drops to 0 and `next` walks on to
+	# "not yet logged" (rc 1). With the here-string it counts 1, reaches
+	# the cap of 1, and refuses (rc 2).
+	_seed_stage_phase05
+	_seed_p05_round "$SHA_PREV" 4
+	# ~3000 rows of 40-char shas — comfortably past the buffer, and the
+	# match is already behind us by the first of them.
+	local i
+	for i in $(seq 1 3000); do
+		printf '{"ts":"2026-01-01T00:00:00Z","sha":"%040d","phase":"0.5","agent":"<all>","findings":0,"status":"emitted"}\n' \
+			"$i" >>"$P05_LOG"
+	done
+	# Sanity: the sha list this drives really is bigger than a pipe buffer,
+	# or the test proves nothing about the window it claims to open.
+	local bytes
+	bytes=$(jq -r -R 'fromjson? | .sha // empty' "$P05_LOG" | wc -c | tr -d ' ')
+	[ "$bytes" -gt 65536 ] || {
+		echo "the seeded sha list is only $bytes bytes — under the pipe buffer, so the SIGPIPE window never opens and this test is vacuous"
+		return 1
+	}
+
+	cd "$TEST_TMP" || return 1
+	export PHASE05_ROUND_CAP=1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 2 ] || {
+		echo "the branch sha was not counted under a large log (rc $status, expected 2) — the round count dropped and the cap did not engage: $output"
+		return 1
+	}
+	case "$output" in
+	*"round-cap reached (1/1)"*) ;;
+	*)
+		echo "the cap did not report the sha as counted: $output"
+		return 1
+		;;
+	esac
+}
