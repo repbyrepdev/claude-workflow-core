@@ -41,7 +41,23 @@ teardown() {
 }
 
 _in_repo() { # runs the script with $WORK as the git toplevel
-	run bash -c "cd '$WORK' && '$SCRIPT' $1"
+	# STUBBED TOO. This helper looked read-only — it only ever runs
+	# --verify — but --verify calls _install_state, which on macOS runs
+	# `launchctl print gui/$(id -u)/...` against the OPERATOR'S REAL
+	# DOMAIN. So a "fresh repo" assertion was reading host state: it would
+	# start failing the day someone followed this script's own --install
+	# advice, and it is the same domain-vs-HOME confusion that left a live
+	# agent registered on the development machine.
+	#
+	# Containment is not optional for the read paths either.
+	_stub_scheduler
+	run env \
+		HOME="$FAKEHOME" \
+		PATH="$WORK/bin:$PATH" \
+		CRONTAB_FILE="$CRONTAB_FILE" \
+		LAUNCHCTL_STATE="$LAUNCHCTL_STATE" \
+		SCHED_PLATFORM="${SCHED_PLATFORM:-}" \
+		bash -c "cd '$WORK' && '$SCRIPT' $1"
 }
 
 @test "scheduler: the file two hooks cite actually exists and is executable" {

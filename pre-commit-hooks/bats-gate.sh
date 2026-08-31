@@ -59,6 +59,16 @@ _scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
 # shellcheck source=../_lib/bats-scope.sh
 [ -n "$_scope_self" ] && [ -r "$_scope_self/.claude/_lib/bats-scope.sh" ] &&
 	! command -v bats_in_scope >/dev/null 2>&1 && . "$_scope_self/.claude/_lib/bats-scope.sh"
+# FAIL CLOSED, once, here — not per file. An unloadable scope predicate must
+# not silently mean "nothing is in scope", which is the gate quietly
+# switching itself off and would look exactly like a passing commit. Checked
+# at load rather than inside the per-file loop: the condition cannot change
+# between files, and a guard that fires on the first file reads as a
+# property of that file.
+if ! command -v bats_in_scope >/dev/null 2>&1; then
+	echo "bats-gate: ERROR: _lib/bats-scope.sh did not load — refusing to run with an unknown scope (an empty scope would pass every commit silently). Fix the plugin install." >&2
+	exit 2
+fi
 _bats_gate_ack() {
 	command -v hook_ack_append >/dev/null 2>&1 &&
 		hook_ack_append "bats-gate" "$1" "$2"
@@ -111,14 +121,6 @@ check_sh_gate() {
 	# copy that used to live here listed consumer paths only, so in this
 	# repo it matched `scripts/` and nothing else — 22% of production.
 	#
-	# FAIL CLOSED if the library is missing: an unloadable scope predicate
-	# must not silently mean "nothing is in scope", which is the gate
-	# quietly switching itself off. That is the failure this whole epic is
-	# about, and it would look exactly like a passing commit.
-	if ! command -v bats_in_scope >/dev/null 2>&1; then
-		echo "bats-gate: ERROR: _lib/bats-scope.sh did not load — refusing to run with an unknown scope (an empty scope would pass every commit silently). Fix the plugin install." >&2
-		exit 2
-	fi
 	bats_in_scope "$sh" || return 0
 
 	# Find a .bats that `# covers:` this script. -print0/NUL-delimited

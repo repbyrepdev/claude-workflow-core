@@ -164,7 +164,10 @@ _scope() { # $1 = snippet
 	for f in pre-commit-hooks/bats-gate.sh hooks/pre-push-pipeline-gate.sh scripts/test.sh; do
 		grep -q 'bats-scope\.sh' "$REPO_ROOT/$f" || missing="$missing $f(no-source)"
 		# It must react to the ABSENCE, not merely source it.
-		grep -qE 'command -v (bats_in_scope|bats_scope_roots|bats_scope_files)' "$REPO_ROOT/$f" ||
+		# bats_scope_roots is NOT an accepted alternative — it was deleted.
+		# Leaving it in the alternation meant a consumer could satisfy this
+		# guard by naming a function that no longer exists.
+		grep -qE 'command -v (bats_in_scope|bats_scope_files)' "$REPO_ROOT/$f" ||
 			missing="$missing $f(no-guard)"
 	done
 	[ -z "$missing" ] || {
@@ -179,7 +182,16 @@ _scope() { # $1 = snippet
 	# enforce it locally and for free; this asserts nobody quietly adds a
 	# workflow later.
 	local hits
-	hits=$(cd "$REPO_ROOT" && grep -rlE 'bats|scripts/test\.sh' .github/workflows/ 2>/dev/null || true)
+	# grep rc captured, as in the duplication guard above: rc 1 is "no
+	# matches" (the passing case), rc >1 is a real failure — a missing
+	# workflows directory after a restructure — and `|| true` made a search
+	# that never ran indistinguishable from a search that found nothing.
+	local grc=0
+	hits=$(cd "$REPO_ROOT" && grep -rlE 'bats|scripts/test\.sh' .github/workflows/) || grc=$?
+	[ "$grc" -le 1 ] || {
+		echo "the CI-policy search itself failed (rc $grc) — this test checked nothing"
+		return 1
+	}
 	[ -z "$hits" ] || {
 		echo "a CI workflow now references bats/test.sh — the enforcement is deliberately LOCAL:"
 		printf '%s\n' "$hits"

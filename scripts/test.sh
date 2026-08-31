@@ -236,6 +236,16 @@ if [ "$MODE" = "coverage" ]; then
 	fi
 	# Tracked files, from git — not a filesystem walk. See bats_scope_files.
 	_scope_files=$(bats_scope_files) || exit 2
+	# ZERO is not a clean inventory when the repo demonstrably has shell
+	# files. It is what a mis-set BATS_SCOPE_DIRS produces — a typo, not
+	# just the documented empty opt-out — and every gate then treats the
+	# whole repo as out of scope while --coverage prints a tidy "N/A". The
+	# denominator being empty is the loudest possible symptom of the defect
+	# this issue is about, so it is refused rather than formatted.
+	if [ -z "$_scope_files" ] && git ls-files --error-unmatch -- '*.sh' >/dev/null 2>&1; then
+		echo "test.sh: ERROR: the repo has tracked .sh files but NONE are in scope. BATS_SCOPE_DIRS='${BATS_SCOPE_DIRS-<unset>}' — a typo there disables every gate silently. Refusing to report coverage over an empty scope." >&2
+		exit 2
+	fi
 	if [ -n "$_scope_files" ]; then
 		sh_count=$(printf '%s\n' "$_scope_files" | grep -c . || true)
 	else

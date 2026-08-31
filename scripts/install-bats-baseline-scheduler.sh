@@ -47,7 +47,17 @@ set -euo pipefail
 #
 # Exit: 0 ok · 1 verify found a problem · 2 usage/precondition
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# NO `|| pwd` fallback. This script SCHEDULES a command that cds into
+# REPO_ROOT and runs the test suite weekly. Falling back to the current
+# directory means scheduling a job against wherever the operator happened
+# to be standing — which will not be a repo, so the job fails silently
+# every week, and the backstop this whole change exists to provide reports
+# itself installed. Outside a repo there is no right answer, so refuse.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
+if [ -z "$REPO_ROOT" ]; then
+	echo "install-bats-baseline-scheduler: not inside a git repository — refusing to schedule a job against an arbitrary directory" >&2
+	exit 2
+fi
 cd "$REPO_ROOT" || exit 2
 
 # The repo path is interpolated into an XML document AND into a crontab
@@ -232,6 +242,7 @@ _install() {
 		# bootout first so a re-install replaces rather than erroring on a
 		# duplicate label; its failure when nothing is loaded is expected.
 		launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+		local _lc_err _lc_detail
 		_lc_err=$(mktemp -t sched-lc.XXXXXX) || _lc_err="/dev/null"
 		if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>"$_lc_err"; then
 			_lc_detail=""
