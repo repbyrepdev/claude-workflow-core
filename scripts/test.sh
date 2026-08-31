@@ -199,6 +199,27 @@ fi
 
 cd "$REPO_ROOT" || exit 2
 
+# (#2642) The bats-scope SSOT.
+#
+# Resolved from THIS SCRIPT'S OWN directory, not from the repo being
+# inspected. $REPO_ROOT is overridable via TEST_REPO_ROOT so --coverage can
+# be pointed at a fixture, and the first version of this block probed there
+# — so every fixture-based coverage test lost the library and took the
+# refusal path. The library ships beside the script; where the script is
+# asked to look is a different question entirely.
+_scope_self=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd) || _scope_self=""
+_scope_lib=""
+for _c in "$_scope_self/_lib/bats-scope.sh" "$_scope_self/.claude/_lib/bats-scope.sh"; do
+	if [ -n "$_scope_self" ] && [ -r "$_c" ]; then
+		_scope_lib="$_c"
+		break
+	fi
+done
+if [ -n "$_scope_lib" ]; then
+	# shellcheck source=../_lib/bats-scope.sh
+	. "$_scope_lib" || true
+fi
+
 # --coverage: inventory mode, doesn't run tests.
 if [ "$MODE" = "coverage" ]; then
 	echo "=== bats coverage inventory ==="
@@ -207,10 +228,23 @@ if [ "$MODE" = "coverage" ]; then
 	# `find | wc -l` pipeline inherits that rc=1 and `set -e` aborts the
 	# script. CR-CLI flagged this on #51 (plugin root ships no .claude/
 	# scripts or .claude/hooks).
+	# (#2642) Roots from _lib/bats-scope.sh. This denominator counted the
+	# same consumer-only paths as the two gates, so --coverage reported a
+	# percentage over 22% of the repo — and printed ~60% while the true
+	# figure across everything was 58.5%. That near-coincidence is why the
+	# wrong denominator went unnoticed for so long.
 	_existing_sh_roots=()
-	for r in .claude/scripts .claude/hooks .claude/skills .claude/local-backups scripts; do
-		[ -d "$r" ] && _existing_sh_roots+=("$r")
-	done
+	if ! command -v bats_scope_roots >/dev/null 2>&1; then
+		# Refuse rather than invent a denominator. A coverage percentage
+		# over an unknown scope is the defect this issue is about: the old
+		# copy of the list here reported ~60% over 22% of the repo, and the
+		# near-coincidence with the true 58.5% is why it went unnoticed.
+		echo "test.sh: ERROR: _lib/bats-scope.sh did not load — refusing to print a coverage figure over an unknown denominator. Fix the plugin install." >&2
+		exit 2
+	fi
+	while IFS= read -r r; do
+		[ -n "$r" ] && _existing_sh_roots+=("$r")
+	done < <(bats_scope_roots)
 	if [ "${#_existing_sh_roots[@]}" -gt 0 ]; then
 		sh_count=$(find "${_existing_sh_roots[@]}" -name "*.sh" | wc -l | tr -d ' ')
 	else

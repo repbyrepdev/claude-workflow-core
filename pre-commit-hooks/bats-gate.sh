@@ -46,6 +46,12 @@ LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
 LIB_CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
 # shellcheck source=../_lib/canonical-consumer-skip.sh
 [ -f "$LIB_CCS" ] && source "$LIB_CCS"
+# (#2642) SSOT for which files the discipline covers — see the scope check
+# in _bats_gate_needs_test below, which refuses rather than defaulting if
+# this did not load.
+LIB_SCOPE="$(dirname "$0")/../_lib/bats-scope.sh"
+# shellcheck source=../_lib/bats-scope.sh
+[ -f "$LIB_SCOPE" ] && source "$LIB_SCOPE"
 _bats_gate_ack() {
 	command -v hook_ack_append >/dev/null 2>&1 &&
 		hook_ack_append "bats-gate" "$1" "$2"
@@ -94,13 +100,19 @@ check_sh_gate() {
 		return 0
 	fi
 
-	# Only gate scripts in scope (same dirs as --coverage counts)
-	case "$sh" in
-	.claude/scripts/* | .claude/hooks/* | .claude/skills/* | .claude/local-backups/* | scripts/*) ;;
-	*)
-		return 0
-		;;
-	esac
+	# (#2642) Scope comes from _lib/bats-scope.sh, not a local copy. The
+	# copy that used to live here listed consumer paths only, so in this
+	# repo it matched `scripts/` and nothing else — 22% of production.
+	#
+	# FAIL CLOSED if the library is missing: an unloadable scope predicate
+	# must not silently mean "nothing is in scope", which is the gate
+	# quietly switching itself off. That is the failure this whole epic is
+	# about, and it would look exactly like a passing commit.
+	if ! command -v bats_in_scope >/dev/null 2>&1; then
+		echo "bats-gate: ERROR: _lib/bats-scope.sh did not load — refusing to run with an unknown scope (an empty scope would pass every commit silently). Fix the plugin install." >&2
+		exit 2
+	fi
+	bats_in_scope "$sh" || return 0
 
 	# Find a .bats that `# covers:` this script. -print0/NUL-delimited
 	# read so filenames containing newlines don't break the loop.

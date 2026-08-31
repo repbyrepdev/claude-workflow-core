@@ -1,0 +1,212 @@
+#!/usr/bin/env bats
+# covers: scripts/install-bats-baseline-scheduler.sh
+#
+# (#2642) Two hooks have pointed at this script since v4.23-V and it did
+# not exist — pre-push-pipeline-gate.sh:859 and session-start-report.sh
+# at :561 and :576. So the push gate's 7-day baseline fallback never fired
+# (zero rows in bats-run.jsonl carry baseline:true) and session-start has
+# been telling the operator to run a command that would answer "No such
+# file". An error message pointing at nothing reads as a supported path.
+#
+# THESE TESTS NEVER INSTALL ANYTHING. --install writes a launchd plist into
+# the operator's real ~/Library/LaunchAgents and calls launchctl; a test
+# suite that did that would be modifying the machine it runs on. Only the
+# read-only paths are exercised, and --verify is pointed at fixture logs
+# via a fake repo root.
+
+setup() {
+	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
+	SCRIPT="$REPO_ROOT/scripts/install-bats-baseline-scheduler.sh"
+	[ -x "$SCRIPT" ]
+	WORK=$(mktemp -d -t bats-sched.XXXXXX) || return 1
+	(
+		cd "$WORK"
+		git init -q
+		mkdir -p .claude/logs
+	) || return 1
+	RUN_LOG="$WORK/.claude/logs/bats-run.jsonl"
+}
+
+teardown() {
+	cd "${TMPDIR:-/tmp}" 2>/dev/null || cd "$HOME" || return 0
+	case "${WORK:-}" in
+	*/bats-sched.*) rm -rf "$WORK" ;;
+	esac
+	return 0
+}
+
+_in_repo() { # runs the script with $WORK as the git toplevel
+	run bash -c "cd '$WORK' && '$SCRIPT' $1"
+}
+
+@test "scheduler: the file two hooks cite actually exists and is executable" {
+	# The whole finding, in one assertion.
+	[ -x "$SCRIPT" ] || {
+		echo "the remedy hooks point at is still missing"
+		return 1
+	}
+	# And the hooks still point HERE — a rename would recreate the defect.
+	local citers
+	citers=$(grep -rl 'install-bats-baseline-scheduler' "$REPO_ROOT/hooks" 2>/dev/null | wc -l | tr -d ' ')
+	[ "$citers" -ge 2 ] || {
+		echo "expected the two citing hooks to still reference this script, found $citers"
+		return 1
+	}
+}
+
+@test "scheduler: --dry-run changes nothing and says what it would do" {
+	_in_repo --dry-run
+	[ "$status" -eq 0 ]
+	[[ $output == *"--baseline"* ]] || {
+		echo "dry-run does not name the command it would schedule: $output"
+		return 1
+	}
+	[[ $output == *"TEST_SH_FULL_OK=1"* ]] || {
+		echo "dry-run omits the env a scheduled full run REQUIRES — a bare scripts/test.sh is refused by design: $output"
+		return 1
+	}
+	# Nothing installed as a side effect — asserted as UNCHANGED, not as
+	# absent. The first version skipped when an agent already existed on
+	# the machine, which made the inertness claim conditional on operator
+	# state and, worse, silently untested on exactly the machines where a
+	# stray install would matter. Comparing before to after works either
+	# way and needs no skip. (The commit gate refused the bare skip for
+	# want of an issue ref, which was the right call for the wrong
+	# reason — the skip should not have been there at all.)
+	local plist="$HOME/Library/LaunchAgents/com.repbyrep.claude-workflow-core.bats-baseline.plist"
+	local before after
+	before=$([ -f "$plist" ] && cksum <"$plist" || echo absent)
+	_in_repo --dry-run
+	after=$([ -f "$plist" ] && cksum <"$plist" || echo absent)
+	[ "$before" = "$after" ] || {
+		echo "--dry-run changed the launchd agent on this machine (before=$before after=$after)"
+		return 1
+	}
+}
+
+@test "scheduler: --verify reports the scheduler and the baseline SEPARATELY" {
+	# Two independent questions with different fixes. Collapsing them is how
+	# a broken cron reads as healthy: "scheduled" and "actually ran" fail
+	# for different reasons and want different remedies.
+	#
+	# A repo with no log at all is its own case, distinct from a log that
+	# exists but holds no baseline row (below) — "nothing has ever run" and
+	# "runs happen but never the baseline" are different diagnoses.
+	_in_repo --verify
+	[ "$status" -eq 1 ] || {
+		echo "verify on a fresh repo returned $status, expected 1: $output"
+		return 1
+	}
+	[[ $output == *"NOT INSTALLED"* ]] || {
+		echo "verify does not report the missing scheduler: $output"
+		return 1
+	}
+	[[ $output == *"nothing has ever run"* ]] || {
+		echo "verify does not report the absent log: $output"
+		return 1
+	}
+}
+
+@test "scheduler: a log with NO baseline row says so, and names the consequence" {
+	# The state this repo was actually in: 752 rows, not one of them a
+	# baseline, so the push gate's 7-day fallback had never fired. The
+	# message has to say that, or the operator reads "no baseline" as
+	# cosmetic.
+	printf '{"ts":"2099-01-01T00:00:00Z","sha":"abc","status":"pass","baseline":false}\n' >"$RUN_LOG"
+	_in_repo --verify
+	[ "$status" -ne 0 ]
+	[[ $output == *"NEVER RUN"* ]] || {
+		echo "verify does not report the missing baseline: $output"
+		return 1
+	}
+	[[ $output == *"never fired"* ]] || {
+		echo "verify does not explain the consequence (the 7-day fallback): $output"
+		return 1
+	}
+}
+
+@test "scheduler: --verify reads a RECENT baseline row as healthy" {
+	# The row shape the push gate's CUTOFF_7D arm actually reads.
+	local now
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf '{"ts":"%s","sha":"abc","status":"pass","baseline":true}\n' "$now" >"$RUN_LOG"
+	_in_repo --verify
+	[[ $output == *"last run $now"* ]] || {
+		echo "verify did not find the fresh baseline row: $output"
+		return 1
+	}
+	[[ $output != *"NEVER RUN"* ]] || {
+		echo "a present baseline row was reported as never run: $output"
+		return 1
+	}
+	[[ $output == *"0d old"* ]] || {
+		echo "verify did not age the row correctly: $output"
+		return 1
+	}
+}
+
+@test "scheduler: --verify reports a STALE baseline, and fails" {
+	# >14 days is two missed weekly cadences — the signal session-start
+	# surfaces. It must be non-zero, or nothing downstream can act on it.
+	printf '{"ts":"2020-01-01T00:00:00Z","sha":"abc","status":"pass","baseline":true}\n' >"$RUN_LOG"
+	_in_repo --verify
+	[ "$status" -ne 0 ] || {
+		echo "a years-old baseline was reported as healthy: $output"
+		return 1
+	}
+	[[ $output == *STALE* ]] || {
+		echo "verify does not name the staleness: $output"
+		return 1
+	}
+}
+
+@test "scheduler: a NON-baseline row does not satisfy --verify" {
+	# Ordinary per-file runs write rows too. Counting them would report a
+	# baseline that never happened — the log is full of them, which is
+	# exactly how this could look healthy while being broken.
+	printf '{"ts":"2099-01-01T00:00:00Z","sha":"abc","status":"pass","baseline":false}\n' >"$RUN_LOG"
+	_in_repo --verify
+	[[ $output == *"NEVER RUN"* ]] || {
+		echo "an ordinary run row was counted as a baseline: $output"
+		return 1
+	}
+}
+
+@test "scheduler: a corrupt log line does not abort the walk" {
+	# fromjson? skips malformed lines. A half-written row must not make
+	# verify claim there is no baseline at all.
+	local now
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	printf 'this is not json\n{"ts":"%s","status":"pass","baseline":true}\n' "$now" >"$RUN_LOG"
+	_in_repo --verify
+	[[ $output == *"last run $now"* ]] || {
+		echo "a corrupt line hid a real baseline row: $output"
+		return 1
+	}
+}
+
+@test "scheduler: an unknown argument refuses instead of installing" {
+	# The dangerous default. A typo must never fall through to --install.
+	_in_repo --instal
+	[ "$status" -eq 2 ] || {
+		echo "a typo'd flag returned $status, expected 2: $output"
+		return 1
+	}
+	[[ $output == *"unknown argument"* ]] || {
+		echo "the refusal does not name the problem: $output"
+		return 1
+	}
+}
+
+@test "scheduler: the default action is --verify, not --install" {
+	# Running it bare must REPORT, never mutate the machine.
+	_in_repo ""
+	[[ $output == *scheduler:* ]] || {
+		echo "the bare invocation did not run verify: $output"
+		return 1
+	}
+	[[ $output != *installed\ launchd* ]] || {
+		echo "the bare invocation INSTALLED something: $output"
+		return 1
+	}
+}

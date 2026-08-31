@@ -2,7 +2,12 @@
 set -uo pipefail
 # event: PostToolUse
 # matcher: Bash
-# enforcement: inform
+# enforcement: enforce — the commit-no-task-transition path calls
+# hook_ack_append, which registers a sentinel that stale-state-gate.sh
+# reads to DENY the next tool call. That is blocking, whatever the
+# nudge is called. It shipped labelled `inform` in #2638 and the
+# INVERSE audit (#2547) has been red on main ever since — the test
+# was right and the label was wrong.
 # auto-register: true
 #
 # (#2555) The third drift #2551 records: a commit lands referencing an issue,

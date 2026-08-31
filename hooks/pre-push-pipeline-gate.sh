@@ -245,6 +245,21 @@ _is_comments_only() {
 # drift). Resolved via the symlink-safe PPG_DIR preamble (top of file) so it
 # works whether the gate is executed (pre-push — including through a
 # `.git/hooks/pre-push` symlink) or sourced-for-test under bats.
+# (#2642) The bats-scope SSOT, sourced beside the other shared libs. The
+# consumer install keeps it at .claude/_lib/; the plugin's own repo at
+# top-level _lib/. Absence is NOT silently tolerated — the check-5 block
+# below refuses the push rather than treating an unknown scope as empty.
+_ppg_scope_lib=""
+if [ -r "$PPG_DIR/../_lib/bats-scope.sh" ]; then
+	_ppg_scope_lib="$PPG_DIR/../_lib/bats-scope.sh"
+elif [ -r "$PPG_DIR/../../_lib/bats-scope.sh" ]; then
+	_ppg_scope_lib="$PPG_DIR/../../_lib/bats-scope.sh"
+fi
+if [ -n "$_ppg_scope_lib" ]; then
+	# shellcheck source=../_lib/bats-scope.sh
+	. "$_ppg_scope_lib" || true
+fi
+
 _ppg_cov_lib="$PPG_DIR/../_lib/cr-phase2-coverage.sh"
 if [ -r "$_ppg_cov_lib" ]; then
 	# shellcheck source=../_lib/cr-phase2-coverage.sh
@@ -767,18 +782,29 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
 	# if INSCOPE_SH is already non-empty — avoids the leading-blank-line
 	# that the prior `INSCOPE_SH="${INSCOPE_SH}${sh}\n"` pattern produced.
 	INSCOPE_SH=""
+	# (#2642) Scope from _lib/bats-scope.sh. The local copy here listed
+	# consumer paths, so this gate — which hashes the blob and demands a
+	# recorded pass at THAT content, the strongest check in the repo — was
+	# guarding 22% of production.
+	#
+	# FAIL CLOSED: an unloadable predicate would leave INSCOPE_SH empty,
+	# and an empty in-scope set reads as "nothing needs verifying", which
+	# passes every push.
+	if ! command -v bats_in_scope >/dev/null 2>&1; then
+		echo "pre-push-pipeline-gate: ERROR: _lib/bats-scope.sh did not load — refusing to push with an unknown scope (an empty scope would pass every push silently). Fix the plugin install." >&2
+		FAILED=1
+		continue
+	fi
 	while IFS= read -r sh; do
 		[ -z "$sh" ] && continue
-		case "$sh" in
-		.claude/scripts/* | .claude/hooks/* | .claude/skills/* | .claude/local-backups/* | scripts/*)
+		if bats_in_scope "$sh"; then
 			if [ -z "$INSCOPE_SH" ]; then
 				INSCOPE_SH="$sh"
 			else
 				INSCOPE_SH="$INSCOPE_SH
 $sh"
 			fi
-			;;
-		esac
+		fi
 	done <<<"$CHANGED_SH"
 	if [ -n "$INSCOPE_SH" ] && [ ! -f "$BATS_LOG" ]; then
 		echo "pre-push-pipeline-gate: v4.23-J check 5 — .sh files changed but $BATS_LOG missing" >&2
