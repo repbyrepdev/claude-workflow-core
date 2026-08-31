@@ -131,9 +131,22 @@ _scope() { # $1 = snippet
 	# leaves the others lying, and nothing compared them. The predicate is
 	# the only place the list may appear.
 	local hits
+	# _lib IS searched — it was omitted, which made the self-exclusion on
+	# the next line dead code and left the most likely home for a fourth
+	# copy (a _lib helper, now that _lib is in scope) invisible. Two agents
+	# pointed at the dead filter before anyone noticed why it was dead.
+	#
+	# grep's rc is CAPTURED: rc 1 is "no matches", the passing case; rc >1
+	# is a real failure (a missing root after a rename) and must not read
+	# as clean, which `|| true` made it.
+	local grc=0
 	hits=$(cd "$REPO_ROOT" && grep -rn 'local-backups/\*' \
-		--include='*.sh' hooks scripts pre-commit-hooks skills 2>/dev/null |
-		grep -v '^_lib/bats-scope.sh:' || true)
+		--include='*.sh' hooks scripts pre-commit-hooks skills _lib |
+		grep -v '^_lib/bats-scope.sh:') || grc=$?
+	[ "$grc" -le 1 ] || {
+		echo "the duplication search itself failed (rc $grc) — this test checked nothing"
+		return 1
+	}
 	[ -z "$hits" ] || {
 		echo "the scope list is duplicated outside _lib/bats-scope.sh:"
 		printf '%s\n' "$hits"

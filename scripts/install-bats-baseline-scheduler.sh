@@ -320,13 +320,31 @@ _verify() {
 	# Two independent questions, reported separately — "scheduled" and
 	# "actually ran recently" fail for different reasons and have different
 	# fixes, and collapsing them is how a broken cron reads as healthy.
-	local rc=0
-	if _is_installed; then
-		echo "scheduler:  installed ($PLATFORM)"
-	else
+	# Report the STATE, not a boolean. _install_state distinguishes four
+	# outcomes and collapsing them to installed/not-installed throws away
+	# exactly the one that matters: a plist written but never loaded is the
+	# unfalsifiable "cron may be broken" case this script exists to end,
+	# and it is not the same as absent (different fix) or unknown (no
+	# answer at all).
+	local rc=0 state
+	state=$(_install_state)
+	case "$state" in
+	loaded)
+		echo "scheduler:  installed and loaded ($PLATFORM)"
+		;;
+	written-not-loaded)
+		echo "scheduler:  plist WRITTEN BUT NOT LOADED ($PLATFORM) — launchd does not know about $LABEL, so nothing will fire. Re-run --install, or: launchctl bootstrap gui/$(id -u) $PLIST" >&2
+		rc=1
+		;;
+	absent)
 		echo "scheduler:  NOT INSTALLED — run: scripts/install-bats-baseline-scheduler.sh --install" >&2
 		rc=1
-	fi
+		;;
+	*)
+		echo "scheduler:  UNDETERMINABLE ($PLATFORM) — could not read the current schedule. This is NOT the same as not installed." >&2
+		rc=1
+		;;
+	esac
 
 	# ABSENT and UNREADABLE are different facts with different fixes, and
 	# `[ ! -r ]` was true of both — so a permissions problem was reported as

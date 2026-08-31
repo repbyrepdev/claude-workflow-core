@@ -544,20 +544,18 @@ STUB
 		echo "--install failed: $output"
 		return 1
 	}
-	if true; then
-		[ -s "$CRONTAB_FILE" ] || {
-			echo "the cron branch wrote nothing"
-			return 1
-		}
-		grep -q 'TEST_SH_FULL_OK=1' "$CRONTAB_FILE" || {
-			echo "the cron entry omits TEST_SH_FULL_OK — a bare scripts/test.sh is refused, so this job could never succeed: $(cat "$CRONTAB_FILE")"
-			return 1
-		}
-		grep -q -- '--baseline' "$CRONTAB_FILE" || {
-			echo "the cron entry does not pass --baseline, so its rows would not satisfy the push gate: $(cat "$CRONTAB_FILE")"
-			return 1
-		}
-	fi
+	[ -s "$CRONTAB_FILE" ] || {
+		echo "the cron branch wrote nothing"
+		return 1
+	}
+	grep -q 'TEST_SH_FULL_OK=1' "$CRONTAB_FILE" || {
+		echo "the cron entry omits TEST_SH_FULL_OK — a bare scripts/test.sh is refused, so this job could never succeed: $(cat "$CRONTAB_FILE")"
+		return 1
+	}
+	grep -q -- '--baseline' "$CRONTAB_FILE" || {
+		echo "the cron entry does not pass --baseline, so its rows would not satisfy the push gate: $(cat "$CRONTAB_FILE")"
+		return 1
+	}
 }
 
 @test "scheduler: both back-ends schedule the SAME time" {

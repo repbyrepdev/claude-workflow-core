@@ -50,7 +50,14 @@ setup() {
 # Stage whatever the test just created, so git can see it. Coverage counts
 # TRACKED files; an unstaged fixture is invisible by design, not by accident.
 _track() {
-	git -C "$TEST_TMP" add -A 2>/dev/null || true
+	# NO `|| true`. A silently failed `git add` leaves zero tracked files,
+	# and "Shell scripts in scope: 0" is exactly what two of these tests
+	# assert — so a broken fixture would satisfy them while proving
+	# nothing about the code.
+	git -C "$TEST_TMP" add -A || {
+		echo "fixture staging failed — the coverage assertions below would pass on an empty repo"
+		return 1
+	}
 }
 
 teardown() {

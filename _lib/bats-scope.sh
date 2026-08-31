@@ -1,6 +1,11 @@
 #!/bin/bash
-set -u
 # (#2642) SSOT for "which shell files does the bats discipline apply to".
+#
+# NO `set -u` in this file. It is SOURCED, so an option set at the top level
+# leaks into the caller and changes how the rest of ITS script behaves —
+# three consumers, each with its own option contract. Every expansion in the
+# body is guarded (`${1:-}`, `${BATS_SCOPE_DIRS-...}`), so the library does
+# not need it; owning shell options is the caller's business.
 #
 # WHY THIS EXISTS
 #
