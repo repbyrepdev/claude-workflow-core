@@ -58,6 +58,28 @@ _ensure_timeout_on_path() {
 # Shorthand: record a fix with overridable retest cmd/rc + cited files.
 _record_fix() {
 	local cmd="$1" rc="$2" cited="${3:-}"
+	# (#2643) Differential symptom evidence is REQUIRED for cycle-critical
+	# citations, and most of this file's fixtures cite hooks/x.sh. These
+	# tests are about the critical-path RETEST rule, not about symptom
+	# evidence, so the helper supplies the smallest TRUTHFUL differential
+	# the fixture affords and each test gets on with its own subject.
+	#
+	# Truthful, not a stub: hooks/x.sh is written into the working tree and
+	# never committed, so at HEAD it genuinely does not exist and the
+	# baseline genuinely exits 127. --allow-absence-baseline is the explicit
+	# claim that absence IS the baseline here — precisely the case that flag
+	# exists for, rather than a way around the check.
+	local sym=()
+	case "$cited" in
+	# One pattern: `*hooks/*.sh` already covers pre-commit-hooks/, and `*`
+	# matches `/`, so the extra arms were the same pattern written three
+	# times. Every fixture in this file that cites a cycle-critical path
+	# cites hooks/x.sh.
+	*hooks/*.sh | *_lib/*.sh)
+		sym=(--symptom-cmd "bash hooks/x.sh" --symptom-baseline-rc 127
+			--symptom-fixed-rc 0 --allow-absence-baseline)
+		;;
+	esac
 	run "$SKILL" record-fix \
 		--finding-id t1 \
 		--finding-text "sample finding" \
@@ -65,7 +87,8 @@ _record_fix() {
 		--retest-cmd "$cmd" \
 		--retest-rc "$rc" \
 		--source phase1 --confidence 5 \
-		${cited:+--cited-files "$cited"}
+		${cited:+--cited-files "$cited"} \
+		"${sym[@]+"${sym[@]}"}"
 }
 
 @test "truthful rc-0 evidence records and stamps retest_verified" {
@@ -223,7 +246,8 @@ _record_fix() {
 	cd sub/deeper || return 1
 	run "$SKILL" record-fix --finding-id cwd1 --finding-text x --fix-summary y \
 		--retest-cmd "bash hooks/x.sh" --retest-rc 0 --cited-files "hooks/x.sh" \
-		--source phase1 --confidence 5
+		--source phase1 --confidence 5 \
+		--symptom-cmd "bash hooks/x.sh" --symptom-baseline-rc 127 --symptom-fixed-rc 0 --allow-absence-baseline
 	[ "$status" -eq 0 ]
 	[[ $output == *"Recorded fix"* ]]
 }
@@ -241,7 +265,8 @@ _record_fix() {
 	# And the SSOT-relative spelling of the entry point satisfies it.
 	run "$SKILL" record-fix --finding-id mir2 --finding-text x2 --fix-summary y \
 		--retest-cmd "bash .claude/hooks/m.sh" --retest-rc 0 --cited-files ".claude/hooks/m.sh" \
-		--source phase1 --confidence 5
+		--source phase1 --confidence 5 \
+		--symptom-cmd "bash .claude/hooks/m.sh" --symptom-baseline-rc 127 --symptom-fixed-rc 0 --allow-absence-baseline
 	[ "$status" -eq 0 ]
 }
 
@@ -294,7 +319,8 @@ _record_fix() {
 	[[ $output == *"Recorded fix"* ]] || return 1
 	run "$SKILL" record-fix --finding-id rd1 --finding-text xr --fix-summary y \
 		--retest-cmd "bash hooks/x.sh >/dev/null 2>&1" --retest-rc 0 \
-		--cited-files "hooks/x.sh" --source phase1 --confidence 5
+		--cited-files "hooks/x.sh" --source phase1 --confidence 5 \
+		--symptom-cmd "bash hooks/x.sh" --symptom-baseline-rc 127 --symptom-fixed-rc 0 --allow-absence-baseline
 	[ "$status" -eq 0 ]
 	[[ $output == *"Recorded fix"* ]]
 }
