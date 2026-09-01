@@ -1032,7 +1032,21 @@ $_bats_untracked"
 	local f
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
-		[ -f "$REPO_ROOT/$f" ] || continue
+		# A path git listed that does not EXIST was deleted in this tree —
+		# there is nothing to copy and nothing is lost, so skip it. But a
+		# path that exists and is NOT a regular file (a directory, a broken
+		# symlink, a name mangled by core.quotePath) was silently skipped
+		# by the old bare `[ -f ] || continue`, which is the same "run the
+		# baseline without the test" outcome the fatal-copy rule below
+		# exists to prevent — just reached by a different door.
+		if [ ! -e "$REPO_ROOT/$f" ]; then
+			continue
+		fi
+		if [ ! -f "$REPO_ROOT/$f" ]; then
+			echo "error: $f is listed as a changed .bats but is not a regular file in this tree — refusing rather than running a baseline WITHOUT the test meant to detect the bug (#2643)" >&2
+			_prove_symptom_wt_cleanup
+			return 2
+		fi
 		if ! mkdir -p "$wt/$(dirname "$f")"; then
 			echo "error: could not create $(dirname "$f") in the baseline worktree — refusing rather than running without $f" >&2
 			_prove_symptom_wt_cleanup
@@ -1071,6 +1085,10 @@ EOF
 	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	else
+		# Match the fixed half and the retest path. An unenforced deadline
+		# must never be silent: the caller's rc-124 guard would otherwise
+		# be comparing elapsed time against a deadline that was never set.
+		echo "record-fix: WARN: the baseline symptom run is UNBOUNDED (no timeout binary, or PROVE_RETEST_NO_TIMEOUT=1) — a hang will not be killed (#2643)" >&2
 		(cd "$wt" && bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	fi
 	_elapsed=$((SECONDS - _t0))
@@ -1369,10 +1387,18 @@ cmd_record_fix() {
 	else
 		# shellcheck source=/dev/null
 		. "$_SF_LIB"
-		if [ "$(type -t _stage_findings_stages_at 2>/dev/null)" != "function" ]; then
-			echo "error: _lib/stage-findings.sh loaded but does not define _stage_findings_stages_at — refusing rather than skipping the reconciliation silently (#2643)" >&2
-			exit 2
-		fi
+		# ALL THREE are load-bearing. A 127 from cycle_started or
+		# cycle_in_use reads as "not started" / "not in use" and turns
+		# check (2) off silently — the exact shape this guard exists to
+		# stop, so a partial library must refuse rather than half-run.
+		local _sf_fn
+		for _sf_fn in _stage_findings_stages_at _stage_findings_cycle_started \
+			_stage_findings_cycle_in_use; do
+			if [ "$(type -t "$_sf_fn" 2>/dev/null)" != "function" ]; then
+				echo "error: _lib/stage-findings.sh loaded but does not define $_sf_fn — refusing rather than skipping the reconciliation silently (#2643)" >&2
+				exit 2
+			fi
+		done
 		if true; then
 			local _sf_sha _sf_stages _sf_started=0
 			if [ -n "$_cov_sha" ]; then
@@ -1405,7 +1431,7 @@ cmd_record_fix() {
 						echo "error: SOURCE/STAGE MISMATCH — ${_sf_sha:0:7} has findings logged by: $(printf '%s' "$_sf_stages" | tr '\n' ' ')but --source is '$src' (#2643)." >&2
 						echo "  Graduation gates count ONLY records whose source matches the stage that found the issue, so this record would be written and then never counted — which is how 42 real fixes read as 0/17, 0/13, 0/12." >&2
 						echo "  Use --source \"$(printf '%s' "$_sf_stages" | head -1)\", or split the record if it genuinely covers more than one stage." >&2
-						echo "  Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
+						echo "  If this is GENUINELY unrelated work on a sha that also had a review round — not coverage for the findings above — that is the case this check cannot tell apart, and the escape is the right answer: PROVE_SOURCE_CHECK_SKIP=1 (audit-logged)." >&2
 						exit 2
 						;;
 					esac

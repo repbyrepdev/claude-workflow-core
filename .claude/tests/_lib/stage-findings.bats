@@ -153,17 +153,38 @@ _load() {
 	}
 }
 
-@test "cr ignores a PARTIAL/TIMED-OUT run rather than reading it as clean" {
+@test "cr: a PARTIAL newest run is 'unknown', not 0 and not the older count" {
 	# #2544: a killed CR-CLI logs findings:0 truthfully meaning "0 SEEN",
-	# not "0 exist". Counting it would call an unreviewed sha clean.
+	# not "0 exist". Two wrong answers were considered here and both were
+	# rejected. Returning 0 calls an unfinished review clean — the #2544
+	# laundering. Returning the PREVIOUS run's 4 answers a question about a
+	# review that has since been re-run and did not finish. The honest
+	# answer is that the count is unknown, which fails closed.
 	_load
 	{
 		printf '{"sha":"2bb2222","rc":0,"findings":4}\n'
 		printf '{"sha":"2bb2222","rc":124,"findings":0,"partial":true,"timeout":true}\n'
 	} >"$WORK/.claude/logs/cr-local-review.jsonl"
 	run _stage_findings_count "$WORK" cr 2bb2222
-	[ "$output" = "4" ] || {
-		echo "a partial run erased the real finding count: got '$output'"
+	[ "$output" = "unknown" ] || {
+		echo "a partial newest run reported '$output' instead of unknown"
+		return 1
+	}
+	[ "$status" -eq 2 ]
+}
+
+@test "cr: a COMPLETE run after a partial one is read normally" {
+	# The control: the partial-run rule must not poison a sha whose latest
+	# review actually finished.
+	_load
+	{
+		printf '{"sha":"3cc3333","rc":124,"findings":0,"partial":true,"timeout":true}\n'
+		printf '{"sha":"3cc3333","rc":0,"findings":7}\n'
+	} >"$WORK/.claude/logs/cr-local-review.jsonl"
+	run _stage_findings_count "$WORK" cr 3cc3333
+	[ "$status" -eq 0 ]
+	[ "$output" = "7" ] || {
+		echo "a completed re-run was not read: got '$output'"
 		return 1
 	}
 }

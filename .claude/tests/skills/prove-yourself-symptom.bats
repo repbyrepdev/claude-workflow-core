@@ -425,12 +425,6 @@ _base_args() {
 	}
 }
 
-# Root cannot be denied by chmod, so a permissions-based negative test is
-# vacuous there — skip rather than pass having exercised nothing.
-_skip_if_root() {
-	[ "$(id -u)" -ne 0 ] || skip "runs as root (#2643): chmod 000 does not deny, so this negative test cannot fail"
-}
-
 @test "#2643: --baseline-ref is a working REMEDY, not just a suggestion" {
 	# The refusal path was tested and the remedy it names was not — so the
 	# message could have offered a flag that did not work, which is worse
@@ -509,7 +503,12 @@ _skip_if_root() {
 	# the new test that is supposed to detect the bug — and the
 	# differential would then "prove" the fix using a suite that never saw
 	# it. Forced by making the source file unreadable.
-	_skip_if_root
+	# NOT chmod 000: root ignores it, so the negative test was vacuous for
+	# anyone running as root and had to be skipped there — a skip that
+	# reports success. Replacing the source with a DIRECTORY makes the
+	# plain `cp` fail for every user, root included, so the refusal is
+	# actually exercised everywhere.
+	#
 	# Commit the TEST first, then make the fix — otherwise committing both
 	# leaves nothing differing from HEAD and the tautology check fires
 	# before the copy is ever attempted.
@@ -521,18 +520,40 @@ _skip_if_root() {
 	# Now change the test so it is a CHANGED .bats the baseline must copy,
 	# and make that copy fail.
 	printf '#!/usr/bin/env bats\n@test "y" { true; }\n' >"$WORK/.claude/tests/deep/new.bats"
-	chmod 000 "$WORK/.claude/tests/deep/new.bats"
+	rm -f "$WORK/.claude/tests/deep/new.bats"
+	mkdir -p "$WORK/.claude/tests/deep/new.bats"
 	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
 		--finding-id t --finding-text t --fix-summary t \
 		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
 		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
-	chmod 644 "$WORK/.claude/tests/deep/new.bats" 2>/dev/null || true
+	rm -rf "$WORK/.claude/tests/deep/new.bats"
 	[ "$status" -ne 0 ] || {
 		echo "an unreadable test file was silently skipped: $output"
 		return 1
 	}
 	[[ $output == *"WITHOUT the test"* ]] || {
 		echo "the refusal does not explain the consequence: $output"
+		return 1
+	}
+}
+
+@test "#2643: a changed .bats that is DELETED in this tree is skipped, not refused" {
+	# The other side of the not-a-regular-file rule. A path git lists that
+	# no longer exists was deleted here — there is nothing to copy and
+	# nothing is lost, so it must not refuse. Without this the rule above
+	# would break every branch that removes a test file.
+	mkdir -p "$WORK/.claude/tests/deep"
+	printf '#!/usr/bin/env bats\n@test "x" { true; }\n' >"$WORK/.claude/tests/deep/gone.bats"
+	git -C "$WORK" add .claude >/dev/null 2>&1
+	git -C "$WORK" commit -qm "add a test" >/dev/null 2>&1
+	_make_fix
+	rm -f "$WORK/.claude/tests/deep/gone.bats"
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "deleting a test file broke the baseline copy: $output"
 		return 1
 	}
 }

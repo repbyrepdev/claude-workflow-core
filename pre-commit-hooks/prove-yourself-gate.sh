@@ -120,7 +120,7 @@ if [ "$COVERS_TOTAL" -lt "$ROUND_FINDINGS" ]; then
 	echo "  Prove-yourself records cover: $COVERS_TOTAL" >&2
 	echo "  Need $((ROUND_FINDINGS - COVERS_TOTAL)) more covered before commit." >&2
 	echo "" >&2
-	echo "  Per-finding:    skills/prove-yourself-audit/run.sh record-{fix,rejection}" >&2
+	echo "  Per-finding:    $SKILL record-{fix,rejection}" >&2
 	echo "                    --finding-text ... [--covers-count N for bulk]" >&2
 	echo "                  A record-fix citing a CYCLE-CRITICAL file (hooks/, _lib/," >&2
 	echo "                  pre-commit-hooks/, scripts/cr/local-review.sh) also needs the" >&2

@@ -193,16 +193,31 @@ _stage_findings_count() {
 		short=$(printf '%s' "$sha" | cut -c1-7)
 		# `jq -rs` here is the whole command, so its status IS the
 		# substitution's — no pipeline to mask it. Kept explicit anyway.
+		# NEWEST row first, THEN judge it — not "filter, then take the
+		# last survivor". Filtering first skips a newest partial/timed-out
+		# row and reports an older clean count for a sha whose most recent
+		# review did not finish: #2544's laundering, inverted. A rejected
+		# newest row is 0 findings SEEN, which is what the caller must act
+		# on. Mirrors _lib/cr-phase2-coverage.sh.
 		n=$(jq -rs --arg s "$short" '
-			[ .[]
-			  | select((.sha // "") == $s)
-			  | select((.partial // false) != true and (.timeout // false) != true)
-			  | (.findings // 0) ]
-			| last // 0
+			[ .[] | select((.sha // "") == $s) ] | last
+			| if . == null then 0
+			  elif ((.partial // false) == true or (.timeout // false) == true) then "unknown"
+			  else (.findings // 0) end
 		' "$log" 2>/dev/null) || {
 			printf 'unknown\n'
 			return 2
 		}
+		# A partial/timed-out NEWEST run is not 0 and not the previous
+		# run's number: it is genuinely unknown. Returning the older count
+		# would answer a question about a review that has since been
+		# re-run and did not finish; returning 0 would call an unfinished
+		# review clean, which is #2544's laundering. Unknown fails closed,
+		# matching this file's contract everywhere else.
+		if [ "$n" = "unknown" ]; then
+			printf 'unknown\n'
+			return 2
+		fi
 		[ -n "$n" ] || {
 			printf 'unknown\n'
 			return 2
