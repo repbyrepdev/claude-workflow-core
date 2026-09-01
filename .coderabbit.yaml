@@ -251,6 +251,7 @@ reviews:
       - '!.claude/_lib/semantic-hash.sh'
       - '!.claude/_lib/ship-cycle-directives.sh'
       - '!.claude/_lib/ship-cycle-protocol.sh'
+      - '!.claude/_lib/stage-findings.sh'
       - '!.claude/_lib/task-queue.sh'
   # PR labels — by which files changed. Base ships ONLY the universal
   # area:infrastructure catch-all (present in every consumer's labels.yml).

@@ -15,7 +15,12 @@
 setup() {
 	REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../../.." && pwd)"
 	HOOK="$REPO_ROOT/hooks/test-sh-scope-nudge.sh"
-	[ -x "$HOOK" ] || skip "hook not executable at $HOOK"
+	# FAIL, do not skip. A skipped suite reports success, so a hook that
+	# went missing or lost its +x would read as "tests passed".
+	[ -x "$HOOK" ] || {
+		echo "FATAL: hook missing or not executable at $HOOK" >&2
+		return 1
+	}
 }
 
 # The hook is a PreToolUse hook: it reads a JSON payload on stdin and, when
@@ -193,8 +198,8 @@ _assert_allowed() {
 	local f
 	for f in --no-log --baseline --coverage; do
 		_run_hook "scripts/test.sh somedir $f"
-		! _is_denied "$output" || {
-			echo "$f after a path was blocked, but it is a flag test.sh really parses: $output"
+		_assert_allowed || {
+			echo "...while checking $f after a path"
 			return 1
 		}
 	done

@@ -119,8 +119,10 @@ review confirmed three ways to satisfy it without proving anything:
 - **Measure then revert** — nothing binds the record to the tree it was
   measured on.
 
-The trigger is also self-selected: `--cited-files` is optional, so an author
-who cites nothing is never asked for a differential at all.
+The trigger is PARTLY self-selected: `--cited-files` is optional, so an author
+who cites nothing — and picks a `--source` other than `issue` — is never asked
+for a differential at all. `--source=issue` requires one regardless of what is
+cited.
 
 Treat it as a floor that makes the honest path the easy one, not a fence. The
 number `audit` prints is a signal for a human to read, not a proof — and it

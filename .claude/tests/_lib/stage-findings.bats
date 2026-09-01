@@ -23,7 +23,11 @@
 setup() {
 	REPO_ROOT=$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)
 	LIB="$REPO_ROOT/_lib/stage-findings.sh"
-	[ -r "$LIB" ] || skip "library not found at $LIB"
+	# FAIL, do not skip — a missing subject must not read as a pass.
+	[ -r "$LIB" ] || {
+		echo "FATAL: subject under test missing at $LIB" >&2
+		return 1
+	}
 	WORK=$(mktemp -d -t stage-findings.XXXXXX) || return 1
 	mkdir -p "$WORK/.claude/logs" "$WORK/.claude/review-log"
 }

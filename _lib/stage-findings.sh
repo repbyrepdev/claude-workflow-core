@@ -98,15 +98,25 @@ _stage_findings_count() {
 			printf 'unknown\n'
 			return 2
 		}
+		# NOT `n=$(jq … | tail -1) || rc=$?` — that reads TAIL's status and
+		# would let a dead jq report success with empty output.
+		local _sf_out
+		_sf_out=$(mktemp -t sf-p05out.XXXXXX) || {
+			printf 'unknown\n'
+			return 2
+		}
 		jq_err=$(mktemp -t sf-p05.XXXXXX) || jq_err=""
-		n=$(jq -r -R --arg s "$sha" \
+		jq -r -R --arg s "$sha" \
 			'fromjson? | select(.sha == $s and .agent == "<all>" and .status == "emitted") | .findings // 0' \
-			"$log" 2>"${jq_err:-/dev/null}" | tail -1) || jq_rc=$?
+			"$log" >"$_sf_out" 2>"${jq_err:-/dev/null}" || jq_rc=$?
 		[ -n "$jq_err" ] && rm -f "$jq_err"
 		if [ "$jq_rc" -ne 0 ]; then
+			rm -f "$_sf_out"
 			printf 'unknown\n'
 			return 2
 		fi
+		n=$(tail -1 "$_sf_out")
+		rm -f "$_sf_out"
 		# A sha with rows but no terminal aggregate is not a zero — the
 		# prefilter may have crashed mid-emit. Say so.
 		if [ -z "$n" ]; then
@@ -134,16 +144,33 @@ _stage_findings_count() {
 			printf 'unknown\n'
 			return 2
 		}
-		local latest
-		latest=$(jq -r 'select(.phase==1 and .round!=null) | .round' "$log" 2>/dev/null |
-			sort -un | tail -1) || latest=""
+		# Same split as the phase0.5 arm: `sort`/`awk` at the tail of a
+		# pipeline would mask jq's exit status entirely.
+		local latest _sf_out
+		_sf_out=$(mktemp -t sf-p1out.XXXXXX) || {
+			printf 'unknown\n'
+			return 2
+		}
+		if ! jq -r 'select(.phase==1 and .round!=null) | .round' "$log" >"$_sf_out" 2>/dev/null; then
+			rm -f "$_sf_out"
+			printf 'unknown\n'
+			return 2
+		fi
+		latest=$(sort -un "$_sf_out" | tail -1)
 		if [ -z "$latest" ]; then
+			rm -f "$_sf_out"
 			printf '0\n'
 			return 0
 		fi
-		n=$(jq -r --arg r "$latest" \
+		if ! jq -r --arg r "$latest" \
 			'select(.phase==1 and (.round|tostring)==$r) | (.findings // 0)' \
-			"$log" 2>/dev/null | awk '{s+=$1} END {print s+0}') || n=""
+			"$log" >"$_sf_out" 2>/dev/null; then
+			rm -f "$_sf_out"
+			printf 'unknown\n'
+			return 2
+		fi
+		n=$(awk '{s+=$1} END {print s+0}' "$_sf_out")
+		rm -f "$_sf_out"
 		[ -n "$n" ] || {
 			printf 'unknown\n'
 			return 2
@@ -164,13 +191,18 @@ _stage_findings_count() {
 			return 2
 		}
 		short=$(printf '%s' "$sha" | cut -c1-7)
+		# `jq -rs` here is the whole command, so its status IS the
+		# substitution's — no pipeline to mask it. Kept explicit anyway.
 		n=$(jq -rs --arg s "$short" '
 			[ .[]
 			  | select((.sha // "") == $s)
 			  | select((.partial // false) != true and (.timeout // false) != true)
 			  | (.findings // 0) ]
 			| last // 0
-		' "$log" 2>/dev/null) || n=""
+		' "$log" 2>/dev/null) || {
+			printf 'unknown\n'
+			return 2
+		}
 		[ -n "$n" ] || {
 			printf 'unknown\n'
 			return 2

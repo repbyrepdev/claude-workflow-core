@@ -757,6 +757,25 @@ cmd_record_rejection() {
 		exit 2
 	fi
 
+	# (#2643) BEFORE the state file is written. The first version
+	# validated after the jq write, so an invalid sha left an orphan
+	# rejection record on disk and only then errored. Resolve and VALIDATE --covered-sha: a real commit that is an
+	# ANCESTOR of HEAD. Evidence may be re-filed onto a commit already on
+	# this branch (correcting a label), never attached to unrelated work.
+	local _rej_cov_sha=""
+	if [ -n "$covered_sha_arg" ]; then
+		_rej_cov_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "${covered_sha_arg}^{commit}" 2>/dev/null) || _rej_cov_sha=""
+		if [ -z "$_rej_cov_sha" ]; then
+			echo "error: --covered-sha '$covered_sha_arg' does not resolve to a commit (#2643)" >&2
+			exit 2
+		fi
+		if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_rej_cov_sha" HEAD 2>/dev/null; then
+			echo "error: --covered-sha '$covered_sha_arg' is not an ancestor of HEAD — evidence can be re-filed against a commit already on this branch, not attached to unrelated work (#2643)" >&2
+			exit 2
+		fi
+		echo "record-rejection: covering ${_rej_cov_sha:0:7} (named via --covered-sha) rather than HEAD" >&2
+	fi
+
 	local ts state_file
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	state_file=$(_state_file_for_finding "$finding_id")
@@ -813,23 +832,6 @@ cmd_record_rejection() {
 		  decision_data: {dogfood_cmd: $cmd, dogfood_output: $out,
 		                  dogfood_rc: $rc, external_authority: $ext,
 		                  reason: $reason}}' >"$state_file"
-
-	# (#2643) Resolve and VALIDATE --covered-sha: a real commit that is an
-	# ANCESTOR of HEAD. Evidence may be re-filed onto a commit already on
-	# this branch (correcting a label), never attached to unrelated work.
-	local _rej_cov_sha=""
-	if [ -n "$covered_sha_arg" ]; then
-		_rej_cov_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "${covered_sha_arg}^{commit}" 2>/dev/null) || _rej_cov_sha=""
-		if [ -z "$_rej_cov_sha" ]; then
-			echo "error: --covered-sha '$covered_sha_arg' does not resolve to a commit (#2643)" >&2
-			exit 2
-		fi
-		if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_rej_cov_sha" HEAD 2>/dev/null; then
-			echo "error: --covered-sha '$covered_sha_arg' is not an ancestor of HEAD — evidence can be re-filed against a commit already on this branch, not attached to unrelated work (#2643)" >&2
-			exit 2
-		fi
-		echo "record-rejection: covering ${_rej_cov_sha:0:7} (named via --covered-sha) rather than HEAD" >&2
-	fi
 
 	# Record per-cited-file cache entries under reviewer "prove-yourself-rejection".
 	_record_cite_cache "prove-yourself-rejection" "$cited_files"
@@ -1341,13 +1343,21 @@ cmd_record_fix() {
 		# bypassed one. Claiming an audit trail that does not exist is the
 		# same defect class this branch is fixing.
 		echo "prove-yourself: PROVE_SOURCE_CHECK_SKIP=1 — source/stage reconciliation bypassed for --source $src (#2643)" >&2
-		if command -v jq >/dev/null 2>&1; then
-			mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
-			jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-				--arg sha "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")" \
-				--arg src "$src" --arg fid "$finding_id" \
-				'{ts:$ts, sha:$sha, label:"prove-source-check-skip", source:$src, finding_id:$fid}' \
-				>>"$REPO_ROOT/.claude/logs/prove-source-check-skip.jsonl" 2>/dev/null || true
+		# A FAILURE TO LOG IS ANNOUNCED. Appending with `|| true` would
+		# reproduce, one level down, the very defect this row exists to
+		# fix: a bypass that calls itself audited when nothing recorded it.
+		# Still non-fatal — refusing the record because a log write failed
+		# would be worse — but never silent.
+		if ! command -v jq >/dev/null 2>&1; then
+			echo "prove-yourself: WARN: jq is not on PATH — this PROVE_SOURCE_CHECK_SKIP bypass is NOT audit-logged" >&2
+		elif ! mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null; then
+			echo "prove-yourself: WARN: cannot create $REPO_ROOT/.claude/logs — this PROVE_SOURCE_CHECK_SKIP bypass is NOT audit-logged" >&2
+		elif ! jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+			--arg sha "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")" \
+			--arg src "$src" --arg fid "$finding_id" \
+			'{ts:$ts, sha:$sha, label:"prove-source-check-skip", source:$src, finding_id:$fid}' \
+			>>"$REPO_ROOT/.claude/logs/prove-source-check-skip.jsonl" 2>/dev/null; then
+			echo "prove-yourself: WARN: could not append the bypass row to .claude/logs/prove-source-check-skip.jsonl — this bypass is stderr-only and the ledger will not show it" >&2
 		fi
 	elif [ ! -r "$_SF_LIB" ]; then
 		# FAIL CLOSED AND SAY SO. Silently skipping meant "reconciled and
