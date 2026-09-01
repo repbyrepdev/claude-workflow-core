@@ -331,6 +331,32 @@ Usage:
                              # critical|high|medium|minor|info);
                              # not used by phase0.5/phase1
     [--cited-files "path1 path2"] [--covers-count N] [--cluster-id ID]
+    [--symptom-cmd "..." --symptom-baseline-rc N --symptom-fixed-rc M]
+                             # #2643 SYMPTOM DIFFERENTIAL. All three go
+                             # together; N must differ from M. The command is
+                             # RE-EXECUTED twice: once here, and once in a
+                             # detached worktree at the baseline ref with this
+                             # tree's .bats files copied in, so a new test can
+                             # detect the old bug. Both observed rcs must match
+                             # what you claim or the record is refused.
+                             # REQUIRED when --source=issue, and when any cited
+                             # file is cycle-critical. Optional elsewhere — but
+                             # still verified if you supply it.
+                             # Timeout: PROVE_BASELINE_TIMEOUT (default 300s).
+                             # It proves the rc DEPENDS on the diff. It cannot
+                             # prove the command is relevant to the fix — no
+                             # mechanism can. Choose a command that would fail
+                             # for the reported reason.
+    [--baseline-ref REF]     # which tree is "before". Default HEAD, because
+                             # the cycle order is fix -> record-fix -> commit.
+                             # Name the commit BEFORE the fix if it is already
+                             # committed. A ref resolving to HEAD gets the same
+                             # tautology check as the default.
+    [--allow-absence-baseline]
+                             # accept a baseline rc of 127. A fix that ADDS a
+                             # file makes the baseline exit "command not found",
+                             # which looks like proof and is not; pass this only
+                             # when 127 genuinely IS the reported symptom.
   run.sh audit
   run.sh check-commit
   run.sh reset
@@ -808,12 +834,34 @@ cmd_record_rejection() {
 # `git stash` is NOT used. It appears nowhere in this repo and
 # scripts/release.sh documents the preference against it.
 #
-# N != M is what makes this unfakeable. `--symptom-cmd true` with both rcs 0
-# proves nothing and is refused — that is the pre-#2562 hole reopening in a
-# new field.
+# N != M is necessary, NOT sufficient, and the earlier wording here
+# ("what makes this unfakeable") was simply false. A differential proves
+# only that the command's exit code DEPENDS ON THE DIFF — not that it
+# exercises the fix. AND THE REQUIREMENT IS SELF-SELECTED: it fires from
+# `--cited-files`, which is optional, so an agent that cites nothing (or
+# picks `--source phase1` over `issue`) is never asked for a differential
+# at all. That is a floor, not a fence. It raises the cost of a bare claim
+# and makes the honest path the easy one; it does not stop a determined
+# author from routing around it, and this comment says so rather than
+# letting the next reader assume otherwise.
+# `grep -q <a string the fix added>` differs across the
+# two trees and demonstrates nothing about behaviour. Nothing mechanical
+# can judge the semantic relevance of an arbitrary command, so this gate
+# does not claim to: it raises the floor from "a suite passed" to "some
+# observable changed, and I re-ran both sides myself to check". Claiming
+# more than that is how a gate ends up reporting enforcement it does not
+# perform (#2640). `--symptom-cmd true` with both rcs 0 is still refused.
 
-# The worktree path currently in use, so the cleanup below can find it from
-# any exit path. (An earlier docblock here described a function
+# The worktree path currently in use. NOTE THE SCOPE, because the earlier
+# comment here overstated it: `_prove_symptom_run_baseline` is invoked
+# inside a command substitution to capture its rc, so it runs in a SUBSHELL
+# and every assignment to this variable is confined there. The parent's copy
+# stays empty, and there is no EXIT trap — so a SIGINT mid-baseline leaks the
+# temp dir and an orphan worktree stub. That is the documented worst case
+# (never a corrupted tree, never a lost fix), and `git worktree prune`
+# clears the stub; the point of this note is that the cleanup is
+# best-effort WITHIN the subshell, not a guarantee from the parent.
+# (An earlier docblock here described a function
 # `_prove_symptom_baseline_worktree <ref> <outvar>` that was never written —
 # the worktree is created inline by _prove_symptom_run_baseline.)
 _prove_symptom_wt=""
@@ -887,12 +935,34 @@ _prove_symptom_run_baseline() {
 	# does NOT differ is identical at <ref> anyway — so the second loop only
 	# ever re-copied what the first had. Its own failure is fatal too: an
 	# empty list from a broken ref would silently omit every new test.
-	local _bats_list _bats_rc=0
+	# p1-bypass (VERIFIED conf 9): `git diff --name-only` DOES NOT LIST
+	# UNTRACKED FILES, and a brand-new test file is exactly what a fix for
+	# a missing-coverage finding adds. The baseline therefore ran without
+	# the new test, `bats <missing>.bats` exited 1 — not 127, so the
+	# absence guard did not catch it either — and the fix got a free
+	# differential for a file that was never copied. Untracked .bats files
+	# are enumerated separately and appended.
+	local _bats_list _bats_untracked _bats_rc=0
 	_bats_list=$(git -C "$REPO_ROOT" diff --name-only "$ref" -- '*.bats') || _bats_rc=$?
 	if [ "$_bats_rc" -ne 0 ]; then
 		echo "error: could not list changed .bats files against '$ref' (rc=$_bats_rc) — refusing rather than running a baseline that silently omits the new tests" >&2
 		_prove_symptom_wt_cleanup
 		return 2
+	fi
+	_bats_rc=0
+	_bats_untracked=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard -- '*.bats') || _bats_rc=$?
+	if [ "$_bats_rc" -ne 0 ]; then
+		echo "error: could not list untracked .bats files (rc=$_bats_rc) — refusing rather than running a baseline that silently omits a brand-new test file" >&2
+		_prove_symptom_wt_cleanup
+		return 2
+	fi
+	if [ -n "$_bats_untracked" ]; then
+		if [ -n "$_bats_list" ]; then
+			_bats_list="$_bats_list
+$_bats_untracked"
+		else
+			_bats_list="$_bats_untracked"
+		fi
 	fi
 	local f
 	while IFS= read -r f; do
@@ -914,14 +984,28 @@ EOF
 
 	# Output kept in a file the caller names, so a baseline mismatch can
 	# show what happened rather than only that the number was wrong.
+	#
+	# p1-bypass (VERIFIED conf 10): ELAPSED TIME IS RECORDED because rc 124
+	# from our own deadline is not evidence of anything. `--symptom-cmd
+	# 'test -f marker || sleep 300' --symptom-baseline-rc 124` made the
+	# wrapper's own kill play the part of "the bug", reproducing in the
+	# symptom field exactly the hole #2562 closed for retest. The caller
+	# compares against the deadline and refuses.
 	local outf="${PROVE_SYMPTOM_BASELINE_OUT:-/dev/null}"
+	local _t0 _t1 _elapsed=0
+	_t0=$(date +%s 2>/dev/null) || _t0=""
 	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	else
 		(cd "$wt" && bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	fi
+	_t1=$(date +%s 2>/dev/null) || _t1=""
+	if [ -n "$_t0" ] && [ -n "$_t1" ]; then
+		_elapsed=$((_t1 - _t0))
+	fi
 	_prove_symptom_wt_cleanup
-	printf '%s\n' "$rc"
+	# rc on the first line, elapsed seconds on the second.
+	printf '%s\n%s\n' "$rc" "$_elapsed"
 	return 0
 }
 
@@ -1440,7 +1524,24 @@ cmd_record_fix() {
 		# Which tree is the baseline? Default HEAD, because the cycle order
 		# is fix -> record-fix -> commit and the fix is still uncommitted.
 		local _sym_ref="${baseline_ref:-HEAD}"
-		if [ -z "$baseline_ref" ]; then
+		# p1-bypass (VERIFIED conf 10): this guard used to run only when
+		# `baseline_ref` was EMPTY — but the default it falls back to is
+		# HEAD, so spelling `--baseline-ref HEAD` produced the identical
+		# baseline while skipping the check. A record with no fix at all
+		# was accepted on a clean tree. What matters is which COMMIT the
+		# baseline resolves to, not whether the operator typed it, so ask
+		# git: any ref that resolves to HEAD gets the guard.
+		local _sym_ref_sha _head_sha _sym_same_as_head=0
+		_sym_ref_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "${_sym_ref}^{commit}" 2>/dev/null) || _sym_ref_sha=""
+		_head_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "HEAD^{commit}" 2>/dev/null) || _head_sha=""
+		if [ -z "$_sym_ref_sha" ]; then
+			echo "error: --baseline-ref '$_sym_ref' does not resolve to a commit — refusing the record rather than accepting one-sided evidence from the fixed half alone (#2643)" >&2
+			exit 2
+		fi
+		if [ -n "$_head_sha" ] && [ "$_sym_ref_sha" = "$_head_sha" ]; then
+			_sym_same_as_head=1
+		fi
+		if [ "$_sym_same_as_head" -eq 1 ]; then
 			# If nothing cited actually differs from HEAD, the fix is
 			# already committed and HEAD is NOT the pre-fix tree — the
 			# baseline would silently re-run the fixed code and the whole
@@ -1484,15 +1585,30 @@ cmd_record_fix() {
 		# a mismatch and this one printed nothing — so the operator learned
 		# the rc was wrong and had no way to see why, on the half that is
 		# hardest to reason about.
-		local _sym_fixed_actual=0 _sym_out
+		local _sym_fixed_actual=0 _sym_out _sym_ft0 _sym_ft1 _sym_fixed_elapsed=0
 		_sym_out=$(mktemp) || {
 			echo "error: mktemp failed for symptom output capture" >&2
 			exit 1
 		}
+		_sym_ft0=$(date +%s 2>/dev/null) || _sym_ft0=""
 		if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 			(cd "$REPO_ROOT" && timeout "$_sym_tmo" bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
 		else
+			# p1 conf 8: no deadline available. The retest path WARNs here
+			# rather than running unbounded in silence; match it, so an
+			# operator can tell a bounded run from an unbounded one.
+			echo "record-fix: WARN: symptom runs are UNBOUNDED (no timeout binary, or PROVE_RETEST_NO_TIMEOUT=1) — a hang will not be killed (#2643)" >&2
 			(cd "$REPO_ROOT" && bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
+		fi
+		_sym_ft1=$(date +%s 2>/dev/null) || _sym_ft1=""
+		if [ -n "$_sym_ft0" ] && [ -n "$_sym_ft1" ]; then
+			_sym_fixed_elapsed=$((_sym_ft1 - _sym_ft0))
+		fi
+		# Same deadline-launder refusal as the baseline half below.
+		if [ "$_sym_fixed_actual" -eq 124 ] && [ "$_sym_fixed_elapsed" -ge "$_sym_tmo" ]; then
+			rm -f "$_sym_out"
+			echo "error: the fixed-tree symptom run hit the deadline (${_sym_fixed_elapsed}s >= ${_sym_tmo}s) — a deadline kill is never valid evidence, regardless of the claimed rc (#2643)" >&2
+			exit 1
 		fi
 		if [ "$_sym_fixed_actual" -ne "$symptom_fixed_rc" ]; then
 			echo "error: SYMPTOM MISMATCH (fixed tree) — the command exited rc=$_sym_fixed_actual but --symptom-fixed-rc claims $symptom_fixed_rc (#2643)." >&2
@@ -1516,12 +1632,28 @@ cmd_record_fix() {
 			exit 1
 		}
 		export PROVE_SYMPTOM_BASELINE_OUT="$_sym_base_out"
-		_sym_base_actual=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo") || {
+		local _sym_base_pair _sym_base_elapsed
+		_sym_base_pair=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo") || {
 			unset PROVE_SYMPTOM_BASELINE_OUT
 			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
 			echo "error: could not run the baseline half — refusing the record rather than accepting one-sided evidence (#2643)" >&2
 			exit 1
 		}
+		_sym_base_actual=$(printf '%s\n' "$_sym_base_pair" | sed -n '1p')
+		_sym_base_elapsed=$(printf '%s\n' "$_sym_base_pair" | sed -n '2p')
+		[ -n "$_sym_base_elapsed" ] || _sym_base_elapsed=0
+		# p1-bypass (VERIFIED conf 10): our own deadline kill is not the
+		# bug. `--symptom-cmd 'test -f marker || sleep 300'
+		# --symptom-baseline-rc 124` let the wrapper's SIGTERM play the
+		# part of "fails without the fix" — the same laundering #2562
+		# closed on the retest side, reopened in a new field. Distinguish
+		# our kill from a child's own fast inner timeout by elapsed time.
+		if [ "$_sym_base_actual" -eq 124 ] && [ "$_sym_base_elapsed" -ge "$_sym_tmo" ]; then
+			unset PROVE_SYMPTOM_BASELINE_OUT
+			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
+			echo "error: the baseline hit the PROVE_BASELINE_TIMEOUT deadline (${_sym_base_elapsed}s >= ${_sym_tmo}s) — a deadline kill is never valid evidence, regardless of the claimed rc; raise PROVE_BASELINE_TIMEOUT if the evidence genuinely needs longer (#2643)" >&2
+			exit 1
+		fi
 		if [ "$_sym_base_actual" -ne "$symptom_baseline_rc" ]; then
 			echo "error: SYMPTOM MISMATCH (baseline at ${_sym_ref}) — the command exited rc=$_sym_base_actual but --symptom-baseline-rc claims $symptom_baseline_rc (#2643)." >&2
 			echo "  The baseline runs HEAD's production code with THIS tree's .bats files copied in, so a new test can detect the old bug." >&2
@@ -1568,9 +1700,11 @@ cmd_record_fix() {
 		--arg ftext "$finding_text" \
 		--arg summary "$fix_summary" \
 		--arg symcmd "$symptom_cmd" \
-		--arg symbase "$symptom_baseline_rc" \
-		--arg symfixed "$symptom_fixed_rc" \
+		--argjson symbase "${symptom_baseline_rc:-null}" \
+		--argjson symfixed "${symptom_fixed_rc:-null}" \
 		--arg symref "${baseline_ref:-}" \
+		--arg symrefeff "${_sym_ref:-}" \
+		--argjson symabsence "$([ "$allow_absence_baseline" = "1" ] && echo true || echo false)" \
 		--arg cmd "$retest_cmd" \
 		--argjson rc "$retest_rc" \
 		--argjson cited "$cited_json" \
@@ -1591,6 +1725,8 @@ cmd_record_fix() {
 		                  retest_verified: true, retest_actual_rc: $actual,
 		                  symptom_cmd: $symcmd, symptom_baseline_rc: $symbase,
 		                  symptom_fixed_rc: $symfixed, symptom_baseline_ref: $symref,
+		                  symptom_baseline_ref_effective: (if $symrefeff == "" then null else $symrefeff end),
+		                  symptom_allow_absence_baseline: $symabsence,
 		                  symptom_verified: ($symcmd != ""),
 		                  retest_output_tail: $rtail}}' >"$state_file"
 
@@ -1699,11 +1835,25 @@ cmd_audit() {
 
 	# Fixes with no verified symptom differential. Counted from the same
 	# record set the tallies above walk.
-	local unproven=0 _af
+	# p1-bypass (VERIFIED conf 10): DO NOT TRUST `symptom_verified` ALONE.
+	# It is a boolean this script writes, so a hand-written record carrying
+	# `"symptom_verified": true` and no symptom fields at all read as proven
+	# and drove the counter to 0. A self-declared flag is exactly the free
+	# text this feature replaces, so the count is derived from the evidence
+	# fields instead: the flag AND a command AND two rcs that actually
+	# differ. Anything short of that is unproven, whatever the flag says.
+	local unproven=0 _af _sv _scmd _sb _sf
 	for _af in "$STATE_DIR"/*.json; do
 		[ -f "$_af" ] || continue
 		[ "$(jq -r '.kind // ""' "$_af" 2>/dev/null)" = "fix" ] || continue
-		[ "$(jq -r '.decision_data.symptom_verified // false' "$_af" 2>/dev/null)" = "true" ] && continue
+		_sv=$(jq -r '.decision_data.symptom_verified // false' "$_af" 2>/dev/null)
+		_scmd=$(jq -r '.decision_data.symptom_cmd // ""' "$_af" 2>/dev/null)
+		_sb=$(jq -r '.decision_data.symptom_baseline_rc // ""' "$_af" 2>/dev/null)
+		_sf=$(jq -r '.decision_data.symptom_fixed_rc // ""' "$_af" 2>/dev/null)
+		if [ "$_sv" = "true" ] && [ -n "$_scmd" ] &&
+			[ -n "$_sb" ] && [ -n "$_sf" ] && [ "$_sb" != "$_sf" ]; then
+			continue
+		fi
 		unproven=$((unproven + 1))
 	done
 	echo "Prove-yourself audit:"

@@ -1781,6 +1781,9 @@ _phase1_cap_gate() {
 Re-running panels past the cap is the phase-1 treadmill (the #2547-class loop: NINE rounds against a cap of 3, millions of tokens). The exit contract (#2570) has exactly two doors:
   - clean round(s) >= cap  → converges automatically, OR
   - at cap: cover EVERY finding on EVERY branch sha — record-fix (applied, with retest) or record-rejection (dogfooded evidence) via skills/prove-yourself-audit/run.sh, --source phase1 — then re-run 'scripts/ship-pr-cycle.sh next': the branch GRADUATES with NO new round.
+    #2643: a record-fix citing a CYCLE-CRITICAL file (hooks/, _lib/, pre-commit-hooks/, scripts/cr/local-review.sh) ALSO needs the symptom differential, or it is refused:
+      --symptom-cmd \"<cmd whose rc the fix changes>\" --symptom-baseline-rc <before> --symptom-fixed-rc <after>   # the two rcs must differ; both are re-executed
+    If the fix is already committed, add --baseline-ref <sha-before-the-fix>.
 Deliberate extra round (audit-logged to pipeline-skip.jsonl):
   PIPELINE_GATE_SKIP=1 PIPELINE_GATE_SKIP_REASON=\"why\" scripts/ship-pr-cycle.sh next"
 	printf '%s\n' "$_cap_body" >&2
@@ -1832,7 +1835,7 @@ _phase2_cap_gate() {
 	local _cap_body
 	_cap_body="ship-pr-cycle: phase2 round-cap ENFORCED ($runs/$cap) — REFUSING to spend another CR-CLI review on this branch; the residual finding(s) are NOT all addressed.
 Re-reviewing past the cap is the non-deterministic minor-tail treadmill (PR #2540 burned 6 rounds against a cap of 3). Graduate instead — address EACH residual from the last completed review, then re-run 'scripts/ship-pr-cycle.sh next':
-  - real issue → fix in-PR, record-fix each finding (prove-yourself), commit — the branch then GRADUATES on the covered ancestor review: 'next' advances to push with NO new spend, the fix-delta deferring to the authoritative server-side CR-in-CI
+  - real issue → fix in-PR, record-fix each finding (prove-yourself; a CYCLE-CRITICAL citation also needs --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc per #2643), commit — the branch then GRADUATES on the covered ancestor review: 'next' advances to push with NO new spend, the fix-delta deferring to the authoritative server-side CR-in-CI
   - verified FALSE-POSITIVE → record a rejection with evidence (scoped to HEAD):
       skills/prove-yourself-audit/run.sh record-rejection --source cr --severity <critical|high|medium|minor|info> \\
         --covers-count <N> --follow-up-issue <N — required for critical/high/medium> \\

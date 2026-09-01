@@ -265,9 +265,6 @@ _base_args() {
 	# the absence guard fires instead — a different test. So it is an
 	# INLINE command over a tracked file, not a script the fix adds.
 	printf 'marker-absent\n' >"$WORK/scripts/thing.sh"
-	# A .bats file that exists only in the working tree; the baseline must
-	# copy it in, which is what lets a NEW test detect the OLD bug.
-	printf '#!/usr/bin/env bats\n@test "x" { true; }\n' >"$WORK/.claude/tests/new.bats"
 	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
 		--finding-id t --finding-text t --fix-summary t \
 		--cited-files scripts/thing.sh \
@@ -280,6 +277,68 @@ _base_args() {
 	}
 	[[ $output == *"1 without the fix, 0 with it"* ]] || {
 		echo "the differential was not as expected: $output"
+		return 1
+	}
+}
+
+@test "#2643: an UNTRACKED .bats really reaches the baseline worktree" {
+	# THE TEST THAT SHOULD HAVE EXISTED. The version of this that shipped
+	# wrote a .bats file into the working tree and then never referred to
+	# it — so with the copy loop entirely dead the test still passed, and
+	# a real bug hid behind it: `git diff --name-only` does not list
+	# untracked files, and a BRAND-NEW test file is the normal case for
+	# "does the new test detect the old bug?".
+	#
+	# Asserting on the copy is awkward, because a file that is present in
+	# both trees produces equal rcs and equal rcs are refused. So this
+	# claims a deliberately WRONG baseline rc and reads the actual one out
+	# of the mismatch: rc 0 means grep found the sentinel and the file was
+	# copied; rc 2 is grep's "no such file" and means it was not.
+	_make_fix
+	printf '#!/usr/bin/env bats\n# sentinel-in-new-bats\n@test "x" { true; }\n' \
+		>"$WORK/.claude/tests/brand-new.bats"
+	# Untracked on purpose — committing it would test the other path.
+	run bash -c "cd '$WORK' && git status --porcelain .claude/tests/brand-new.bats"
+	[[ $output == '??'* ]] || {
+		echo "fixture is not untracked, so this test would prove the wrong thing: $output"
+		return 1
+	}
+
+	_rec "$(_base_args) --symptom-cmd 'grep -q sentinel-in-new-bats .claude/tests/brand-new.bats' \
+		--symptom-baseline-rc 5 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "expected a mismatch refusal (5 is deliberately wrong): $output"
+		return 1
+	}
+	[[ $output == *"exited rc=0"* ]] || {
+		echo "the untracked .bats did not reach the baseline worktree — grep could not read it there. Output: $output"
+		return 1
+	}
+}
+
+@test "#2643: a TRACKED-MODIFIED .bats also reaches the baseline worktree" {
+	# The control for the test above: the path that always worked, so a
+	# regression in the tracked half cannot hide behind the untracked fix.
+	_make_fix
+	printf '#!/usr/bin/env bats\n@test "x" { true; }\n' \
+		>"$WORK/.claude/tests/tracked.bats"
+	run bash -c "cd '$WORK' && git add .claude/tests/tracked.bats && git -c user.email=t@t -c user.name=t commit -qm tracked"
+	[ "$status" -eq 0 ] || {
+		echo "could not commit the control fixture: $output"
+		return 1
+	}
+	# Now modify it in the working tree only.
+	printf '#!/usr/bin/env bats\n# sentinel-tracked-mod\n@test "x" { true; }\n' \
+		>"$WORK/.claude/tests/tracked.bats"
+
+	_rec "$(_base_args) --symptom-cmd 'grep -q sentinel-tracked-mod .claude/tests/tracked.bats' \
+		--symptom-baseline-rc 5 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "expected a mismatch refusal (5 is deliberately wrong): $output"
+		return 1
+	}
+	[[ $output == *"exited rc=0"* ]] || {
+		echo "the working-tree version of a tracked .bats did not reach the baseline: $output"
 		return 1
 	}
 }
@@ -532,9 +591,50 @@ _skip_if_root() {
 	# The usage block and the error text both listed `issue` as valid while
 	# the code refused it at runtime. Advertising a value that cannot work
 	# is worse than omitting it, because the operator trusts the help.
-	run bash -c "'$RUN' record-rejection 2>&1 || true"
+	#
+	# `record-rejection` with NO ARGS was the original probe here, and it
+	# never reached print_help at all — it stopped at "--source is REQUIRED"
+	# and the assertion passed on a string that could not have contained the
+	# advertisement either way. Editing print_help back to the wrong text
+	# left it green. `--help` is the route that actually renders the block.
+	run bash -c "'$RUN' record-rejection --help 2>&1"
+	[ "$status" -eq 0 ] || {
+		echo "record-rejection --help did not render usage (status $status): $output"
+		return 1
+	}
+	# Guard against the probe silently ceasing to reach the usage block
+	# again: if this anchor is gone, the assertion below proves nothing.
+	[[ $output == *"run.sh record-rejection"* ]] || {
+		echo "output is not the usage block, so the check below would be vacuous: $output"
+		return 1
+	}
+	# Scope to the REJECTION section. record-fix legitimately advertises
+	# `issue`, so asserting over the whole help would fail on correct text —
+	# the two subcommands genuinely have different vocabularies, which is
+	# the entire point of the fix under test.
+	local rej_block
+	rej_block=$(printf '%s\n' "$output" | awk '/run\.sh record-rejection/{f=1} /run\.sh record-fix/{f=0} f')
+	[ -n "$rej_block" ] || {
+		echo "could not isolate the record-rejection block; the check below would be vacuous: $output"
+		return 1
+	}
+	# Match the VOCABULARY, not the word. The block is allowed — encouraged —
+	# to mention `issue` in prose explaining that it is NOT valid here; what
+	# it must never do is list it as a selectable value.
+	[[ $rej_block != *"|issue}"* ]] || {
+		echo "the rejection usage block still lists issue as a valid --source: $rej_block"
+		return 1
+	}
+	# And the prose that replaced it is still there, so a future edit that
+	# drops the vocabulary AND the explanation does not pass silently.
+	[[ $rej_block == *"NOT issue"* ]] || {
+		echo "the rejection block no longer explains that issue is invalid here: $rej_block"
+		return 1
+	}
+	# And the error text, which was the other half of the same drift.
+	run bash -c "'$RUN' record-rejection --finding-id x --finding-text t --source issue 2>&1 || true"
 	[[ $output != *"phase0.5|phase1|cr|issue"* ]] || {
-		echo "the rejection path still advertises source=issue: $output"
+		echo "the rejection error text still advertises source=issue: $output"
 		return 1
 	}
 }
@@ -581,6 +681,111 @@ _skip_if_root() {
 	}
 	[[ $output == *"SYMPTOM MISMATCH"* ]] || {
 		echo "the volunteered evidence was not re-executed: $output"
+		return 1
+	}
+}
+
+@test "#2643: --baseline-ref HEAD gets the tautology check too" {
+	# VERIFIED BYPASS (phase 1, conf 10). The guard ran only when
+	# --baseline-ref was EMPTY — but the value it defaults to IS HEAD, so
+	# spelling it out produced the identical baseline while skipping the
+	# check. A record with no fix at all was accepted on a clean tree.
+	# What matters is the commit the ref resolves to, not whether the
+	# operator typed it.
+	_make_fix
+	# Commit the fix so nothing differs from HEAD: that is the tautology.
+	run bash -c "cd '$WORK' && git add -A && git -c user.email=t@t -c user.name=t commit -qm fix"
+	[ "$status" -eq 0 ]
+
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--baseline-ref HEAD \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "an explicit --baseline-ref HEAD walked around the tautology guard: $output"
+		return 1
+	}
+	[[ $output == *"tautology"* ]] || {
+		echo "refused, but not for the tautology reason: $output"
+		return 1
+	}
+}
+
+@test "#2643: our own deadline kill is not the symptom (FIXED half)" {
+	# VERIFIED BYPASS (phase 1, conf 10). Claiming rc 124 and supplying a
+	# command that hangs let the wrapper's own SIGTERM play the part of the
+	# evidence — the laundering #2562 closed on the retest side, reopened in
+	# a new field. Here the FIXED half hangs, so its guard is the one that
+	# must fire.
+	_make_fix
+	run bash -c "cd '$WORK' && PROVE_BASELINE_TIMEOUT=2 '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'test -f never-exists-marker || sleep 30' \
+		--symptom-baseline-rc 1 --symptom-fixed-rc 124"
+	[ "$status" -ne 0 ] || {
+		echo "a deadline kill was accepted as evidence: $output"
+		return 1
+	}
+	[[ $output == *"fixed-tree symptom run hit the deadline"* ]] || {
+		echo "refused, but not by the fixed-half deadline guard: $output"
+		return 1
+	}
+}
+
+@test "#2643: our own deadline kill is not the symptom (BASELINE half)" {
+	# The baseline guard is SEPARATE code from the fixed-half one above, and
+	# the first version of this test never reached it: both trees hung, so
+	# the fixed half refused first and the baseline guard could be deleted
+	# outright with every test still green. Mutation-checked.
+	#
+	# The command must therefore be FAST in the fixed tree and HANG in the
+	# baseline. A marker file the "fix" adds does exactly that: present now,
+	# absent at HEAD.
+	_make_fix
+	printf 'x\n' >"$WORK/marker"
+	run bash -c "cd '$WORK' && PROVE_BASELINE_TIMEOUT=2 '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'test -f marker || sleep 30' \
+		--symptom-baseline-rc 124 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "a baseline deadline kill was accepted as evidence: $output"
+		return 1
+	}
+	[[ $output == *"baseline hit the PROVE_BASELINE_TIMEOUT deadline"* ]] || {
+		echo "refused, but not by the baseline deadline guard: $output"
+		return 1
+	}
+}
+
+@test "#2643: the audit counter does not trust a self-declared flag" {
+	# VERIFIED BYPASS (phase 1, conf 10). `unproven` was computed from the
+	# boolean `symptom_verified` alone, so a hand-written record carrying
+	# `"symptom_verified": true` and no symptom fields read as proven and
+	# drove the count to 0. A self-declared flag is precisely the free text
+	# this feature replaces.
+	_make_fix
+	local sd="$WORK/.claude/.session-state/prove-yourself"
+	mkdir -p "$sd"
+	# WELL-FORMED on every other axis, so the only thing under test is the
+	# forged flag. An incomplete record would be caught by the schema check
+	# instead and prove nothing about the counter.
+	cat >"$sd/forged-abc123.json" <<'JSON'
+{"finding_id":"forged","kind":"fix","finding_text":"t","ts":"2026-01-01T00:00:00Z",
+ "covers_count":1,"cited_files":[],
+ "decision_data":{"fix_summary":"t","retest_cmd":"true","retest_rc":0,
+                  "retest_verified":true,"retest_actual_rc":0,
+                  "symptom_verified":true}}
+JSON
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[ "$status" -eq 0 ] || {
+		echo "audit failed: $output"
+		return 1
+	}
+	[[ $output == *"unproven (no symptom differential): 1"* ]] || {
+		echo "a forged symptom_verified flag counted as proven: $output"
 		return 1
 	}
 }

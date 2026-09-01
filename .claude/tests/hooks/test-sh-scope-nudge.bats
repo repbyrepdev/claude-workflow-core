@@ -40,6 +40,21 @@ _is_denied() {
 	printf '%s' "$1" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1
 }
 
+# `! _is_denied` on its own is satisfied by ANY non-deny output — including
+# the hook crashing and printing a stack trace, or printing nothing because
+# it died. An "allowed through" claim therefore needs the exit status too:
+# the hook must have RUN and SUCCEEDED, not merely failed to say deny.
+_assert_allowed() {
+	[ "$status" -eq 0 ] || {
+		echo "the hook exited $status; 'allowed through' must mean it ran cleanly: $output"
+		return 1
+	}
+	! _is_denied "$output" || {
+		echo "expected the command to be allowed, but the hook denied it: $output"
+		return 1
+	}
+}
+
 @test "bare scripts/test.sh is refused" {
 	_run_hook "scripts/test.sh"
 	_is_denied "$output" || {
@@ -50,18 +65,12 @@ _is_denied() {
 
 @test "a specific .bats path is allowed through" {
 	_run_hook "scripts/test.sh .claude/tests/hooks/test-sh-scope-nudge.bats"
-	! _is_denied "$output" || {
-		echo "a scoped single-file run was blocked: $output"
-		return 1
-	}
+	_assert_allowed
 }
 
 @test "TEST_SH_FULL_OK=1 is allowed through (written in the command)" {
 	_run_hook "TEST_SH_FULL_OK=1 scripts/test.sh"
-	! _is_denied "$output" || {
-		echo "the documented full-suite bypass was itself blocked: $output"
-		return 1
-	}
+	_assert_allowed
 }
 
 @test "TEST_SH_FULL_OK=1 is allowed through (inherited from the environment)" {
@@ -71,10 +80,7 @@ _is_denied() {
 	# the full suite actually uses — so the untested path was the one every
 	# suite run depends on.
 	run env TEST_SH_FULL_OK=1 bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"scripts/test.sh\"}}' | '$HOOK' 2>/dev/null"
-	! _is_denied "$output" || {
-		echo "an inherited TEST_SH_FULL_OK=1 did not allow the run: $output"
-		return 1
-	}
+	_assert_allowed
 	[ -z "$output" ] || {
 		echo "expected the hook to stay silent when opted in; got: $output"
 		return 1
@@ -149,10 +155,7 @@ _is_denied() {
 	# nothing this hook exists to prevent can happen. The bug worth fixing
 	# was the hook ADVERTISING the flag, which the tests above cover.
 	_run_hook "scripts/test.sh --full"
-	! _is_denied "$output" || {
-		echo "the catch-all dash arm changed; if that is intended, this test's reasoning needs revisiting rather than deleting: $output"
-		return 1
-	}
+	_assert_allowed
 	# And the other half of the claim: test.sh really does refuse it, so
 	# the operator gets a clear error rather than a silent no-op.
 	run "$REPO_ROOT/scripts/test.sh" --full
@@ -164,4 +167,35 @@ _is_denied() {
 		echo "test.sh refused --full without saying why: $output"
 		return 1
 	}
+}
+
+@test "#2640: --full after a path is BLOCKED, unlike the real flags" {
+	# This is where dropping `--full` from the named allow-arm actually
+	# bites. The catch-all `scripts/test.sh -`* only matches a dash
+	# IMMEDIATELY after the script, so `scripts/test.sh foo --full` misses
+	# it and falls to the named list. While `--full` sat in that list it was
+	# waved through as a deliberate opt-in; it is not one, because test.sh
+	# cannot parse it.
+	#
+	# Without this test the allow-arm edit had no coverage at all: a
+	# reviewer restored `--full` to the list and every other test stayed
+	# green.
+	_run_hook "scripts/test.sh somedir --full"
+	_is_denied "$output" || {
+		echo "--full after a path was treated as a valid opt-in: $output"
+		return 1
+	}
+}
+
+@test "#2640: the real flags ARE still honoured after a path" {
+	# The control. The named arms exist precisely for flags that follow a
+	# path, so blocking --full must not have broken --no-log or --baseline.
+	local f
+	for f in --no-log --baseline --coverage; do
+		_run_hook "scripts/test.sh somedir $f"
+		! _is_denied "$output" || {
+			echo "$f after a path was blocked, but it is a flag test.sh really parses: $output"
+			return 1
+		}
+	done
 }
