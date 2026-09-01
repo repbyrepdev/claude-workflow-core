@@ -477,3 +477,64 @@ _skip_if_root() {
 		return 1
 	}
 }
+
+@test "#2643: a symptom MISMATCH shows what the command actually printed" {
+	# The retest path prints a `last output:` tail on a mismatch and this
+	# one printed nothing — so the operator learned the rc was wrong with
+	# no way to see why, on the half that is hardest to reason about.
+	_make_fix
+	_rec "$(_base_args) --symptom-cmd 'echo the-actual-output; exit 4' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ]
+	[[ $output == *"last output:"* ]] || {
+		echo "the mismatch showed no output tail: $output"
+		return 1
+	}
+	[[ $output == *the-actual-output* ]] || {
+		echo "the tail does not carry what the command printed: $output"
+		return 1
+	}
+}
+
+@test "#2643: --symptom-fixed-rc gets the same validation as its sibling" {
+	# Only the baseline rc had a test. An identical branch with no coverage
+	# is a coin-flip on whether it works.
+	_make_fix
+	_rec "$(_base_args) --symptom-cmd true --symptom-baseline-rc 0 --symptom-fixed-rc zero"
+	[ "$status" -eq 2 ] || {
+		echo "a non-numeric fixed rc returned $status, expected 2: $output"
+		return 1
+	}
+	[[ $output == *"non-negative integer"* ]] || {
+		echo "the refusal does not name the constraint: $output"
+		return 1
+	}
+}
+
+@test "#2643: a bad PROVE_BASELINE_TIMEOUT warns and falls back" {
+	# The fallback exists so a typo'd timeout cannot silently mean "no
+	# deadline". Untested, it is a guess.
+	_make_fix
+	run bash -c "cd '$WORK' && PROVE_BASELINE_TIMEOUT=notanumber '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "a bad timeout broke the run instead of falling back: $output"
+		return 1
+	}
+	[[ $output == *"PROVE_BASELINE_TIMEOUT"* ]] || {
+		echo "the fallback was silent: $output"
+		return 1
+	}
+}
+
+@test "#2643: record-rejection's own docs do not advertise source=issue" {
+	# The usage block and the error text both listed `issue` as valid while
+	# the code refused it at runtime. Advertising a value that cannot work
+	# is worse than omitting it, because the operator trusts the help.
+	run bash -c "'$RUN' record-rejection 2>&1 || true"
+	[[ $output != *"phase0.5|phase1|cr|issue"* ]] || {
+		echo "the rejection path still advertises source=issue: $output"
+		return 1
+	}
+}

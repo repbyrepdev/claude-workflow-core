@@ -301,7 +301,7 @@ Usage:
   run.sh record-rejection --finding-id X --finding-text "..." \
     --dogfood-cmd "..." --dogfood-output "..." --dogfood-rc N \
     --external-authority "..." --reason "..." \
-    --source {phase0.5|phase1|cr|issue} \
+    --source {phase0.5|phase1|cr}   # NOT issue — see below \
     [--confidence 1-10]      # required for source phase0.5/phase1
     [--severity ...]         # required for source=cr (CR vocab:
                              # critical|high|medium|minor|info).
@@ -524,7 +524,7 @@ cmd_record_rejection() {
 	#   fix-this-PR or follow-up-issue). medium → follow-up-issue
 	#   required for defer. minor/info → bulk-defer ok.
 	[ -z "$src" ] && {
-		echo "error: --source is REQUIRED (phase0.5|phase1|cr|issue)" >&2
+		echo "error: --source is REQUIRED (phase0.5|phase1|cr)" >&2
 		exit 2
 	}
 	# (#2643) `issue` joins the vocabulary. Until now the only sources were
@@ -602,7 +602,7 @@ cmd_record_rejection() {
 		exit 2
 		;;
 	*)
-		echo "error: --source must be phase0.5|phase1|cr (got: $src)" >&2
+		echo "error: --source must be phase0.5|phase1|cr (got: $src) — 'issue' is accepted by record-fix only" >&2
 		exit 2
 		;;
 	esac
@@ -904,10 +904,13 @@ _prove_symptom_run_baseline() {
 $_bats_list
 EOF
 
+	# Output kept in a file the caller names, so a baseline mismatch can
+	# show what happened rather than only that the number was wrong.
+	local outf="${PROVE_SYMPTOM_BASELINE_OUT:-/dev/null}"
 	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
-		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >/dev/null 2>&1 || rc=$?
+		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	else
-		(cd "$wt" && bash -c "$cmd") >/dev/null 2>&1 || rc=$?
+		(cd "$wt" && bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	fi
 	_prove_symptom_wt_cleanup
 	printf '%s\n' "$rc"
@@ -1469,31 +1472,52 @@ cmd_record_fix() {
 
 		# --- the FIXED half, in the live tree -------------------------
 		echo "record-fix: re-executing symptom evidence (fixed tree, timeout ${_sym_tmo}s): $symptom_cmd" >&2
-		local _sym_fixed_actual=0
+		# OUTPUT IS CAPTURED. The retest path prints a `last output:` tail on
+		# a mismatch and this one printed nothing — so the operator learned
+		# the rc was wrong and had no way to see why, on the half that is
+		# hardest to reason about.
+		local _sym_fixed_actual=0 _sym_out
+		_sym_out=$(mktemp) || {
+			echo "error: mktemp failed for symptom output capture" >&2
+			exit 1
+		}
 		if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
-			(cd "$REPO_ROOT" && timeout "$_sym_tmo" bash -c "$symptom_cmd") >/dev/null 2>&1 || _sym_fixed_actual=$?
+			(cd "$REPO_ROOT" && timeout "$_sym_tmo" bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
 		else
-			(cd "$REPO_ROOT" && bash -c "$symptom_cmd") >/dev/null 2>&1 || _sym_fixed_actual=$?
+			(cd "$REPO_ROOT" && bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
 		fi
 		if [ "$_sym_fixed_actual" -ne "$symptom_fixed_rc" ]; then
 			echo "error: SYMPTOM MISMATCH (fixed tree) — the command exited rc=$_sym_fixed_actual but --symptom-fixed-rc claims $symptom_fixed_rc (#2643)." >&2
+			echo "  last output:" >&2
+			tail -c 400 "$_sym_out" | sed 's/^/    /' >&2 || true
+			rm -f "$_sym_out"
 			echo "  If this is flaky rather than wrong, say so in the fix summary and re-run; a flake that changes the rc makes the evidence unreliable, not merely inconvenient." >&2
 			exit 1
 		fi
+		rm -f "$_sym_out"
 
 		# --- the BASELINE half, in a detached worktree ----------------
 		echo "record-fix: re-executing symptom evidence (baseline worktree at ${_sym_ref}): $symptom_cmd" >&2
-		local _sym_base_actual
+		local _sym_base_actual _sym_base_out
+		_sym_base_out=$(mktemp) || _sym_base_out="/dev/null"
+		export PROVE_SYMPTOM_BASELINE_OUT="$_sym_base_out"
 		_sym_base_actual=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo") || {
+			unset PROVE_SYMPTOM_BASELINE_OUT
+			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
 			echo "error: could not run the baseline half — refusing the record rather than accepting one-sided evidence (#2643)" >&2
 			exit 1
 		}
 		if [ "$_sym_base_actual" -ne "$symptom_baseline_rc" ]; then
 			echo "error: SYMPTOM MISMATCH (baseline at ${_sym_ref}) — the command exited rc=$_sym_base_actual but --symptom-baseline-rc claims $symptom_baseline_rc (#2643)." >&2
 			echo "  The baseline runs HEAD's production code with THIS tree's .bats files copied in, so a new test can detect the old bug." >&2
+			echo "  last output:" >&2
+			tail -c 400 "$_sym_base_out" | sed 's/^/    /' >&2 || true
 			echo "  If the numbers disagree because the command is flaky, that is a reason to distrust the evidence, not to retry until it agrees." >&2
+			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
 			exit 1
 		fi
+		unset PROVE_SYMPTOM_BASELINE_OUT
+		[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
 
 		# ABSENCE-SHAPED FAILURE. If the fix ADDS a file, the baseline
 		# exits 127 ("command not found") and looks exactly like "fails
