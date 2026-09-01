@@ -850,11 +850,19 @@ _prove_symptom_run_baseline() {
 		return 2
 	}
 	rm -rf "$wt"
-	if ! git -C "$REPO_ROOT" worktree add --detach --quiet "$wt" "$ref" 2>/dev/null; then
-		echo "error: could not create a detached worktree at '$ref' — the baseline half of the symptom evidence cannot be run. (Is '$ref' a valid commit?)" >&2
+	# git's own stderr is kept: "not a valid object name", "permission
+	# denied" and "no space left" want completely different responses, and
+	# the generic message could not tell them apart.
+	local _wt_err _wt_detail=""
+	_wt_err=$(mktemp) || _wt_err=""
+	if ! git -C "$REPO_ROOT" worktree add --detach --quiet "$wt" "$ref" 2>"${_wt_err:-/dev/null}"; then
+		[ -n "$_wt_err" ] && [ -s "$_wt_err" ] && _wt_detail=" — git said: $(head -c 200 "$_wt_err")"
+		echo "error: could not create a detached worktree at '$ref'${_wt_detail}. The baseline half of the symptom evidence cannot be run." >&2
+		[ -n "$_wt_err" ] && rm -f "$_wt_err"
 		rm -rf "$wt" 2>/dev/null || true
 		return 2
 	fi
+	[ -n "$_wt_err" ] && rm -f "$_wt_err"
 	_prove_symptom_wt="$wt"
 
 	# THE NEW TESTS COME ALONG; the production code does not.
@@ -1499,7 +1507,14 @@ cmd_record_fix() {
 		# --- the BASELINE half, in a detached worktree ----------------
 		echo "record-fix: re-executing symptom evidence (baseline worktree at ${_sym_ref}): $symptom_cmd" >&2
 		local _sym_base_actual _sym_base_out
-		_sym_base_out=$(mktemp) || _sym_base_out="/dev/null"
+		# Fail the same way the sibling capture does. Falling back to
+		# /dev/null meant a mismatch on the baseline half printed an empty
+		# tail and looked like a command that produced no output — the one
+		# case where the operator most needs to see what happened.
+		_sym_base_out=$(mktemp) || {
+			echo "error: mktemp failed for baseline symptom output capture" >&2
+			exit 1
+		}
 		export PROVE_SYMPTOM_BASELINE_OUT="$_sym_base_out"
 		_sym_base_actual=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo") || {
 			unset PROVE_SYMPTOM_BASELINE_OUT

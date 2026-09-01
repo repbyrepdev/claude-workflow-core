@@ -538,3 +538,49 @@ _skip_if_root() {
 		return 1
 	}
 }
+
+@test "#2643: the unproven counter COUNTS UP, not just down to zero" {
+	# It was only ever asserted at 0 — the all-verified case. A counter
+	# that never increments in any test is a counter nobody has seen work,
+	# and it is the whole visible-number half of this feature.
+	_make_fix
+	# One WITH a differential.
+	_rec "$(_base_args) --symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ]
+	# One WITHOUT — an ordinary non-critical fix, which is allowed.
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 5 \
+		--finding-id plain --finding-text t --fix-summary t \
+		--cited-files README.md --retest-cmd true --retest-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "the plain fix was refused: $output"
+		return 1
+	}
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[[ $output == *"unproven (no symptom differential): 1"* ]] || {
+		echo "the counter did not count the unproven fix: $output"
+		return 1
+	}
+	[[ $output == *"Fixes recorded:      2"* ]] || {
+		echo "both fixes were not recorded: $output"
+		return 1
+	}
+}
+
+@test "#2643: optional symptom evidence is VERIFIED when volunteered" {
+	# Optional does not mean unchecked. A non-required source that supplies
+	# the flags must still have them re-executed — otherwise "optional"
+	# quietly means "free text", which is the thing this replaces.
+	_make_fix
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 5 \
+		--finding-id vol --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 9 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "a volunteered but WRONG differential was accepted unchecked: $output"
+		return 1
+	}
+	[[ $output == *"SYMPTOM MISMATCH"* ]] || {
+		echo "the volunteered evidence was not re-executed: $output"
+		return 1
+	}
+}
