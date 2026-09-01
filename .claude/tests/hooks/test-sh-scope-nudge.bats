@@ -23,9 +23,17 @@ setup() {
 # text to stderr for operator-grep, and bats' `run` merges the two streams —
 # so stderr is dropped here, otherwise every `jq` below parses JSON with
 # prose stapled to it.
+#
+# `env -u TEST_SH_FULL_OK` is load-bearing, not tidiness. The hook honours
+# that variable from the ENVIRONMENT (line 49), and the full suite is itself
+# launched as `TEST_SH_FULL_OK=1 scripts/test.sh` — so these tests inherited
+# the very bypass they exist to check. Every blocking assertion passed alone
+# and went green-on-nothing inside the suite, with the hook emitting no
+# output at all. A test whose subject is a gate must own the gate's
+# environment rather than inherit it.
 _run_hook() {
 	local cmd="$1"
-	run bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .)}}' | '$HOOK' 2>/dev/null"
+	run env -u TEST_SH_FULL_OK bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .)}}' | '$HOOK' 2>/dev/null"
 }
 
 _is_denied() {
@@ -48,10 +56,27 @@ _is_denied() {
 	}
 }
 
-@test "TEST_SH_FULL_OK=1 is allowed through" {
+@test "TEST_SH_FULL_OK=1 is allowed through (written in the command)" {
 	_run_hook "TEST_SH_FULL_OK=1 scripts/test.sh"
 	! _is_denied "$output" || {
 		echo "the documented full-suite bypass was itself blocked: $output"
+		return 1
+	}
+}
+
+@test "TEST_SH_FULL_OK=1 is allowed through (inherited from the environment)" {
+	# The hook honours this from the environment as well as from the command
+	# text, and the two paths are separate code (line 49 vs the command-text
+	# grep). Only the command-text one had a test, and the env one is what
+	# the full suite actually uses — so the untested path was the one every
+	# suite run depends on.
+	run env TEST_SH_FULL_OK=1 bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"scripts/test.sh\"}}' | '$HOOK' 2>/dev/null"
+	! _is_denied "$output" || {
+		echo "an inherited TEST_SH_FULL_OK=1 did not allow the run: $output"
+		return 1
+	}
+	[ -z "$output" ] || {
+		echo "expected the hook to stay silent when opted in; got: $output"
 		return 1
 	}
 }
