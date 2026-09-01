@@ -106,10 +106,24 @@ Refusals you may hit, each with its remedy:
   never evidence. Raise `PROVE_BASELINE_TIMEOUT` if the check needs longer.
 
 **What it does and does not prove.** It proves the exit code *depends on the
-diff*. It cannot prove the command is relevant to the fix — `grep -q` for a
-string the fix added would satisfy it — and the trigger is self-selected,
-since `--cited-files` is optional. Treat it as a floor that makes the honest
-path the easy one, not a fence.
+diff*. It cannot prove the command is relevant to the fix, and an adversarial
+review confirmed three ways to satisfy it without proving anything:
+
+- **Observe the diff** — add a comment to a cited file and `grep -q` for it.
+  The rcs differ; the fix is a no-op.
+- **Live-cwd asymmetry** — the fixed half runs in your working tree, the
+  baseline in a pristine checkout, so `test -f <any untracked file>` differs
+  for free. Inherent: running the fixed half somewhere clean would throw away
+  the uncommitted fix being tested.
+- **Measure then revert** — nothing binds the record to the tree it was
+  measured on.
+
+The trigger is also self-selected: `--cited-files` is optional, so an author
+who cites nothing is never asked for a differential at all.
+
+Treat it as a floor that makes the honest path the easy one, not a fence. The
+number `audit` prints is a signal for a human to read, not a proof — and it
+is not enforced at commit time.
 - **Cycle-critical citations demand the real entry point**: when
   `--cited-files` names `hooks/*.sh`, `_lib/*.sh`, `pre-commit-hooks/*.sh`,
   or `scripts/cr/local-review.sh` (`.claude/`-mirror spellings normalized),

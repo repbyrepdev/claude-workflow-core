@@ -564,7 +564,7 @@ cmd_record_rejection() {
 	case "$src" in
 	phase0.5 | phase1 | cr | issue) ;;
 	*)
-		echo "error: --source must be phase0.5|phase1|cr|issue (got: $src)" >&2
+		echo "error: --source must be phase0.5|phase1|cr (got: $src) — 'issue' is accepted by record-fix only" >&2
 		exit 2
 		;;
 	esac
@@ -831,13 +831,31 @@ cmd_record_rejection() {
 # restore. Worst case on a cleanup failure is a leaked temp dir and an
 # orphan worktree stub — never a corrupted tree and never a lost fix.
 #
-# `git stash` is NOT used. It appears nowhere in this repo and
-# scripts/release.sh documents the preference against it.
+# `git stash` is NOT used: it mutates the operator's working tree, and the
+# whole point here is that the baseline costs nothing to obtain. (An earlier
+# version of this comment claimed scripts/release.sh "documents the
+# preference against it" — it does not; it says "commit or stash". The
+# reason above stands on its own without the borrowed authority.)
 #
 # N != M is necessary, NOT sufficient, and the earlier wording here
 # ("what makes this unfakeable") was simply false. A differential proves
 # only that the command's exit code DEPENDS ON THE DIFF — not that it
-# exercises the fix. AND THE REQUIREMENT IS SELF-SELECTED: it fires from
+# exercises the fix. Three shapes an adversarial review CONFIRMED against
+# this code, kept here because a gate that hides its holes is worse than one
+# that names them:
+#   1. OBSERVE-THE-DIFF. Add a comment to a cited file, then
+#      `--symptom-cmd "grep -q <that comment> <that file>"`. The rc differs
+#      across the trees and the "fix" is a no-op. Mechanically
+#      indistinguishable from grepping for new BEHAVIOUR.
+#   2. LIVE-CWD ASYMMETRY. The fixed half runs in the working tree; the
+#      baseline in a pristine checkout. Untracked junk exists in one and
+#      never the other, so `test -f <any untracked file>` is a free
+#      differential. Inherent to comparing a dirty tree against a commit —
+#      running the fixed half somewhere clean would discard the uncommitted
+#      fix, which is the thing under test.
+#   3. MEASURE-THEN-REVERT. Nothing binds the record to the tree state it
+#      was measured on, so the fix can be reverted afterwards.
+# AND THE REQUIREMENT IS SELF-SELECTED: it fires from
 # `--cited-files`, which is optional, so an agent that cites nothing (or
 # picks `--source phase1` over `issue`) is never asked for a differential
 # at all. That is a floor, not a fence. It raises the cost of a bare claim
@@ -1500,7 +1518,7 @@ cmd_record_fix() {
 
 	if [ "$_sym_supplied" = "1" ]; then
 		[ -n "$symptom_cmd" ] || {
-			echo "error: --symptom-baseline-rc/--symptom-fixed-rc given without --symptom-cmd (#2643)" >&2
+			echo "error: --symptom-baseline-rc/--symptom-fixed-rc/--baseline-ref given without --symptom-cmd (#2643)" >&2
 			exit 2
 		}
 		case "$symptom_baseline_rc" in '' | *[!0-9]*)
@@ -1566,16 +1584,53 @@ cmd_record_fix() {
 				fi
 			done
 			if [ "$_sym_dirty" = "0" ]; then
-				echo "error: no cited file differs from HEAD, so HEAD is not the pre-fix tree and the baseline would re-run the FIXED code — a tautology, not evidence (#2643)." >&2
+				if [ -z "$cited_files" ]; then
+					# Nothing was cited at all, so "no cited file differs"
+					# is vacuously true and the --baseline-ref remedy
+					# misdiagnoses it. Say what is actually missing.
+					echo "error: no --cited-files were given, so there is nothing to check against ${_sym_ref} and the baseline cannot be shown to be the pre-fix tree (#2643)." >&2
+					echo '  Cite the files the fix changed: --cited-files "path1 path2"' >&2
+					echo "  If the fix is already committed, also name the commit before it: --baseline-ref <sha>" >&2
+					exit 2
+				fi
+				echo "error: no cited file differs from ${_sym_ref}, so ${_sym_ref} is not the pre-fix tree and the baseline would re-run the FIXED code — a tautology, not evidence (#2643)." >&2
 				echo "  If the fix is already committed, name the commit before it: --baseline-ref <sha>" >&2
 				exit 2
 			fi
 		fi
 
-		local _sym_tmo="${PROVE_BASELINE_TIMEOUT:-${PROVE_RETEST_TIMEOUT:-120}}"
-		case "$_sym_tmo" in '' | *[!0-9]* | 0)
-			echo "WARN: PROVE_BASELINE_TIMEOUT='$_sym_tmo' is not a positive integer — using 120" >&2
+		# Name the variable the bad value ACTUALLY came from. This read the
+		# raw env of whichever var won and then blamed PROVE_BASELINE_TIMEOUT
+		# regardless, so a typo in PROVE_RETEST_TIMEOUT sent the operator to
+		# check a variable they had not set (p1-docs, verified).
+		local _sym_tmo _sym_tmo_var
+		if [ -n "${PROVE_BASELINE_TIMEOUT:-}" ]; then
+			_sym_tmo="$PROVE_BASELINE_TIMEOUT"
+			_sym_tmo_var="PROVE_BASELINE_TIMEOUT"
+		elif [ -n "${PROVE_RETEST_TIMEOUT:-}" ]; then
+			_sym_tmo="$PROVE_RETEST_TIMEOUT"
+			_sym_tmo_var="PROVE_RETEST_TIMEOUT"
+		else
 			_sym_tmo=120
+			_sym_tmo_var="PROVE_BASELINE_TIMEOUT"
+		fi
+		# `00` and `000` passed the old `| 0)` arm and GNU `timeout 00` means
+		# NO DEADLINE — so a two-character typo silently removed the only
+		# backstop on a hanging baseline, and removed it right where the
+		# rc-124 guard needs a real deadline to compare against. The retest
+		# path already required ^[1-9][0-9]*$; match it (p1-correct, verified).
+		case "$_sym_tmo" in
+		'' | *[!0-9]*)
+			echo "WARN: $_sym_tmo_var='$_sym_tmo' is not a positive integer — using 120" >&2
+			_sym_tmo=120
+			;;
+		*)
+			# All-digits, but reject all-zero forms: 0, 00, 000.
+			case "$_sym_tmo" in *[!0]*) ;; *)
+				echo "WARN: $_sym_tmo_var='$_sym_tmo' means NO DEADLINE to timeout(1), which would let a hang stand in for evidence — using 120" >&2
+				_sym_tmo=120
+				;;
+			esac
 			;;
 		esac
 
@@ -1656,7 +1711,7 @@ cmd_record_fix() {
 		fi
 		if [ "$_sym_base_actual" -ne "$symptom_baseline_rc" ]; then
 			echo "error: SYMPTOM MISMATCH (baseline at ${_sym_ref}) — the command exited rc=$_sym_base_actual but --symptom-baseline-rc claims $symptom_baseline_rc (#2643)." >&2
-			echo "  The baseline runs HEAD's production code with THIS tree's .bats files copied in, so a new test can detect the old bug." >&2
+			echo "  The baseline runs ${_sym_ref}'s production code with THIS tree's .bats files (tracked AND untracked) copied in, so a new test can detect the old bug." >&2
 			echo "  last output:" >&2
 			tail -c 400 "$_sym_base_out" | sed 's/^/    /' >&2 || true
 			echo "  If the numbers disagree because the command is flaky, that is a reason to distrust the evidence, not to retry until it agrees." >&2

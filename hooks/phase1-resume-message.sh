@@ -27,6 +27,9 @@ set -euo pipefail
 # evidence addressed in decision_data. These EXISTING prove-yourself actions
 # (record-fix / record-rejection) MUST still be run — no NEW action *type* is
 # introduced; the refutation flow reuses them rather than adding a kind.
+# (#2643) The action type is unchanged but the record-fix CONTRACT grew: a
+# citation of a cycle-critical file now also requires --symptom-cmd plus the
+# two rcs, so a refutation upheld against hooks/ or _lib/ needs them too.
 #
 # Usage:
 #   phase1-resume-message.sh build <agent> <round> <base_ref> <head_sha>

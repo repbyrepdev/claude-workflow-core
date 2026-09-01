@@ -116,7 +116,7 @@
     "hooks/phase1-log-pending-gate.sh": "9998f621072690f2faa08af725c4c8cdd1f3a3919ffb3479dbd7da6e4a790566",
     "hooks/phase1-post-agent-nudge.sh": "3ae1627523f8e8f384ff878736917294d1450377a42e2260b254a43c0fed98c1",
     "hooks/phase1-post-commit-resume.sh": "fb49f898836a0666b7c27f7d904f65f133a90afda8ac9d8d089ce6bab68628b2",
-    "hooks/phase1-resume-message.sh": "0aad45ca709149d89495fb1c98207b409ae05d6cfc975eb81734949e65da4343",
+    "hooks/phase1-resume-message.sh": "7bea49c3c2f26926711289fa57014a03685f803d6c1a40d5b278e6c593da0793",
     "hooks/phase1-scaler.sh": "95a4ab600d9f52804507283bd8c9ef6e6e792af19b50b66181b26d5e1181d0fb",
     "hooks/post-commit-ship-cycle.sh": "c76866008d15fef5ac75c99a4288f2ebcc8a77a77b8af11c32c71cd6cc51fd69",
     "hooks/post-commit-template-lint.sh": "279462db797de0441e1c1405f3a0afeaaf7249457459c928f987340b1983cab2",

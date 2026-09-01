@@ -789,3 +789,102 @@ JSON
 		return 1
 	}
 }
+
+@test "#2643: the rejection --source ERROR text does not advertise issue either" {
+	# The same defect existed TWICE in cmd_record_rejection and the earlier
+	# fix caught only the second copy. The test that shipped with it ran
+	# record-rejection with no args, which stops at "--source is REQUIRED"
+	# and reaches neither line — so the miss survived its own regression
+	# test. This drives the path that actually prints it: a source that is
+	# present but invalid, with the other required fields supplied.
+	run bash -c "'$RUN' record-rejection --source bogus \
+		--finding-id x --finding-text t --dogfood-cmd t --dogfood-output t \
+		--dogfood-rc 0 --external-authority t --reason t 2>&1 || true"
+	[[ $output == *"--source must be"* ]] || {
+		echo "did not reach the invalid-source error at all, so this test would be vacuous: $output"
+		return 1
+	}
+	[[ $output != *"|issue"* ]] || {
+		echo "the rejection error text still advertises issue as valid: $output"
+		return 1
+	}
+}
+
+@test "#2643: an all-zero timeout is refused, not silently unbounded" {
+	# `timeout 00` means NO DEADLINE to GNU timeout, and the old validation
+	# only rejected a single `0`. A two-character typo therefore removed the
+	# one backstop on a hanging baseline — precisely where the rc-124 guard
+	# needs a real deadline to compare against.
+	_make_fix
+	run bash -c "cd '$WORK' && PROVE_BASELINE_TIMEOUT=00 '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "the fallback should let the record proceed, not break it: $output"
+		return 1
+	}
+	[[ $output == *"NO DEADLINE"* ]] || {
+		echo "an all-zero timeout was accepted silently: $output"
+		return 1
+	}
+}
+
+@test "#2643: a bad timeout names the variable it actually came from" {
+	# The WARN read whichever variable won and then blamed
+	# PROVE_BASELINE_TIMEOUT regardless, sending the operator to check a
+	# variable they had never set.
+	_make_fix
+	run bash -c "cd '$WORK' && PROVE_RETEST_TIMEOUT=notanumber '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[[ $output == *"PROVE_RETEST_TIMEOUT='notanumber'"* ]] || {
+		echo "the WARN blames the wrong variable: $output"
+		return 1
+	}
+}
+
+@test "#2643: citing NOTHING is diagnosed as citing nothing" {
+	# With no --cited-files the tautology refusal fired vacuously ("no cited
+	# file differs") and offered --baseline-ref, which is the remedy for a
+	# different problem entirely.
+	_make_fix
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "a record with no citations was accepted: $output"
+		return 1
+	}
+	[[ $output == *"no --cited-files were given"* ]] || {
+		echo "the refusal misdiagnoses the missing citation: $output"
+		return 1
+	}
+}
+
+@test "#2643: the unproven counter counts FIXES, not rejections" {
+	# Mutation-verified gap: deleting the `kind == fix` filter left all 54
+	# tests green, because every audit test used a fix-only state dir. A
+	# rejection is not an unproven fix.
+	_make_fix
+	_rec "$(_base_args) --symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ]
+	local sd="$WORK/.claude/.session-state/prove-yourself"
+	cat >"$sd/rej-zzz999.json" <<'JSON'
+{"finding_id":"rej","kind":"rejection","finding_text":"t","ts":"2026-01-01T00:00:00Z",
+ "covers_count":1,"cited_files":[],
+ "decision_data":{"reason":"t","dogfood_cmd":"true","dogfood_output":"o","dogfood_rc":0,
+                  "external_authority":"a"}}
+JSON
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[[ $output == *"unproven (no symptom differential): 0"* ]] || {
+		echo "a rejection was counted as an unproven fix: $output"
+		return 1
+	}
+	[[ $output == *"Rejections recorded: 1"* ]] || {
+		echo "the rejection fixture was not picked up at all, so this test is vacuous: $output"
+		return 1
+	}
+}

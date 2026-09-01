@@ -1621,7 +1621,7 @@ _phase05_cap_gate() {
 	elif [ "$_findings_shas" -eq 0 ]; then
 		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings-bearing sha exists on this branch — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run."
 	else
-		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)."
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection; a record-fix citing hooks/, _lib/, pre-commit-hooks/ or scripts/cr/local-review.sh also needs --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc per #2643), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)."
 	fi
 	printf '%s\n' "$_cap_body" >&2
 	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&

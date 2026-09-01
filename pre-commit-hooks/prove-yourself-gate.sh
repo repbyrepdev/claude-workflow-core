@@ -120,8 +120,14 @@ if [ "$COVERS_TOTAL" -lt "$ROUND_FINDINGS" ]; then
 	echo "  Prove-yourself records cover: $COVERS_TOTAL" >&2
 	echo "  Need $((ROUND_FINDINGS - COVERS_TOTAL)) more covered before commit." >&2
 	echo "" >&2
-	echo "  Per-finding:    .claude/skills/prove-yourself-audit/run.sh record-{fix,rejection} \\" >&2
+	echo "  Per-finding:    skills/prove-yourself-audit/run.sh record-{fix,rejection}" >&2
 	echo "                    --finding-text ... [--covers-count N for bulk]" >&2
+	echo "                  A record-fix citing a CYCLE-CRITICAL file (hooks/, _lib/," >&2
+	echo "                  pre-commit-hooks/, scripts/cr/local-review.sh) also needs the" >&2
+	echo "                  #2643 symptom differential, or it exits 2:" >&2
+	echo '                    --symptom-cmd "..." --symptom-baseline-rc N --symptom-fixed-rc M' >&2
+	echo "                  (N != M; both are re-executed. Already committed? add" >&2
+	echo "                  --baseline-ref <sha-before-the-fix>. See run.sh --help.)" >&2
 	echo "  Bypass:         PROVE_YOURSELF_GATE_SKIP=1 git commit ... (audit-logged)" >&2
 	# r5 #676 expansion: append to universal sentinel for single-pane visibility.
 	LIB_HOOK_ACK="$(dirname "$0")/../_lib/hook-ack.sh"
