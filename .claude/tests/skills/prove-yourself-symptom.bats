@@ -888,3 +888,116 @@ JSON
 		return 1
 	}
 }
+# ---- #2643 source/stage reconciliation ------------------------------------
+# The guard for the failure that cost three review rounds' worth of
+# bookkeeping: phase0.5 findings recorded as --source issue, counted by
+# nothing, and uncorrectable because covered_sha was stamped from HEAD.
+
+@test "#2643: recording a phase0.5 sha under the WRONG source is refused" {
+	# THE ONE THAT WOULD HAVE CAUGHT IT. The vocabulary check passes
+	# `issue` happily; only comparing it against the stage log for this sha
+	# reveals that the record would be written and then never counted.
+	_make_fix
+	mkdir -p "$WORK/.claude/logs"
+	local sha
+	sha=$(git -C "$WORK" rev-parse HEAD)
+	printf '{"sha":"%s","findings":12}\n' "$sha" >"$WORK/.claude/logs/phase0.5-run.jsonl"
+
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "a phase0.5 sha was recorded as --source issue, the exact mislabel: $output"
+		return 1
+	}
+	[[ $output == *"SOURCE/STAGE MISMATCH"* ]] || {
+		echo "refused, but not for the mislabel: $output"
+		return 1
+	}
+	[[ $output == *phase0.5* ]] || {
+		echo "the refusal does not name the source that WOULD count: $output"
+		return 1
+	}
+}
+
+@test "#2643: the MATCHING source is accepted at the same sha" {
+	# The control. A guard that refused everything would be useless, and
+	# would be turned off within a day.
+	_make_fix
+	mkdir -p "$WORK/.claude/logs"
+	local sha
+	sha=$(git -C "$WORK" rev-parse HEAD)
+	printf '{"sha":"%s","findings":12}\n' "$sha" >"$WORK/.claude/logs/phase0.5-run.jsonl"
+
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase0.5 --confidence 8 \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "the correct source was refused: $output"
+		return 1
+	}
+}
+
+@test "#2643: a sha with no findings logged does not trip the guard" {
+	# Ordinary recording must stay unaffected, or the guard becomes noise.
+	_make_fix
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "a clean sha was blocked by the reconciliation guard: $output"
+		return 1
+	}
+}
+
+@test "#2643: --covered-sha re-files evidence onto an ancestor commit" {
+	# The recovery path, and the reason a bypass was not needed. Without
+	# this, a mislabeled record is permanent: covered_sha is stamped from
+	# HEAD, so the only exits are a skip or re-running the review.
+	_make_fix
+	local old_sha
+	old_sha=$(git -C "$WORK" rev-parse HEAD)
+	run bash -c "cd '$WORK' && git add -A && git -c user.email=t@t -c user.name=t commit -qm second"
+	[ "$status" -eq 0 ]
+
+	printf 'more\n' >>"$WORK/scripts/thing.sh"
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 7 \
+		--covered-sha '$old_sha' \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "re-filing onto an ancestor was refused: $output"
+		return 1
+	}
+	[[ $output == *"covered-sha"* ]] || {
+		echo "the run does not say it covered a different sha: $output"
+		return 1
+	}
+	local logged
+	logged=$(jq -rs --arg s "$old_sha" '[ .[] | select(.covered_sha == $s) ] | length' \
+		"$WORK/.claude/audit/prove-yourself.jsonl" 2>/dev/null)
+	[ "${logged:-0}" -ge 1 ] || {
+		echo "the ledger row was not filed against the named sha"
+		return 1
+	}
+}
+
+@test "#2643: --covered-sha REFUSES a sha that is not an ancestor" {
+	# Otherwise the recovery flag becomes a coverage-fabrication flag:
+	# attach evidence to any commit anywhere.
+	_make_fix
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 7 \
+		--covered-sha deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "an unresolvable sha was accepted: $output"
+		return 1
+	}
+	[[ $output == *"does not resolve to a commit"* ]] || {
+		echo "refused, but not for the reason claimed: $output"
+		return 1
+	}
+}

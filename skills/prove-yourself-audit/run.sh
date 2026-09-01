@@ -1049,7 +1049,7 @@ cmd_record_fix() {
 	local finding_id="" finding_text="" fix_summary="" retest_cmd="" retest_rc="" cited_files=""
 	local symptom_cmd="" symptom_baseline_rc="" symptom_fixed_rc="" baseline_ref=""
 	local allow_absence_baseline=0
-	local covers_count="1" confidence="" cluster_id="" src=""
+	local covers_count="1" confidence="" cluster_id="" src="" covered_sha_arg=""
 	# v4.28-W4 #723: record-fix now accepts --severity (matches the
 	# help text claim). cr-source records-of-fix use severity vocab
 	# (critical|high|medium|minor|info) same as record-rejection.
@@ -1173,6 +1173,21 @@ cmd_record_fix() {
 			cluster_id=${2:-}
 			shift 2
 			;;
+		--covered-sha)
+			# (#2643) Name the sha this evidence covers instead of always
+			# stamping HEAD. Without it a mislabeled record is PERMANENT —
+			# the only exits are a bypass or re-running the review, which is
+			# exactly the corner this feature's own author ended up in after
+			# filing 42 phase0.5 findings under the wrong source. Validated
+			# as an ANCESTOR of HEAD below, so it can correct a record and
+			# never invent coverage for unrelated work.
+			[ $# -lt 2 ] && {
+				echo "error: missing value for --covered-sha" >&2
+				exit 2
+			}
+			covered_sha_arg=${2:-}
+			shift 2
+			;;
 		--source)
 			# v4.28-W3-C: source of the underlying finding being fixed.
 			# Same semantics as cmd_record_rejection's --source.
@@ -1224,6 +1239,93 @@ cmd_record_fix() {
 		exit 2
 		;;
 	esac
+
+	# (#2643) Resolve and VALIDATE --covered-sha before anything reads it.
+	# It must name a real commit that is an ANCESTOR of HEAD: evidence may be
+	# re-filed against a commit already on this branch (correcting a label),
+	# never attached to unrelated or future work.
+	local _cov_sha=""
+	if [ -n "$covered_sha_arg" ]; then
+		_cov_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "${covered_sha_arg}^{commit}" 2>/dev/null) || _cov_sha=""
+		if [ -z "$_cov_sha" ]; then
+			echo "error: --covered-sha '$covered_sha_arg' does not resolve to a commit (#2643)" >&2
+			exit 2
+		fi
+		if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_cov_sha" HEAD 2>/dev/null; then
+			echo "error: --covered-sha '$covered_sha_arg' is not an ancestor of HEAD — evidence can be re-filed against a commit already on this branch, not attached to unrelated work (#2643)" >&2
+			exit 2
+		fi
+		echo "record-fix: covering ${_cov_sha:0:7} (named via --covered-sha) rather than HEAD" >&2
+	fi
+
+	# ===== #2643 SOURCE-vs-STAGE RECONCILIATION ==========================
+	# The vocabulary check above only proves the string is spellable. It
+	# does NOT prove it names the stage that actually produced the findings
+	# being covered — and that gap cost 42 findings across three shas,
+	# recorded as `--source issue` when they were phase0.5 prefilter
+	# results. The graduation gate counts only `source == "phase0.5"`, so it
+	# reported 0/17, 0/13, 0/12 for work that was entirely done. The label
+	# was wrong and, because `covered_sha` is stamped from HEAD, unfixable
+	# afterwards.
+	#
+	# Two checks, because the failure had two independent halves:
+	#   (1) the source disagrees with the stage log for THIS sha, and
+	#   (2) there is no stage log at all, because the phases were run by
+	#       hand and the state machine was never driven — which is the
+	#       condition that makes (1) silent.
+	# Both name PROVE_SOURCE_CHECK_SKIP so a deliberate exception is
+	# audit-logged rather than invisible.
+	# Resolve from the script's own location first (works in the consumer
+	# .claude/ mirror too), then fall back to the repo root.
+	local _SF_LIB _SF_SELF
+	_SF_SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _SF_SELF=""
+	_SF_LIB="$_SF_SELF/../../_lib/stage-findings.sh"
+	[ -r "$_SF_LIB" ] || _SF_LIB="$REPO_ROOT/_lib/stage-findings.sh"
+	[ -r "$_SF_LIB" ] || _SF_LIB="$REPO_ROOT/.claude/_lib/stage-findings.sh"
+	if [ "${PROVE_SOURCE_CHECK_SKIP:-0}" = "1" ]; then
+		echo "prove-yourself: PROVE_SOURCE_CHECK_SKIP=1 — source/stage reconciliation bypassed for --source $src (#2643)" >&2
+	elif [ -r "$_SF_LIB" ]; then
+		# shellcheck source=/dev/null
+		. "$_SF_LIB"
+		if [ "$(type -t _stage_findings_stages_at 2>/dev/null)" = "function" ]; then
+			local _sf_sha _sf_stages _sf_started=0
+			if [ -n "$_cov_sha" ]; then
+				_sf_sha="$_cov_sha"
+			else
+				_sf_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) || _sf_sha=""
+			fi
+			if [ -n "$_sf_sha" ]; then
+				_stage_findings_cycle_started "$REPO_ROOT" "$_sf_sha" && _sf_started=1
+				_sf_stages=$(_stage_findings_stages_at "$REPO_ROOT" "$_sf_sha")
+
+				# (1) A stage logged findings here and --source names a
+				#     different one. The record would not count toward the
+				#     graduation this evidence is for.
+				if [ -n "$_sf_stages" ]; then
+					case "$_sf_stages" in
+					*"$src"*) ;;
+					*)
+						echo "error: SOURCE/STAGE MISMATCH — HEAD ${_sf_sha:0:7} has findings logged by: $(printf '%s' "$_sf_stages" | tr '\n' ' ')but --source is '$src' (#2643)." >&2
+						echo "  Graduation gates count ONLY records whose source matches the stage that found the issue, so this record would be written and then never counted — which is how 42 real fixes read as 0/17, 0/13, 0/12." >&2
+						echo "  Use --source \"$(printf '%s' "$_sf_stages" | head -1)\", or split the record if it genuinely covers more than one stage." >&2
+						echo "  Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
+						exit 2
+						;;
+					esac
+				# (2) No stage log for this sha AND no cycle state. Phase
+				#     evidence on a branch the machine never drove is
+				#     unreconcilable: nothing will ever match it up.
+				elif [ "$_sf_started" -eq 0 ] && [ "$src" != "issue" ] &&
+					_stage_findings_cycle_in_use "$REPO_ROOT"; then
+					echo "error: --source $src but the ship-cycle state machine has never run on HEAD ${_sf_sha:0:7} (#2643)." >&2
+					echo "  A phase-sourced record with no stage log is unreconcilable — no gate can ever match it to the round it claims to cover. This is exactly the shape that let hand-run phases produce records nothing counted." >&2
+					echo "  Run 'scripts/ship-pr-cycle.sh start' (then 'next') so the phase is logged, or record issue-driven work as --source issue." >&2
+					echo "  Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
+					exit 2
+				fi
+			fi
+		fi
+	fi
 	# v4.28-W3-C: confidence/severity required source-keyed (record-fix
 	# doesn't need follow-up since it's "did fix" not "deferred"; the
 	# retest_cmd + retest_rc are the dogfood evidence).
@@ -1790,6 +1892,8 @@ cmd_record_fix() {
 
 	# v4.28-W4 (#710): append summary to tracked audit log.
 	# CR-CI fix: propagate failure (mirror record-rejection branch).
+	# (#2643) Hand the validated ancestor sha to the ledger writer.
+	[ -n "$_cov_sha" ] && export PROVE_COVERED_SHA="$_cov_sha"
 	if ! _append_tracked_audit "fix" "$finding_id" "${src:-}" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count"; then
 		echo "ERROR: tracked audit append failed for $finding_id (state file at $state_file is intact, but audit log is missing this record)" >&2
 		exit 1
@@ -2093,7 +2197,13 @@ _append_tracked_audit() {
 	# tests). Cannot use $REPO_ROOT here because some callers pre-set it
 	# to a fixture dir; resolve from git directly for the current HEAD.
 	local covered_sha
-	covered_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	# (#2643) PROVE_COVERED_SHA carries an ALREADY-VALIDATED ancestor sha
+	# from record-fix's --covered-sha. Unset = HEAD, as before.
+	if [ -n "${PROVE_COVERED_SHA:-}" ]; then
+		covered_sha="$PROVE_COVERED_SHA"
+	else
+		covered_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+	fi
 	jq_err=$(mktemp 2>/dev/null) || jq_err=/dev/null
 	if ! jq -nc \
 		--arg ts "$ts" --arg kind "$kind" --arg fid "$fid" \
