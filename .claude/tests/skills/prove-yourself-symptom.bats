@@ -365,3 +365,115 @@ _base_args() {
 		return 1
 	}
 }
+
+# Root cannot be denied by chmod, so a permissions-based negative test is
+# vacuous there — skip rather than pass having exercised nothing.
+_skip_if_root() {
+	[ "$(id -u)" -ne 0 ] || skip "runs as root (#2643): chmod 000 does not deny, so this negative test cannot fail"
+}
+
+@test "#2643: --baseline-ref is a working REMEDY, not just a suggestion" {
+	# The refusal path was tested and the remedy it names was not — so the
+	# message could have offered a flag that did not work, which is worse
+	# than no advice. An already-committed fix names the commit BEFORE it.
+	printf '#!/bin/bash\nexit 0\n' >"$WORK/scripts/thing.sh"
+	git -C "$WORK" add -A >/dev/null 2>&1
+	git -C "$WORK" commit -qm "the fix, now committed" >/dev/null 2>&1
+	local before
+	before=$(git -C "$WORK" rev-parse HEAD~1)
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0 \
+		--baseline-ref $before"
+	[ "$status" -eq 0 ] || {
+		echo "--baseline-ref did not work as the refusal advertises: $output"
+		return 1
+	}
+	[[ $output == *"1 without the fix, 0 with it"* ]] || {
+		echo "the differential against the named ref was not confirmed: $output"
+		return 1
+	}
+}
+
+@test "#2643: a BAD --baseline-ref refuses rather than skipping the baseline" {
+	# One-sided evidence is not evidence. If the worktree cannot be built,
+	# the record must be refused — never written with the fixed half alone.
+	_make_fix
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0 \
+		--baseline-ref deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	[ "$status" -ne 0 ] || {
+		echo "an unusable baseline ref was accepted: $output"
+		return 1
+	}
+	[[ $output == *"one-sided evidence"* ]] || {
+		echo "the refusal does not explain what it protects: $output"
+		return 1
+	}
+}
+
+@test "#2643: partial symptom flags are refused" {
+	# Rcs without a command describe a claim with nothing to run — the
+	# free-text shape this whole feature replaces.
+	_make_fix
+	_rec "$(_base_args) --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 2 ] || {
+		echo "rcs without a command returned $status, expected 2: $output"
+		return 1
+	}
+	[[ $output == *"without --symptom-cmd"* ]] || {
+		echo "the refusal does not name what is missing: $output"
+		return 1
+	}
+}
+
+@test "#2643: a NON-NUMERIC symptom rc is refused" {
+	# The same validation the retest rc gets. Without it the equality check
+	# is a string compare that silently accepts nonsense.
+	_make_fix
+	_rec "$(_base_args) --symptom-cmd true --symptom-baseline-rc one --symptom-fixed-rc 0"
+	[ "$status" -eq 2 ] || {
+		echo "a non-numeric baseline rc returned $status, expected 2: $output"
+		return 1
+	}
+	[[ $output == *"non-negative integer"* ]] || {
+		echo "the refusal does not name the constraint: $output"
+		return 1
+	}
+}
+
+@test "#2643: a failed .bats copy REFUSES rather than running without the test" {
+	# The high-severity one. `cp ... || true` let the baseline run WITHOUT
+	# the new test that is supposed to detect the bug — and the
+	# differential would then "prove" the fix using a suite that never saw
+	# it. Forced by making the source file unreadable.
+	_skip_if_root
+	# Commit the TEST first, then make the fix — otherwise committing both
+	# leaves nothing differing from HEAD and the tautology check fires
+	# before the copy is ever attempted.
+	mkdir -p "$WORK/.claude/tests/deep"
+	printf '#!/usr/bin/env bats\n@test "x" { true; }\n' >"$WORK/.claude/tests/deep/new.bats"
+	git -C "$WORK" add .claude >/dev/null 2>&1
+	git -C "$WORK" commit -qm "add a test" >/dev/null 2>&1
+	_make_fix
+	# Now change the test so it is a CHANGED .bats the baseline must copy,
+	# and make that copy fail.
+	printf '#!/usr/bin/env bats\n@test "y" { true; }\n' >"$WORK/.claude/tests/deep/new.bats"
+	chmod 000 "$WORK/.claude/tests/deep/new.bats"
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	chmod 644 "$WORK/.claude/tests/deep/new.bats" 2>/dev/null || true
+	[ "$status" -ne 0 ] || {
+		echo "an unreadable test file was silently skipped: $output"
+		return 1
+	}
+	[[ $output == *"WITHOUT the test"* ]] || {
+		echo "the refusal does not explain the consequence: $output"
+		return 1
+	}
+}

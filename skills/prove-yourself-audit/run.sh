@@ -812,8 +812,10 @@ cmd_record_rejection() {
 # proves nothing and is refused — that is the pre-#2562 hole reopening in a
 # new field.
 
-# _prove_symptom_baseline_worktree <ref> <outvar>
-#   Creates a detached worktree at <ref>, echoes its path. rc 2 on failure.
+# The worktree path currently in use, so the cleanup below can find it from
+# any exit path. (An earlier docblock here described a function
+# `_prove_symptom_baseline_worktree <ref> <outvar>` that was never written —
+# the worktree is created inline by _prove_symptom_run_baseline.)
 _prove_symptom_wt=""
 _prove_symptom_wt_cleanup() {
 	# Remove -> rm -rf -> prune, the hardened sequence
@@ -821,17 +823,27 @@ _prove_symptom_wt_cleanup() {
 	# best-effort: a half-removed worktree must not abort the caller, and
 	# the prune is what stops an orphan .git/worktrees/ stub accumulating.
 	[ -n "$_prove_symptom_wt" ] || return 0
-	git -C "$REPO_ROOT" worktree remove --force "$_prove_symptom_wt" 2>/dev/null || true
-	rm -rf "$_prove_symptom_wt" 2>/dev/null || true
-	git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
+	# Best-effort by design — a cleanup failure must never abort the caller
+	# or lose the operator's fix — but NOT silent. An accumulating orphan
+	# worktree is a real cost, and the first version discarded every signal
+	# of one.
+	git -C "$REPO_ROOT" worktree remove --force "$_prove_symptom_wt" 2>/dev/null ||
+		echo "WARN: could not remove the baseline worktree at $_prove_symptom_wt — trying rm -rf" >&2
+	rm -rf "$_prove_symptom_wt" 2>/dev/null ||
+		echo "WARN: could not rm -rf $_prove_symptom_wt — it will need removing by hand" >&2
+	git -C "$REPO_ROOT" worktree prune 2>/dev/null ||
+		echo "WARN: 'git worktree prune' failed — an orphan stub may remain in .git/worktrees" >&2
 	_prove_symptom_wt=""
 }
 
-# _prove_symptom_run_baseline <ref> <cmd> <timeout> <cited_files>
+# _prove_symptom_run_baseline <ref> <cmd> <timeout>
 #   Echoes the observed rc on stdout. rc 2 (of the function) on a setup
 #   failure, which is NOT the same as the command failing.
 _prove_symptom_run_baseline() {
-	local ref="$1" cmd="$2" tmo="$3" cited="$4"
+	# No `cited` parameter: the single .bats list below comes from `git
+	# diff --name-only`, which already includes any cited test file that
+	# differs — and one that does NOT differ is identical at <ref> anyway.
+	local ref="$1" cmd="$2" tmo="$3"
 	local wt rc=0
 	wt=$(mktemp -d -t prove-baseline.XXXXXX) || {
 		echo "error: mktemp -d failed for the baseline worktree" >&2
@@ -854,30 +866,43 @@ _prove_symptom_run_baseline() {
 	#
 	# .claude/tests/**/*.bats are tests. Everything else is production —
 	# stated here rather than guessed at each call site.
+	#
+	# A FAILED COPY IS FATAL. It was `cp ... || true`, which meant a
+	# permissions or path error let the baseline run WITHOUT the very test
+	# that is supposed to detect the bug — and the differential would then
+	# "prove" the fix using a suite that never saw it. That is the silent
+	# degradation this whole epic is about, in the one place least able to
+	# afford it.
+	#
+	# ONE list, not two overlapping loops. `git diff --name-only <ref>`
+	# already includes any cited .bats that differs, and a cited .bats that
+	# does NOT differ is identical at <ref> anyway — so the second loop only
+	# ever re-copied what the first had. Its own failure is fatal too: an
+	# empty list from a broken ref would silently omit every new test.
+	local _bats_list _bats_rc=0
+	_bats_list=$(git -C "$REPO_ROOT" diff --name-only "$ref" -- '*.bats') || _bats_rc=$?
+	if [ "$_bats_rc" -ne 0 ]; then
+		echo "error: could not list changed .bats files against '$ref' (rc=$_bats_rc) — refusing rather than running a baseline that silently omits the new tests" >&2
+		_prove_symptom_wt_cleanup
+		return 2
+	fi
 	local f
-	for f in $cited; do
-		case "$f" in
-		# `*` matches `/` in a case pattern, so this covers any depth — a
-		# separate `**` arm is the same pattern written twice.
-		.claude/tests/*.bats) ;;
-		*) continue ;;
-		esac
-		[ -f "$REPO_ROOT/$f" ] || continue
-		mkdir -p "$wt/$(dirname "$f")" 2>/dev/null || true
-		cp "$REPO_ROOT/$f" "$wt/$f" 2>/dev/null || true
-	done
-	# Any changed test file, not only cited ones — a fix's proof often
-	# lives in a suite the citation does not name.
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
-		case "$f" in
-		*.bats) ;;
-		*) continue ;;
-		esac
 		[ -f "$REPO_ROOT/$f" ] || continue
-		mkdir -p "$wt/$(dirname "$f")" 2>/dev/null || true
-		cp "$REPO_ROOT/$f" "$wt/$f" 2>/dev/null || true
-	done < <(git -C "$REPO_ROOT" diff --name-only "$ref" -- '*.bats' 2>/dev/null || true)
+		if ! mkdir -p "$wt/$(dirname "$f")"; then
+			echo "error: could not create $(dirname "$f") in the baseline worktree — refusing rather than running without $f" >&2
+			_prove_symptom_wt_cleanup
+			return 2
+		fi
+		if ! cp "$REPO_ROOT/$f" "$wt/$f"; then
+			echo "error: could not copy $f into the baseline worktree — refusing rather than running a baseline WITHOUT the test meant to detect the bug" >&2
+			_prove_symptom_wt_cleanup
+			return 2
+		fi
+	done <<EOF
+$_bats_list
+EOF
 
 	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >/dev/null 2>&1 || rc=$?
@@ -1409,18 +1434,21 @@ cmd_record_fix() {
 			# already committed and HEAD is NOT the pre-fix tree — the
 			# baseline would silently re-run the fixed code and the whole
 			# experiment would be a tautology. Refuse WITH the remedy.
-			local _sym_dirty=0 _cf
+			# `git status --porcelain` answers "does this path differ from
+			# HEAD in any way" directly — modified, staged, or untracked —
+			# in ONE call. The first version reconstructed that from two
+			# (`ls-files --error-unmatch` then `diff --quiet`), which is
+			# re-deriving a classification git already publishes, and it
+			# got the untracked case wrong on the first attempt precisely
+			# because the reconstruction had a gap.
+			local _sym_dirty=0 _cf _st _st_rc=0
 			for _cf in $cited_files; do
-				# UNTRACKED counts as different. `git diff HEAD -- <path>`
-				# reports nothing for a file git has never seen, so a fix
-				# that ADDS a file looked exactly like a fix already
-				# committed — and the remedy the message offered
-				# (--baseline-ref) would have been wrong advice for it.
-				if ! git -C "$REPO_ROOT" ls-files --error-unmatch -- "$_cf" >/dev/null 2>&1; then
-					_sym_dirty=1
-					break
+				_st=$(git -C "$REPO_ROOT" status --porcelain -- "$_cf" 2>/dev/null) || _st_rc=$?
+				if [ "$_st_rc" -ne 0 ]; then
+					echo "error: could not ask git about '$_cf' (rc=$_st_rc) — refusing rather than guessing whether HEAD is the pre-fix tree" >&2
+					exit 2
 				fi
-				if ! git -C "$REPO_ROOT" diff --quiet HEAD -- "$_cf" 2>/dev/null; then
+				if [ -n "$_st" ]; then
 					_sym_dirty=1
 					break
 				fi
@@ -1456,7 +1484,7 @@ cmd_record_fix() {
 		# --- the BASELINE half, in a detached worktree ----------------
 		echo "record-fix: re-executing symptom evidence (baseline worktree at ${_sym_ref}): $symptom_cmd" >&2
 		local _sym_base_actual
-		_sym_base_actual=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo" "$cited_files") || {
+		_sym_base_actual=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo") || {
 			echo "error: could not run the baseline half — refusing the record rather than accepting one-sided evidence (#2643)" >&2
 			exit 1
 		}
