@@ -1,0 +1,142 @@
+#!/usr/bin/env bats
+# covers: hooks/test-sh-scope-nudge.sh
+#
+# (#2640) This hook had NO tests, and it was advertising a flag that does
+# not exist: its refusal text said "For full: scripts/test.sh --full", and
+# its allow-arm passed `--full` through to a test.sh that answers "error:
+# unknown flag '--full'". An operator who followed the instruction got a
+# hard error and no full-suite run. That is the epic's exact shape — a
+# gate whose message describes behaviour the system does not have.
+#
+# The load-bearing assertion here is the LAST one: the flags the refusal
+# advertises are checked against the flags scripts/test.sh actually parses,
+# so this class of drift fails a test instead of an operator.
+
+setup() {
+	REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../../.." && pwd)"
+	HOOK="$REPO_ROOT/hooks/test-sh-scope-nudge.sh"
+	[ -x "$HOOK" ] || skip "hook not executable at $HOOK"
+}
+
+# The hook is a PreToolUse hook: it reads a JSON payload on stdin and, when
+# it blocks, emits deny-JSON on stdout (exit 0). It ALSO mirrors the same
+# text to stderr for operator-grep, and bats' `run` merges the two streams —
+# so stderr is dropped here, otherwise every `jq` below parses JSON with
+# prose stapled to it.
+_run_hook() {
+	local cmd="$1"
+	run bash -c "printf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .)}}' | '$HOOK' 2>/dev/null"
+}
+
+_is_denied() {
+	printf '%s' "$1" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1
+}
+
+@test "bare scripts/test.sh is refused" {
+	_run_hook "scripts/test.sh"
+	_is_denied "$output" || {
+		echo "a bare full-suite run was NOT blocked — the hook's whole job: $output"
+		return 1
+	}
+}
+
+@test "a specific .bats path is allowed through" {
+	_run_hook "scripts/test.sh .claude/tests/hooks/test-sh-scope-nudge.bats"
+	! _is_denied "$output" || {
+		echo "a scoped single-file run was blocked: $output"
+		return 1
+	}
+}
+
+@test "TEST_SH_FULL_OK=1 is allowed through" {
+	_run_hook "TEST_SH_FULL_OK=1 scripts/test.sh"
+	! _is_denied "$output" || {
+		echo "the documented full-suite bypass was itself blocked: $output"
+		return 1
+	}
+}
+
+@test "#2640: --full is NOT advertised, because test.sh rejects it" {
+	# The old text said "For full: scripts/test.sh --full". Following it
+	# produced "error: unknown flag '--full'" and ran nothing.
+	_run_hook "scripts/test.sh"
+	local reason
+	reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+	[[ $reason != *"--full"* ]] || {
+		echo "the refusal still advertises --full, which test.sh does not accept: $reason"
+		return 1
+	}
+}
+
+@test "#2640: the refusal names TEST_SH_FULL_OK as the full-suite route" {
+	# Removing --full is only half the fix; the operator still needs to be
+	# told what DOES work, or the message is merely less wrong.
+	_run_hook "scripts/test.sh"
+	local reason
+	reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+	[[ $reason == *"TEST_SH_FULL_OK=1 scripts/test.sh"* ]] || {
+		echo "the refusal does not give a working full-suite command: $reason"
+		return 1
+	}
+}
+
+@test "#2640: every flag the refusal advertises is one test.sh parses" {
+	# THE LOAD-BEARING TEST. Extract the long flags named in the refusal
+	# text and confirm each has a real parser arm in scripts/test.sh. This
+	# is what makes the fix durable rather than a one-time correction: the
+	# next person to invent a flag in the help gets a red test.
+	_run_hook "scripts/test.sh"
+	local reason
+	reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+
+	local advertised
+	advertised=$(printf '%s' "$reason" | grep -oE -- '--[a-z][a-z-]*' | sort -u)
+	[ -n "$advertised" ] || {
+		echo "no flags found in the refusal text — the extraction is broken, so this test would pass vacuously"
+		return 1
+	}
+
+	local f missing=""
+	for f in $advertised; do
+		# A real arm looks like `	--coverage)` in the case statement.
+		grep -qE "^[[:space:]]*(\*\|)?${f}\)" "$REPO_ROOT/scripts/test.sh" || missing="$missing $f"
+	done
+	[ -z "$missing" ] || {
+		echo "the refusal advertises flags scripts/test.sh does not parse:$missing"
+		echo "--- refusal text ---"
+		echo "$reason"
+		return 1
+	}
+}
+
+@test "#2640: an unknown flag passes the gate and is refused by test.sh" {
+	# DELIBERATE, pinned so nobody "fixes" it into a maintenance trap.
+	#
+	# The catch-all arm `"scripts/test.sh -"*` lets any dash-argument
+	# through. `--full` therefore still reaches test.sh — which is fine,
+	# and better than the alternative: a strict allow-list here would mean
+	# every genuinely new flag added to test.sh is blocked by this hook
+	# until someone remembers to update it, turning a nudge into an
+	# obstacle.
+	#
+	# The gate's job is to stop a BARE full-suite run. `--full` is not a
+	# run at all: test.sh rejects it immediately and executes no tests, so
+	# nothing this hook exists to prevent can happen. The bug worth fixing
+	# was the hook ADVERTISING the flag, which the tests above cover.
+	_run_hook "scripts/test.sh --full"
+	! _is_denied "$output" || {
+		echo "the catch-all dash arm changed; if that is intended, this test's reasoning needs revisiting rather than deleting: $output"
+		return 1
+	}
+	# And the other half of the claim: test.sh really does refuse it, so
+	# the operator gets a clear error rather than a silent no-op.
+	run "$REPO_ROOT/scripts/test.sh" --full
+	[ "$status" -ne 0 ] || {
+		echo "test.sh accepted --full, so the reasoning above is now wrong: $output"
+		return 1
+	}
+	[[ $output == *"unknown flag"* ]] || {
+		echo "test.sh refused --full without saying why: $output"
+		return 1
+	}
+}

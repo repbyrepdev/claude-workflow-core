@@ -16,15 +16,20 @@ set -u
 # operator-grep continues to find `test-sh-scope-nudge:` on stderr.
 #
 # What it gates: bare `scripts/test.sh` (full suite, ~700 tests) blocks
-# unless the caller explicitly opted into full-suite via --baseline /
-# --coverage / --full / --no-log or a specific path argument.
+# unless the caller explicitly opted in via TEST_SH_FULL_OK=1, one of the
+# flags test.sh actually parses (--baseline / --coverage / --no-log), or a
+# specific path argument.
 # v4.28-W3-C upgrades from advisory to BLOCKING per #665 — repeated
 # observation that the advisory got ignored, full suite ran in
 # iteration loops, burned 10-50× the per-iteration time.
 #
 # Policy:
-#  - `scripts/test.sh --baseline` / `--coverage` / `--full` / `--no-log` /
-#    a specific path argument → allowed (valid full-suite or scoped uses)
+#  - `scripts/test.sh --baseline` / `--coverage` / `--no-log` / a specific
+#    path argument → allowed. NOTE these are not all "run everything":
+#    --coverage is an inventory mode that runs no tests at all, and
+#    --no-log only suppresses JSONL. The way to actually run the whole
+#    suite is TEST_SH_FULL_OK=1 (below). There is no `--full` flag;
+#    test.sh rejects it with "unknown flag" (#2640).
 #  - `scripts/test.sh` BARE → REFUSED, redirected to test-touched.sh.
 #    Bypass: TEST_SH_FULL_OK=1 (operator-explicit; no automatic setter
 #    in-tree today — full-suite is operator-driven for pre-push
@@ -98,7 +103,7 @@ _seg_should_block() {
 	case "$seg" in
 	"scripts/test.sh") return 0 ;;
 	"scripts/test.sh "*"--baseline"* | "scripts/test.sh "*"--coverage"* | \
-		"scripts/test.sh "*"--full"* | "scripts/test.sh "*"--no-log"* | \
+		"scripts/test.sh "*"--no-log"* | \
 		"scripts/test.sh -"*) return 1 ;;
 	"scripts/test.sh "*".bats"* | "scripts/test.sh "*".claude/tests"*) return 1 ;;
 	"scripts/test.sh "*) return 0 ;;
@@ -134,12 +139,12 @@ case "$CMD" in
 	fi
 	# v4.28-W3-C #665: emit deny-JSON + exit 0 (PreToolUse blocking
 	# contract per v4.17.R). Same pattern as skill-bypass-guard's deny().
-	REASON="BLOCKED: bare \`scripts/test.sh\` runs all ~700 tests, defeating the iteration loop.
+	REASON='BLOCKED: bare `scripts/test.sh` runs all ~700 tests, defeating the iteration loop.
 
 For iteration: scripts/test-touched.sh (scoped via # covers: headers, 10-50× faster).
 For one file:  scripts/test.sh path/to/file.bats
-For full:      scripts/test.sh --full   (or --baseline / --coverage / --no-log)
-Bypass (operator-explicit, used for pre-push / baseline runs): TEST_SH_FULL_OK=1 scripts/test.sh"
+For the FULL suite (pre-push / baseline): TEST_SH_FULL_OK=1 scripts/test.sh
+Other modes:   --coverage (inventory only, runs no tests) / --baseline / --no-log'
 	if command -v jq >/dev/null 2>&1; then
 		jq -nc --arg r "$REASON" \
 			'{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'

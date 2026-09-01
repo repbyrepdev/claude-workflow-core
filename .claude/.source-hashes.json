@@ -148,7 +148,7 @@
     "hooks/task-issue-reconcile.sh": "c4780a39a3682c3837211b662e8cf6bcc27bc6c5ca0afa176ddf83847ca7d552",
     "hooks/task-queue-track.sh": "dd573cb29508e5933df83ae9c5c8d659d8d7eb590655265709ea6ce61b294227",
     "hooks/teleport-stop-advisory.sh": "fab60eb08c5c1dc33747ca1576c4263f799a71c75f156d2afdae13318e0975b0",
-    "hooks/test-sh-scope-nudge.sh": "7133af5fbc2914907e51ea56ee9755839ccdc92c3f97360d6401b22af0a3cf94",
+    "hooks/test-sh-scope-nudge.sh": "eb394ee625ad12ac513a83fbe4cb2fe4322adff75a5f2408f7826fe66798569a",
     "skills/ship-pr-cycle/run.sh": "7a1e055339ae285ddcf9fd66b77ab2091d461da97ae5af3f48fd38417accec0b"
   },
   "producer_root": ".",
