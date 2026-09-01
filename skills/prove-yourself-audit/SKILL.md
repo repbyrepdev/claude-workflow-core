@@ -90,7 +90,8 @@ baseline in a **detached worktree at `--baseline-ref`** (default `HEAD`,
 because the cycle order is fix → record-fix → commit, so at record time HEAD
 *is* the pre-fix tree). The branch's changed *and untracked* `.bats` files
 are copied into that worktree, so a brand-new test can detect the old bug.
-Timeout: `PROVE_BASELINE_TIMEOUT` (default 300s).
+Timeout: `PROVE_BASELINE_TIMEOUT`, falling back to `PROVE_RETEST_TIMEOUT`,
+then 120s.
 
 Refusals you may hit, each with its remedy:
 

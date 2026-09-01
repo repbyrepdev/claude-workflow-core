@@ -24,8 +24,14 @@ set -u
 # iteration loops, burned 10-50× the per-iteration time.
 #
 # Policy:
+#  - ANY `-`-prefixed FIRST argument → allowed by the catch-all arm. That
+#    is deliberate (the bats file pins the reasoning): a strict allow-list
+#    would block every genuinely new flag until someone updated this hook,
+#    and an unparseable flag is not the bare full-suite run this gate
+#    exists to prevent — test.sh rejects it outright.
 #  - `scripts/test.sh --baseline` / `--coverage` / `--no-log` / a specific
-#    path argument → allowed. NOTE these are not all "run everything":
+#    path argument → allowed, including AFTER a path. NOTE these are not
+#    all "run everything":
 #    --coverage is an inventory mode that runs no tests at all, and
 #    --no-log only suppresses JSONL. The way to actually run the whole
 #    suite is TEST_SH_FULL_OK=1 (below). There is no `--full` flag;

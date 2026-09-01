@@ -29,7 +29,10 @@ set -euo pipefail
 # introduced; the refutation flow reuses them rather than adding a kind.
 # (#2643) The action type is unchanged but the record-fix CONTRACT grew: a
 # citation of a cycle-critical file now also requires --symptom-cmd plus the
-# two rcs, so a refutation upheld against hooks/ or _lib/ needs them too.
+# two rcs. The full set is hooks/, _lib/, pre-commit-hooks/ and
+# scripts/cr/local-review.sh — naming only the first two here was already a
+# drift of the very list this PR is trying to keep honest; run.sh --help is
+# the machine-readable definition.
 #
 # Usage:
 #   phase1-resume-message.sh build <agent> <round> <base_ref> <head_sha>

@@ -312,6 +312,8 @@ Usage:
                              # OR (b) source=cr + severity in {critical,high,medium}.
                              # Verified via gh issue view.
     [--cited-files "path1 path2 path3"] [--covers-count N] [--cluster-id ID]
+    [--covered-sha SHA]      # ancestor of HEAD; re-file this evidence against
+                             # an earlier commit (see record-fix below)
   run.sh record-fix --finding-id X --finding-text "..." \
     --fix-summary "..." --retest-cmd "..." --retest-rc N \
                              # #2562: --retest-cmd is RE-EXECUTED at record
@@ -342,7 +344,8 @@ Usage:
                              # REQUIRED when --source=issue, and when any cited
                              # file is cycle-critical. Optional elsewhere — but
                              # still verified if you supply it.
-                             # Timeout: PROVE_BASELINE_TIMEOUT (default 300s).
+                             # Timeout: PROVE_BASELINE_TIMEOUT, else
+                             # PROVE_RETEST_TIMEOUT, else 120s.
                              # It proves the rc DEPENDS on the diff. It cannot
                              # prove the command is relevant to the fix — no
                              # mechanism can. Choose a command that would fail
@@ -352,6 +355,12 @@ Usage:
                              # Name the commit BEFORE the fix if it is already
                              # committed. A ref resolving to HEAD gets the same
                              # tautology check as the default.
+    [--covered-sha SHA]      # which commit this evidence covers. Default is
+                             # HEAD. Must be an ANCESTOR of HEAD: evidence can
+                             # be re-filed onto a commit already on this branch
+                             # (correcting a wrong --source, which is otherwise
+                             # permanent because the sha is stamped at write
+                             # time), never attached to unrelated work.
     [--allow-absence-baseline]
                              # accept a baseline rc of 127. A fix that ADDS a
                              # file makes the baseline exit "command not found",
@@ -398,6 +407,7 @@ cmd_record_rejection() {
 	local finding_id="" finding_text="" dogfood_cmd="" dogfood_output=""
 	local dogfood_rc="" external_authority="" reason="" cited_files=""
 	local covers_count="1" confidence="" follow_up_issue="" cluster_id=""
+	local covered_sha_arg=""
 	local src="" severity=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
@@ -506,6 +516,18 @@ cmd_record_rejection() {
 				exit 2
 			}
 			cluster_id=${2:-}
+			shift 2
+			;;
+		--covered-sha)
+			# (#2643) Same flag, same reason, same validation as record-fix:
+			# a rejection filed under the wrong source is counted by nothing
+			# and, without this, could never be corrected either — the same
+			# dead end the fix side hit.
+			[ $# -lt 2 ] && {
+				echo "error: missing value for --covered-sha" >&2
+				exit 2
+			}
+			covered_sha_arg=${2:-}
 			shift 2
 			;;
 		--source)
@@ -628,7 +650,12 @@ cmd_record_rejection() {
 		exit 2
 		;;
 	*)
-		echo "error: --source must be phase0.5|phase1|cr (got: $src) — 'issue' is accepted by record-fix only" >&2
+		# UNREACHABLE by construction: the vocabulary case above already
+		# rejected anything outside {phase0.5, phase1, cr, issue}, and this
+		# case has an arm for each. Kept as a fail-closed default so a
+		# future vocabulary addition cannot fall through silently — if this
+		# ever prints, an arm is missing above.
+		echo "error: internal: --source '$src' passed the vocabulary check but has no handler — refusing rather than recording an unvalidated source (#2643)" >&2
 		exit 2
 		;;
 	esac
@@ -787,6 +814,23 @@ cmd_record_rejection() {
 		                  dogfood_rc: $rc, external_authority: $ext,
 		                  reason: $reason}}' >"$state_file"
 
+	# (#2643) Resolve and VALIDATE --covered-sha: a real commit that is an
+	# ANCESTOR of HEAD. Evidence may be re-filed onto a commit already on
+	# this branch (correcting a label), never attached to unrelated work.
+	local _rej_cov_sha=""
+	if [ -n "$covered_sha_arg" ]; then
+		_rej_cov_sha=$(git -C "$REPO_ROOT" rev-parse --verify --quiet "${covered_sha_arg}^{commit}" 2>/dev/null) || _rej_cov_sha=""
+		if [ -z "$_rej_cov_sha" ]; then
+			echo "error: --covered-sha '$covered_sha_arg' does not resolve to a commit (#2643)" >&2
+			exit 2
+		fi
+		if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_rej_cov_sha" HEAD 2>/dev/null; then
+			echo "error: --covered-sha '$covered_sha_arg' is not an ancestor of HEAD — evidence can be re-filed against a commit already on this branch, not attached to unrelated work (#2643)" >&2
+			exit 2
+		fi
+		echo "record-rejection: covering ${_rej_cov_sha:0:7} (named via --covered-sha) rather than HEAD" >&2
+	fi
+
 	# Record per-cited-file cache entries under reviewer "prove-yourself-rejection".
 	_record_cite_cache "prove-yourself-rejection" "$cited_files"
 
@@ -794,7 +838,7 @@ cmd_record_rejection() {
 	# CR-CI fix: propagate _append_tracked_audit failure. Helper returns
 	# 1 on mkdir/jq error (r13 fail-closed); without rc check, caller
 	# would print "✓ Recorded" after losing the persistent entry.
-	if ! _append_tracked_audit "rejection" "$finding_id" "$src" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count"; then
+	if ! _append_tracked_audit "rejection" "$finding_id" "$src" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count" "$_rej_cov_sha"; then
 		echo "ERROR: tracked audit append failed for $finding_id (state file at $state_file is intact, but audit log is missing this record)" >&2
 		exit 1
 	fi
@@ -862,8 +906,7 @@ cmd_record_rejection() {
 # and makes the honest path the easy one; it does not stop a determined
 # author from routing around it, and this comment says so rather than
 # letting the next reader assume otherwise.
-# `grep -q <a string the fix added>` differs across the
-# two trees and demonstrates nothing about behaviour. Nothing mechanical
+# Nothing mechanical
 # can judge the semantic relevance of an arbitrary command, so this gate
 # does not claim to: it raises the floor from "a suite passed" to "some
 # observable changed, and I re-ran both sides myself to check". Claiming
@@ -902,8 +945,10 @@ _prove_symptom_wt_cleanup() {
 	_prove_symptom_wt=""
 }
 
-# _prove_symptom_run_baseline <ref> <cmd> <timeout>
-#   Echoes the observed rc on stdout. rc 2 (of the function) on a setup
+# _prove_symptom_run_baseline <ref> <cmd> <timeout> [outfile]
+#   Echoes the observed rc on LINE 1 and the elapsed seconds on LINE 2 —
+#   the caller needs the elapsed time to tell OUR deadline kill from a
+#   child's own fast inner timeout. rc 2 (of the function) on a setup
 #   failure, which is NOT the same as the command failing.
 _prove_symptom_run_baseline() {
 	# No `cited` parameter: the single .bats list below comes from `git
@@ -1009,18 +1054,24 @@ EOF
 	# wrapper's own kill play the part of "the bug", reproducing in the
 	# symptom field exactly the hole #2562 closed for retest. The caller
 	# compares against the deadline and refuses.
-	local outf="${PROVE_SYMPTOM_BASELINE_OUT:-/dev/null}"
-	local _t0 _t1 _elapsed=0
-	_t0=$(date +%s 2>/dev/null) || _t0=""
+	# 4th POSITIONAL, not an exported global. The first version exported
+	# PROVE_SYMPTOM_BASELINE_OUT, which meant the operator-supplied
+	# --symptom-cmd was executed with the path to its own evidence-capture
+	# file in its environment — and two functions in the same process were
+	# talking through the environment for no reason.
+	local outf="${4:-/dev/null}"
+	# SECONDS, matching the retest path twelve lines up — not `date`. The
+	# subprocess plus its "date failed, elapsed stays 0" fallback bought
+	# nothing, and a silently-zero elapsed would have disabled the
+	# deadline-kill discrimination that reads it.
+	local _t0 _elapsed=0
+	_t0=$SECONDS
 	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	else
 		(cd "$wt" && bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	fi
-	_t1=$(date +%s 2>/dev/null) || _t1=""
-	if [ -n "$_t0" ] && [ -n "$_t1" ]; then
-		_elapsed=$((_t1 - _t0))
-	fi
+	_elapsed=$((SECONDS - _t0))
 	_prove_symptom_wt_cleanup
 	# rc on the first line, elapsed seconds on the second.
 	printf '%s\n%s\n' "$rc" "$_elapsed"
@@ -1283,11 +1334,36 @@ cmd_record_fix() {
 	[ -r "$_SF_LIB" ] || _SF_LIB="$REPO_ROOT/_lib/stage-findings.sh"
 	[ -r "$_SF_LIB" ] || _SF_LIB="$REPO_ROOT/.claude/_lib/stage-findings.sh"
 	if [ "${PROVE_SOURCE_CHECK_SKIP:-0}" = "1" ]; then
+		# ACTUALLY LOG IT. Both operator messages call this bypass
+		# "audit-logged" and the first version only echoed to stderr —
+		# every other bypass in this repo appends a row, so an auditor
+		# reading the ledger could not tell a reconciled record from a
+		# bypassed one. Claiming an audit trail that does not exist is the
+		# same defect class this branch is fixing.
 		echo "prove-yourself: PROVE_SOURCE_CHECK_SKIP=1 — source/stage reconciliation bypassed for --source $src (#2643)" >&2
-	elif [ -r "$_SF_LIB" ]; then
+		if command -v jq >/dev/null 2>&1; then
+			mkdir -p "$REPO_ROOT/.claude/logs" 2>/dev/null || true
+			jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+				--arg sha "$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")" \
+				--arg src "$src" --arg fid "$finding_id" \
+				'{ts:$ts, sha:$sha, label:"prove-source-check-skip", source:$src, finding_id:$fid}' \
+				>>"$REPO_ROOT/.claude/logs/prove-source-check-skip.jsonl" 2>/dev/null || true
+		fi
+	elif [ ! -r "$_SF_LIB" ]; then
+		# FAIL CLOSED AND SAY SO. Silently skipping meant "reconciled and
+		# clean" and "never reconciled" were indistinguishable in both the
+		# output and the written record.
+		echo "error: cannot read _lib/stage-findings.sh — the source/stage reconciliation cannot run, and a check that silently does not run is the failure this gate exists to prevent (#2643)." >&2
+		echo "  Looked for it next to this script and under the repo root. Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
+		exit 2
+	else
 		# shellcheck source=/dev/null
 		. "$_SF_LIB"
-		if [ "$(type -t _stage_findings_stages_at 2>/dev/null)" = "function" ]; then
+		if [ "$(type -t _stage_findings_stages_at 2>/dev/null)" != "function" ]; then
+			echo "error: _lib/stage-findings.sh loaded but does not define _stage_findings_stages_at — refusing rather than skipping the reconciliation silently (#2643)" >&2
+			exit 2
+		fi
+		if true; then
 			local _sf_sha _sf_stages _sf_started=0
 			if [ -n "$_cov_sha" ]; then
 				_sf_sha="$_cov_sha"
@@ -1296,7 +1372,18 @@ cmd_record_fix() {
 			fi
 			if [ -n "$_sf_sha" ]; then
 				_stage_findings_cycle_started "$REPO_ROOT" "$_sf_sha" && _sf_started=1
-				_sf_stages=$(_stage_findings_stages_at "$REPO_ROOT" "$_sf_sha")
+				local _sf_rc=0
+				_sf_stages=$(_stage_findings_stages_at "$REPO_ROOT" "$_sf_sha") || _sf_rc=$?
+				if [ "$_sf_rc" -ne 0 ]; then
+					# A log that cannot be read is NOT an absence of
+					# findings. Coercing it to zero shrinks the bar, which
+					# is the exact coercion _phase05_findings_for_sha
+					# refuses for the same reason.
+					echo "error: could not determine which stage produced the findings at ${_sf_sha:0:7} — a stage log is unreadable, malformed, or jq is unavailable (#2643)." >&2
+					echo "  Refusing rather than assuming there is nothing to reconcile: an unreadable log read as 'no findings' is how a mislabel gets written in the first place." >&2
+					echo "  Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
+					exit 2
+				fi
 
 				# (1) A stage logged findings here and --source names a
 				#     different one. The record would not count toward the
@@ -1305,7 +1392,7 @@ cmd_record_fix() {
 					case "$_sf_stages" in
 					*"$src"*) ;;
 					*)
-						echo "error: SOURCE/STAGE MISMATCH — HEAD ${_sf_sha:0:7} has findings logged by: $(printf '%s' "$_sf_stages" | tr '\n' ' ')but --source is '$src' (#2643)." >&2
+						echo "error: SOURCE/STAGE MISMATCH — ${_sf_sha:0:7} has findings logged by: $(printf '%s' "$_sf_stages" | tr '\n' ' ')but --source is '$src' (#2643)." >&2
 						echo "  Graduation gates count ONLY records whose source matches the stage that found the issue, so this record would be written and then never counted — which is how 42 real fixes read as 0/17, 0/13, 0/12." >&2
 						echo "  Use --source \"$(printf '%s' "$_sf_stages" | head -1)\", or split the record if it genuinely covers more than one stage." >&2
 						echo "  Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
@@ -1317,7 +1404,7 @@ cmd_record_fix() {
 				#     unreconcilable: nothing will ever match it up.
 				elif [ "$_sf_started" -eq 0 ] && [ "$src" != "issue" ] &&
 					_stage_findings_cycle_in_use "$REPO_ROOT"; then
-					echo "error: --source $src but the ship-cycle state machine has never run on HEAD ${_sf_sha:0:7} (#2643)." >&2
+					echo "error: --source $src but the ship-cycle state machine has never run on ${_sf_sha:0:7} (#2643)." >&2
 					echo "  A phase-sourced record with no stage log is unreconcilable — no gate can ever match it to the round it claims to cover. This is exactly the shape that let hand-run phases produce records nothing counted." >&2
 					echo "  Run 'scripts/ship-pr-cycle.sh start' (then 'next') so the phase is logged, or record issue-driven work as --source issue." >&2
 					echo "  Deliberate exception (audit-logged): PROVE_SOURCE_CHECK_SKIP=1" >&2
@@ -1723,13 +1810,13 @@ cmd_record_fix() {
 		# path already required ^[1-9][0-9]*$; match it (p1-correct, verified).
 		case "$_sym_tmo" in
 		'' | *[!0-9]*)
-			echo "WARN: $_sym_tmo_var='$_sym_tmo' is not a positive integer — using 120" >&2
+			echo "WARN: symptom timeout: $_sym_tmo_var='$_sym_tmo' is not a positive integer — using 120" >&2
 			_sym_tmo=120
 			;;
 		*)
 			# All-digits, but reject all-zero forms: 0, 00, 000.
 			case "$_sym_tmo" in *[!0]*) ;; *)
-				echo "WARN: $_sym_tmo_var='$_sym_tmo' means NO DEADLINE to timeout(1), which would let a hang stand in for evidence — using 120" >&2
+				echo "WARN: symptom timeout: $_sym_tmo_var='$_sym_tmo' means NO DEADLINE to timeout(1), which would let a hang stand in for evidence — using 120" >&2
 				_sym_tmo=120
 				;;
 			esac
@@ -1742,12 +1829,12 @@ cmd_record_fix() {
 		# a mismatch and this one printed nothing — so the operator learned
 		# the rc was wrong and had no way to see why, on the half that is
 		# hardest to reason about.
-		local _sym_fixed_actual=0 _sym_out _sym_ft0 _sym_ft1 _sym_fixed_elapsed=0
+		local _sym_fixed_actual=0 _sym_out _sym_ft0 _sym_fixed_elapsed=0
 		_sym_out=$(mktemp) || {
 			echo "error: mktemp failed for symptom output capture" >&2
 			exit 1
 		}
-		_sym_ft0=$(date +%s 2>/dev/null) || _sym_ft0=""
+		_sym_ft0=$SECONDS
 		if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
 			(cd "$REPO_ROOT" && timeout "$_sym_tmo" bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
 		else
@@ -1757,10 +1844,7 @@ cmd_record_fix() {
 			echo "record-fix: WARN: symptom runs are UNBOUNDED (no timeout binary, or PROVE_RETEST_NO_TIMEOUT=1) — a hang will not be killed (#2643)" >&2
 			(cd "$REPO_ROOT" && bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
 		fi
-		_sym_ft1=$(date +%s 2>/dev/null) || _sym_ft1=""
-		if [ -n "$_sym_ft0" ] && [ -n "$_sym_ft1" ]; then
-			_sym_fixed_elapsed=$((_sym_ft1 - _sym_ft0))
-		fi
+		_sym_fixed_elapsed=$((SECONDS - _sym_ft0))
 		# Same deadline-launder refusal as the baseline half below.
 		if [ "$_sym_fixed_actual" -eq 124 ] && [ "$_sym_fixed_elapsed" -ge "$_sym_tmo" ]; then
 			rm -f "$_sym_out"
@@ -1788,11 +1872,10 @@ cmd_record_fix() {
 			echo "error: mktemp failed for baseline symptom output capture" >&2
 			exit 1
 		}
-		export PROVE_SYMPTOM_BASELINE_OUT="$_sym_base_out"
+
 		local _sym_base_pair _sym_base_elapsed
-		_sym_base_pair=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo") || {
-			unset PROVE_SYMPTOM_BASELINE_OUT
-			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
+		_sym_base_pair=$(_prove_symptom_run_baseline "$_sym_ref" "$symptom_cmd" "$_sym_tmo" "$_sym_base_out") || {
+			rm -f "$_sym_base_out"
 			echo "error: could not run the baseline half — refusing the record rather than accepting one-sided evidence (#2643)" >&2
 			exit 1
 		}
@@ -1806,8 +1889,7 @@ cmd_record_fix() {
 		# closed on the retest side, reopened in a new field. Distinguish
 		# our kill from a child's own fast inner timeout by elapsed time.
 		if [ "$_sym_base_actual" -eq 124 ] && [ "$_sym_base_elapsed" -ge "$_sym_tmo" ]; then
-			unset PROVE_SYMPTOM_BASELINE_OUT
-			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
+			rm -f "$_sym_base_out"
 			echo "error: the baseline hit the PROVE_BASELINE_TIMEOUT deadline (${_sym_base_elapsed}s >= ${_sym_tmo}s) — a deadline kill is never valid evidence, regardless of the claimed rc; raise PROVE_BASELINE_TIMEOUT if the evidence genuinely needs longer (#2643)" >&2
 			exit 1
 		fi
@@ -1817,11 +1899,10 @@ cmd_record_fix() {
 			echo "  last output:" >&2
 			tail -c 400 "$_sym_base_out" | sed 's/^/    /' >&2 || true
 			echo "  If the numbers disagree because the command is flaky, that is a reason to distrust the evidence, not to retry until it agrees." >&2
-			[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
+			rm -f "$_sym_base_out"
 			exit 1
 		fi
-		unset PROVE_SYMPTOM_BASELINE_OUT
-		[ "$_sym_base_out" != "/dev/null" ] && rm -f "$_sym_base_out"
+		rm -f "$_sym_base_out"
 
 		# ABSENCE-SHAPED FAILURE. If the fix ADDS a file, the baseline
 		# exits 127 ("command not found") and looks exactly like "fails
@@ -1892,9 +1973,9 @@ cmd_record_fix() {
 
 	# v4.28-W4 (#710): append summary to tracked audit log.
 	# CR-CI fix: propagate failure (mirror record-rejection branch).
-	# (#2643) Hand the validated ancestor sha to the ledger writer.
-	[ -n "$_cov_sha" ] && export PROVE_COVERED_SHA="$_cov_sha"
-	if ! _append_tracked_audit "fix" "$finding_id" "${src:-}" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count"; then
+	# (#2643) Hand the validated ancestor sha to the ledger writer as an
+	# argument — see the note on $10 there for why not an env var.
+	if ! _append_tracked_audit "fix" "$finding_id" "${src:-}" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count" "$_cov_sha"; then
 		echo "ERROR: tracked audit append failed for $finding_id (state file at $state_file is intact, but audit log is missing this record)" >&2
 		exit 1
 	fi
@@ -2001,14 +2082,24 @@ cmd_audit() {
 	# text this feature replaces, so the count is derived from the evidence
 	# fields instead: the flag AND a command AND two rcs that actually
 	# differ. Anything short of that is unproven, whatever the flag says.
-	local unproven=0 _af _sv _scmd _sb _sf
+	# ONE pass, and ONE jq per record. The first version walked the same
+	# glob a second time and spent five more jq processes per file — on
+	# every commit, since the pre-commit gate runs check-commit. The four
+	# fields come back as one tab-separated line.
+	local unproven=0 _af _fields _sv _scmd _sb _sf
 	for _af in "$STATE_DIR"/*.json; do
 		[ -f "$_af" ] || continue
-		[ "$(jq -r '.kind // ""' "$_af" 2>/dev/null)" = "fix" ] || continue
-		_sv=$(jq -r '.decision_data.symptom_verified // false' "$_af" 2>/dev/null)
-		_scmd=$(jq -r '.decision_data.symptom_cmd // ""' "$_af" 2>/dev/null)
-		_sb=$(jq -r '.decision_data.symptom_baseline_rc // ""' "$_af" 2>/dev/null)
-		_sf=$(jq -r '.decision_data.symptom_fixed_rc // ""' "$_af" 2>/dev/null)
+		_fields=$(jq -r '
+			[ (.kind // ""),
+			  (.decision_data.symptom_verified // false | tostring),
+			  (.decision_data.symptom_cmd // ""),
+			  (.decision_data.symptom_baseline_rc // "" | tostring),
+			  (.decision_data.symptom_fixed_rc // "" | tostring)
+			] | @tsv' "$_af" 2>/dev/null) || continue
+		IFS=$(printf '\t') read -r _kind _sv _scmd _sb _sf <<EOF
+$_fields
+EOF
+		[ "$_kind" = "fix" ] || continue
 		if [ "$_sv" = "true" ] && [ -n "$_scmd" ] &&
 			[ -n "$_sb" ] && [ -n "$_sf" ] && [ "$_sb" != "$_sf" ]; then
 			continue
@@ -2127,6 +2218,15 @@ _append_tracked_audit() {
 	# already-handled clusters by cluster_id (not just description-text
 	# substring, which breaks when agents reword across rounds).
 	local kind="$1" fid="$2" src="$3" sev="$4" conf="$5" ftext="$6" sfile="$7"
+	# $10 (optional): an ALREADY-VALIDATED covered sha from record-fix's
+	# --covered-sha. It arrives as a parameter, never through the ambient
+	# environment: the first version exported PROVE_COVERED_SHA, and since
+	# this writer read `${PROVE_COVERED_SHA:-}` verbatim, anything in the
+	# caller's env stamped an arbitrary covered_sha on a fix OR a rejection
+	# — opening the phase1, cr and ship-cycle coverage gates with a value
+	# that had passed no ancestor check at all. Two phase-1 agents flagged
+	# it independently. A parameter cannot be inherited.
+	local covered_sha_in="${10:-}"
 	local cluster="${8:-}"
 	# v0.32.7 (#238): 9th arg covers_count MUST reach the tracked audit log —
 	# the pre-push-gate's CR-coverage query (and ship-pr-cycle's phase2 cap, via
@@ -2197,10 +2297,8 @@ _append_tracked_audit() {
 	# tests). Cannot use $REPO_ROOT here because some callers pre-set it
 	# to a fixture dir; resolve from git directly for the current HEAD.
 	local covered_sha
-	# (#2643) PROVE_COVERED_SHA carries an ALREADY-VALIDATED ancestor sha
-	# from record-fix's --covered-sha. Unset = HEAD, as before.
-	if [ -n "${PROVE_COVERED_SHA:-}" ]; then
-		covered_sha="$PROVE_COVERED_SHA"
+	if [ -n "$covered_sha_in" ]; then
+		covered_sha="$covered_sha_in"
 	else
 		covered_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
 	fi

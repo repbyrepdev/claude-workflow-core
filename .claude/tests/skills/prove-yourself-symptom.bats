@@ -375,7 +375,7 @@ _base_args() {
 }
 
 @test "#2643: git stash is not used anywhere in the recorder" {
-	# scripts/release.sh documents the preference against it and it appears
+	# a stash would put the operator's uncommitted fix at risk and it appears
 	# nowhere in this repo. A baseline built on stash would put the
 	# operator's uncommitted fix at risk to prove the fix works.
 	# CODE only. The file explains at length WHY stash is not used, so a
@@ -901,7 +901,12 @@ JSON
 	mkdir -p "$WORK/.claude/logs"
 	local sha
 	sha=$(git -C "$WORK" rev-parse HEAD)
-	printf '{"sha":"%s","findings":12}\n' "$sha" >"$WORK/.claude/logs/phase0.5-run.jsonl"
+	# REAL schema: the terminal aggregate {agent:"<all>", status:"emitted"}
+	# is the authority (_lib/phase05-dedupe.sh). An earlier version of this
+	# fixture invented {sha, findings} and so pinned a reader that was dead
+	# against every real log in the repo.
+	printf '{"sha":"%s","agent":"<all>","findings":12,"status":"emitted"}\n' \
+		"$sha" >"$WORK/.claude/logs/phase0.5-run.jsonl"
 
 	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
 		--finding-id t --finding-text t --fix-summary t \
@@ -928,7 +933,12 @@ JSON
 	mkdir -p "$WORK/.claude/logs"
 	local sha
 	sha=$(git -C "$WORK" rev-parse HEAD)
-	printf '{"sha":"%s","findings":12}\n' "$sha" >"$WORK/.claude/logs/phase0.5-run.jsonl"
+	# REAL schema: the terminal aggregate {agent:"<all>", status:"emitted"}
+	# is the authority (_lib/phase05-dedupe.sh). An earlier version of this
+	# fixture invented {sha, findings} and so pinned a reader that was dead
+	# against every real log in the repo.
+	printf '{"sha":"%s","agent":"<all>","findings":12,"status":"emitted"}\n' \
+		"$sha" >"$WORK/.claude/logs/phase0.5-run.jsonl"
 
 	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase0.5 --confidence 8 \
 		--finding-id t --finding-text t --fix-summary t \
@@ -998,6 +1008,258 @@ JSON
 	}
 	[[ $output == *"does not resolve to a commit"* ]] || {
 		echo "refused, but not for the reason claimed: $output"
+		return 1
+	}
+}
+# ---- #2643 phase-1 round 1: gaps the mutation testing found -------------
+
+@test "#2643: --covered-sha refuses a REAL commit that is not an ancestor" {
+	# MUTATION-VERIFIED GAP. The existing test passed `deadbeef...`, which
+	# fails `rev-parse` first and never reaches the ancestor check — so
+	# deleting the `merge-base --is-ancestor` guard entirely left the suite
+	# green. That guard is the whole anti-fabrication property of the flag:
+	# without it, evidence can be attached to any commit anywhere. It needs
+	# a sha that RESOLVES but is not an ancestor.
+	_make_fix
+	run bash -c "cd '$WORK' && git add -A && git -c user.email=t@t -c user.name=t commit -qm main-line"
+	[ "$status" -eq 0 ]
+	# A commit on a side branch: real, resolvable, NOT an ancestor of HEAD.
+	local side
+	side=$(cd "$WORK" && git rev-parse HEAD)
+	run bash -c "cd '$WORK' && git checkout -q -b sidebranch '$side' && printf 'side\n' > scripts/side.sh && git add -A && git -c user.email=t@t -c user.name=t commit -qm side && git rev-parse HEAD"
+	[ "$status" -eq 0 ]
+	local side_sha="${lines[${#lines[@]} - 1]}"
+	run bash -c "cd '$WORK' && git checkout -q - 2>/dev/null || git checkout -q master 2>/dev/null || git checkout -q main"
+	# Sanity: the fixture really does have a non-ancestor commit, or this
+	# test would prove nothing.
+	run bash -c "cd '$WORK' && git merge-base --is-ancestor '$side_sha' HEAD"
+	[ "$status" -ne 0 ] || {
+		echo "fixture setup failed: $side_sha IS an ancestor, so the refusal below would be untested"
+		return 1
+	}
+
+	printf 'more\n' >>"$WORK/scripts/thing.sh"
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 7 \
+		--covered-sha '$side_sha' \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "evidence was filed against a commit that is NOT on this branch: $output"
+		return 1
+	}
+	[[ $output == *"not an ancestor"* ]] || {
+		echo "refused, but not by the ancestor guard: $output"
+		return 1
+	}
+}
+
+@test "#2643: a phase source with NO cycle state is refused where the machine runs" {
+	# MUTATION-VERIFIED GAP: replacing this branch with `elif false` left
+	# every test green. It is the half of the reconciliation that catches a
+	# phase run BY HAND around the state machine — the actual shape of the
+	# failure this feature exists for — and nothing exercised it.
+	_make_fix
+	# The machine is in use in this repo, but never drove THIS sha.
+	mkdir -p "$WORK/.claude/.session-state/ship-cycle"
+	printf '{}\n' >"$WORK/.claude/.session-state/ship-cycle/some-other-sha.json"
+
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 7 \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "a hand-run phase record was accepted with no cycle state: $output"
+		return 1
+	}
+	[[ $output == *"never run on"* ]] || {
+		echo "refused, but not by the cycle-state check: $output"
+		return 1
+	}
+}
+
+@test "#2643: the same record is ACCEPTED once the machine has driven the sha" {
+	# The control for the test above. Without it, the check could refuse
+	# unconditionally and still look correct.
+	_make_fix
+	local sha
+	sha=$(git -C "$WORK" rev-parse HEAD)
+	mkdir -p "$WORK/.claude/.session-state/ship-cycle"
+	printf '{}\n' >"$WORK/.claude/.session-state/ship-cycle/$sha.json"
+
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source phase1 --confidence 7 \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "a properly-driven sha was still refused: $output"
+		return 1
+	}
+}
+
+@test "#2643: PROVE_SOURCE_CHECK_SKIP actually lets a record through" {
+	# An escape hatch named in a blocking error but never exercised is how
+	# operators end up deadlocked with no verified way out. Both new
+	# refusals advertise this one.
+	_make_fix
+	mkdir -p "$WORK/.claude/.session-state/ship-cycle"
+	printf '{}\n' >"$WORK/.claude/.session-state/ship-cycle/other.json"
+
+	run bash -c "cd '$WORK' && PROVE_SOURCE_CHECK_SKIP=1 '$RUN' record-fix --source phase1 --confidence 7 \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd true --retest-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "the advertised escape hatch does not work: $output"
+		return 1
+	}
+	[[ $output == *"PROVE_SOURCE_CHECK_SKIP=1"* ]] || {
+		echo "the bypass was silent: $output"
+		return 1
+	}
+	# And it must leave an audit row, because both messages call it
+	# "audit-logged" — a claim that was false in the first version.
+	[ -s "$WORK/.claude/logs/prove-source-check-skip.jsonl" ] || {
+		echo "the bypass claims to be audit-logged but wrote no row"
+		return 1
+	}
+}
+
+@test "#2643: the symptom timeout WARN is distinct from the retest one" {
+	# MUTATION-VERIFIED VACUOUS: the two warnings were byte-identical, so
+	# the test asserting the variable name was satisfied by the retest
+	# path's warning and stayed green when the symptom path hardcoded the
+	# wrong variable.
+	_make_fix
+	# PROVE_BASELINE_TIMEOUT must be UNSET, or the symptom path uses it and
+	# never reaches the PROVE_RETEST_TIMEOUT fallback this test is about.
+	# setup() exports a valid one, so drop it explicitly.
+	run bash -c "cd '$WORK' && env -u PROVE_BASELINE_TIMEOUT PROVE_RETEST_TIMEOUT=notanumber '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[[ $output == *"symptom timeout: PROVE_RETEST_TIMEOUT='notanumber'"* ]] || {
+		echo "the SYMPTOM warning does not name the variable the value came from: $output"
+		return 1
+	}
+}
+
+@test "#2643: a baseline MISMATCH shows what the baseline actually printed" {
+	# MUTATION-VERIFIED GAP: reverting the baseline capture to /dev/null
+	# left the suite green, because the only tail-content test exercises the
+	# FIXED half. The baseline half is the one an operator can least easily
+	# reason about, which is why it captures output at all.
+	_make_fix
+	_rec "$(_base_args) --symptom-cmd 'echo baseline-said-this; bash scripts/thing.sh' \
+		--symptom-baseline-rc 9 --symptom-fixed-rc 0"
+	[ "$status" -ne 0 ] || {
+		echo "expected a baseline mismatch (9 is wrong): $output"
+		return 1
+	}
+	[[ $output == *"SYMPTOM MISMATCH (baseline"* ]] || {
+		echo "did not reach the baseline mismatch: $output"
+		return 1
+	}
+	[[ $output == *baseline-said-this* ]] || {
+		echo "the baseline tail does not carry what the command printed: $output"
+		return 1
+	}
+}
+
+@test "#2643: a child's own FAST rc-124 is still valid symptom evidence" {
+	# The accept side of the deadline guard. MUTATION-VERIFIED GAP:
+	# collapsing both guards to a blanket `rc == 124 -> refuse` left every
+	# test green, so the elapsed-time discrimination — the only thing
+	# separating a laundered kill from a legitimate inner timeout — was
+	# unpinned. The retest path has this test; the symptom path did not.
+	_make_fix
+	# Exits 124 immediately, nowhere near the 60s deadline.
+	run bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'if [ -f scripts/thing.sh ] && grep -q \"exit 0\" scripts/thing.sh; then exit 0; else exit 124; fi' \
+		--symptom-baseline-rc 124 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "a fast, genuine rc-124 was rejected as a deadline kill: $output"
+		return 1
+	}
+	[[ $output == *"differential CONFIRMED"* ]] || {
+		echo "the differential was not confirmed: $output"
+		return 1
+	}
+}
+@test "#2643: record-rejection gets --covered-sha too, ancestor-validated" {
+	# code-reviewer r1: cmd_record_rejection writes through the SAME ledger
+	# writer, stamps the same covered_sha and is summed by the same gates —
+	# so a mislabeled rejection was exactly as uncounted, and exactly as
+	# uncorrectable, as the mislabeled fix this PR exists to fix. The flag
+	# was added to record-fix only.
+	_make_fix
+	local old_sha
+	old_sha=$(git -C "$WORK" rev-parse HEAD)
+	run bash -c "cd '$WORK' && git add -A && git -c user.email=t@t -c user.name=t commit -qm second"
+	[ "$status" -eq 0 ]
+
+	run bash -c "cd '$WORK' && '$RUN' record-rejection --source phase1 --confidence 3 \
+		--covered-sha '$old_sha' \
+		--finding-id r --finding-text t --dogfood-cmd 'bash scripts/thing.sh' \
+		--dogfood-output 'o' --dogfood-rc 0 \
+		--external-authority 'https://example.invalid/spec#section' --reason 'r'"
+	[ "$status" -eq 0 ] || {
+		echo "a rejection could not be re-filed onto an ancestor: $output"
+		return 1
+	}
+	local logged
+	logged=$(jq -rs --arg s "$old_sha" '[ .[] | select(.covered_sha == $s and .kind == "rejection") ] | length' \
+		"$WORK/.claude/audit/prove-yourself.jsonl" 2>/dev/null)
+	[ "${logged:-0}" -ge 1 ] || {
+		echo "the rejection row was not filed against the named sha"
+		return 1
+	}
+}
+
+@test "#2643: record-rejection --covered-sha refuses a non-ancestor" {
+	# The anti-fabrication half, on the rejection side.
+	_make_fix
+	run bash -c "cd '$WORK' && git add -A && git -c user.email=t@t -c user.name=t commit -qm base && git rev-parse HEAD"
+	[ "$status" -eq 0 ]
+	local base="${lines[${#lines[@]} - 1]}"
+	run bash -c "cd '$WORK' && git checkout -q -b side '$base' && printf 'x\n' > scripts/side.sh && git add -A && git -c user.email=t@t -c user.name=t commit -qm side && git rev-parse HEAD"
+	[ "$status" -eq 0 ]
+	local side_sha="${lines[${#lines[@]} - 1]}"
+	run bash -c "cd '$WORK' && git checkout -q '$base'"
+	run bash -c "cd '$WORK' && git merge-base --is-ancestor '$side_sha' HEAD"
+	[ "$status" -ne 0 ] || {
+		echo "fixture setup failed: the side sha IS an ancestor, so the refusal below is untested"
+		return 1
+	}
+
+	run bash -c "cd '$WORK' && '$RUN' record-rejection --source phase1 --confidence 3 \
+		--covered-sha '$side_sha' \
+		--finding-id r --finding-text t --dogfood-cmd 'true' \
+		--dogfood-output 'o' --dogfood-rc 0 \
+		--external-authority 'https://example.invalid/spec#section' --reason 'r'"
+	[ "$status" -ne 0 ] || {
+		echo "a rejection was filed against a commit not on this branch: $output"
+		return 1
+	}
+	[[ $output == *"not an ancestor"* ]] || {
+		echo "refused, but not by the ancestor guard: $output"
+		return 1
+	}
+}
+
+@test "#2643: the symptom path WARNS when it runs with no deadline" {
+	# pr-test-analyzer r1: the no-timeout branch and its UNBOUNDED warning
+	# had no test, though the analogous retest branch does. An unbounded
+	# run that says nothing is indistinguishable from a bounded one.
+	_make_fix
+	run bash -c "cd '$WORK' && PROVE_RETEST_NO_TIMEOUT=1 '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "disabling the deadline broke the record: $output"
+		return 1
+	}
+	[[ $output == *"UNBOUNDED"* ]] || {
+		echo "the symptom run went unbounded silently: $output"
 		return 1
 	}
 }

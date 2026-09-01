@@ -20,77 +20,196 @@
 # the prove-yourself rule exists to remove — sitting in the one field that
 # decides whether the evidence counts at all.
 #
-# The data needed to check it was already on disk, keyed by the SAME sha
-# `covered_sha` stamps. This library reads it.
+# ---------------------------------------------------------------------------
+# THE FIRST VERSION OF THIS FILE INVENTED ITS OWN SCHEMAS AND WAS DEAD ON
+# TWO OF THREE STAGES. Phase 1 caught it; recording it here because the
+# failure mode is the one this whole epic is about — a gate that reports
+# enforcement it does not perform.
 #
-# Stage log locations (one place, so a new stage is added here, not in each
-# consumer):
-#   phase0.5 → .claude/logs/phase0.5-run.jsonl    {sha, findings}
-#   phase1   → .claude/review-log/<sha>.jsonl     per-sha, one row per finding
-#   cr       → .claude/logs/cr-local-review.jsonl {sha, findings}
+#   phase1: counted rows with `.finding_id`/`.id`. hooks/review-log.sh is the
+#           sole writer and emits {ts,sha,phase,round,agent,findings,...}.
+#           Zero of the repo's real rows carry either key, so the arm
+#           returned 0 for every sha — and on a sha carrying both phase0.5
+#           and phase1 rows it told the operator to relabel a CORRECT
+#           `--source phase1` record. The unit test pinned the invented
+#           shape, so the suite stayed green over a guard that never fired.
+#   cr:     compared FULL shas; cr-local-review.jsonl stores 7-char shas, so
+#           that arm never matched either.
+#   p0.5:   took `max` over a sha's rows — the algorithm
+#           scripts/ship-pr-cycle.sh::_phase05_findings_for_sha documents as
+#           MEASURED wrong "by up to 4x and wrong in both directions",
+#           because per-agent rows are written BEFORE emission and survive a
+#           crashed emit.
+#
+# So: this file no longer invents anything. Each arm mirrors the semantics
+# of the gate that already owns that stage, and the docblock names it.
+# ---------------------------------------------------------------------------
+#
+# A jq failure is NEVER coerced to 0. `_phase05_findings_for_sha` states the
+# reason directly — coercing shrinks the bar, so an unreadable log would read
+# as "nothing to cover". These functions echo `unknown` and return 2, and the
+# caller must fail closed rather than treat it as clean.
+
+# _stage_findings_log_usable <log>
+# rc 0 when the file is empty, or has at least one line that parses as JSON.
+# rc 1 when it has content and NOTHING parses — i.e. it is not a JSONL log.
+#
+# The distinction matters and cost a test to find. The phase0.5 reader uses
+# `fromjson?`, which SILENTLY SKIPS unparseable lines — correct for one bad
+# line among good ones, but it means a wholly corrupt log yields no rows and
+# reads as "this sha has no findings". Zero and unreadable must not be the
+# same answer here; zero opens a gate.
+_stage_findings_log_usable() {
+	local log="${1:-}" total ok
+	[ -n "$log" ] && [ -r "$log" ] || return 0
+	total=$(grep -c '[^[:space:]]' "$log" 2>/dev/null) || total=0
+	[ "${total:-0}" -gt 0 ] 2>/dev/null || return 0
+	ok=$(jq -r -R 'fromjson? | "x"' "$log" 2>/dev/null | grep -c x) || ok=0
+	[ "${ok:-0}" -gt 0 ] 2>/dev/null
+}
 
 # _stage_findings_count <repo_root> <stage> <sha>
-# Echoes how many findings that stage logged at that sha; 0 when the log is
-# absent, unreadable, or jq is missing. A 0 therefore means "no findings
-# VISIBLE here", which is why the caller must also consult
-# _stage_findings_cycle_started before treating silence as clean — the whole
-# failure this file addresses came from empty logs, not from a wrong count.
+# Echoes a count, or `unknown` (rc 2) when the answer cannot be determined.
+# rc 0 with a number = a real answer. rc 0 with 0 = genuinely no findings.
 _stage_findings_count() {
-	local root="${1:-}" stage="${2:-}" sha="${3:-}" log n
+	local root="${1:-}" stage="${2:-}" sha="${3:-}" log n short jq_err jq_rc=0
 	if [ -z "$root" ] || [ -z "$stage" ] || [ -z "$sha" ]; then
-		printf '0\n'
-		return 0
+		printf 'unknown\n'
+		return 2
 	fi
 	if ! command -v jq >/dev/null 2>&1; then
-		printf '0\n'
-		return 0
+		printf 'unknown\n'
+		return 2
 	fi
+
 	case "$stage" in
-	phase0.5) log="$root/.claude/logs/phase0.5-run.jsonl" ;;
-	cr) log="$root/.claude/logs/cr-local-review.jsonl" ;;
-	phase1) log="$root/.claude/review-log/$sha.jsonl" ;;
-	*)
-		printf '0\n'
-		return 0
+	phase0.5)
+		# AUTHORITY: scripts/ship-pr-cycle.sh::_phase05_findings_for_sha.
+		# The terminal aggregate {agent:"<all>", status:"emitted"} is the
+		# only trustworthy row; per-agent rows are written before emission
+		# and summing them counts findings that were never emitted.
+		# Newest aggregate wins — re-running the prefilter appends another.
+		log="$root/.claude/logs/phase0.5-run.jsonl"
+		[ -r "$log" ] || {
+			printf '0\n'
+			return 0
+		}
+		_stage_findings_log_usable "$log" || {
+			printf 'unknown\n'
+			return 2
+		}
+		jq_err=$(mktemp -t sf-p05.XXXXXX) || jq_err=""
+		n=$(jq -r -R --arg s "$sha" \
+			'fromjson? | select(.sha == $s and .agent == "<all>" and .status == "emitted") | .findings // 0' \
+			"$log" 2>"${jq_err:-/dev/null}" | tail -1) || jq_rc=$?
+		[ -n "$jq_err" ] && rm -f "$jq_err"
+		if [ "$jq_rc" -ne 0 ]; then
+			printf 'unknown\n'
+			return 2
+		fi
+		# A sha with rows but no terminal aggregate is not a zero — the
+		# prefilter may have crashed mid-emit. Say so.
+		if [ -z "$n" ]; then
+			local any
+			any=$(jq -r -R --arg s "$sha" 'fromjson? | select(.sha == $s) | .sha' \
+				"$log" 2>/dev/null | head -1) || any=""
+			if [ -n "$any" ]; then
+				printf 'unknown\n'
+				return 2
+			fi
+			printf '0\n'
+			return 0
+		fi
 		;;
-	esac
-	if [ ! -r "$log" ]; then
-		printf '0\n'
-		return 0
-	fi
-	case "$stage" in
 	phase1)
-		# Per-sha file; each finding is a row.
-		n=$(jq -rs '[ .[] | select(((.finding_id // .id // "") | tostring) != "") ] | length' \
-			"$log" 2>/dev/null) || n=0
+		# AUTHORITY: pre-commit-hooks/prove-yourself-gate.sh — sum
+		# `.findings` across the agents of the LATEST round, not a row
+		# count. hooks/review-log.sh writes one aggregate row per agent.
+		log="$root/.claude/review-log/$sha.jsonl"
+		[ -r "$log" ] || {
+			printf '0\n'
+			return 0
+		}
+		_stage_findings_log_usable "$log" || {
+			printf 'unknown\n'
+			return 2
+		}
+		local latest
+		latest=$(jq -r 'select(.phase==1 and .round!=null) | .round' "$log" 2>/dev/null |
+			sort -un | tail -1) || latest=""
+		if [ -z "$latest" ]; then
+			printf '0\n'
+			return 0
+		fi
+		n=$(jq -r --arg r "$latest" \
+			'select(.phase==1 and (.round|tostring)==$r) | (.findings // 0)' \
+			"$log" 2>/dev/null | awk '{s+=$1} END {print s+0}') || n=""
+		[ -n "$n" ] || {
+			printf 'unknown\n'
+			return 2
+		}
+		;;
+	cr)
+		# AUTHORITY: _lib/cr-phase2-coverage.sh. Two things this arm got
+		# wrong on the first pass: the log stores SHORT (7-char) shas, and
+		# a PARTIAL/TIMED-OUT run reports "0 findings SEEN", not "0 exist"
+		# — reading that as clean is the #2544 laundering.
+		log="$root/.claude/logs/cr-local-review.jsonl"
+		[ -r "$log" ] || {
+			printf '0\n'
+			return 0
+		}
+		_stage_findings_log_usable "$log" || {
+			printf 'unknown\n'
+			return 2
+		}
+		short=$(printf '%s' "$sha" | cut -c1-7)
+		n=$(jq -rs --arg s "$short" '
+			[ .[]
+			  | select((.sha // "") == $s)
+			  | select((.partial // false) != true and (.timeout // false) != true)
+			  | (.findings // 0) ]
+			| last // 0
+		' "$log" 2>/dev/null) || n=""
+		[ -n "$n" ] || {
+			printf 'unknown\n'
+			return 2
+		}
 		;;
 	*)
-		# Shared log; take the LARGEST count recorded for this sha. Rounds
-		# append, and a later clean round must not erase an earlier round's
-		# findings — "0 findings this round" is not "0 findings on this sha".
-		n=$(jq -rs --arg s "$sha" '
-			[ .[] | select((.sha // "") == $s) | (.findings // 0) ] | max // 0
-		' "$log" 2>/dev/null) || n=0
+		printf 'unknown\n'
+		return 2
 		;;
 	esac
+
 	case "$n" in
-	'' | *[!0-9]*) n=0 ;;
+	'' | *[!0-9]*)
+		printf 'unknown\n'
+		return 2
+		;;
 	esac
 	printf '%s\n' "$n"
+	return 0
 }
 
 # _stage_findings_stages_at <repo_root> <sha>
 # Echoes, newline-separated, every stage that logged >0 findings at that sha.
-# Empty output = no stage claims findings there.
+# rc 2 if ANY stage could not be determined — the caller must not treat a
+# partial answer as "no stage claims findings here".
 _stage_findings_stages_at() {
-	local root="${1:-}" sha="${2:-}" st n
+	local root="${1:-}" sha="${2:-}" st n rc=0
 	for st in phase0.5 phase1 cr; do
-		n=$(_stage_findings_count "$root" "$st" "$sha")
-		if [ "$n" -gt 0 ] 2>/dev/null; then
-			printf '%s\n' "$st"
-		fi
+		n=$(_stage_findings_count "$root" "$st" "$sha") || rc=2
+		case "$n" in
+		unknown) rc=2 ;;
+		*)
+			if [ "$n" -gt 0 ] 2>/dev/null; then
+				printf '%s\n' "$st"
+			fi
+			;;
+		esac
 	done
-	return 0
+	return "$rc"
 }
 
 # _stage_findings_cycle_started <repo_root> <sha>
