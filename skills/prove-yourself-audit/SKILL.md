@@ -95,15 +95,24 @@ is still broken, capture the failing run —
 ```
 
 The command is re-executed under the same deadline machinery and **must
-fail** (a passing baseline demonstrates no symptom and is refused; a
+fail** (a passing baseline demonstrates no symptom and is refused; rc
+126/127 are refused as *absence, not symptom* unless
+`--allow-absence-baseline` explicitly claims absence is the symptom; a
 symptom whose failure mode is a *wrong success* needs the explicit rc pair
-of the symptom flags below). Evidence `{cmd, rc, output tail, tree sha}` is
-stored keyed by `--finding-id`. A later `record-fix` for that finding-id
-then **requires** the same `--retest-cmd`, a claimed `--retest-rc 0`, and
-stamps both halves into the record (`baseline_verified: true`,
-`baseline_rc`, `baseline_ts`, `baseline_sha`, `baseline_output_tail`) —
-*failed before, passes after*, both sides run live, no worktree needed.
-Without a captured baseline `record-fix` behaves exactly as before.
+of the symptom flags below). The key is `--finding-id`, or derived from
+`--finding-text` exactly as `record-fix` derives it. Evidence
+`{cmd, rc, output tail, tree sha, note}` is stored keyed by that id, and a
+**corroborating row is appended to the tracked audit ledger** — the
+session-state file alone is hand-forgeable, so `record-fix` refuses a
+baseline the ledger does not corroborate. A later `record-fix` for that
+finding-id then **requires** the same `--retest-cmd`, a claimed
+`--retest-rc 0`, and a capture sha that is an ancestor of HEAD; it stamps
+both halves into the record (`baseline_verified: true`, `baseline_rc`,
+`baseline_ts`, `baseline_sha`, `baseline_output_tail`, `baseline_note`)
+and **consumes** the baseline file — *failed before, passes after*, both
+sides run live, no worktree needed. Without a captured baseline
+`record-fix`'s acceptance behavior is unchanged (records additionally
+stamp `baseline_verified: false`).
 
 **The SYMPTOM DIFFERENTIAL (#2643).** A passing retest proves the command
 runs, not that it would have FAILED before the fix — a hook that was already

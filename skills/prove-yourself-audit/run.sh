@@ -371,18 +371,26 @@ Usage:
                              # file makes the baseline exit "command not found",
                              # which looks like proof and is not; pass this only
                              # when 127 genuinely IS the reported symptom.
-  run.sh record-baseline --finding-id X --retest-cmd "..." [--note "..."]
+  run.sh record-baseline {--finding-id X | --finding-text "..."} \
+    --retest-cmd "..." [--note "..."] [--allow-absence-baseline]
                              # (#2652) capture PRE-FIX evidence BEFORE applying
                              # the fix: the command is RE-EXECUTED now and must
                              # FAIL (nonzero rc) — a passing baseline shows no
-                             # symptom and is refused. Stored keyed by
-                             # finding-id; a later record-fix for the SAME
-                             # finding-id then requires the SAME command, a
-                             # claimed --retest-rc 0, and stamps both halves
-                             # into the record — before/after proven from two
-                             # live runs, no worktree needed. For a fix that is
-                             # already committed (no pre-fix tree left to run
-                             # in), use the #2643 symptom flags instead.
+                             # symptom and is refused; rc 126/127 are refused
+                             # too (absence is not a symptom) unless
+                             # --allow-absence-baseline claims it is. The key
+                             # is --finding-id, or derived from --finding-text
+                             # exactly like record-fix derives it. Evidence is
+                             # stored keyed by that id AND corroborated by a
+                             # tracked audit-ledger row; a later record-fix for
+                             # the SAME id then requires the SAME command, a
+                             # claimed --retest-rc 0, an ancestor-of-HEAD
+                             # capture sha, and stamps both halves (+ the note)
+                             # into the record, CONSUMING the baseline file —
+                             # before/after proven from two live runs, no
+                             # worktree needed. For a fix that is already
+                             # committed (no pre-fix tree left to run in), use
+                             # the #2643 symptom flags instead.
                              # Timeout: PROVE_RETEST_TIMEOUT (default 120s).
   run.sh audit
   run.sh check-commit
@@ -1138,8 +1146,12 @@ _prove_symptom_run_baseline() {
 # the retest and the pre-fix baseline — so the #2562 deadline contract
 # cannot drift between call sites (real run, real deadline, fail-closed
 # without a timeout binary, a deadline kill is never evidence). The #2643
-# symptom halves keep their own runner: the baseline half executes in a
-# worktree with different cwd/timeout semantics.
+# symptom halves keep their own runners DELIBERATELY: their refusal
+# strings ("fixed-tree symptom run hit the deadline", the #2643-tagged
+# missing-binary message with rc 2) are contract text the symptom suite
+# pins, and the baseline half additionally runs in a detached worktree —
+# absorbing either here would change published messages to save ~30
+# lines (phase1 simplifier, partially applied).
 # _evidence_reexec <cmd> <announce-prefix> <noun>
 #   Runs <cmd> at $REPO_ROOT under PROVE_RETEST_TIMEOUT. Sets _REEXEC_RC
 #   (observed rc) + _REEXEC_TAIL (last 800 bytes of combined output).
@@ -1162,11 +1174,15 @@ _evidence_reexec() {
 	}
 	echo "$_announce (timeout ${_tmo}s): $_cmd" >&2
 	_t0=$SECONDS
-	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
-		(cd "$REPO_ROOT" && timeout "$_tmo" bash -c "$_cmd") >"$_out" 2>&1 || _REEXEC_RC=$?
-	elif [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
+	# Positive-first, env read once (phase1 simplifier): opt-out wins,
+	# else a present timeout binary, else refuse — same truth table as
+	# the negated compound this replaces, one read that cannot disagree.
+	local _no_deadline="${PROVE_RETEST_NO_TIMEOUT:-0}"
+	if [ "$_no_deadline" = "1" ]; then
 		echo "WARN: PROVE_RETEST_NO_TIMEOUT=1 — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED for this $_noun run (a hung command must be interrupted manually)" >&2
 		(cd "$REPO_ROOT" && bash -c "$_cmd") >"$_out" 2>&1 || _REEXEC_RC=$?
+	elif command -v timeout >/dev/null 2>&1; then
+		(cd "$REPO_ROOT" && timeout "$_tmo" bash -c "$_cmd") >"$_out" 2>&1 || _REEXEC_RC=$?
 	else
 		echo "error: no timeout binary on PATH — refusing to run $_noun evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2562)" >&2
 		rm -f "$_out"
@@ -1182,6 +1198,21 @@ _evidence_reexec() {
 	rm -f "$_out"
 }
 
+# (#2652) The ONE path rule for baseline files — used by the writer
+# (record-baseline) AND the reader (record-fix), so the traversal guard
+# cannot exist on only one side (phase1: `record-fix --finding-id ../../x`
+# read an arbitrary JSON outside the store).
+# Echoes the path; exits 2 on a path-shaped id.
+_baseline_file_for_finding() {
+	case "${1:-}" in
+	'' | */* | *..*)
+		echo "error: finding-id must be non-empty and contain no '/' or '..' (it names the baseline file)" >&2
+		exit 2
+		;;
+	esac
+	printf '%s\n' "$BASELINE_DIR/${1}.json"
+}
+
 # (#2652) PRE-FIX BASELINE — the missing half of #2562's "evidence is a
 # run". record-fix re-executes the retest AFTER the fix, which proves the
 # suite passes but not that the bug was ever present; the #2643 symptom
@@ -1192,11 +1223,15 @@ _evidence_reexec() {
 # FAIL — a passing baseline demonstrates no symptom and is refused
 # (a symptom whose failure mode is a WRONG rc-0 needs the symptom flags'
 # explicit rc pair instead; this path encodes the common fails→passes
-# contract). Evidence {cmd, rc, output tail, tree sha} is stored keyed by
-# finding-id; the later record-fix for that finding-id must run the SAME
-# command, claim rc 0, and stamps both halves into the record.
+# contract). Evidence {cmd, rc, output tail, tree sha, note} is stored
+# keyed by finding-id, AND a corroborating row is appended to the TRACKED
+# audit ledger — the session-state file alone is forgeable with a text
+# editor, and a forged tracked row shows up in the diff (phase1 security).
+# The later record-fix for that finding-id must run the SAME command,
+# claim rc 0, and stamps both halves into the record; the baseline file
+# is consumed by that stamp.
 cmd_record_baseline() {
-	local finding_id="" retest_cmd="" note=""
+	local finding_id="" finding_text="" retest_cmd="" note="" allow_absence=0
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--finding-id)
@@ -1205,6 +1240,14 @@ cmd_record_baseline() {
 				exit 2
 			}
 			finding_id=${2:-}
+			shift 2
+			;;
+		--finding-text)
+			[ $# -lt 2 ] && {
+				echo "error: missing value for --finding-text" >&2
+				exit 2
+			}
+			finding_text=${2:-}
 			shift 2
 			;;
 		--retest-cmd)
@@ -1223,28 +1266,37 @@ cmd_record_baseline() {
 			note=${2:-}
 			shift 2
 			;;
+		--allow-absence-baseline)
+			allow_absence=1
+			shift
+			;;
 		*)
 			echo "error: unknown arg: $1" >&2
 			exit 2
 			;;
 		esac
 	done
-	[ -z "$finding_id" ] && {
-		echo "error: --finding-id is required (the later record-fix pairs on it)" >&2
-		exit 2
-	}
 	[ -z "$retest_cmd" ] && {
 		echo "error: --retest-cmd is required" >&2
 		exit 2
 	}
-	case "$finding_id" in
-	*/* | *..*)
-		# The id becomes a filename under BASELINE_DIR; a path-shaped id
-		# would escape the directory.
-		echo "error: --finding-id must not contain '/' or '..' (it names the baseline file)" >&2
-		exit 2
-		;;
-	esac
+	# Same key derivation as record-fix (phase1: the two halves could not
+	# agree on a key by construction — record-fix derives from
+	# --finding-text when --finding-id is omitted, so the capture must
+	# offer the identical derivation or default invocations never pair).
+	if [ -z "$finding_id" ]; then
+		if [ -z "$finding_text" ]; then
+			echo "error: --finding-id or --finding-text is required (the later record-fix pairs on the same key)" >&2
+			exit 2
+		fi
+		finding_id=$(_hash_finding "$finding_text")
+		[ -z "$finding_id" ] && {
+			echo "error: cannot derive finding-id (no sha256sum/shasum) — pass --finding-id explicitly" >&2
+			exit 2
+		}
+	fi
+	local _bl_file
+	_bl_file=$(_baseline_file_for_finding "$finding_id")
 
 	# The shared #2562 engine: real run, real deadline, fail-closed when
 	# no timeout binary exists, a deadline kill is never evidence.
@@ -1255,9 +1307,25 @@ cmd_record_baseline() {
 		echo "  If the symptom is a WRONG success (the command should fail and does not), encode the expected rcs explicitly via record-fix's --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc instead." >&2
 		exit 1
 	fi
+	# rc 126/127 are absence, not symptom (phase1 silent-failure, mirror
+	# of the #2643 worktree-baseline rule): a fix that ADDS the very file
+	# the command runs makes the baseline exit "command not found", which
+	# looks like proof and is not. --allow-absence-baseline is the
+	# explicit claim that absence IS the reported symptom.
+	if { [ "$_bl_actual_rc" -eq 126 ] || [ "$_bl_actual_rc" -eq 127 ]; } && [ "$allow_absence" -ne 1 ]; then
+		echo "error: baseline exited rc $_bl_actual_rc (not executable / command not found) — that demonstrates ABSENCE, not the bug's symptom; a fix that adds the file would 'flip' this without fixing anything (#2652)." >&2
+		echo "  Pass --allow-absence-baseline only when absence genuinely IS the reported symptom." >&2
+		exit 1
+	fi
 	local _bl_tail _bl_sha _bl_ts
 	_bl_tail="$_REEXEC_TAIL"
-	_bl_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+	# Loud refusal, not a silent "unknown" (phase1 silent-failure): the
+	# sha is the field the record-fix ancestry check hangs on; capturing
+	# without it would quietly undermine the pairing downstream.
+	if ! _bl_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null); then
+		echo "error: cannot resolve HEAD for the baseline's tree sha — a baseline unmoored from a commit cannot be paired (#2652)" >&2
+		exit 1
+	fi
 	_bl_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 	mkdir -p "$BASELINE_DIR" || {
@@ -1275,12 +1343,23 @@ cmd_record_baseline() {
 		'{finding_id: $fid, ts: $ts, sha: $sha, retest_cmd: $cmd,
 		  baseline_rc: $rc, output_tail: $tail,
 		  note: (if $note == "" then null else $note end)}' \
-		>"$BASELINE_DIR/${finding_id}.json"; then
+		>"$_bl_file"; then
 		echo "error: failed writing baseline record for $finding_id" >&2
 		exit 1
 	fi
+	# Corroborating TRACKED row (phase1 security): the gitignored file
+	# above is forgeable with a text editor; record-fix refuses a
+	# baseline the tracked ledger does not corroborate. The row's empty
+	# source keeps it outside every coverage query (they filter on
+	# .source). Unrecordable corroboration = no baseline (rm the file).
+	if ! _append_tracked_audit "baseline" "$finding_id" "" "" "" \
+		"baseline_rc=$_bl_actual_rc retest_cmd=$retest_cmd" "$_bl_file" "" 1 "$_bl_sha"; then
+		rm -f "$_bl_file"
+		echo "error: tracked-ledger corroboration append failed — refusing to keep an uncorroborated baseline (#2652)" >&2
+		exit 1
+	fi
 	echo "✓ Captured pre-fix baseline for $finding_id: rc=$_bl_actual_rc (must be nonzero; record-fix will require the same command to exit 0)"
-	echo "  $BASELINE_DIR/${finding_id}.json"
+	echo "  $_bl_file"
 }
 
 cmd_record_fix() {
@@ -1710,25 +1789,56 @@ cmd_record_fix() {
 	# command is two unrelated observations, not a differential) and a
 	# claimed rc of 0 (the baseline already proved nonzero, so the pair
 	# encodes fails→passes; nonzero-target evidence belongs to the
-	# symptom flags). Absent a baseline, behavior is unchanged — the
-	# #2643 symptom differential remains the before/after path for
+	# symptom flags). Absent a baseline, acceptance behavior is unchanged
+	# (records additionally stamp baseline_verified:false) — the #2643
+	# symptom differential remains the before/after path for
 	# already-committed fixes and cycle-critical citations.
-	local _bl_file="$BASELINE_DIR/${finding_id}.json"
-	local _bl_present=0 _bl_cmd="" _bl_rc="" _bl_ts="" _bl_sha="" _bl_tail=""
+	local _bl_file
+	_bl_file=$(_baseline_file_for_finding "$finding_id")
+	local _bl_present=false _bl_cmd="" _bl_rc="" _bl_ts="" _bl_sha="" _bl_tail="" _bl_note=""
 	if [ -f "$_bl_file" ]; then
-		_bl_present=1
+		_bl_present=true
+		# One guard over every field read (phase1 simplifier): the -er
+		# reads sit first so a missing cmd/rc short-circuits, and a jq
+		# failure on any provenance field is the same malformed refusal
+		# — never a silently-empty stamp (phase0.5).
 		if ! _bl_cmd=$(jq -er '.retest_cmd' "$_bl_file" 2>/dev/null) ||
-			! _bl_rc=$(jq -er '.baseline_rc' "$_bl_file" 2>/dev/null); then
+			! _bl_rc=$(jq -er '.baseline_rc' "$_bl_file" 2>/dev/null) ||
+			! _bl_ts=$(jq -r '.ts // ""' "$_bl_file" 2>/dev/null) ||
+			! _bl_sha=$(jq -r '.sha // ""' "$_bl_file" 2>/dev/null) ||
+			! _bl_tail=$(jq -r '.output_tail // ""' "$_bl_file" 2>/dev/null) ||
+			! _bl_note=$(jq -r '.note // ""' "$_bl_file" 2>/dev/null); then
 			echo "error: baseline record $_bl_file is malformed — re-capture with record-baseline or remove it (#2652)" >&2
 			exit 2
 		fi
-		# Same hard-fail as the cmd/rc reads above (phase0.5: `|| true`
-		# here silently degraded the provenance fields to empty strings
-		# on a corrupt record while the reads two lines up refuse).
-		if ! _bl_ts=$(jq -r '.ts // ""' "$_bl_file" 2>/dev/null) ||
-			! _bl_sha=$(jq -r '.sha // ""' "$_bl_file" 2>/dev/null) ||
-			! _bl_tail=$(jq -r '.output_tail // ""' "$_bl_file" 2>/dev/null); then
-			echo "error: baseline record $_bl_file is malformed (provenance fields unreadable) — re-capture with record-baseline or remove it (#2652)" >&2
+		# File-sourced value headed for --argjson (phase1 silent-failure):
+		# record-baseline only ever writes 1-255, so anything else is a
+		# corrupt or hand-edited record — refuse as malformed rather than
+		# let jq abort mid-write (truncating the state file) or stamp a
+		# lying rc-0 "pair".
+		if ! [[ $_bl_rc =~ ^[1-9][0-9]?[0-9]?$ ]] || [ "$_bl_rc" -gt 255 ]; then
+			echo "error: baseline record $_bl_file is malformed (baseline_rc '$_bl_rc' is not a 1-255 integer) — re-capture with record-baseline or remove it (#2652)" >&2
+			exit 2
+		fi
+		# The tracked ledger must corroborate (phase1 security): the
+		# session-state file alone is forgeable with a text editor — a
+		# hand-written JSON would earn baseline_verified with no run.
+		# Forging the corroboration means editing a TRACKED file, which
+		# the diff shows. grep prefilters; jq requires kind/id/rc match.
+		if ! grep -F "\"finding_id\":\"$finding_id\"" "$AUDIT_FILE" 2>/dev/null |
+			jq -e --arg fid "$finding_id" --arg rc "$_bl_rc" \
+				'select(.kind == "baseline" and .finding_id == $fid) |
+				 select(.finding_text | startswith("baseline_rc=" + $rc + " "))' \
+				>/dev/null 2>&1; then
+			echo "error: the tracked audit ledger has no corroborating baseline row for $finding_id (rc=$_bl_rc) — record-baseline appends one at capture; a session-state file without it is not evidence (#2652)" >&2
+			exit 2
+		fi
+		# The baseline must have been captured on THIS branch's history
+		# (phase1 lifecycle): a months-old baseline from another line of
+		# development is not the "before" of this fix.
+		if [ -z "$_bl_sha" ] ||
+			! git -C "$REPO_ROOT" merge-base --is-ancestor "$_bl_sha" HEAD 2>/dev/null; then
+			echo "error: baseline for $finding_id was captured at '${_bl_sha:-<missing sha>}', which is not an ancestor of HEAD — a baseline from another line of development cannot pair with this fix; re-capture (#2652)" >&2
 			exit 2
 		fi
 		if [ "$_bl_cmd" != "$retest_cmd" ]; then
@@ -2179,11 +2289,12 @@ cmd_record_fix() {
 		--arg src "${src:-}" \
 		--argjson actual "$_retest_actual_rc" \
 		--arg rtail "$_retest_tail" \
-		--argjson blpresent "$([ "$_bl_present" -eq 1 ] && echo true || echo false)" \
+		--argjson blpresent "$_bl_present" \
 		--argjson blrc "${_bl_rc:-null}" \
 		--arg blts "$_bl_ts" \
 		--arg blsha "$_bl_sha" \
 		--arg bltail "$_bl_tail" \
+		--arg blnote "$_bl_note" \
 		'{finding_id: $fid, kind: "fix", finding_text: $ftext, ts: $ts,
 		  covers_count: $covers, confidence: $conf,
 		  severity: (if $sev == "" then null else $sev end),
@@ -2196,6 +2307,7 @@ cmd_record_fix() {
 		                  baseline_ts: (if $blts == "" then null else $blts end),
 		                  baseline_sha: (if $blsha == "" then null else $blsha end),
 		                  baseline_output_tail: (if $bltail == "" then null else $bltail end),
+		                  baseline_note: (if $blnote == "" then null else $blnote end),
 		                  symptom_cmd: $symcmd, symptom_baseline_rc: $symbase,
 		                  symptom_fixed_rc: $symfixed, symptom_baseline_ref: $symref,
 		                  symptom_baseline_ref_effective: (if $symrefeff == "" then null else $symrefeff end),
@@ -2203,8 +2315,15 @@ cmd_record_fix() {
 		                  symptom_verified: ($symcmd != ""),
 		                  retest_output_tail: $rtail}}' >"$state_file"
 
-	if [ "$_bl_present" -eq 1 ]; then
+	if [ "$_bl_present" = true ]; then
 		echo "record-fix: before/after pair CONFIRMED — baseline rc=$_bl_rc (captured $_bl_ts at ${_bl_sha:0:7}), post-fix rc=$_retest_actual_rc" >&2
+		# Consume the baseline (phase1 lifecycle): its evidence now lives
+		# in the durable record; leaving the file re-stamps stale proof
+		# onto future records for a reused finding-id (or hard-refuses
+		# them on BASELINE MISMATCH). Removal failure is loud but not
+		# fatal — the record is already written and correct.
+		rm -f "$_bl_file" ||
+			echo "WARN: could not remove consumed baseline $_bl_file — a future record-fix for this finding-id will trip over it" >&2
 	fi
 
 	# Record per-cited-file cache entries under reviewer "prove-yourself-fix".
@@ -2457,6 +2576,14 @@ cmd_reset() {
 		[ -e "$f" ] || continue
 		rm -f -- "$f" || rc=1
 	done
+	# (#2652 phase1 lifecycle): un-consumed baselines are as stale as the
+	# records after a merge — the sibling store resets with the main one.
+	if [ -n "${BASELINE_DIR:-}" ] && [ "$BASELINE_DIR" != "/" ]; then
+		for f in "${BASELINE_DIR:?}"/*.json; do
+			[ -e "$f" ] || continue
+			rm -f -- "$f" || rc=1
+		done
+	fi
 	if [ "$rc" -ne 0 ]; then
 		echo "error: failed to reset prove-yourself state" >&2
 		exit 1

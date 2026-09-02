@@ -128,7 +128,13 @@ bash4_features_unsafe_shebang() {
 # old fail-open, not a crash — and returns non-zero so the detector body
 # is skipped; the caller turns a non-empty _B4_TOOL_ERR into a BLOCK.
 _b4_hit() {
-	printf '%s' "${1:-}" | grep -Eq "${2:-}"
+	# Herestring, not `printf | grep -Eq`: grep -q exits on its FIRST
+	# match, so under a pipefail caller a feature appearing EARLY in
+	# large content SIGPIPE'd the printf (rc 141 → "detector errored"
+	# BLOCK) — the same class as the shebang extraction fix, surviving
+	# one function over because the shipped tests only placed features
+	# at the tail (#2652 phase1, live-probed at 370KB).
+	grep -Eq -- "${2:-}" <<<"${1:-}"
 	local _rc=$?
 	if [ "$_rc" -ge 2 ]; then
 		_B4_TOOL_ERR="grep rc=$_rc on regex: ${2:-}"
@@ -160,12 +166,13 @@ bash4_features_check_content() {
 	local _B4_TOOL_ERR=""
 	# Extract shebang (first line) via parameter expansion. The previous
 	# `printf '%s' "$content" | head -1` SIGPIPE'd the printf under the
-	# callers' pipefail once content exceeded the pipe buffer (head exits
-	# after line 1), and the r1 fail-closed branch turned that into a
-	# spurious BLOCK on every large staged file (#2652 dogfood: the 90KB
-	# prove-yourself run.sh). Expansion cannot fail and forks nothing —
-	# the fail-closed branch it replaces guarded a tool that no longer
-	# exists here.
+	# COMMIT GATE's pipefail once content exceeded the pipe buffer (head
+	# exits after line 1), and the r1 fail-closed branch turned that into
+	# a spurious BLOCK on every large staged file (#2652 dogfood: the
+	# ~120KB prove-yourself run.sh). The write-guard caller runs under
+	# `set -u` only, so the bug never surfaced there. Expansion cannot
+	# fail and forks nothing — the fail-closed branch it replaces guarded
+	# a tool that no longer exists here.
 	shebang=${content%%$'\n'*}
 	# Safe shebang → out of scope (shared predicate, one definition).
 	bash4_features_unsafe_shebang "$shebang" || return 0

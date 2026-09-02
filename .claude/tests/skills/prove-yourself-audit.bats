@@ -415,9 +415,19 @@ _record_rejection_reason() {
 
 # ---- (#2652) pre-fix baseline pairing -------------------------------------
 
-# A retest surface whose rc the "fix" flips: fails until `fixed` exists.
+# A retest surface whose rc the "fix" flips: fails WITH OUTPUT until
+# `fixed` exists (the marker lets tests assert the output_tail actually
+# round-trips into the evidence — phase1 test-analysis).
 _write_flip_check() {
-	printf '#!/bin/bash\n[ -f fixed ]\n' >check.sh
+	printf '#!/bin/bash\nif [ -f fixed ]; then exit 0; fi\necho "FLIPCHECK-FAILING-MARKER"\nexit 1\n' >check.sh
+}
+
+# The canonical capture: flip check + baseline for id t1 (matches
+# _record_fix's hardcoded --finding-id t1).
+_baseline_t1() {
+	_write_flip_check
+	run "$SKILL" record-baseline --finding-id t1 --retest-cmd "bash check.sh"
+	[ "$status" -eq 0 ]
 }
 
 @test "record-baseline refuses a passing command - no symptom demonstrated" {
@@ -430,27 +440,62 @@ _write_flip_check() {
 
 @test "record-baseline captures a failing run keyed by finding-id" {
 	cd "$TEST_TMP" || return 1
-	run "$SKILL" record-baseline --finding-id b2 --retest-cmd "false" --note "sample"
+	_write_flip_check
+	run "$SKILL" record-baseline --finding-id b2 --retest-cmd "bash check.sh" --note "sample"
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'Captured pre-fix baseline'* ]] || return 1
 	local f=.claude/.session-state/prove-yourself-baselines/b2.json
 	[ -f "$f" ] || return 1
 	[ "$(jq -r '.baseline_rc' "$f")" = "1" ] || return 1
-	[ "$(jq -r '.retest_cmd' "$f")" = "false" ]
+	[ "$(jq -r '.retest_cmd' "$f")" = "bash check.sh" ] || return 1
+	# The failure's own output is captured, not dropped (phase1).
+	[[ $(jq -r '.output_tail' "$f") == *'FLIPCHECK-FAILING-MARKER'* ]] || return 1
+	# The tracked ledger corroborates the capture (phase1 security).
+	grep -q '"kind":"baseline"' .claude/audit/prove-yourself.jsonl
 }
 
-@test "record-baseline refuses a path-shaped finding-id" {
+@test "record-baseline refuses path-shaped finding-ids" {
 	cd "$TEST_TMP" || return 1
 	run "$SKILL" record-baseline --finding-id "../evil" --retest-cmd "false"
 	[ "$status" -eq 2 ] || return 1
-	[[ $output == *'must not contain'* ]]
+	[[ $output == *'contain no'* ]] || return 1
+	run "$SKILL" record-baseline --finding-id ".." --retest-cmd "false"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'contain no'* ]]
+}
+
+@test "record-baseline refuses missing key and missing command" {
+	cd "$TEST_TMP" || return 1
+	run "$SKILL" record-baseline --retest-cmd "false"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'--finding-id or --finding-text is required'* ]] || return 1
+	run "$SKILL" record-baseline --finding-id b3
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'--retest-cmd is required'* ]]
+}
+
+@test "record-baseline refuses rc 127 absence unless explicitly allowed" {
+	cd "$TEST_TMP" || return 1
+	run "$SKILL" record-baseline --finding-id b4 --retest-cmd "definitely-not-a-command-xyz"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *'ABSENCE'* ]] || return 1
+	[ ! -f .claude/.session-state/prove-yourself-baselines/b4.json ] || return 1
+	run "$SKILL" record-baseline --finding-id b4 --retest-cmd "definitely-not-a-command-xyz" --allow-absence-baseline
+	[ "$status" -eq 0 ] || return 1
+	[ "$(jq -r '.baseline_rc' .claude/.session-state/prove-yourself-baselines/b4.json)" = "127" ]
+}
+
+@test "record-baseline's own deadline kill is refused as evidence" {
+	cd "$TEST_TMP" || return 1
+	run env PROVE_RETEST_TIMEOUT=1 "$SKILL" record-baseline --finding-id b5 --retest-cmd "sleep 5"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *'hit the PROVE_RETEST_TIMEOUT deadline'* ]] || return 1
+	[ ! -f .claude/.session-state/prove-yourself-baselines/b5.json ]
 }
 
 @test "record-fix with a baseline refuses a DIFFERENT retest command" {
 	cd "$TEST_TMP" || return 1
-	_write_flip_check
-	run "$SKILL" record-baseline --finding-id t1 --retest-cmd "bash check.sh"
-	[ "$status" -eq 0 ] || return 1
+	_baseline_t1 || return 1
 	_record_fix "true" 0
 	[ "$status" -eq 2 ] || return 1
 	[[ $output == *'BASELINE MISMATCH'* ]]
@@ -458,9 +503,7 @@ _write_flip_check() {
 
 @test "record-fix with a baseline refuses a nonzero claimed retest rc" {
 	cd "$TEST_TMP" || return 1
-	_write_flip_check
-	run "$SKILL" record-baseline --finding-id t1 --retest-cmd "bash check.sh"
-	[ "$status" -eq 0 ] || return 1
+	_baseline_t1 || return 1
 	_record_fix "bash check.sh" 1
 	[ "$status" -eq 2 ] || return 1
 	[[ $output == *'must PASS'* ]]
@@ -468,9 +511,7 @@ _write_flip_check() {
 
 @test "record-fix with a baseline refuses when the post-fix retest still fails" {
 	cd "$TEST_TMP" || return 1
-	_write_flip_check
-	run "$SKILL" record-baseline --finding-id t1 --retest-cmd "bash check.sh"
-	[ "$status" -eq 0 ] || return 1
+	_baseline_t1 || return 1
 	# No `fixed` marker: the retest still fails, so claiming 0 must be an
 	# EVIDENCE MISMATCH from the existing re-execution machinery.
 	_record_fix "bash check.sh" 0
@@ -478,11 +519,9 @@ _write_flip_check() {
 	[[ $output == *'EVIDENCE MISMATCH'* ]]
 }
 
-@test "paired baseline plus fix stamps both halves into the record" {
+@test "paired baseline plus fix stamps both halves and consumes the baseline" {
 	cd "$TEST_TMP" || return 1
-	_write_flip_check
-	run "$SKILL" record-baseline --finding-id t1 --retest-cmd "bash check.sh"
-	[ "$status" -eq 0 ] || return 1
+	_baseline_t1 || return 1
 	touch fixed
 	_record_fix "bash check.sh" 0
 	[ "$status" -eq 0 ] || return 1
@@ -492,9 +531,26 @@ _write_flip_check() {
 	[ "$(jq -r '.decision_data.baseline_verified' "$f")" = "true" ] || return 1
 	[ "$(jq -r '.decision_data.baseline_rc' "$f")" = "1" ] || return 1
 	[ "$(jq -r '.decision_data.retest_actual_rc' "$f")" = "0" ] || return 1
-	# Provenance fields stamped with real content, not nulls (phase0.5).
+	# Provenance stamped with real content, not nulls (phase0.5), the
+	# failure output included (phase1 test-analysis).
 	[ "$(jq -r '.decision_data.baseline_ts' "$f")" != "null" ] || return 1
-	[ "$(jq -r '.decision_data.baseline_sha' "$f")" != "null" ]
+	[ "$(jq -r '.decision_data.baseline_sha' "$f")" != "null" ] || return 1
+	[[ $(jq -r '.decision_data.baseline_output_tail' "$f") == *'FLIPCHECK-FAILING-MARKER'* ]] || return 1
+	# Consumed on stamp (phase1 lifecycle): the file must be gone.
+	[ ! -f .claude/.session-state/prove-yourself-baselines/t1.json ]
+}
+
+@test "default finding-text derivation pairs capture and fix without an explicit id" {
+	cd "$TEST_TMP" || return 1
+	_write_flip_check
+	run "$SKILL" record-baseline --finding-text "derived key finding" --retest-cmd "bash check.sh"
+	[ "$status" -eq 0 ] || return 1
+	touch fixed
+	run "$SKILL" record-fix --finding-text "derived key finding" \
+		--fix-summary "s" --retest-cmd "bash check.sh" --retest-rc 0 \
+		--source phase1 --confidence 5
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'before/after pair CONFIRMED'* ]]
 }
 
 @test "record-fix refuses a MALFORMED baseline file instead of pairing garbage" {
@@ -508,21 +564,55 @@ _write_flip_check() {
 	[[ $output == *'malformed'* ]]
 }
 
-@test "record-baseline refuses missing required args" {
+@test "hand-forged baseline file without a ledger row is refused" {
+	# phase1 security: the session-state file alone is forgeable; the
+	# tracked ledger must corroborate the capture.
 	cd "$TEST_TMP" || return 1
-	run "$SKILL" record-baseline --retest-cmd "false"
+	_write_flip_check
+	mkdir -p .claude/.session-state/prove-yourself-baselines || return 1
+	jq -n --arg sha "$(git rev-parse HEAD)" \
+		'{finding_id: "t1", ts: "2026-01-01T00:00:00Z", sha: $sha,
+		  retest_cmd: "bash check.sh", baseline_rc: 1,
+		  output_tail: "forged", note: null}' \
+		>.claude/.session-state/prove-yourself-baselines/t1.json || return 1
+	touch fixed
+	_record_fix "bash check.sh" 0
 	[ "$status" -eq 2 ] || return 1
-	[[ $output == *'--finding-id is required'* ]] || return 1
-	run "$SKILL" record-baseline --finding-id b3
-	[ "$status" -eq 2 ] || return 1
-	[[ $output == *'--retest-cmd is required'* ]]
+	[[ $output == *'no corroborating baseline row'* ]]
 }
 
-@test "record-baseline refuses a bare dot-dot finding-id" {
+@test "baseline captured on another line of history is refused (ancestry)" {
 	cd "$TEST_TMP" || return 1
-	run "$SKILL" record-baseline --finding-id ".." --retest-cmd "false"
+	_baseline_t1 || return 1
+	# Tamper the capture sha to a commit that is not an ancestor of HEAD.
+	local f=.claude/.session-state/prove-yourself-baselines/t1.json
+	jq '.sha = "0123456789012345678901234567890123456789"' "$f" >"$f.tmp" || return 1
+	mv "$f.tmp" "$f" || return 1
+	touch fixed
+	_record_fix "bash check.sh" 0
 	[ "$status" -eq 2 ] || return 1
-	[[ $output == *'must not contain'* ]]
+	[[ $output == *'not an ancestor of HEAD'* ]]
+}
+
+@test "corrupt non-integer baseline_rc is refused as malformed" {
+	cd "$TEST_TMP" || return 1
+	_baseline_t1 || return 1
+	local f=.claude/.session-state/prove-yourself-baselines/t1.json
+	jq '.baseline_rc = "abc"' "$f" >"$f.tmp" || return 1
+	mv "$f.tmp" "$f" || return 1
+	touch fixed
+	_record_fix "bash check.sh" 0
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'not a 1-255 integer'* ]]
+}
+
+@test "reset clears un-consumed baselines alongside the record store" {
+	cd "$TEST_TMP" || return 1
+	_baseline_t1 || return 1
+	[ -f .claude/.session-state/prove-yourself-baselines/t1.json ] || return 1
+	run "$SKILL" reset
+	[ "$status" -eq 0 ] || return 1
+	[ ! -f .claude/.session-state/prove-yourself-baselines/t1.json ]
 }
 
 @test "record-fix WITHOUT a baseline is unchanged and stamps baseline_verified false" {
