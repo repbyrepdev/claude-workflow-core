@@ -485,8 +485,28 @@ _baseline_t1() {
 	[ "$(jq -r '.baseline_rc' .claude/.session-state/prove-yourself-baselines/b4.json)" = "127" ]
 }
 
+@test "record-fix still accepts a path-shaped finding-id (no baseline possible)" {
+	# CR-in-CI r1 major: record-baseline refuses slash ids, so record-fix
+	# must treat them as "no pairing" — not hard-refuse ids that
+	# _state_file_for_finding has always slugified legally.
+	cd "$TEST_TMP" || return 1
+	run "$SKILL" record-fix --finding-id "feat/x" --finding-text "slash id" \
+		--fix-summary "s" --retest-cmd "true" --retest-rc 0 \
+		--source phase1 --confidence 5
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'Recorded fix'* ]]
+}
+
+@test "record-baseline answers --help like its siblings" {
+	cd "$TEST_TMP" || return 1
+	run "$SKILL" record-baseline --help
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'record-baseline'* ]]
+}
+
 @test "record-baseline's own deadline kill is refused as evidence" {
 	cd "$TEST_TMP" || return 1
+	_ensure_timeout_on_path
 	run env PROVE_RETEST_TIMEOUT=1 "$SKILL" record-baseline --finding-id b5 --retest-cmd "sleep 5"
 	[ "$status" -eq 1 ] || return 1
 	[[ $output == *'hit the PROVE_RETEST_TIMEOUT deadline'* ]] || return 1

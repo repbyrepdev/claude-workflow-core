@@ -1234,6 +1234,10 @@ cmd_record_baseline() {
 	local finding_id="" finding_text="" retest_cmd="" note="" allow_absence=0
 	while [ $# -gt 0 ]; do
 		case "$1" in
+		-h | --help)
+			print_help
+			exit 0
+			;;
 		--finding-id)
 			[ $# -lt 2 ] && {
 				echo "error: missing value for --finding-id" >&2
@@ -1793,10 +1797,19 @@ cmd_record_fix() {
 	# (records additionally stamp baseline_verified:false) — the #2643
 	# symptom differential remains the before/after path for
 	# already-committed fixes and cycle-critical citations.
-	local _bl_file
-	_bl_file=$(_baseline_file_for_finding "$finding_id")
+	# A path-shaped finding-id CANNOT have a baseline — record-baseline's
+	# writer guard (_baseline_file_for_finding) refuses to create one —
+	# so it means "no pairing", not an error: record-fix and
+	# record-rejection have always accepted such ids by slugifying them
+	# (_state_file_for_finding), and hard-refusing here broke that
+	# contract (CR-in-CI r1 major).
+	local _bl_file=""
+	case "$finding_id" in
+	*/* | *..*) : ;;
+	*) _bl_file=$(_baseline_file_for_finding "$finding_id") ;;
+	esac
 	local _bl_present=false _bl_cmd="" _bl_rc="" _bl_ts="" _bl_sha="" _bl_tail="" _bl_note=""
-	if [ -f "$_bl_file" ]; then
+	if [ -n "$_bl_file" ] && [ -f "$_bl_file" ]; then
 		_bl_present=true
 		# One guard over every field read (phase1 simplifier): the -er
 		# reads sit first so a missing cmd/rc short-circuits, and a jq
