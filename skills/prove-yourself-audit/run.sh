@@ -1837,13 +1837,19 @@ cmd_record_fix() {
 		# session-state file alone is forgeable with a text editor — a
 		# hand-written JSON would earn baseline_verified with no run.
 		# Forging the corroboration means editing a TRACKED file, which
-		# the diff shows. grep prefilters; jq requires kind/id/rc match.
+		# the diff shows. The binding is the FULL captured pair as exact
+		# equality — an rc-only prefix check let an honest throwaway
+		# capture corroborate a file whose retest_cmd was then hand-
+		# edited to the real target (backup review on 11b7e56: rc=1
+		# collides with almost every real failure, so any prior capture
+		# for the id unlocked any command). grep prefilters by id.
 		if ! grep -F "\"finding_id\":\"$finding_id\"" "$AUDIT_FILE" 2>/dev/null |
-			jq -e --arg fid "$finding_id" --arg rc "$_bl_rc" \
+			jq -e --arg fid "$finding_id" \
+				--arg expect "baseline_rc=$_bl_rc retest_cmd=$_bl_cmd" \
 				'select(.kind == "baseline" and .finding_id == $fid) |
-				 select(.finding_text | startswith("baseline_rc=" + $rc + " "))' \
+				 select(.finding_text == $expect)' \
 				>/dev/null 2>&1; then
-			echo "error: the tracked audit ledger has no corroborating baseline row for $finding_id (rc=$_bl_rc) — record-baseline appends one at capture; a session-state file without it is not evidence (#2652)" >&2
+			echo "error: the tracked audit ledger has no corroborating baseline row for $finding_id matching rc=$_bl_rc AND this exact retest command — record-baseline appends the bound pair at capture; a session-state file the ledger does not corroborate is not evidence (#2652)" >&2
 			exit 2
 		fi
 		# The baseline must have been captured on THIS branch's history

@@ -584,6 +584,22 @@ _baseline_t1() {
 	[[ $output == *'malformed'* ]]
 }
 
+@test "cmd-tampered baseline with an honest ledger row is refused (full-pair binding)" {
+	# Backup review on 11b7e56: an rc-only corroboration let an honest
+	# throwaway capture (rc 1) unlock a hand-edited retest_cmd. The
+	# ledger row must match the FULL pair.
+	cd "$TEST_TMP" || return 1
+	_baseline_t1 || return 1
+	local f=.claude/.session-state/prove-yourself-baselines/t1.json
+	jq '.retest_cmd = "true"' "$f" >"$f.tmp" || return 1
+	mv "$f.tmp" "$f" || return 1
+	run "$SKILL" record-fix --finding-id t1 --finding-text "sample finding" \
+		--fix-summary "s" --retest-cmd "true" --retest-rc 0 \
+		--source phase1 --confidence 5
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'no corroborating baseline row'* ]]
+}
+
 @test "hand-forged baseline file without a ledger row is refused" {
 	# phase1 security: the session-state file alone is forgeable; the
 	# tracked ledger must corroborate the capture.
