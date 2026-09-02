@@ -182,11 +182,18 @@ _index_blob() {
 
 # _owned_of <lib-path> — identifiers the lib OWNS: top-level `name()` or
 # `UPPER_CASE=`. The sed classes guarantee ERE-safe output (word chars
-# only), so extracted names can sit inside a grep -E pattern.
+# only), so extracted names can sit inside a grep -E pattern. Memoized in
+# a file-backed cache keyed by the flattened lib path (phase2 CR: layer 1
+# re-derived the same set for every staged consumer), shared by both
+# layers and removed by the EXIT trap.
 _owned_of() {
-	_index_blob "$1" | sed -n \
-		-e 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' \
-		-e 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' | sort -u
+	local _cache="${_OWNED_CACHE_DIR:?}/${1//\//_}"
+	if [ ! -f "$_cache" ]; then
+		_index_blob "$1" | sed -n \
+			-e 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' \
+			-e 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' | sort -u >"$_cache" || exit 2
+	fi
+	cat "$_cache"
 }
 
 # _consumers_of <lib-path> <owned-idents> — tracked .sh files whose INDEX
@@ -245,7 +252,8 @@ _required_tokens_for() {
 
 # ---- staged set (NUL-safe; git rc checked) --------------------------------
 _staged_tmp=$(mktemp -t lcs-staged.XXXXXX) || exit 2
-trap 'rm -f "$_staged_tmp"' EXIT
+_OWNED_CACHE_DIR=$(mktemp -d -t lcs-owned.XXXXXX) || exit 2
+trap 'rm -f "$_staged_tmp"; rm -rf "$_OWNED_CACHE_DIR"' EXIT
 if ! git diff --cached --name-only --no-renames \
 	--diff-filter=ACMR -z -- '*.sh' >"$_staged_tmp"; then
 	echo "lib-consumer-symmetry: git diff --cached failed enumerating staged files" >&2
@@ -360,7 +368,29 @@ done
 # ---- layer 2: guard-token symmetry (#2653) --------------------------------
 while IFS= read -r _lib; do
 	[ -n "$_lib" ] || continue
-	_lib_tracked "$_lib" || continue
+	if ! _lib_tracked "$_lib"; then
+		# Distinguish map drift from a tree that simply never had this
+		# library (phase2 CR): a mapped lib that is GONE while tracked
+		# scripts still mention its basename means the map references a
+		# removed/renamed library — silently skipping would produce a
+		# clean result forever. A layout with no such references (plain
+		# consumer install, unrelated _lib) legitimately no-ops.
+		if [ -n "$_libs" ]; then
+			_drift_rc=0
+			git grep --cached -l --fixed-strings -e "${_lib##*/}" -- '*.sh' \
+				":(exclude,literal)$SELF_PATH" ':(exclude).claude/tests/*' \
+				>/dev/null 2>&1 || _drift_rc=$?
+			if [ "$_drift_rc" -eq 0 ]; then
+				echo "lib-consumer-symmetry: mapped lib $_lib is not tracked but scripts still reference it — _LCS_TOKEN_LIBS references a removed/renamed library, fix the map" >&2
+				exit 2
+			fi
+			if [ "$_drift_rc" -ge 2 ]; then
+				echo "lib-consumer-symmetry: git grep --cached failed (rc $_drift_rc) probing map drift for $_lib" >&2
+				exit 2
+			fi
+		fi
+		continue
+	fi
 	_toks=$(_required_tokens_for "$_lib")
 	if [ -z "$_toks" ]; then
 		echo "lib-consumer-symmetry: mapped lib $_lib has no token set — _LCS_TOKEN_LIBS gained an entry without a _required_tokens_for arm, fix the map" >&2

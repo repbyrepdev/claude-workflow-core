@@ -283,6 +283,24 @@ _stage_tweak() {
 	[[ $output == *'ledger'* ]]
 }
 
+@test "map drift fails closed: mapped lib gone but still referenced exits 2" {
+	_seed_mylib
+	printf '%s\n' '#!/bin/bash' '# migrated off _lib/issue-trailers.sh, ref lingers' >lingering.sh
+	_commit_all lingering || return 1
+	_stage_alpha_edit
+	run bash "$HOOK"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'removed/renamed library'* ]]
+}
+
+@test "unmapped _lib layout with NO reference to the mapped lib stays a no-op" {
+	_seed_mylib
+	_stage_tweak alpha.sh
+	run bash "$HOOK"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'removed/renamed'* ]]
+}
+
 @test "skip is REFUSED (exit 2) when pipeline-skip lib is unreachable" {
 	_seed_mylib
 	mkdir -p "$FIX/lonely" || return 1
