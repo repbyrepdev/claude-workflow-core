@@ -307,3 +307,58 @@ _chk() {
 	[ "$status" -eq 1 ] || return 1
 	[[ $output == *"PARSE error"* ]]
 }
+
+# #2652 dogfood: run the check under the COMMIT GATE's shell contract —
+# pre-commit-hooks/bash4-features-check.sh sets `set -euo pipefail`, and
+# the SIGPIPE class this pins only exists under pipefail (the write-guard
+# runs `set -u` only and never surfaced it; the bats harness does not set
+# pipefail either, which is exactly how the bug hid from a plain _chk
+# call). Content travels via a temp FILE, not argv — Linux caps a single
+# exec argument at MAX_ARG_STRLEN (~128KB), so a ~350KB argv would E2BIG
+# on any Linux runner (phase1 test-analysis).
+_chk_pipefail() {
+	printf '%s' "$1" >"$BATS_TEST_TMPDIR/pf-content" || return 1
+	run bash -c 'set -euo pipefail; . "$1"; bash4_features_check_content chk.sh "$(cat "$2")"' _ \
+		"${BATS_TEST_DIRNAME}/../../../_lib/bash4-features-check.sh" \
+		"$BATS_TEST_TMPDIR/pf-content"
+}
+
+# _big_body <shebang> [early-line] [tail-line] — ~350KB of content with a
+# feature optionally placed before or after the buffer-pressure filler.
+# One home for the 10000-line constant (phase1 simplifier).
+_big_body() {
+	awk -v sb="$1" -v early="${2:-}" -v tl="${3:-}" \
+		'BEGIN{print sb; if (early != "") print early; for (i = 0; i < 10000; i++) print "echo filler line for buffer pressure"; if (tl != "") print tl}'
+}
+
+@test "large content does not SIGPIPE shebang extraction into a spurious BLOCK" {
+	# `printf | head -1` under the commit gate's pipefail broke on blobs
+	# past the pipe buffer; a ~350KB safe-shebang file must pass.
+	local big
+	big=$(_big_body '#!/usr/bin/env bash')
+	_chk_pipefail "$big"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'cannot extract shebang'* ]]
+}
+
+@test "large bin-bash content still detects its bash-4 feature at the tail" {
+	local big
+	big=$(_big_body '#!/bin/bash' '' 'declare -A m=()')
+	_chk_pipefail "$big"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *'declare -A'* ]]
+}
+
+@test "feature EARLY in large content is a finding, not a detector error" {
+	# The same SIGPIPE class one function over (#2652 phase1,
+	# live-probed): grep -Eq exits on its first match, so an EARLY match
+	# SIGPIPE'd _b4_hit's printf and the rc-141 fail-closed turned a
+	# real finding into 'detector errored'. The tail-placement test
+	# above cannot catch this — grep reaches EOF there.
+	local big
+	big=$(_big_body '#!/bin/bash' 'declare -A m=()')
+	_chk_pipefail "$big"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *'declare -A'* ]] || return 1
+	[[ $output != *'detector errored'* ]]
+}
