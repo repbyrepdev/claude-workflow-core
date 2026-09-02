@@ -99,10 +99,18 @@ bash4_features_skip_basename() {
 # check (#2645 r1 simplifier — the duplicated case pattern was the same
 # drift class that produced bash4_features_exempt_path).
 bash4_features_unsafe_shebang() {
+	# Whitespace-robust (CR #2649): `#! /bin/bash`, tab-separated args, and
+	# trailing blanks are the same interpreter; the old exact-prefix match
+	# failed OPEN on them. Parse: strip `#!`, word-split, compare the first
+	# token exactly — `/opt/homebrew/bin/bash` and `/usr/bin/env bash`
+	# never equal `/bin/bash`, so safe interpreters cannot false-match.
 	case "${1:-}" in
-	"#!/bin/bash" | "#!/bin/bash "*) return 0 ;;
+	"#!"*) ;;
+	*) return 1 ;;
 	esac
-	return 1
+	# shellcheck disable=SC2086  # deliberate word-split: first token = interpreter path
+	set -- ${1#"#!"}
+	[ "${1:-}" = "/bin/bash" ]
 }
 
 # _b4_hit <body> <regex> — grep -Eq wrapper that separates "no match" from
@@ -173,7 +181,7 @@ bash4_features_check_content() {
 	# key (typo insurance). The key vocabulary lives in $_B4_WAIVER_KEYS —
 	# one definition. A waiver is for a use that is guarded, degradation-
 	# documented, and genuinely needed — not a convenience escape.
-	if _b4_hit "$body" "${_B4_PRE}(mapfile|readarray)[[:space:]]+-[a-z]*d[a-z]*\b" && ! _b4_waived "$content" mapfile-d; then
+	if _b4_hit "$body" "${_B4_PRE}(mapfile|readarray)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[a-z]*d[a-z]*\b" && ! _b4_waived "$content" mapfile-d; then
 		findings="${findings:+$findings
 }  - mapfile -d / readarray -d (bash 4.4) — CR autofix favorite, silently fails on /bin/bash 3.2"
 	fi
@@ -251,7 +259,15 @@ bash4_features_check_content() {
 	# not silently fail to suppress (the operator believes they are covered),
 	# and a reasonless waiver is an unaudited bypass. Scans the ORIGINAL
 	# content (waivers live on comment lines, which $body no longer has).
-	local _wline _wkey
+	# Materialized first (CR #2649): in the old `done < <(... grep ...)`
+	# form this was the one detector-path grep whose rc >= 2 escaped
+	# set -e AND the _B4_TOOL_ERR accumulator — a grep failure silently
+	# skipped malformed-waiver reporting. rc 1 (no waiver lines) is normal.
+	local _wline _wkey _wlines="" _wrc=0
+	_wlines=$(printf '%s' "$content" | grep -E '^[[:space:]]*#[[:space:]]*bash4-waiver:') || _wrc=$?
+	if [ "$_wrc" -ge 2 ]; then
+		_B4_TOOL_ERR="grep rc=$_wrc scanning bash4-waiver lines"
+	fi
 	while IFS= read -r _wline; do
 		[ -n "$_wline" ] || continue
 		_wkey=$(printf '%s' "$_wline" | sed -E 's/^[[:space:]]*#[[:space:]]*bash4-waiver:[[:space:]]*//; s/[[:space:]].*$//')
@@ -268,7 +284,7 @@ bash4_features_check_content() {
 }  - unknown bash4-waiver key '${_wkey}' — valid keys: ${_B4_WAIVER_KEYS}"
 			;;
 		esac
-	done < <(printf '%s' "$content" | grep -E '^[[:space:]]*#[[:space:]]*bash4-waiver:' 2>/dev/null)
+	done <<<"$_wlines"
 	# A detector-tool failure is a BLOCK, not a clean bill (#2645 r1): with
 	# grep erroring, "no features found" is exactly what we cannot claim.
 	if [ -n "$_B4_TOOL_ERR" ]; then

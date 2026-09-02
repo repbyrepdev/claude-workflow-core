@@ -85,14 +85,23 @@ if [ -f "$FILE_PATH" ] && [ "$TOOL" != "Write" ]; then
 	RECONSTRUCTED="$DISK_CONTENT"
 	while IFS= read -r _edit; do
 		[ -n "$_edit" ] || continue
-		_old=$(printf '%s' "$_edit" | jq -r '.old_string // ""')
-		_new=$(printf '%s' "$_edit" | jq -r '.new_string // ""')
-		_all=$(printf '%s' "$_edit" | jq -r '.replace_all // false')
+		# Per-edit jq extraction follows the file's uniform fail-closed
+		# contract (CR #2649): a jq failure mid-reconstruction would
+		# otherwise yield a partial reconstruction scanned as truth.
+		if ! _old=$(printf '%s' "$_edit" | jq -r '.old_string // ""'); then
+			hook_deny "bash4-features-write-guard" "jq failed extracting old_string during reconstruction — failing closed"
+		fi
+		if ! _new=$(printf '%s' "$_edit" | jq -r '.new_string // ""'); then
+			hook_deny "bash4-features-write-guard" "jq failed extracting new_string during reconstruction — failing closed"
+		fi
+		if ! _all=$(printf '%s' "$_edit" | jq -r '.replace_all // false'); then
+			hook_deny "bash4-features-write-guard" "jq failed extracting replace_all during reconstruction — failing closed"
+		fi
 		[ -n "$_old" ] || continue
 		if [ "$_all" = "true" ]; then
-			RECONSTRUCTED="${RECONSTRUCTED//"$_old"/$_new}"
+			RECONSTRUCTED="${RECONSTRUCTED//"$_old"/"$_new"}"
 		else
-			RECONSTRUCTED="${RECONSTRUCTED/"$_old"/$_new}"
+			RECONSTRUCTED="${RECONSTRUCTED/"$_old"/"$_new"}"
 		fi
 	done <<<"$_edits"
 fi

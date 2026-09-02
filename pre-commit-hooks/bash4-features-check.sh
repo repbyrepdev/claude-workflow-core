@@ -43,6 +43,15 @@ _b4_staged="$(mktemp "${TMPDIR:-/tmp}/bash4-staged.XXXXXX")" || {
 	echo "BLOCK: mktemp failed — cannot enumerate staged files (failing closed)" >&2
 	exit 1
 }
+# The stderr capture is ALSO mktemp-created (CR #2649): "$_b4_staged.err"
+# was a derived, predictable name — not atomically created — so a
+# pre-planted file/symlink at that path in a shared TMPDIR could be
+# followed. Both files now come from mktemp.
+_b4_staged_err="$(mktemp "${TMPDIR:-/tmp}/bash4-staged-err.XXXXXX")" || {
+	echo "BLOCK: mktemp failed — cannot capture git stderr (failing closed)" >&2
+	rm -f "$_b4_staged"
+	exit 1
+}
 # stderr goes to its OWN file (#2645 r1 security): merged into the -z
 # stream, an rc-0 git warning (fsmonitor, .gitattributes) becomes part of
 # the first NUL record and silently unscans that file.
@@ -50,13 +59,13 @@ _b4_staged="$(mktemp "${TMPDIR:-/tmp}/bash4-staged.XXXXXX")" || {
 # status R — outside the AM filter — so `git mv bad.sh new.sh` (or a
 # delete+add git chooses to pair) would land its destination UNSCANNED.
 # Disabling detection surfaces the destination as a plain A.
-if ! git diff --cached --name-only --no-renames --diff-filter=AM -z >"$_b4_staged" 2>"$_b4_staged.err"; then
+if ! git diff --cached --name-only --no-renames --diff-filter=AM -z >"$_b4_staged" 2>"$_b4_staged_err"; then
 	echo "BLOCK: git diff --cached failed — cannot enumerate staged files (failing closed):" >&2
-	cat "$_b4_staged.err" >&2
-	rm -f "$_b4_staged" "$_b4_staged.err"
+	cat "$_b4_staged_err" >&2
+	rm -f "$_b4_staged" "$_b4_staged_err"
 	exit 1
 fi
-[ -s "$_b4_staged.err" ] && cat "$_b4_staged.err" >&2
+[ -s "$_b4_staged_err" ] && cat "$_b4_staged_err" >&2
 errs=0
 while IFS= read -r -d '' f; do
 	[ -n "$f" ] || continue
@@ -86,7 +95,7 @@ while IFS= read -r -d '' f; do
 	fi
 	bash4_features_check_content "$f" "$_b4_blob" || errs=$((errs + 1))
 done <"$_b4_staged"
-rm -f "$_b4_staged" "$_b4_staged.err"
+rm -f "$_b4_staged" "$_b4_staged_err"
 
 # Fail-closed (#2235 CR): exit 1 on ANY failure (not the raw count — a count
 # >255 would wrap to 0 = silent pass; codes 2+ also collide with usage-error

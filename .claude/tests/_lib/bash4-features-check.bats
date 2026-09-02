@@ -42,6 +42,23 @@ _chk() {
 	[[ $output == *"mapfile -d"* ]]
 }
 
+@test "mapfile -t -d with split flag clusters flags (#2649)" {
+	run _chk $'#!/bin/bash\nmapfile -t -d "" arr < x'
+	[ "$status" -eq 1 ]
+	[[ $output == *"mapfile -d"* ]]
+}
+
+@test "whitespace shebang variants are still unsafe; safe interpreters never match (#2649)" {
+	run _chk $'#! /bin/bash\ndeclare -A m'
+	[ "$status" -eq 1 ] || return 1
+	run _chk $'#!/bin/bash \t\ndeclare -A m'
+	[ "$status" -eq 1 ] || return 1
+	run bash4_features_unsafe_shebang '#!/opt/homebrew/bin/bash'
+	[ "$status" -eq 1 ] || return 1
+	run bash4_features_unsafe_shebang '#!/usr/bin/env bash'
+	[ "$status" -eq 1 ]
+}
+
 @test "declare -A flags (bash 4.0)" {
 	run _chk $'#!/bin/bash\ndeclare -A map'
 	[ "$status" -eq 1 ]
