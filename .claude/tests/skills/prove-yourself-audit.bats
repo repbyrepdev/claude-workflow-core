@@ -491,7 +491,38 @@ _write_flip_check() {
 	f=$(ls .claude/.session-state/prove-yourself/*.json)
 	[ "$(jq -r '.decision_data.baseline_verified' "$f")" = "true" ] || return 1
 	[ "$(jq -r '.decision_data.baseline_rc' "$f")" = "1" ] || return 1
-	[ "$(jq -r '.decision_data.retest_actual_rc' "$f")" = "0" ]
+	[ "$(jq -r '.decision_data.retest_actual_rc' "$f")" = "0" ] || return 1
+	# Provenance fields stamped with real content, not nulls (phase0.5).
+	[ "$(jq -r '.decision_data.baseline_ts' "$f")" != "null" ] || return 1
+	[ "$(jq -r '.decision_data.baseline_sha' "$f")" != "null" ]
+}
+
+@test "record-fix refuses a MALFORMED baseline file instead of pairing garbage" {
+	cd "$TEST_TMP" || return 1
+	_write_flip_check
+	mkdir -p .claude/.session-state/prove-yourself-baselines || return 1
+	echo "not json" >.claude/.session-state/prove-yourself-baselines/t1.json
+	touch fixed
+	_record_fix "bash check.sh" 0
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'malformed'* ]]
+}
+
+@test "record-baseline refuses missing required args" {
+	cd "$TEST_TMP" || return 1
+	run "$SKILL" record-baseline --retest-cmd "false"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'--finding-id is required'* ]] || return 1
+	run "$SKILL" record-baseline --finding-id b3
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'--retest-cmd is required'* ]]
+}
+
+@test "record-baseline refuses a bare dot-dot finding-id" {
+	cd "$TEST_TMP" || return 1
+	run "$SKILL" record-baseline --finding-id ".." --retest-cmd "false"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'must not contain'* ]]
 }
 
 @test "record-fix WITHOUT a baseline is unchanged and stamps baseline_verified false" {

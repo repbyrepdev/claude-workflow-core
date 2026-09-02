@@ -1134,6 +1134,54 @@ _prove_symptom_run_baseline() {
 	return 0
 }
 
+# (#2652 phase0.5) ONE re-execution engine for every live evidence run —
+# the retest and the pre-fix baseline — so the #2562 deadline contract
+# cannot drift between call sites (real run, real deadline, fail-closed
+# without a timeout binary, a deadline kill is never evidence). The #2643
+# symptom halves keep their own runner: the baseline half executes in a
+# worktree with different cwd/timeout semantics.
+# _evidence_reexec <cmd> <announce-prefix> <noun>
+#   Runs <cmd> at $REPO_ROOT under PROVE_RETEST_TIMEOUT. Sets _REEXEC_RC
+#   (observed rc) + _REEXEC_TAIL (last 800 bytes of combined output).
+#   Exits 1 on machinery failure (mktemp, no timeout binary without the
+#   explicit seam, our own deadline kill).
+_REEXEC_RC=0
+_REEXEC_TAIL=""
+_evidence_reexec() {
+	local _cmd="$1" _announce="$2" _noun="$3"
+	local _tmo="${PROVE_RETEST_TIMEOUT:-120}"
+	if ! [[ $_tmo =~ ^[1-9][0-9]*$ ]]; then
+		echo "WARN: PROVE_RETEST_TIMEOUT='$_tmo' is not a positive integer — using 120" >&2
+		_tmo=120
+	fi
+	local _out _t0 _elapsed
+	_REEXEC_RC=0
+	_out=$(mktemp) || {
+		echo "error: mktemp failed for $_noun output capture" >&2
+		exit 1
+	}
+	echo "$_announce (timeout ${_tmo}s): $_cmd" >&2
+	_t0=$SECONDS
+	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
+		(cd "$REPO_ROOT" && timeout "$_tmo" bash -c "$_cmd") >"$_out" 2>&1 || _REEXEC_RC=$?
+	elif [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
+		echo "WARN: PROVE_RETEST_NO_TIMEOUT=1 — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED for this $_noun run (a hung command must be interrupted manually)" >&2
+		(cd "$REPO_ROOT" && bash -c "$_cmd") >"$_out" 2>&1 || _REEXEC_RC=$?
+	else
+		echo "error: no timeout binary on PATH — refusing to run $_noun evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2562)" >&2
+		rm -f "$_out"
+		exit 1
+	fi
+	_elapsed=$((SECONDS - _t0))
+	if [ "$_REEXEC_RC" -eq 124 ] && [ "$_elapsed" -ge "$_tmo" ]; then
+		echo "error: $_noun hit the PROVE_RETEST_TIMEOUT deadline (${_elapsed}s >= ${_tmo}s) — a deadline kill is never valid evidence, regardless of the claimed rc; raise PROVE_RETEST_TIMEOUT if the evidence genuinely needs longer (#2562)" >&2
+		rm -f "$_out"
+		exit 1
+	fi
+	_REEXEC_TAIL=$(tail -c 800 "$_out" 2>/dev/null || true)
+	rm -f "$_out"
+}
+
 # (#2652) PRE-FIX BASELINE — the missing half of #2562's "evidence is a
 # run". record-fix re-executes the retest AFTER the fix, which proves the
 # suite passes but not that the bug was ever present; the #2643 symptom
@@ -1198,46 +1246,17 @@ cmd_record_baseline() {
 		;;
 	esac
 
-	# Same re-execution contract as record-fix's retest (#2562): a real
-	# run, a real deadline, fail-closed when no timeout binary exists, and
-	# a deadline kill is never evidence.
-	local _bl_timeout="${PROVE_RETEST_TIMEOUT:-120}"
-	if ! [[ $_bl_timeout =~ ^[1-9][0-9]*$ ]]; then
-		echo "WARN: PROVE_RETEST_TIMEOUT='$_bl_timeout' is not a positive integer — using 120" >&2
-		_bl_timeout=120
-	fi
-	local _bl_out _bl_actual_rc=0 _bl_t0 _bl_elapsed
-	_bl_out=$(mktemp) || {
-		echo "error: mktemp failed for baseline output capture" >&2
-		exit 1
-	}
-	echo "record-baseline: re-executing pre-fix evidence (timeout ${_bl_timeout}s): $retest_cmd" >&2
-	_bl_t0=$SECONDS
-	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
-		(cd "$REPO_ROOT" && timeout "$_bl_timeout" bash -c "$retest_cmd") >"$_bl_out" 2>&1 || _bl_actual_rc=$?
-	elif [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
-		echo "WARN: PROVE_RETEST_NO_TIMEOUT=1 — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED for this baseline (a hung run must be interrupted manually)" >&2
-		(cd "$REPO_ROOT" && bash -c "$retest_cmd") >"$_bl_out" 2>&1 || _bl_actual_rc=$?
-	else
-		echo "error: no timeout binary on PATH — refusing to run baseline evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2652)" >&2
-		rm -f "$_bl_out"
-		exit 1
-	fi
-	_bl_elapsed=$((SECONDS - _bl_t0))
-	if [ "$_bl_actual_rc" -eq 124 ] && [ "$_bl_elapsed" -ge "$_bl_timeout" ]; then
-		echo "error: baseline hit the PROVE_RETEST_TIMEOUT deadline (${_bl_elapsed}s >= ${_bl_timeout}s) — a deadline kill is never valid evidence; raise PROVE_RETEST_TIMEOUT if the run genuinely needs longer (#2652)" >&2
-		rm -f "$_bl_out"
-		exit 1
-	fi
+	# The shared #2562 engine: real run, real deadline, fail-closed when
+	# no timeout binary exists, a deadline kill is never evidence.
+	_evidence_reexec "$retest_cmd" "record-baseline: re-executing pre-fix evidence" "baseline"
+	local _bl_actual_rc="$_REEXEC_RC"
 	if [ "$_bl_actual_rc" -eq 0 ]; then
 		echo "error: baseline run PASSED (rc 0) — no symptom demonstrated, so there is nothing for the fix to flip; a baseline must show the bug (#2652)." >&2
 		echo "  If the symptom is a WRONG success (the command should fail and does not), encode the expected rcs explicitly via record-fix's --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc instead." >&2
-		rm -f "$_bl_out"
 		exit 1
 	fi
 	local _bl_tail _bl_sha _bl_ts
-	_bl_tail=$(tail -c 800 "$_bl_out" 2>/dev/null || true)
-	rm -f "$_bl_out"
+	_bl_tail="$_REEXEC_TAIL"
 	_bl_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
 	_bl_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -1703,9 +1722,15 @@ cmd_record_fix() {
 			echo "error: baseline record $_bl_file is malformed — re-capture with record-baseline or remove it (#2652)" >&2
 			exit 2
 		fi
-		_bl_ts=$(jq -r '.ts // ""' "$_bl_file" 2>/dev/null || true)
-		_bl_sha=$(jq -r '.sha // ""' "$_bl_file" 2>/dev/null || true)
-		_bl_tail=$(jq -r '.output_tail // ""' "$_bl_file" 2>/dev/null || true)
+		# Same hard-fail as the cmd/rc reads above (phase0.5: `|| true`
+		# here silently degraded the provenance fields to empty strings
+		# on a corrupt record while the reads two lines up refuse).
+		if ! _bl_ts=$(jq -r '.ts // ""' "$_bl_file" 2>/dev/null) ||
+			! _bl_sha=$(jq -r '.sha // ""' "$_bl_file" 2>/dev/null) ||
+			! _bl_tail=$(jq -r '.output_tail // ""' "$_bl_file" 2>/dev/null); then
+			echo "error: baseline record $_bl_file is malformed (provenance fields unreadable) — re-capture with record-baseline or remove it (#2652)" >&2
+			exit 2
+		fi
 		if [ "$_bl_cmd" != "$retest_cmd" ]; then
 			echo "error: BASELINE MISMATCH — record-baseline for $finding_id captured:" >&2
 			echo "    $_bl_cmd" >&2
@@ -1855,65 +1880,22 @@ cmd_record_fix() {
 	#     (a test/check invocation — which is what retest evidence is).
 	#     A claimed NONZERO rc is legitimate evidence ("the gate refuses
 	#     with rc 1" proves enforcement) — the contract is match, not zero.
-	local _retest_timeout="${PROVE_RETEST_TIMEOUT:-120}"
-	if ! [[ $_retest_timeout =~ ^[1-9][0-9]*$ ]]; then
-		echo "WARN: PROVE_RETEST_TIMEOUT='$_retest_timeout' is not a positive integer — using 120" >&2
-		_retest_timeout=120
-	fi
-	local _retest_out _retest_actual_rc=0 _retest_t0 _retest_elapsed
-	_retest_out=$(mktemp) || {
-		echo "error: mktemp failed for retest output capture" >&2
-		exit 1
-	}
-	echo "record-fix: re-executing retest evidence (timeout ${_retest_timeout}s): $retest_cmd" >&2
-	# p1r1: anchor the retest at $REPO_ROOT — every other path in this file
-	# resolves against it, and a repo-relative command (which the critical-
-	# path rule REQUIRES) would fail rc=127 from a subdirectory and surface
-	# as a bogus EVIDENCE MISMATCH.
-	_retest_t0=$SECONDS
-	# p2-ci-r1: PROVE_RETEST_NO_TIMEOUT=1 forces the unbounded branch —
-	# a deterministic seam so the fallback has real coverage on hosts
-	# WITH a timeout binary (PATH surgery in tests was host-dependent and
-	# silently skipped on exactly the CI hosts that have coreutils).
-	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
-		(cd "$REPO_ROOT" && timeout "$_retest_timeout" bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
-	elif [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
-		# The EXPLICIT unbounded seam (tests + operators who accept the
-		# risk). WARN so the transcript shows the deadline was off.
-		echo "WARN: PROVE_RETEST_NO_TIMEOUT=1 — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED for this record (a hung retest must be interrupted manually)" >&2
-		(cd "$REPO_ROOT" && bash -c "$retest_cmd") >"$_retest_out" 2>&1 || _retest_actual_rc=$?
-	else
-		# p2-cap residual (CR major): FAIL CLOSED, don't silently run
-		# unbounded. A host without a timeout binary gets no deadline
-		# enforcement at all — the deadline-launder guard below would be
-		# theater. Refuse with the remedy; the explicit seam above is the
-		# only sanctioned unbounded path.
-		echo "error: no timeout binary on PATH — refusing to run retest evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2562)" >&2
-		rm -f "$_retest_out"
-		exit 1
-	fi
-	_retest_elapsed=$((SECONDS - _retest_t0))
-	# p2r1 (CR major): a DEADLINE kill is never valid evidence — even when
-	# --retest-rc claims 124. The old exemption (claimed-124 passes) was
-	# launderable: claim 124, supply a hanging command, and the wrapper's
-	# own kill produces a matching 124 that proves nothing. Distinguish
-	# the wrapper's deadline from a child's own fast inner timeout by
-	# elapsed time: rc 124 at-or-past the deadline is OURS — refuse.
-	if [ "$_retest_actual_rc" -eq 124 ] && [ "$_retest_elapsed" -ge "$_retest_timeout" ]; then
-		echo "error: retest hit the PROVE_RETEST_TIMEOUT deadline (${_retest_elapsed}s >= ${_retest_timeout}s) — a deadline kill is never valid evidence, regardless of the claimed rc; raise PROVE_RETEST_TIMEOUT if the evidence genuinely needs longer (#2562)" >&2
-		rm -f "$_retest_out"
-		exit 1
-	fi
+	# (#2652 phase0.5) The machinery lives in _evidence_reexec — ONE
+	# implementation of the #2562 contract (timeout validation, the
+	# explicit PROVE_RETEST_NO_TIMEOUT seam, fail-closed without a
+	# timeout binary, the deadline-kill refusal) shared with
+	# record-baseline. The retest anchors at $REPO_ROOT there (p1r1: a
+	# repo-relative command — which the critical-path rule REQUIRES —
+	# would fail rc=127 from a subdirectory and surface as a bogus
+	# EVIDENCE MISMATCH).
+	_evidence_reexec "$retest_cmd" "record-fix: re-executing retest evidence" "retest"
+	local _retest_actual_rc="$_REEXEC_RC" _retest_tail="$_REEXEC_TAIL"
 	if [ "$_retest_actual_rc" -ne "$retest_rc" ]; then
 		echo "error: EVIDENCE MISMATCH — retest command exited rc=$_retest_actual_rc but --retest-rc claims $retest_rc; refusing the record (#2562)" >&2
 		echo "  last output:" >&2
-		tail -c 400 "$_retest_out" | sed 's/^/    /' >&2 || true
-		rm -f "$_retest_out"
+		printf '%s' "$_retest_tail" | tail -c 400 | sed 's/^/    /' >&2 || true
 		exit 1
 	fi
-	local _retest_tail
-	_retest_tail=$(tail -c 800 "$_retest_out" 2>/dev/null || true)
-	rm -f "$_retest_out"
 
 	# ---- (#2643) DIFFERENTIAL SYMPTOM EVIDENCE ------------------------
 	#

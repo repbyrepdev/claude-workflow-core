@@ -334,3 +334,10 @@ _chk_pipefail() {
 	[ "$status" -eq 1 ] || return 1
 	[[ $output == *'declare -A'* ]]
 }
+
+@test "single-line content with no trailing newline parses its shebang (parity)" {
+	# phase0.5 #2652: the expansion-based extraction must treat a
+	# newline-less one-line file as its own first line, like head did.
+	run _chk '#!/bin/bash'
+	[ "$status" -eq 0 ]
+}
