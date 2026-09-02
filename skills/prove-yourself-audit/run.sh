@@ -1008,14 +1008,22 @@ _prove_symptom_run_baseline() {
 	# differential for a file that was never copied. Untracked .bats files
 	# are enumerated separately and appended.
 	local _bats_list _bats_untracked _bats_rc=0
-	_bats_list=$(git -C "$REPO_ROOT" diff --name-only "$ref" -- '*.bats') || _bats_rc=$?
+	# -c core.quotePath=false: with the default, a path containing a
+	# non-ASCII byte is printed QUOTED and C-escaped ("tests/caf\303\251.bats").
+	# That string does not exist on disk, so the loop below took its
+	# not-found branch and skipped the file — the baseline then ran without
+	# the very test meant to detect the bug, which is the fail-open the
+	# fatal-copy rule exists to prevent. An earlier comment claimed the
+	# not-a-regular-file refusal caught this; it does not, because the
+	# does-not-exist check is evaluated first.
+	_bats_list=$(git -C "$REPO_ROOT" -c core.quotePath=false diff --name-only "$ref" -- '*.bats') || _bats_rc=$?
 	if [ "$_bats_rc" -ne 0 ]; then
 		echo "error: could not list changed .bats files against '$ref' (rc=$_bats_rc) — refusing rather than running a baseline that silently omits the new tests" >&2
 		_prove_symptom_wt_cleanup
 		return 2
 	fi
 	_bats_rc=0
-	_bats_untracked=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard -- '*.bats') || _bats_rc=$?
+	_bats_untracked=$(git -C "$REPO_ROOT" -c core.quotePath=false ls-files --others --exclude-standard -- '*.bats') || _bats_rc=$?
 	if [ "$_bats_rc" -ne 0 ]; then
 		echo "error: could not list untracked .bats files (rc=$_bats_rc) — refusing rather than running a baseline that silently omits a brand-new test file" >&2
 		_prove_symptom_wt_cleanup
@@ -1035,7 +1043,7 @@ $_bats_untracked"
 		# A path git listed that does not EXIST was deleted in this tree —
 		# there is nothing to copy and nothing is lost, so skip it. But a
 		# path that exists and is NOT a regular file (a directory, a broken
-		# symlink, a name mangled by core.quotePath) was silently skipped
+		# symlink) was silently skipped
 		# by the old bare `[ -f ] || continue`, which is the same "run the
 		# baseline without the test" outcome the fatal-copy rule below
 		# exists to prevent — just reached by a different door.
@@ -2135,19 +2143,29 @@ cmd_audit() {
 	local unproven=0 _af _fields _sv _scmd _sb _sf
 	for _af in "$STATE_DIR"/*.json; do
 		[ -f "$_af" ] || continue
+		# NO EMPTY FIELDS and NO FREE TEXT. Tab is IFS whitespace, so
+		# `IFS=<tab> read` collapses runs of tabs and drops leading and
+		# trailing ones: five fields with an empty one in the middle
+		# arrived as three. The old read still counted correctly only
+		# because the shift was leftward — right by accident.
+		#
+		# So: every field is a scalar that can never be empty (missing
+		# becomes "-"), and symptom_cmd is reduced to a BOOLEAN here since
+		# only its presence matters. That also removes the one field that
+		# could contain a tab or a newline of its own.
 		_fields=$(jq -r '
-			[ (.kind // ""),
+			[ (.kind // "-"),
 			  (.decision_data.symptom_verified // false | tostring),
-			  (.decision_data.symptom_cmd // ""),
-			  (.decision_data.symptom_baseline_rc // "" | tostring),
-			  (.decision_data.symptom_fixed_rc // "" | tostring)
+			  ((.decision_data.symptom_cmd // "") | length > 0 | tostring),
+			  ((.decision_data.symptom_baseline_rc // "-") | tostring),
+			  ((.decision_data.symptom_fixed_rc // "-") | tostring)
 			] | @tsv' "$_af" 2>/dev/null) || continue
 		IFS=$(printf '\t') read -r _kind _sv _scmd _sb _sf <<EOF
 $_fields
 EOF
 		[ "$_kind" = "fix" ] || continue
-		if [ "$_sv" = "true" ] && [ -n "$_scmd" ] &&
-			[ -n "$_sb" ] && [ -n "$_sf" ] && [ "$_sb" != "$_sf" ]; then
+		if [ "$_sv" = "true" ] && [ "$_scmd" = "true" ] &&
+			[ "$_sb" != "-" ] && [ "$_sf" != "-" ] && [ "$_sb" != "$_sf" ]; then
 			continue
 		fi
 		unproven=$((unproven + 1))

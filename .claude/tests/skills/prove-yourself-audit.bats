@@ -75,7 +75,7 @@ _record_fix() {
 	# matches `/`, so the extra arms were the same pattern written three
 	# times. Every fixture in this file that cites a cycle-critical path
 	# cites hooks/x.sh.
-	*hooks/*.sh | *_lib/*.sh)
+	*hooks/*.sh)
 		sym=(--symptom-cmd "bash hooks/x.sh" --symptom-baseline-rc 127
 			--symptom-fixed-rc 0 --allow-absence-baseline)
 		;;

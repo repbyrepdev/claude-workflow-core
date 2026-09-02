@@ -224,6 +224,13 @@ _base_args() {
 		--cited-files scripts/new.sh --retest-cmd 'bash scripts/new.sh' --retest-rc 0 \
 		--symptom-cmd 'bash scripts/new.sh' --symptom-baseline-rc 127 --symptom-fixed-rc 0 \
 		--allow-absence-baseline"
+	# Status FIRST. An absence-only assertion passes when record-fix aborts
+	# for any unrelated reason — this file names that shape elsewhere as
+	# "the check below would be vacuous", and then had it here.
+	[ "$status" -eq 0 ] || {
+		echo "the untracked-file run failed for another reason, so the absence check below proves nothing: $output"
+		return 1
+	}
 	[[ $output != *"no cited file differs from HEAD"* ]] || {
 		echo "an untracked new file was mistaken for an already-committed fix: $output"
 		return 1
@@ -860,6 +867,13 @@ JSON
 		--finding-id t --finding-text t --fix-summary t \
 		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
 		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	# The fallback exists so a typo'd timeout cannot mean "no deadline" —
+	# so the run must SUCCEED, not merely emit the right words on its way
+	# to failing for some other reason.
+	[ "$status" -eq 0 ] || {
+		echo "a bad timeout broke the run instead of falling back: $output"
+		return 1
+	}
 	[[ $output == *"PROVE_RETEST_TIMEOUT='notanumber'"* ]] || {
 		echo "the WARN blames the wrong variable: $output"
 		return 1

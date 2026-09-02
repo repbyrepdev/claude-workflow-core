@@ -151,7 +151,10 @@ _stage_findings_count() {
 			printf 'unknown\n'
 			return 2
 		}
-		if ! jq -r 'select(.phase==1 and .round!=null) | .round' "$log" >"$_sf_out" 2>/dev/null; then
+		# `-R 'fromjson?'` like the phase0.5 arm: ONE truncated line in an
+		# append-only log must not poison the whole read. A wholly corrupt
+		# log is still caught by _stage_findings_log_usable above.
+		if ! jq -r -R 'fromjson? | select(.phase==1 and .round!=null) | .round' "$log" >"$_sf_out" 2>/dev/null; then
 			rm -f "$_sf_out"
 			printf 'unknown\n'
 			return 2
@@ -162,8 +165,8 @@ _stage_findings_count() {
 			printf '0\n'
 			return 0
 		fi
-		if ! jq -r --arg r "$latest" \
-			'select(.phase==1 and (.round|tostring)==$r) | (.findings // 0)' \
+		if ! jq -r -R --arg r "$latest" \
+			'fromjson? | select(.phase==1 and (.round|tostring)==$r) | (.findings // 0)' \
 			"$log" >"$_sf_out" 2>/dev/null; then
 			rm -f "$_sf_out"
 			printf 'unknown\n'
@@ -191,23 +194,41 @@ _stage_findings_count() {
 			return 2
 		}
 		short=$(printf '%s' "$sha" | cut -c1-7)
-		# `jq -rs` here is the whole command, so its status IS the
-		# substitution's — no pipeline to mask it. Kept explicit anyway.
-		# NEWEST row first, THEN judge it — not "filter, then take the
-		# last survivor". Filtering first skips a newest partial/timed-out
-		# row and reports an older clean count for a sha whose most recent
+		# NEWEST row first, THEN judge it — not "filter, then take the last
+		# survivor". Filtering first skips a newest partial/timed-out row
+		# and reports an older clean count for a sha whose most recent
 		# review did not finish: #2544's laundering, inverted. A rejected
-		# newest row is 0 findings SEEN, which is what the caller must act
-		# on. Mirrors _lib/cr-phase2-coverage.sh.
+		# newest row means 0 findings SEEN, which the caller must act on.
+		# Mirrors _lib/cr-phase2-coverage.sh.
+		#
+		# TWO STAGES, and the second reads STDIN. Written as one pipeline
+		# where the second jq ALSO took "$log" as a file argument, it
+		# re-parsed the raw log including the bad line the first stage
+		# exists to drop — so under pipefail the arm returned `unknown` for
+		# every sha. My own reconciliation gate refused the next record
+		# because of it, which is the only reason it surfaced. `-e` is off
+		# for the tail so a legitimate 0 is not read as failure.
+		local _sf_clean
+		_sf_clean=$(mktemp -t sf-cr.XXXXXX) || {
+			printf 'unknown\n'
+			return 2
+		}
+		if ! jq -r -R 'fromjson?' "$log" >"$_sf_clean" 2>/dev/null; then
+			rm -f "$_sf_clean"
+			printf 'unknown\n'
+			return 2
+		fi
 		n=$(jq -rs --arg s "$short" '
 			[ .[] | select((.sha // "") == $s) ] | last
 			| if . == null then 0
 			  elif ((.partial // false) == true or (.timeout // false) == true) then "unknown"
 			  else (.findings // 0) end
-		' "$log" 2>/dev/null) || {
+		' <"$_sf_clean" 2>/dev/null) || {
+			rm -f "$_sf_clean"
 			printf 'unknown\n'
 			return 2
 		}
+		rm -f "$_sf_clean"
 		# A partial/timed-out NEWEST run is not 0 and not the previous
 		# run's number: it is genuinely unknown. Returning the older count
 		# would answer a question about a review that has since been

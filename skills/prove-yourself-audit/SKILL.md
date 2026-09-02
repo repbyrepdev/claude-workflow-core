@@ -143,6 +143,7 @@ cited.
 Treat it as a floor that makes the honest path the easy one, not a fence. The
 number `audit` prints is a signal for a human to read, not a proof — and it
 is not enforced at commit time.
+
 ### `audit`
 Read-only audit of all records under `.claude/.session-state/prove-yourself/`. Reports count of rejections / fixes / records with missing fields. Exits non-zero if any record is malformed.
 

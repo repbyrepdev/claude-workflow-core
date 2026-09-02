@@ -49,6 +49,21 @@ _is_denied() {
 # the hook crashing and printing a stack trace, or printing nothing because
 # it died. An "allowed through" claim therefore needs the exit status too:
 # the hook must have RUN and SUCCEEDED, not merely failed to say deny.
+# The mirror of _assert_allowed. Checking only for the deny shape accepts a
+# hook that crashed on its way to producing those bytes — and line 100's
+# `reason` extraction can yield "" after a failed jq, which then satisfies a
+# `!= *--full*` assertion for the wrong reason entirely.
+_assert_denied() {
+	[ "$status" -eq 0 ] || {
+		echo "the hook exited $status; a refusal must be a clean deny, not a crash: $output"
+		return 1
+	}
+	_is_denied "$output" || {
+		echo "expected the command to be denied, but the hook allowed it: $output"
+		return 1
+	}
+}
+
 _assert_allowed() {
 	[ "$status" -eq 0 ] || {
 		echo "the hook exited $status; 'allowed through' must mean it ran cleanly: $output"
@@ -62,8 +77,8 @@ _assert_allowed() {
 
 @test "bare scripts/test.sh is refused" {
 	_run_hook "scripts/test.sh"
-	_is_denied "$output" || {
-		echo "a bare full-suite run was NOT blocked — the hook's whole job: $output"
+	_assert_denied || {
+		echo "...a bare full-suite run must be blocked — the hook's whole job"
 		return 1
 	}
 }
@@ -96,8 +111,13 @@ _assert_allowed() {
 	# The old text said "For full: scripts/test.sh --full". Following it
 	# produced "error: unknown flag '--full'" and ran nothing.
 	_run_hook "scripts/test.sh"
+	_assert_denied || return 1
 	local reason
 	reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+	[ -n "$reason" ] || {
+		echo "the refusal reason is empty — the assertions below would prove nothing"
+		return 1
+	}
 	[[ $reason != *"--full"* ]] || {
 		echo "the refusal still advertises --full, which test.sh does not accept: $reason"
 		return 1
@@ -108,8 +128,13 @@ _assert_allowed() {
 	# Removing --full is only half the fix; the operator still needs to be
 	# told what DOES work, or the message is merely less wrong.
 	_run_hook "scripts/test.sh"
+	_assert_denied || return 1
 	local reason
 	reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+	[ -n "$reason" ] || {
+		echo "the refusal reason is empty — the assertions below would prove nothing"
+		return 1
+	}
 	[[ $reason == *"TEST_SH_FULL_OK=1 scripts/test.sh"* ]] || {
 		echo "the refusal does not give a working full-suite command: $reason"
 		return 1
@@ -122,8 +147,13 @@ _assert_allowed() {
 	# is what makes the fix durable rather than a one-time correction: the
 	# next person to invent a flag in the help gets a red test.
 	_run_hook "scripts/test.sh"
+	_assert_denied || return 1
 	local reason
 	reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+	[ -n "$reason" ] || {
+		echo "the refusal reason is empty — the assertions below would prove nothing"
+		return 1
+	}
 
 	local advertised
 	advertised=$(printf '%s' "$reason" | grep -oE -- '--[a-z][a-z-]*' | sort -u)
@@ -186,8 +216,8 @@ _assert_allowed() {
 	# reviewer restored `--full` to the list and every other test stayed
 	# green.
 	_run_hook "scripts/test.sh somedir --full"
-	_is_denied "$output" || {
-		echo "--full after a path was treated as a valid opt-in: $output"
+	_assert_denied || {
+		echo "...--full after a path must not be treated as a valid opt-in"
 		return 1
 	}
 }

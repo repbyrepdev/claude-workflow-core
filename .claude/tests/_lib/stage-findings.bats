@@ -314,3 +314,37 @@ _load() {
 		return 1
 	}
 }
+
+@test "every arm survives 'set -euo pipefail' — the caller runs under it" {
+	# THE ONE THAT WOULD HAVE CAUGHT IT. The cr arm was written as a single
+	# pipeline whose SECOND jq also took the log as a file argument, so it
+	# re-parsed the raw bad line the first stage exists to drop. Under
+	# pipefail that made the arm return `unknown` for EVERY sha — and the
+	# reconciliation gate in run.sh, which runs under `set -euo pipefail`,
+	# then refused a perfectly good record. Direct invocation from an
+	# interactive shell returned 0 and hid it completely.
+	_load
+	{
+		printf '{"sha":"aaaa111","agent":"<all>","findings":3,"status":"emitted"}\n'
+		printf 'TRUNCATED LINE FROM A CRASHED APPEND\n'
+	} >"$WORK/.claude/logs/phase0.5-run.jsonl"
+	{
+		printf '{"sha":"aaaa111","rc":0,"findings":2}\n'
+		printf 'ANOTHER TRUNCATED LINE\n'
+	} >"$WORK/.claude/logs/cr-local-review.jsonl"
+	printf '{"sha":"aaaa111","phase":1,"round":1,"agent":"a","findings":4,"status":"ok"}\n' \
+		>"$WORK/.claude/review-log/aaaa111.jsonl"
+
+	local st
+	for st in phase0.5 phase1 cr; do
+		run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' $st aaaa111"
+		[ "$status" -eq 0 ] || {
+			echo "$st returned rc $status under pipefail (output: $output) — a real answer exists and the arm could not deliver it"
+			return 1
+		}
+		[ "$output" != "unknown" ] || {
+			echo "$st said 'unknown' under pipefail for a log it can read fine otherwise"
+			return 1
+		}
+	done
+}

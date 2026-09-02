@@ -1386,6 +1386,12 @@ _phase05_branch_round_count() {
 	printf '%s\n' "$n"
 }
 
+# The cycle-critical paths, spelled ONCE in this file. The machine-readable
+# definition lives in skills/prove-yourself-audit/run.sh; these directives
+# quote it for the operator, and a second hand-written copy is how the same
+# list already drifted in hooks/phase1-resume-message.sh.
+SCM_CYCLE_CRITICAL_PATHS="hooks/, _lib/, pre-commit-hooks/ or scripts/cr/local-review.sh"
+
 _phase05_findings_for_sha() {
 	# Findings REPORTED for one sha, from the terminal aggregate row.
 	#
@@ -1621,7 +1627,7 @@ _phase05_cap_gate() {
 	elif [ "$_findings_shas" -eq 0 ]; then
 		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) but NO findings-bearing sha exists on this branch — the covered-at-cap door needs positive evidence, and an errored prefilter is indistinguishable from a clean one by silence alone. Investigate .claude/logs/phase0.5-run.jsonl, then re-run."
 	else
-		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection; a record-fix citing hooks/, _lib/, pre-commit-hooks/ or scripts/cr/local-review.sh also needs --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc per #2643), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)."
+		_cap_body="ship-pr-cycle: ERROR: phase0.5 round-cap reached ($runs/$cap) with uncovered findings on:$_detail. Record them via skills/prove-yourself-audit/run.sh --source phase0.5 (record-fix or record-rejection; a record-fix citing $SCM_CYCLE_CRITICAL_PATHS also needs --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc per #2643), then re-run 'next' — the branch graduates to phase1 with NO further prefilter round. Deliberate overrun: PIPELINE_GATE_SKIP=1 (audited)."
 	fi
 	printf '%s\n' "$_cap_body" >&2
 	if command -v hook_ack_diagnostic_write >/dev/null 2>&1 &&
@@ -1781,7 +1787,7 @@ _phase1_cap_gate() {
 Re-running panels past the cap is the phase-1 treadmill (the #2547-class loop: NINE rounds against a cap of 3, millions of tokens). The exit contract (#2570) has exactly two doors:
   - clean round(s) >= cap  → converges automatically, OR
   - at cap: cover EVERY finding on EVERY branch sha — record-fix (applied, with retest) or record-rejection (dogfooded evidence) via skills/prove-yourself-audit/run.sh, --source phase1 — then re-run 'scripts/ship-pr-cycle.sh next': the branch GRADUATES with NO new round.
-    #2643: a record-fix citing a CYCLE-CRITICAL file (hooks/, _lib/, pre-commit-hooks/, scripts/cr/local-review.sh) ALSO needs the symptom differential, or it is refused:
+    #2643: a record-fix citing a CYCLE-CRITICAL file ($SCM_CYCLE_CRITICAL_PATHS) ALSO needs the symptom differential, or it is refused:
       --symptom-cmd \"<cmd whose rc the fix changes>\" --symptom-baseline-rc <before> --symptom-fixed-rc <after>   # the two rcs must differ; both are re-executed
     If the fix is already committed, add --baseline-ref <sha-before-the-fix>.
 Deliberate extra round (audit-logged to pipeline-skip.jsonl):
