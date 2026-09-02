@@ -394,43 +394,44 @@ done
 while IFS= read -r _lib; do
 	[ -n "$_lib" ] || continue
 	if ! _lib_tracked "$_lib"; then
-		# Distinguish map drift from a tree that simply never had this
-		# library (phase2 CR): a mapped lib that is GONE while tracked
-		# scripts still reference its basename in NON-COMMENT lines means
-		# the map references a removed/renamed library — silently skipping
-		# would produce a clean result forever. Comment-only mentions do
-		# not count (CR-in-CI r1: the gate's own positive-evidence rule;
-		# owned-symbol evidence is impossible for a removed lib, so a
-		# non-comment mention is the nearest honest proxy — a lingering
-		# comment after a legitimate removal must not wedge every commit).
-		# A layout with no such references legitimately no-ops.
-		if [ -n "$_libs" ]; then
-			_drift_rc=0
-			_drift_cands=$(git grep --cached -l --fixed-strings -e "${_lib##*/}" -- \
-				'*.sh' ":(exclude,literal)$SELF_PATH" \
-				':(exclude).claude/tests/*' 2>/dev/null) || _drift_rc=$?
-			if [ "$_drift_rc" -ge 2 ]; then
-				echo "lib-consumer-symmetry: git grep --cached failed (rc $_drift_rc) probing map drift for $_lib" >&2
-				exit 2
-			fi
-			_drift_hit=""
-			if [ "$_drift_rc" -eq 0 ]; then
-				while IFS= read -r _dc; do
-					[ -n "$_dc" ] || continue
-					_dc_stripped=$(_index_blob "$_dc" | sed '/^[[:space:]]*#/d') || {
-						echo "lib-consumer-symmetry: comment-strip failed for $_dc during drift probe" >&2
-						exit 2
-					}
-					if _blob_has "$_dc_stripped" "${_lib##*/}"; then
-						_drift_hit="$_dc"
-						break
-					fi
-				done <<<"$_drift_cands"
-			fi
-			if [ -n "$_drift_hit" ]; then
-				echo "lib-consumer-symmetry: mapped lib $_lib is not tracked but $_drift_hit still references it outside comments — _LCS_TOKEN_LIBS references a removed/renamed library, fix the map" >&2
-				exit 2
-			fi
+		# Map-drift probe (phase2 CR + CR-in-CI r1/r2): a mapped lib that
+		# is GONE while a tracked script still references its basename in
+		# NON-COMMENT lines means the map references a removed/renamed
+		# library — silently skipping would produce a clean result
+		# forever. Comment-only mentions do not count (the gate's own
+		# positive-evidence rule; owned-symbol evidence is impossible for
+		# a removed lib, so a non-comment mention is the nearest honest
+		# proxy — a lingering comment after a legitimate removal must not
+		# wedge every commit). Driven purely by the mapped entry's own
+		# evidence — NOT by whether unrelated `_lib/*.sh` files exist
+		# (CR-in-CI r2: gating on a non-empty _libs skipped the probe
+		# exactly when the removed mapped lib was the LAST one). A tree
+		# with no non-comment references no-ops regardless of layout.
+		_drift_rc=0
+		_drift_cands=$(git grep --cached -l --fixed-strings -e "${_lib##*/}" -- \
+			'*.sh' ":(exclude,literal)$SELF_PATH" \
+			':(exclude).claude/tests/*' 2>/dev/null) || _drift_rc=$?
+		if [ "$_drift_rc" -ge 2 ]; then
+			echo "lib-consumer-symmetry: git grep --cached failed (rc $_drift_rc) probing map drift for $_lib" >&2
+			exit 2
+		fi
+		_drift_hit=""
+		if [ "$_drift_rc" -eq 0 ]; then
+			while IFS= read -r _dc; do
+				[ -n "$_dc" ] || continue
+				_dc_stripped=$(_index_blob "$_dc" | sed '/^[[:space:]]*#/d') || {
+					echo "lib-consumer-symmetry: comment-strip failed for $_dc during drift probe" >&2
+					exit 2
+				}
+				if _blob_has "$_dc_stripped" "${_lib##*/}"; then
+					_drift_hit="$_dc"
+					break
+				fi
+			done <<<"$_drift_cands"
+		fi
+		if [ -n "$_drift_hit" ]; then
+			echo "lib-consumer-symmetry: mapped lib $_lib is not tracked but $_drift_hit still references it outside comments — _LCS_TOKEN_LIBS references a removed/renamed library, fix the map" >&2
+			exit 2
 		fi
 		continue
 	fi

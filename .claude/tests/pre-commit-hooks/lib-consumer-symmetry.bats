@@ -311,6 +311,17 @@ _stage_tweak() {
 	[[ $output == *'lingering.sh'* ]]
 }
 
+@test "map drift still fires when the removed mapped lib was the LAST _lib file" {
+	# No tracked _lib at all: the probe is driven by the mapped entry's
+	# own evidence, not by whether unrelated libraries exist.
+	printf '%s\n' '#!/bin/bash' 'echo "loading _lib/issue-trailers.sh"' >lingering.sh
+	_commit_all seed || return 1
+	_stage_tweak lingering.sh
+	run bash "$HOOK"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'removed/renamed library'* ]]
+}
+
 @test "map drift ignores COMMENT-only mentions of the removed lib" {
 	_seed_mylib
 	printf '%s\n' '#!/bin/bash' '# migrated off _lib/issue-trailers.sh, ref lingers' 'echo ok' >lingering.sh
