@@ -358,6 +358,17 @@ _stage_tweak() {
 	[[ $output != *'removed/renamed'* ]]
 }
 
+@test "map drift ignores a comment glued to a closing paren ()#)" {
+	# `( : )# old ref` — the comment starts right after `)` (CR-in-CI r5).
+	_seed_mylib
+	printf '%s\n' '#!/bin/bash' '( : )# migrated off _lib/issue-trailers.sh' >lingering.sh
+	_commit_all lingering || return 1
+	_stage_alpha_edit
+	run bash "$HOOK"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'removed/renamed'* ]]
+}
+
 @test "unmapped _lib layout with NO reference to the mapped lib stays a no-op" {
 	_seed_mylib
 	_stage_tweak alpha.sh

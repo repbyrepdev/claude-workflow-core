@@ -423,16 +423,16 @@ while IFS= read -r _lib; do
 				# an inline `code  # old ref` otherwise survives the
 				# strip and hard-blocks every commit, the exact
 				# availability bug the comment-only carve-out exists to
-				# avoid (backup review r1). Shell starts a comment at
-				# any WORD BOUNDARY — whitespace, or a control operator
-				# like `;`, `&`, `|`, `(` glued to the `#` (CR-in-CI r4:
-				# `echo ok;# old ref` is a valid comment the
-				# whitespace-only rule left intact). A `#` inside quotes
-				# is over-stripped — that corner under-detects, never
-				# wedges.
+				# avoid (backup review r1). Shell starts a comment
+				# wherever `#` begins a WORD — after whitespace, or
+				# glued to ANY operator character: `;` `&` `|` `(` `)`
+				# `{` `}` (CR-in-CI r4 `;#`, r5 `)#` — the class carries
+				# the full practical set so the enumeration ends here).
+				# Over-strip corners (`#` inside quotes, `${#var}`)
+				# under-detect, never wedge.
 				_dc_stripped=$(_index_blob "$_dc" |
 					sed -E -e 's/[[:space:]]+#.*$//' \
-						-e 's/([;&|(])[[:space:]]*#.*$/\1/' \
+						-e 's/([;&|(){}])[[:space:]]*#.*$/\1/' \
 						-e '/^[[:space:]]*#/d') || {
 					echo "lib-consumer-symmetry: comment-strip failed for $_dc during drift probe" >&2
 					exit 2
