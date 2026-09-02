@@ -6,11 +6,12 @@ set -euo pipefail
 # Anchor case: on branch fix/v0.34.228, a guard landed on one of two callers
 # of _lib/issue-trailers.sh FOUR times; the fourth (a788b2f) shipped a real
 # regression — `${ISSUE_TRAILER_MAX:-50}` became a bare `$ISSUE_TRAILER_MAX`
-# in one caller while the sibling's dependency gate never learned to require
-# the variable. The library-keyed trigger ("you changed _lib/X.sh, sweep the
-# consumers") is structurally blind to it: a788b2f did not touch the library
-# at all. Detection must be CONSUMER-side (trigger B, validated 14/16
-# counterfactuals on that branch — see #2644).
+# in one caller whose OWN dependency gate never learned to require the
+# variable (the sibling's gate already did — that asymmetry is exactly the
+# shape this gate exists to catch). The library-keyed trigger ("you changed
+# _lib/X.sh, sweep the consumers") is structurally blind to it: a788b2f did
+# not touch the library at all. Detection must be CONSUMER-side (trigger B,
+# validated 14/16 counterfactuals on that branch — see #2644).
 #
 # Two layers:
 #
@@ -27,23 +28,32 @@ set -euo pipefail
 #      listed — a checked-in consumer registry would need its own staleness
 #      gate (#2644 "no manifest"), and the token list lives once, here.
 #
+# A "consumer" needs POSITIVE EVIDENCE in both layers: naming the lib's
+# basename AND referencing at least one identifier the lib owns. Basename
+# alone cannot tell sourcing from prose (#2644 measured a 25% overcount on
+# hook-ack.sh), and layer 2 imposing tokens on a prose-mentioner would
+# manufacture findings for files that never call the library.
+#
 # Consumer discovery is `git grep --cached`, NEVER `grep -r`: .claude/_lib,
 # .claude/hooks and .claude/scripts are untracked symlinks into the root, so
 # a filesystem walk returns log JSONL, .source-hashes.json and bats files as
 # "consumers". The cached form returns exactly the real ones (#2644 repro).
-# All sourcing idioms in this repo name the literal basename somewhere in
-# the consumer file, so basename matching is sound — but it cannot tell
-# sourcing from prose, hence the owned-symbol requirement in layer 1.
+# Library enumeration is anchored to the tracked top-level `_lib/*.sh`
+# layout — repos without that layout (plain consumer installs run gates from
+# the plugin cache against their own tree) enumerate zero libs and both
+# layers no-op; the gate is meaningful where _lib/*.sh is tracked.
 #
 # WARN-ONLY this cycle (#2644 "ship warn-only, count fires, then flip the
 # fan-out ≤3 band to blocking"): findings print + append to the fires
 # ledger (.claude/logs/lib-consumer-symmetry.jsonl) and the hook exits 0.
-# LIB_CONSUMER_SYMMETRY_ENFORCE=1 flips findings to exit 1 (the planned
-# default once the ledger review lands). Tool failures ALWAYS exit 2 — a
-# warn that silently could not look is indistinguishable from clean, which
-# is the reporting-without-performing class this epic exists to kill. The
-# ledger append itself fails closed (exit 2): the ledger is the data the
-# warn cycle exists to collect.
+# LIB_CONSUMER_SYMMETRY_ENFORCE=1 makes ENFORCEABLE findings exit 1 —
+# staging findings in the fan-out ≤3 band and token findings; high-fan-out
+# staging findings stay advisory even then, as their own message says
+# (#2644: not all high-fan-out fires are false, but they only buy a look).
+# Tool failures ALWAYS exit 2 — a warn that silently could not look is
+# indistinguishable from clean, which is the reporting-without-performing
+# class this epic exists to kill. The ledger append itself fails closed
+# (exit 2): the ledger is the data the warn cycle exists to collect.
 #
 # Known blind spot, stated plainly (#2644): identifier-text driven, so a
 # semantic change that alters no identifier (sort order, dedup behavior)
@@ -53,22 +63,18 @@ set -euo pipefail
 # Env:
 #   LIB_CONSUMER_SYMMETRY_SKIP=1          bypass for one invocation.
 #   LIB_CONSUMER_SYMMETRY_SKIP_REASON=…   rationale, recorded with it.
-#   LIB_CONSUMER_SYMMETRY_ENFORCE=1       findings exit 1 instead of 0.
+#   LIB_CONSUMER_SYMMETRY_ENFORCE=1       enforceable findings exit 1.
 #
-# Exit: 0 clean or warn-only findings · 1 findings under ENFORCE=1 · 2 the
-# gate could not run (not a git repo, unreadable index blob, git/grep
-# failure, unwritable ledger). 1-vs-2 per bats-assertion-gate.sh:37-47.
+# Exit: 0 clean or warn-only findings · 1 enforceable findings under
+# ENFORCE=1 · 2 the gate could not run (not a git repo, unreadable index
+# blob, git/grep failure, unwritable ledger). 1-vs-2 per
+# bats-assertion-gate.sh:37-47.
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "lib-consumer-symmetry: not in a git repo" >&2
 	exit 2
 }
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-
-# This file names library basenames and owned identifiers by necessity (the
-# token map, this header) — it must never count as a consumer of them, or
-# the gate fires on its own commit forever.
-SELF_PATH="pre-commit-hooks/lib-consumer-symmetry.sh"
 
 if [ "${LIB_CONSUMER_SYMMETRY_SKIP:-0}" = "1" ]; then
 	echo "lib-consumer-symmetry: SKIPPED via LIB_CONSUMER_SYMMETRY_SKIP=1" >&2
@@ -82,6 +88,11 @@ if [ "${LIB_CONSUMER_SYMMETRY_SKIP:-0}" = "1" ]; then
 	fi
 	# shellcheck source=../_lib/pipeline-skip.sh
 	. "$SCRIPT_DIR/../_lib/pipeline-skip.sh"
+	# pipeline_skip_log honors SKIP_LOG as a test seam; here the same actor
+	# invoking the skip controls the environment, so an inherited
+	# SKIP_LOG=/dev/null would void the audit row while the skip proceeds
+	# (phase1 security review, verified). Pin the target to the default.
+	unset SKIP_LOG
 	PIPELINE_GATE_SKIP_REASON="${LIB_CONSUMER_SYMMETRY_SKIP_REASON:-}" \
 		pipeline_skip_log "lib-consumer-symmetry-skip" || {
 		echo "lib-consumer-symmetry: skip audit append failed — refusing the skip" >&2
@@ -90,42 +101,73 @@ if [ "${LIB_CONSUMER_SYMMETRY_SKIP:-0}" = "1" ]; then
 	exit 0
 fi
 
-LEDGER="$REPO_ROOT/.claude/logs/lib-consumer-symmetry.jsonl"
-FINDINGS=0
+cd "$REPO_ROOT"
+
+# This file names library basenames and owned identifiers by necessity (the
+# token map, this header) — it must never count as a consumer of them, or
+# the gate fires on its own commit forever. Derived from our own location so
+# a rename cannot silently break the exclusion; literal fallback for runs
+# from outside the tracked tree (plugin-cache installs).
+# `|| true`: outside the tracked tree git exits 128 ("outside repository")
+# and set -e would kill the gate before the fallback could apply.
+SELF_PATH=$(git ls-files --cached --full-name -- "${BASH_SOURCE[0]}" 2>/dev/null | head -n1) || true
+[ -n "$SELF_PATH" ] || SELF_PATH="pre-commit-hooks/lib-consumer-symmetry.sh"
+
+LEDGER_DIR="$REPO_ROOT/.claude/logs"
+LEDGER="$LEDGER_DIR/lib-consumer-symmetry.jsonl"
+FINDINGS_ENFORCEABLE=0
+FINDINGS_ADVISORY=0
 _BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+# One mode predicate, used by BOTH the ledger rows and the verdict — the
+# two diverging (`:+enforce` labeling vs an exact-"1" verdict) mislabeled
+# the dataset the flip decision depends on (phase1 silent-failure-hunter).
+_MODE=warn
+[ "${LIB_CONSUMER_SYMMETRY_ENFORCE:-0}" = "1" ] && _MODE=enforce
 
 # _ledger_row <layer> <lib> <consumer> <detail> <unstaged-csv> <fanout>
+# Uniform 6-field shape across layers (readers segment on .layer).
 _ledger_row() {
-	mkdir -p "$(dirname "$LEDGER")" || {
+	mkdir -p "$LEDGER_DIR" || {
 		echo "lib-consumer-symmetry: cannot create ledger dir — the warn cycle's data cannot be dropped" >&2
 		exit 2
 	}
 	jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg layer "$1" \
 		--arg lib "$2" --arg consumer "$3" --arg detail "$4" \
 		--arg unstaged "$5" --arg fanout "$6" --arg branch "$_BRANCH" \
-		--arg mode "${LIB_CONSUMER_SYMMETRY_ENFORCE:+enforce}" \
+		--arg mode "$_MODE" \
 		'{ts: $ts, layer: $layer, lib: $lib, consumer: $consumer,
 		  detail: $detail, unstaged: $unstaged, fanout: $fanout,
-		  branch: $branch, mode: (if $mode == "" then "warn" else $mode end)}' \
+		  branch: $branch, mode: $mode}' \
 		>>"$LEDGER" || {
 		echo "lib-consumer-symmetry: ledger append FAILED ($LEDGER) — refusing to warn unrecorded" >&2
 		exit 2
 	}
 }
 
-# _consumers_of <lib-path> — tracked .sh files whose INDEX blob names the
-# lib's basename, excluding the lib itself, this gate, and tests. rc 1 (no
-# match) is a normal empty result; rc >=2 is a tool failure.
-_consumers_of() {
-	local _lib="$1" _rc=0 _out
-	_out=$(git grep --cached -l --fixed-strings "$(basename "$_lib")" -- \
-		'*.sh' ":(exclude)$_lib" ":(exclude)$SELF_PATH" \
-		':(exclude).claude/tests/*' 2>/dev/null) || _rc=$?
+# _blob_has <blob> <fixed-string> / _blob_has_re <blob> <ere> — match
+# helpers that keep the fail-closed contract: rc 1 (no match) is the only
+# tolerated failure; rc >=2 is a tool error and exits 2. Herestrings, not
+# `printf | grep -q`: under pipefail, grep -q exiting on an early match
+# SIGPIPEs the printf and the pipeline returns 141 — precisely on MATCHING
+# pairs — which a bare `|| continue` then swallows as no-match (phase1
+# silent-failure-hunter, reproduced 40/40 on large blobs).
+_blob_has() {
+	local _rc=0
+	grep -qF -- "$2" <<<"$1" || _rc=$?
 	if [ "$_rc" -ge 2 ]; then
-		echo "lib-consumer-symmetry: git grep --cached failed (rc $_rc) enumerating consumers of $_lib" >&2
+		echo "lib-consumer-symmetry: grep -F failed (rc $_rc)" >&2
 		exit 2
 	fi
-	printf '%s\n' "$_out"
+	return "$_rc"
+}
+_blob_has_re() {
+	local _rc=0
+	grep -Eq -- "$2" <<<"$1" || _rc=$?
+	if [ "$_rc" -ge 2 ]; then
+		echo "lib-consumer-symmetry: grep -E failed (rc $_rc)" >&2
+		exit 2
+	fi
+	return "$_rc"
 }
 
 # _index_blob <path> — the INDEX version (staged content when staged,
@@ -138,17 +180,58 @@ _index_blob() {
 	}
 }
 
+# _owned_of <lib-path> — identifiers the lib OWNS: top-level `name()` or
+# `UPPER_CASE=`. The sed classes guarantee ERE-safe output (word chars
+# only), so extracted names can sit inside a grep -E pattern.
+_owned_of() {
+	_index_blob "$1" | sed -n \
+		-e 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' \
+		-e 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' | sort -u
+}
+
+# _consumers_of <lib-path> <owned-idents> — tracked .sh files whose INDEX
+# blob names the lib's basename AND references at least one owned
+# identifier (positive evidence — see header). Excludes the lib itself,
+# this gate, and tests. git grep rc 1 (no candidate) is a normal empty
+# result; rc >=2 is a tool failure. `-e` pins the basename to pattern
+# position and `:(exclude,literal)` disables glob magic in the excludes
+# (phase1 security review: a dash- or glob-shaped tracked name must not
+# become an option or widen an exclusion).
+_consumers_of() {
+	local _lib="$1" _owned_list="$2" _rc=0 _out _cand _cand_blob _sym
+	_out=$(git grep --cached -l --fixed-strings -e "${_lib##*/}" -- \
+		'*.sh' ":(exclude,literal)$_lib" ":(exclude,literal)$SELF_PATH" \
+		':(exclude).claude/tests/*' 2>/dev/null) || _rc=$?
+	if [ "$_rc" -ge 2 ]; then
+		echo "lib-consumer-symmetry: git grep --cached failed (rc $_rc) enumerating consumers of $_lib" >&2
+		exit 2
+	fi
+	[ -n "$_out" ] || return 0
+	[ -n "$_owned_list" ] || return 0
+	while IFS= read -r _cand; do
+		[ -n "$_cand" ] || continue
+		_cand_blob=$(_index_blob "$_cand")
+		while IFS= read -r _sym; do
+			[ -n "$_sym" ] || continue
+			if _blob_has_re "$_cand_blob" "(^|[^A-Za-z0-9_])${_sym}([^A-Za-z0-9_]|$)"; then
+				printf '%s\n' "$_cand"
+				break
+			fi
+		done <<<"$_owned_list"
+	done <<<"$_out"
+	return 0
+}
+
 # Mapped libraries, newline-delimited — the ONE list layer 2 iterates.
-# _required_tokens_for must return a non-empty token set for every entry;
-# that is checked at run time (empty set for a mapped lib = map drift =
-# exit 2), so this list and the case arms below cannot desync silently
-# (phase0.5 on this branch: two parallel structures, no validation).
+# The run-time check below is ONE-directional: a list entry whose
+# _required_tokens_for arm is missing exits 2, but a case arm added
+# WITHOUT extending this list is silently inert — so extend the list
+# first, and the empty-set check forces the arm to follow.
 _LCS_TOKEN_LIBS='_lib/issue-trailers.sh'
 
 # Required guard tokens per mapped library (#2653). Newline-delimited fixed
 # strings; the single authoritative copy — consumers must each carry every
-# line verbatim. Add libraries by extending _LCS_TOKEN_LIBS AND adding a
-# case arm here (the run-time check catches doing only one).
+# line verbatim.
 _required_tokens_for() {
 	case "$1" in
 	_lib/issue-trailers.sh)
@@ -163,7 +246,7 @@ _required_tokens_for() {
 # ---- staged set (NUL-safe; git rc checked) --------------------------------
 _staged_tmp=$(mktemp -t lcs-staged.XXXXXX) || exit 2
 trap 'rm -f "$_staged_tmp"' EXIT
-if ! git -C "$REPO_ROOT" diff --cached --name-only --no-renames \
+if ! git diff --cached --name-only --no-renames \
 	--diff-filter=ACMR -z -- '*.sh' >"$_staged_tmp"; then
 	echo "lib-consumer-symmetry: git diff --cached failed enumerating staged files" >&2
 	exit 2
@@ -182,13 +265,33 @@ _is_staged() {
 	return 1
 }
 
-cd "$REPO_ROOT"
+# _any_staged — reads newline paths on stdin; rc 0 if any is staged.
+_any_staged() {
+	local _p
+	while IFS= read -r _p; do
+		[ -n "$_p" ] || continue
+		if _is_staged "$_p"; then
+			return 0
+		fi
+	done
+	return 1
+}
 
 # All tracked libraries (the INDEX view, so a lib added in this very commit
-# participates immediately).
+# participates immediately). Membership in this rc-checked list is also the
+# layer-2 existence test — a separate `git cat-file -e` probe cannot tell
+# benign absence from a real git failure (both rc 128; phase1
+# silent-failure-hunter).
 _libs=$(git ls-files --cached -- '_lib/*.sh') || {
 	echo "lib-consumer-symmetry: git ls-files failed enumerating _lib" >&2
 	exit 2
+}
+_lib_tracked() {
+	local _l
+	while IFS= read -r _l; do
+		[ "$_l" = "$1" ] && return 0
+	done <<<"$_libs"
+	return 1
 }
 
 # ---- layer 1: staging symmetry (trigger B, #2644) -------------------------
@@ -197,31 +300,33 @@ for _c in "${STAGED[@]}"; do
 	case "$_c" in .claude/tests/*) continue ;; esac
 	_c_blob=$(_index_blob "$_c")
 	# The diff itself fails closed (phase0.5: `diff | grep || true` under
-	# pipefail swallowed a git failure identically to the benign no-match);
-	# only the greps' rc-1 no-match is tolerated.
+	# pipefail swallowed a git failure identically to the benign no-match).
 	_diff_out=$(git diff --cached -U0 --no-renames -- "$_c") || {
 		echo "lib-consumer-symmetry: git diff --cached failed for $_c" >&2
 		exit 2
 	}
-	# +/- hunk lines of the staged change, context stripped.
+	# +/- hunk lines of the staged change, context stripped. These greps
+	# read their whole input (no -q → no early-exit SIGPIPE); rc 1
+	# (no hunk lines) is the benign case, anything above is a tool error.
+	_hunk_rc=0
 	_hunk=$(printf '%s\n' "$_diff_out" |
-		grep -E '^[+-]' | grep -Ev '^\+\+\+|^---' || true)
+		grep -E '^[+-]' | grep -Ev '^\+\+\+|^---') || _hunk_rc=$?
+	if [ "$_hunk_rc" -ge 2 ]; then
+		echo "lib-consumer-symmetry: hunk extraction failed (rc $_hunk_rc) for $_c" >&2
+		exit 2
+	fi
 	[ -n "$_hunk" ] || continue
 	while IFS= read -r _lib; do
 		[ -n "$_lib" ] || continue
 		[ "$_lib" = "$_c" ] && continue
 		# Prefilter: the consumer names the lib's basename at all.
-		printf '%s' "$_c_blob" | grep -qF "$(basename "$_lib")" || continue
-		# Identifiers OWNED by the lib: top-level `name()` or `UPPER=`.
-		_owned=$(_index_blob "$_lib" | sed -n \
-			-e 's/^\([A-Za-z_][A-Za-z0-9_]*\)().*/\1/p' \
-			-e 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' | sort -u)
+		_blob_has "$_c_blob" "${_lib##*/}" || continue
+		_owned=$(_owned_of "$_lib")
 		[ -n "$_owned" ] || continue
 		_hit_sym=""
 		while IFS= read -r _sym; do
 			[ -n "$_sym" ] || continue
-			if printf '%s\n' "$_hunk" |
-				grep -Eq "(^|[^A-Za-z0-9_])${_sym}([^A-Za-z0-9_]|$)"; then
+			if _blob_has_re "$_hunk" "(^|[^A-Za-z0-9_])${_sym}([^A-Za-z0-9_]|$)"; then
 				_hit_sym="$_sym"
 				break
 			fi
@@ -229,7 +334,7 @@ for _c in "${STAGED[@]}"; do
 		[ -n "$_hit_sym" ] || continue
 		# The staged consumer touches an owned symbol — are the siblings
 		# staged too?
-		_siblings=$(_consumers_of "$_lib")
+		_siblings=$(_consumers_of "$_lib" "$_owned")
 		_fanout=0
 		_unstaged=""
 		while IFS= read -r _sib; do
@@ -239,9 +344,13 @@ for _c in "${STAGED[@]}"; do
 			_is_staged "$_sib" || _unstaged="${_unstaged:+$_unstaged,}$_sib"
 		done <<<"$_siblings"
 		[ -n "$_unstaged" ] || continue
-		FINDINGS=$((FINDINGS + 1))
 		_band=""
-		[ "$_fanout" -gt 3 ] && _band=" [high fan-out: stays advisory after the enforce flip]"
+		if [ "$_fanout" -gt 3 ]; then
+			_band=" [high fan-out: advisory even under ENFORCE]"
+			FINDINGS_ADVISORY=$((FINDINGS_ADVISORY + 1))
+		else
+			FINDINGS_ENFORCEABLE=$((FINDINGS_ENFORCEABLE + 1))
+		fi
 		echo "lib-consumer-symmetry: $_c touches '$_hit_sym' (owned by $_lib) but sibling consumer(s) NOT staged: $_unstaged (fan-out $_fanout)$_band" >&2
 		echo "  If the siblings are already correct, say so in the commit message; if not, this is the a788b2f regression shape (#2644)." >&2
 		_ledger_row "staging" "$_lib" "$_c" "$_hit_sym" "$_unstaged" "$_fanout"
@@ -251,36 +360,28 @@ done
 # ---- layer 2: guard-token symmetry (#2653) --------------------------------
 while IFS= read -r _lib; do
 	[ -n "$_lib" ] || continue
-	git cat-file -e ":0:$_lib" 2>/dev/null || continue
+	_lib_tracked "$_lib" || continue
 	_toks=$(_required_tokens_for "$_lib")
 	if [ -z "$_toks" ]; then
-		echo "lib-consumer-symmetry: mapped lib $_lib has no token set — _LCS_TOKEN_LIBS and _required_tokens_for drifted, fix the map" >&2
+		echo "lib-consumer-symmetry: mapped lib $_lib has no token set — _LCS_TOKEN_LIBS gained an entry without a _required_tokens_for arm, fix the map" >&2
 		exit 2
 	fi
-	_consumers=$(_consumers_of "$_lib")
+	_owned=$(_owned_of "$_lib")
+	_consumers=$(_consumers_of "$_lib" "$_owned")
 	[ -n "$_consumers" ] || continue
 	# Scoped to commits that touch the mapped surface: the lib or one of
 	# its consumers must be staged, else this commit cannot have moved
 	# their symmetry.
-	_touched=0
-	_is_staged "$_lib" && _touched=1
-	if [ "$_touched" -eq 0 ]; then
-		while IFS= read -r _cons; do
-			[ -n "$_cons" ] || continue
-			if _is_staged "$_cons"; then
-				_touched=1
-				break
-			fi
-		done <<<"$_consumers"
+	if ! _is_staged "$_lib" && ! _any_staged <<<"$_consumers"; then
+		continue
 	fi
-	[ "$_touched" -eq 1 ] || continue
 	while IFS= read -r _cons; do
 		[ -n "$_cons" ] || continue
 		_cons_blob=$(_index_blob "$_cons")
 		while IFS= read -r _tok; do
 			[ -n "$_tok" ] || continue
-			printf '%s' "$_cons_blob" | grep -qF -- "$_tok" && continue
-			FINDINGS=$((FINDINGS + 1))
+			_blob_has "$_cons_blob" "$_tok" && continue
+			FINDINGS_ENFORCEABLE=$((FINDINGS_ENFORCEABLE + 1))
 			echo "lib-consumer-symmetry: $_cons is missing required guard token for $_lib: $_tok" >&2
 			echo "  Every consumer carries every token (single list in this gate, #2653) — the sibling already has it." >&2
 			_ledger_row "token" "$_lib" "$_cons" "$_tok" "" ""
@@ -289,11 +390,12 @@ while IFS= read -r _lib; do
 done <<<"$_LCS_TOKEN_LIBS"
 
 # ---- verdict --------------------------------------------------------------
-if [ "$FINDINGS" -gt 0 ]; then
-	echo "lib-consumer-symmetry: $FINDINGS finding(s) — ledger: .claude/logs/lib-consumer-symmetry.jsonl" >&2
-	if [ "${LIB_CONSUMER_SYMMETRY_ENFORCE:-0}" = "1" ]; then
+_total=$((FINDINGS_ENFORCEABLE + FINDINGS_ADVISORY))
+if [ "$_total" -gt 0 ]; then
+	echo "lib-consumer-symmetry: $_total finding(s) ($FINDINGS_ENFORCEABLE enforceable, $FINDINGS_ADVISORY advisory) — ledger: .claude/logs/lib-consumer-symmetry.jsonl" >&2
+	if [ "$_MODE" = "enforce" ] && [ "$FINDINGS_ENFORCEABLE" -gt 0 ]; then
 		exit 1
 	fi
-	echo "lib-consumer-symmetry: WARN-ONLY cycle (#2644) — not blocking this commit." >&2
+	echo "lib-consumer-symmetry: WARN-ONLY (#2644 rollout) — not blocking this commit." >&2
 fi
 exit 0
