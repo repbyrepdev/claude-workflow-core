@@ -149,3 +149,65 @@ _seed_trailers() {
 	[ "$status" -eq 0 ] || return 1
 	[ -z "$output" ]
 }
+
+@test "fan-out above 3 fires with the high-fan-out band note and every unstaged sibling" {
+	_seed_mylib
+	printf '%s\n' '#!/bin/bash' '# sources _lib/mylib.sh' 'echo "$MY_MAX"' >gamma.sh
+	printf '%s\n' '#!/bin/bash' '# sources _lib/mylib.sh' 'echo "$MY_MAX"' >delta.sh
+	_commit_all more-consumers || return 1
+	printf '%s\n' 'echo "cap: $MY_MAX"' >>alpha.sh
+	git add alpha.sh || return 1
+	run bash "$HOOK"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'high fan-out'* ]] || return 1
+	[[ $output == *'beta.sh'* ]] || return 1
+	[[ $output == *'gamma.sh'* ]] || return 1
+	[[ $output == *'delta.sh'* ]] || return 1
+	grep -q '"fanout":"4"' .claude/logs/lib-consumer-symmetry.jsonl
+}
+
+@test "ENFORCE=1 turns a token finding into exit 1" {
+	_seed_trailers
+	printf '%s\n' '#!/bin/bash' '# consumes _lib/issue-trailers.sh' \
+		'. "$_it_lib"' >user-b.sh
+	git add -A || return 1
+	run env LIB_CONSUMER_SYMMETRY_ENFORCE=1 bash "$HOOK"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *'missing required guard token'* ]]
+}
+
+@test "skip is REFUSED (exit 2) when pipeline-skip lib is unreachable" {
+	# Copy the hook somewhere with no ../_lib sibling: the skip cannot be
+	# recorded, so it must not happen.
+	_seed_mylib
+	mkdir -p "$FIX/lonely" || return 1
+	cp "$HOOK" "$FIX/lonely/hook.sh" || return 1
+	printf '%s\n' 'echo "cap: $MY_MAX"' >>alpha.sh
+	git add alpha.sh || return 1
+	run env LIB_CONSUMER_SYMMETRY_SKIP=1 bash "$FIX/lonely/hook.sh"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'cannot record the skip'* ]]
+}
+
+@test "unwritable ledger path fails closed (exit 2) instead of warning unrecorded" {
+	_seed_mylib
+	mkdir -p .claude || return 1
+	: >.claude/logs || return 1
+	printf '%s\n' 'echo "cap: $MY_MAX"' >>alpha.sh
+	git add alpha.sh || return 1
+	run bash "$HOOK"
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'ledger'* ]]
+}
+
+@test "the gate's own path is excluded from consumer discovery (no self-fire)" {
+	_seed_mylib
+	mkdir -p pre-commit-hooks || return 1
+	printf '%s\n' '#!/bin/bash' '# names _lib/mylib.sh and MY_MAX by necessity' \
+		'echo "MY_MAX my_func mylib.sh"' >pre-commit-hooks/lib-consumer-symmetry.sh
+	git add pre-commit-hooks/lib-consumer-symmetry.sh || return 1
+	run bash "$HOOK"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'sibling consumer'* ]] || return 1
+	[ ! -f .claude/logs/lib-consumer-symmetry.jsonl ]
+}

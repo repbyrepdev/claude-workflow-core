@@ -138,9 +138,17 @@ _index_blob() {
 	}
 }
 
+# Mapped libraries, newline-delimited — the ONE list layer 2 iterates.
+# _required_tokens_for must return a non-empty token set for every entry;
+# that is checked at run time (empty set for a mapped lib = map drift =
+# exit 2), so this list and the case arms below cannot desync silently
+# (phase0.5 on this branch: two parallel structures, no validation).
+_LCS_TOKEN_LIBS='_lib/issue-trailers.sh'
+
 # Required guard tokens per mapped library (#2653). Newline-delimited fixed
 # strings; the single authoritative copy — consumers must each carry every
-# line verbatim. Add libraries here as their contracts earn a token set.
+# line verbatim. Add libraries by extending _LCS_TOKEN_LIBS AND adding a
+# case arm here (the run-time check catches doing only one).
 _required_tokens_for() {
 	case "$1" in
 	_lib/issue-trailers.sh)
@@ -150,9 +158,6 @@ _required_tokens_for() {
 			'command -v issue_trailers_for_pr'
 		;;
 	esac
-}
-_token_mapped_libs() {
-	printf '%s\n' '_lib/issue-trailers.sh'
 }
 
 # ---- staged set (NUL-safe; git rc checked) --------------------------------
@@ -191,9 +196,15 @@ for _c in "${STAGED[@]}"; do
 	[ "$_c" = "$SELF_PATH" ] && continue
 	case "$_c" in .claude/tests/*) continue ;; esac
 	_c_blob=$(_index_blob "$_c")
-	# +/- hunk lines of the staged change, context stripped. grep rc 1
-	# (no such lines) leaves the loop with nothing to match — fine.
-	_hunk=$(git diff --cached -U0 --no-renames -- "$_c" |
+	# The diff itself fails closed (phase0.5: `diff | grep || true` under
+	# pipefail swallowed a git failure identically to the benign no-match);
+	# only the greps' rc-1 no-match is tolerated.
+	_diff_out=$(git diff --cached -U0 --no-renames -- "$_c") || {
+		echo "lib-consumer-symmetry: git diff --cached failed for $_c" >&2
+		exit 2
+	}
+	# +/- hunk lines of the staged change, context stripped.
+	_hunk=$(printf '%s\n' "$_diff_out" |
 		grep -E '^[+-]' | grep -Ev '^\+\+\+|^---' || true)
 	[ -n "$_hunk" ] || continue
 	while IFS= read -r _lib; do
@@ -241,6 +252,11 @@ done
 while IFS= read -r _lib; do
 	[ -n "$_lib" ] || continue
 	git cat-file -e ":0:$_lib" 2>/dev/null || continue
+	_toks=$(_required_tokens_for "$_lib")
+	if [ -z "$_toks" ]; then
+		echo "lib-consumer-symmetry: mapped lib $_lib has no token set — _LCS_TOKEN_LIBS and _required_tokens_for drifted, fix the map" >&2
+		exit 2
+	fi
 	_consumers=$(_consumers_of "$_lib")
 	[ -n "$_consumers" ] || continue
 	# Scoped to commits that touch the mapped surface: the lib or one of
@@ -268,9 +284,9 @@ while IFS= read -r _lib; do
 			echo "lib-consumer-symmetry: $_cons is missing required guard token for $_lib: $_tok" >&2
 			echo "  Every consumer carries every token (single list in this gate, #2653) — the sibling already has it." >&2
 			_ledger_row "token" "$_lib" "$_cons" "$_tok" "" ""
-		done < <(_required_tokens_for "$_lib")
+		done <<<"$_toks"
 	done <<<"$_consumers"
-done < <(_token_mapped_libs)
+done <<<"$_LCS_TOKEN_LIBS"
 
 # ---- verdict --------------------------------------------------------------
 if [ "$FINDINGS" -gt 0 ]; then
