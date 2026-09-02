@@ -139,8 +139,10 @@ _b4_hit() {
 # control-char class missed them (probed live: rc=1). The chain form
 # `((word)[[:space:]]+)*` also covers `do while :; do ...` nesting, and
 # `!` (a reserved word in command position) covers negated commands like
-# `if ! mapfile -d '' x <f; then` (CR #2649 r2 fail-open).
-_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until|!|builtin|command|time)[[:space:]]+)*'
+# `if ! mapfile -d '' x <f; then` (CR #2649 r2 fail-open). Chain words may
+# carry option tokens (`command -p readarray`, `time -p mapfile` — r4);
+# reserved words never take options, so the extra `(-opt)*` there is inert.
+_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until|!|builtin|command|time)([[:space:]]+-[A-Za-z][A-Za-z-]*)*[[:space:]]+)*'
 
 bash4_features_check_content() {
 	local display="${1:-}" content="${2:-}" body shebang

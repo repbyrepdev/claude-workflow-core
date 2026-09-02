@@ -75,6 +75,15 @@ _chk() {
 	[[ $output == *"mapfile / readarray (bash 4.0)"* ]]
 }
 
+@test "prefixes with options flag: command -p readarray and time -p mapfile (#2649 r4)" {
+	run _chk $'#!/bin/bash\ncommand -p readarray values'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"readarray (bash 4.0)"* ]] || return 1
+	run _chk $'#!/bin/bash\ntime -p mapfile values < input'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile / readarray (bash 4.0)"* ]]
+}
+
 @test "negated commands flag: if ! mapfile ... and bare ! declare (#2649 r2)" {
 	run _chk $'#!/bin/bash\nif ! mapfile -d "" items < input; then :; fi'
 	[ "$status" -eq 1 ] || return 1
