@@ -1340,3 +1340,48 @@ JSON
 		return 1
 	}
 }
+@test "#2643: a forged record with WRONG-TYPED symptom fields is unproven" {
+	# CR-in-CI, static-analysis backed. The presence checks were satisfied
+	# by a record with `"symptom_verified": "true"` as a STRING, a
+	# symptom_cmd that is an OBJECT (non-zero length), and rcs of "bad-a"
+	# and "bad-b" — which differ, so the not-equal test passed too. Every
+	# guard was met and nothing had been verified. Types are checked now.
+	_make_fix
+	local sd="$WORK/.claude/.session-state/prove-yourself"
+	mkdir -p "$sd"
+	cat >"$sd/forged-types.json" <<'JSON'
+{"finding_id":"forgedtypes","kind":"fix","finding_text":"t","ts":"2026-01-01T00:00:00Z",
+ "covers_count":1,"cited_files":[],
+ "decision_data":{"fix_summary":"t","retest_cmd":"true","retest_rc":0,
+                  "retest_verified":true,"retest_actual_rc":0,
+                  "symptom_verified":"true",
+                  "symptom_cmd":{"fake":"command"},
+                  "symptom_baseline_rc":"bad-a",
+                  "symptom_fixed_rc":"bad-b"}}
+JSON
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[ "$status" -eq 0 ] || {
+		echo "audit failed: $output"
+		return 1
+	}
+	[[ $output == *"unproven (no symptom differential): 1"* ]] || {
+		echo "a record with string/object/non-numeric symptom fields counted as proven: $output"
+		return 1
+	}
+}
+
+@test "#2643: a WELL-TYPED record still counts as proven — the control" {
+	# Without this the type check could reject everything and still look
+	# correct.
+	_make_fix
+	_rec "$(_base_args) --symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	[ "$status" -eq 0 ] || {
+		echo "a genuine differential was refused: $output"
+		return 1
+	}
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[[ $output == *"unproven (no symptom differential): 0"* ]] || {
+		echo "a genuine, well-typed record was counted unproven: $output"
+		return 1
+	}
+}

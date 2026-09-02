@@ -347,4 +347,22 @@ _load() {
 			return 1
 		}
 	done
+	# EXACT counts, not merely "not unknown". Rejecting only `unknown`
+	# accepts 0, and a regression that drops every matching row would pass
+	# — the same not-quite-an-assertion this suite exists to avoid.
+	run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' phase0.5 aaaa111"
+	[ "$output" = "3" ] || {
+		echo "phase0.5 under pipefail: expected 3, got '$output'"
+		return 1
+	}
+	run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' phase1 aaaa111"
+	[ "$output" = "4" ] || {
+		echo "phase1 under pipefail: expected 4, got '$output'"
+		return 1
+	}
+	run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' cr aaaa111"
+	[ "$output" = "2" ] || {
+		echo "cr under pipefail: expected 2, got '$output'"
+		return 1
+	}
 }

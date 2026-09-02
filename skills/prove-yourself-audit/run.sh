@@ -1016,29 +1016,36 @@ _prove_symptom_run_baseline() {
 	# fatal-copy rule exists to prevent. An earlier comment claimed the
 	# not-a-regular-file refusal caught this; it does not, because the
 	# does-not-exist check is evaluated first.
-	_bats_list=$(git -C "$REPO_ROOT" -c core.quotePath=false diff --name-only "$ref" -- '*.bats') || _bats_rc=$?
-	if [ "$_bats_rc" -ne 0 ]; then
-		echo "error: could not list changed .bats files against '$ref' (rc=$_bats_rc) — refusing rather than running a baseline that silently omits the new tests" >&2
+	# -z, THROUGH A TEMP FILE. `core.quotePath=false` alone fixes only
+	# high-byte names; git still C-quotes CONTROL characters — a `.bats`
+	# path containing a newline still arrives as a quoted string that does
+	# not exist on disk, and the loop below skips it, which is the same
+	# fail-open the fatal-copy rule forbids.
+	#
+	# The temp file is not stylistic: bash DROPS NUL BYTES inside `$( )`, so
+	# reading -z output through a command substitution silently yields an
+	# empty list. That is exactly how the bats-scope SSOT reported a zero
+	# file set in #2642.
+	local _bats_z
+	_bats_z=$(mktemp -t prove-bats-z.XXXXXX) || {
+		echo "error: mktemp failed while listing changed .bats files — refusing rather than running a baseline that silently omits the new tests" >&2
+		_prove_symptom_wt_cleanup
+		return 2
+	}
+	if ! git -C "$REPO_ROOT" diff -z --name-only "$ref" -- '*.bats' >"$_bats_z" 2>/dev/null; then
+		echo "error: could not list changed .bats files against '$ref' — refusing rather than running a baseline that silently omits the new tests" >&2
+		rm -f "$_bats_z"
 		_prove_symptom_wt_cleanup
 		return 2
 	fi
-	_bats_rc=0
-	_bats_untracked=$(git -C "$REPO_ROOT" -c core.quotePath=false ls-files --others --exclude-standard -- '*.bats') || _bats_rc=$?
-	if [ "$_bats_rc" -ne 0 ]; then
-		echo "error: could not list untracked .bats files (rc=$_bats_rc) — refusing rather than running a baseline that silently omits a brand-new test file" >&2
+	if ! git -C "$REPO_ROOT" ls-files -z --others --exclude-standard -- '*.bats' >>"$_bats_z" 2>/dev/null; then
+		echo "error: could not list untracked .bats files — refusing rather than running a baseline that silently omits a brand-new test file" >&2
+		rm -f "$_bats_z"
 		_prove_symptom_wt_cleanup
 		return 2
-	fi
-	if [ -n "$_bats_untracked" ]; then
-		if [ -n "$_bats_list" ]; then
-			_bats_list="$_bats_list
-$_bats_untracked"
-		else
-			_bats_list="$_bats_untracked"
-		fi
 	fi
 	local f
-	while IFS= read -r f; do
+	while IFS= read -r -d '' f; do
 		[ -n "$f" ] || continue
 		# A path git listed that does not EXIST was deleted in this tree —
 		# there is nothing to copy and nothing is lost, so skip it. But a
@@ -1065,9 +1072,8 @@ $_bats_untracked"
 			_prove_symptom_wt_cleanup
 			return 2
 		fi
-	done <<EOF
-$_bats_list
-EOF
+	done <"$_bats_z"
+	rm -f "$_bats_z"
 
 	# Output kept in a file the caller names, so a baseline mismatch can
 	# show what happened rather than only that the number was wrong.
@@ -2153,12 +2159,20 @@ cmd_audit() {
 		# becomes "-"), and symptom_cmd is reduced to a BOOLEAN here since
 		# only its presence matters. That also removes the one field that
 		# could contain a tab or a newline of its own.
+		# TYPES ARE CHECKED IN JQ, not just presence. A forged record with
+		# `"symptom_verified": "true"` (a string), a symptom_cmd that is an
+		# object, and rcs of "bad-a" / "bad-b" — which differ, so the
+		# not-equal test passed — counted as PROVEN. Each field is
+		# normalised to "-" unless it has the right type.
 		_fields=$(jq -r '
 			[ (.kind // "-"),
-			  (.decision_data.symptom_verified // false | tostring),
-			  ((.decision_data.symptom_cmd // "") | length > 0 | tostring),
-			  ((.decision_data.symptom_baseline_rc // "-") | tostring),
-			  ((.decision_data.symptom_fixed_rc // "-") | tostring)
+			  (if (.decision_data.symptom_verified) == true then "true" else "-" end),
+			  (if (.decision_data.symptom_cmd | type) == "string"
+			      and ((.decision_data.symptom_cmd | length) > 0) then "true" else "-" end),
+			  (if (.decision_data.symptom_baseline_rc | type) == "number"
+			      then (.decision_data.symptom_baseline_rc | tostring) else "-" end),
+			  (if (.decision_data.symptom_fixed_rc | type) == "number"
+			      then (.decision_data.symptom_fixed_rc | tostring) else "-" end)
 			] | @tsv' "$_af" 2>/dev/null) || continue
 		IFS=$(printf '\t') read -r _kind _sv _scmd _sb _sf <<EOF
 $_fields
