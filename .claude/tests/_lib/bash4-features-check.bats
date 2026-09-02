@@ -102,6 +102,21 @@ _chk() {
 	[[ $output == *"readarray (bash 4.0)"* ]]
 }
 
+@test "backtick substitution is a command boundary: legacy backtick-wrapped features flag (#2649 backup review)" {
+	run _chk $'#!/bin/bash\nn=`declare -A seen; echo "${#seen[@]}"`'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]] || return 1
+	run _chk $'#!/bin/bash\narr=`mapfile -t a < f; echo done`'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile / readarray (bash 4.0)"* ]]
+}
+
+@test "CRLF shebang does not disable the gate (#2649 backup review)" {
+	run _chk $'#!/bin/bash\r\ndeclare -A m'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]]
+}
+
 @test "negated commands flag: if ! mapfile ... and bare ! declare (#2649 r2)" {
 	run _chk $'#!/bin/bash\nif ! mapfile -d "" items < input; then :; fi'
 	[ "$status" -eq 1 ] || return 1

@@ -106,12 +106,17 @@ bash4_features_unsafe_shebang() {
 	# failed OPEN on them. Parse: strip `#!`, word-split, compare the first
 	# token exactly — `/opt/homebrew/bin/bash` and `/usr/bin/env bash`
 	# never equal `/bin/bash`, so safe interpreters cannot false-match.
-	case "${1:-}" in
+	# CRLF checkout (backup review #2649): `#!/bin/bash\r` left a trailing
+	# CR on the token, failing the compare and silently disabling the whole
+	# gate for that file — strip it before parsing.
+	local _b4_line="${1:-}"
+	_b4_line="${_b4_line%$'\r'}"
+	case "$_b4_line" in
 	"#!"*) ;;
 	*) return 1 ;;
 	esac
 	# shellcheck disable=SC2086  # deliberate word-split: first token = interpreter path
-	set -- ${1#"#!"}
+	set -- ${_b4_line#"#!"}
 	[ "${1:-}" = "/bin/bash" ]
 }
 
@@ -147,7 +152,7 @@ _b4_hit() {
 # space inside a QUOTED value still breaks the chain, accepted as rare +
 # same-direction miss) and leading REDIRECTIONS (`< input mapfile x`,
 # `2>log readarray y`).
-_B4_PRE='(^|[;{()&|])[[:space:]]*(((if|then|elif|else|do|while|until|!|builtin|command|time)([[:space:]]+-[A-Za-z][A-Za-z-]*)*|[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?=[^[:space:]]*|[0-9]*[<>]{1,2}[[:space:]]*[^[:space:]]+)[[:space:]]+)*'
+_B4_PRE='(^|[;{()&|`])[[:space:]]*(((if|then|elif|else|do|while|until|!|builtin|command|time)([[:space:]]+-[A-Za-z][A-Za-z-]*)*|[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?=[^[:space:]]*|[0-9]*[<>]{1,2}[[:space:]]*[^[:space:]]+)[[:space:]]+)*'
 
 bash4_features_check_content() {
 	local display="${1:-}" content="${2:-}" body shebang
