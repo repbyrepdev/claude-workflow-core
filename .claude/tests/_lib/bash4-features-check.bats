@@ -51,12 +51,25 @@ _chk() {
 @test "whitespace shebang variants are still unsafe; safe interpreters never match (#2649)" {
 	run _chk $'#! /bin/bash\ndeclare -A m'
 	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]] || return 1
 	run _chk $'#!/bin/bash \t\ndeclare -A m'
 	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]] || return 1
 	run bash4_features_unsafe_shebang '#!/opt/homebrew/bin/bash'
 	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ] || return 1
 	run bash4_features_unsafe_shebang '#!/usr/bin/env bash'
-	[ "$status" -eq 1 ]
+	[ "$status" -eq 1 ] || return 1
+	[ -z "$output" ]
+}
+
+@test "negated commands flag: if ! mapfile ... and bare ! declare (#2649 r2)" {
+	run _chk $'#!/bin/bash\nif ! mapfile -d "" items < input; then :; fi'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile -d"* ]] || return 1
+	run _chk $'#!/bin/bash\n! declare -A m'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]]
 }
 
 @test "declare -A flags (bash 4.0)" {

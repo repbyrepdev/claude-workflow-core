@@ -135,8 +135,10 @@ _b4_hit() {
 # `for f in a b; do readarray ...`, `if declare -A m; then` are the anchor
 # regression class in its most common single-line shape, and the bare
 # control-char class missed them (probed live: rc=1). The chain form
-# `((word)[[:space:]]+)*` also covers `do while :; do ...` nesting.
-_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until)[[:space:]]+)*'
+# `((word)[[:space:]]+)*` also covers `do while :; do ...` nesting, and
+# `!` (a reserved word in command position) covers negated commands like
+# `if ! mapfile -d '' x <f; then` (CR #2649 r2 fail-open).
+_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until|!)[[:space:]]+)*'
 
 bash4_features_check_content() {
 	local display="${1:-}" content="${2:-}" body shebang
