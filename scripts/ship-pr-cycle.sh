@@ -2002,20 +2002,35 @@ _cmd_next_once() {
 			return 1
 		fi
 		# (#2651) One-time APPROACH-REVIEW checkpoint, at the only edge
-		# that precedes every code review. BRANCH-keyed marker: state is
-		# per-sha, so branch-ready re-enters on every commit — a per-sha
-		# emit would re-block the same question each commit. Marker write
-		# failure only risks a re-emit (advisory), never a deadlock. No
-		# second re-dispatch site; the _SHIP_NEXT_REDISPATCH cap is
-		# untouched.
-		local _appr_branch _appr_marker
-		_appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
-		_appr_marker="$STATE_DIR/approach-reviewed.$(printf '%s' "$_appr_branch" | tr -c 'A-Za-z0-9._-\n' '_')"
-		if [ ! -f "$_appr_marker" ]; then
+		# that precedes every code review. Branch-keyed via the SAME
+		# validated branch machinery the pointer files use
+		# (_branch_name_safe_for_pointer; phase0.5 r1 flagged the first
+		# version for reinventing it with divergent sanitization —
+		# the exact prior-art miss this directive exists to ask about):
+		# state is per-sha and branch-ready re-enters on every commit,
+		# so a per-sha emit would re-block the same question each
+		# commit. Unresolvable/unsafe branch name (detached HEAD, git
+		# failure): emit WITHOUT a marker and say so — an advisory
+		# re-fire on a rare state beats a skipped checkpoint or a
+		# shared marker. Marker-write failure only risks a re-emit,
+		# never a deadlock (the mkdir's own failure surfaces through
+		# the marker write's check — its stderr is quieted because
+		# already-exists is the common case). No second re-dispatch
+		# site; the _SHIP_NEXT_REDISPATCH cap is untouched.
+		local _appr_branch _appr_marker=""
+		if _appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) &&
+			_branch_name_safe_for_pointer "$_appr_branch"; then
+			_appr_marker="$STATE_DIR/branch/$_appr_branch.approach-reviewed"
+		else
+			scm_warn "approach-review: branch name unresolvable or unsafe — directive emitted without a once-marker (it may re-fire)"
+		fi
+		if [ -z "$_appr_marker" ] || [ ! -f "$_appr_marker" ]; then
 			_emit_stage_directive approach-review
-			mkdir -p "$STATE_DIR" 2>/dev/null || true
-			: >"$_appr_marker" ||
-				scm_warn "approach-review marker write failed at $_appr_marker — the one-time directive may re-fire on the next commit"
+			if [ -n "$_appr_marker" ]; then
+				mkdir -p "$(dirname "$_appr_marker")" 2>/dev/null || true
+				: >"$_appr_marker" ||
+					scm_warn "approach-review marker write failed at $_appr_marker — the one-time directive may re-fire on the next commit"
+			fi
 		fi
 		_set_stage "phase0.5"
 		echo "→ advanced to phase0.5"

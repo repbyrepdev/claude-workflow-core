@@ -85,3 +85,12 @@ _stage_config() {
 	[ "$status" -ne 0 ] || return 1
 	[[ $output == *'approach: must be a non-empty string'* ]]
 }
+
+@test "approach as an EMPTY string fails (#2651)" {
+	_write_valid_config
+	printf '%s\n' 'approach: ""' >>.claude/review-config.yml
+	_stage_config || return 1
+	run bash "$HOOK"
+	[ "$status" -ne 0 ] || return 1
+	[[ $output == *'approach: must be a non-empty string'* ]]
+}

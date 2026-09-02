@@ -38,9 +38,10 @@ if ! yq -e '.agents' "$_tmp" >/dev/null 2>&1; then
 fi
 
 # (#2651) OPTIONAL top-level `approach:` — a consumer-declared brief the
-# ship-pr-cycle approach-review checkpoint surfaces at branch-ready.
+# ship-pr-cycle approach-review checkpoint tells the operator/agent to
+# weigh at branch-ready (advisory prose; nothing machine-embeds it).
 # Non-required (existing configs pass untouched); when present it must be
-# a non-empty string so the directive never renders an empty brief.
+# a non-empty string so a declared brief is never a silently-blank value.
 if yq -e '.approach' "$_tmp" >/dev/null 2>&1; then
 	if ! yq -e '(.approach | tag) == "!!str" and (.approach | length > 0)' "$_tmp" >/dev/null 2>&1; then
 		echo "✗ review-config.yml approach: must be a non-empty string when present (#2651)" >&2

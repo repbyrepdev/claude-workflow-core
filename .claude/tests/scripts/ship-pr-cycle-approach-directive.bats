@@ -42,7 +42,7 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'APPROACH REVIEW'* ]] || return 1
 	[[ $output == *'advanced to phase0.5'* ]] || return 1
-	ls .claude/.session-state/ship-cycle/approach-reviewed.* >/dev/null 2>&1
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-reviewed ]
 }
 
 @test "a later commit on the SAME branch does not re-emit the directive" {
@@ -63,7 +63,7 @@ teardown() {
 	[[ $output == *'advanced to phase0.5'* ]]
 }
 
-@test "a DIFFERENT branch gets its own one-time directive" {
+@test "a DIFFERENT branch gets its own one-time directive and its own marker" {
 	cd "$TEST_TMP" || return 1
 	run bash "$SCRIPT" start
 	[ "$status" -eq 0 ] || return 1
@@ -75,5 +75,36 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ] || return 1
-	[[ $output == *'APPROACH REVIEW'* ]]
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	# Marker isolation: one file per branch, both present.
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-reviewed ] || return 1
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-other.approach-reviewed ]
+}
+
+@test "a slash-bearing branch name nests its marker like the branch pointers do" {
+	cd "$TEST_TMP" || return 1
+	git checkout -q -b feat/2651/slashy main || return 1
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m slashy1 || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	[ -f .claude/.session-state/ship-cycle/branch/feat/2651/slashy.approach-reviewed ]
+}
+
+@test "marker write failure warns, still advances, and may re-fire" {
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	# Block the branch/ dir with a FILE so mkdir -p and the marker write
+	# both fail: the directive must stay advisory (warn + advance).
+	# (start already created the real dir for the pointer — replace it.)
+	rm -rf .claude/.session-state/ship-cycle/branch || return 1
+	: >.claude/.session-state/ship-cycle/branch || return 1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	[[ $output == *'marker write failed'* ]] || return 1
+	[[ $output == *'advanced to phase0.5'* ]]
 }
