@@ -1417,3 +1417,55 @@ JSON
 		return 1
 	}
 }
+
+@test "#2643: an rc above 255 is not an exit code either" {
+	# CR-in-CI: bash can only observe a process exit status of 0..255, so
+	# 256 and 9999 are integers that no wait(2) will ever report. They are
+	# distinct and non-negative, which was enough to pass the previous
+	# checks.
+	_make_fix
+	local sd="$WORK/.claude/.session-state/prove-yourself"
+	mkdir -p "$sd"
+	cat >"$sd/forged-high.json" <<'JSON'
+{"finding_id":"forgedhigh","kind":"fix","finding_text":"t","ts":"2026-01-01T00:00:00Z",
+ "covers_count":1,"cited_files":[],
+ "decision_data":{"fix_summary":"t","retest_cmd":"true","retest_rc":0,
+                  "retest_verified":true,"retest_actual_rc":0,
+                  "symptom_verified":true,"symptom_cmd":"false",
+                  "symptom_baseline_rc":9999,"symptom_fixed_rc":256}}
+JSON
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[ "$status" -eq 0 ] || {
+		echo "audit exited $status: $output"
+		return 1
+	}
+	[[ $output == *"unproven (no symptom differential): 1"* ]] || {
+		echo "a record claiming rc 9999 and rc 256 counted as proven: $output"
+		return 1
+	}
+}
+
+@test "#2643: rc 255 itself is still valid — the boundary is inclusive" {
+	# The control. 255 is a real exit status and must keep counting; an
+	# off-by-one here would quietly mark genuine evidence unproven.
+	_make_fix
+	local sd="$WORK/.claude/.session-state/prove-yourself"
+	mkdir -p "$sd"
+	cat >"$sd/edge-255.json" <<'JSON'
+{"finding_id":"edge255","kind":"fix","finding_text":"t","ts":"2026-01-01T00:00:00Z",
+ "covers_count":1,"cited_files":[],
+ "decision_data":{"fix_summary":"t","retest_cmd":"true","retest_rc":0,
+                  "retest_verified":true,"retest_actual_rc":0,
+                  "symptom_verified":true,"symptom_cmd":"false",
+                  "symptom_baseline_rc":255,"symptom_fixed_rc":0}}
+JSON
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[ "$status" -eq 0 ] || {
+		echo "audit exited $status: $output"
+		return 1
+	}
+	[[ $output == *"unproven (no symptom differential): 0"* ]] || {
+		echo "rc 255 was rejected, but it is a real exit status: $output"
+		return 1
+	}
+}

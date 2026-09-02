@@ -2174,10 +2174,12 @@ cmd_audit() {
 			      and ((.decision_data.symptom_cmd | length) > 0) then "true" else "-" end),
 			  (if (.decision_data.symptom_baseline_rc | type) == "number"
 			      and (.decision_data.symptom_baseline_rc >= 0)
+			      and (.decision_data.symptom_baseline_rc <= 255)
 			      and ((.decision_data.symptom_baseline_rc | floor) == .decision_data.symptom_baseline_rc)
 			      then (.decision_data.symptom_baseline_rc | tostring) else "-" end),
 			  (if (.decision_data.symptom_fixed_rc | type) == "number"
 			      and (.decision_data.symptom_fixed_rc >= 0)
+			      and (.decision_data.symptom_fixed_rc <= 255)
 			      and ((.decision_data.symptom_fixed_rc | floor) == .decision_data.symptom_fixed_rc)
 			      then (.decision_data.symptom_fixed_rc | tostring) else "-" end)
 			] | @tsv' "$_af" 2>/dev/null) || continue
