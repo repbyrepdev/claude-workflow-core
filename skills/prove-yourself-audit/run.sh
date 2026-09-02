@@ -1842,13 +1842,15 @@ cmd_record_fix() {
 		# capture corroborate a file whose retest_cmd was then hand-
 		# edited to the real target (backup review on 11b7e56: rc=1
 		# collides with almost every real failure, so any prior capture
-		# for the id unlocked any command). grep prefilters by id.
-		if ! grep -F "\"finding_id\":\"$finding_id\"" "$AUDIT_FILE" 2>/dev/null |
-			jq -e --arg fid "$finding_id" \
-				--arg expect "baseline_rc=$_bl_rc retest_cmd=$_bl_cmd" \
-				'select(.kind == "baseline" and .finding_id == $fid) |
+		# for the id unlocked any command). jq reads the JSONL directly —
+		# a raw grep -F prefilter missed ids containing `"` or `\`,
+		# which jq escapes in the ledger, rejecting valid baselines
+		# (CR-in-CI r3).
+		if ! jq -e --arg fid "$finding_id" \
+			--arg expect "baseline_rc=$_bl_rc retest_cmd=$_bl_cmd" \
+			'select(.kind == "baseline" and .finding_id == $fid) |
 				 select(.finding_text == $expect)' \
-				>/dev/null 2>&1; then
+			"$AUDIT_FILE" >/dev/null 2>&1; then
 			echo "error: the tracked audit ledger has no corroborating baseline row for $finding_id matching rc=$_bl_rc AND this exact retest command — record-baseline appends the bound pair at capture; a session-state file the ledger does not corroborate is not evidence (#2652)" >&2
 			exit 2
 		fi

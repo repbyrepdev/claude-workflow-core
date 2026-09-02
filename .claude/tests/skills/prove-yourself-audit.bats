@@ -560,6 +560,21 @@ _baseline_t1() {
 	[ ! -f .claude/.session-state/prove-yourself-baselines/t1.json ]
 }
 
+@test "a finding-id containing a double quote still pairs (jq-escaped in ledger)" {
+	# CR-in-CI r3: a raw grep -F prefilter missed jq-escaped ids and
+	# rejected valid baselines as uncorroborated.
+	cd "$TEST_TMP" || return 1
+	_write_flip_check
+	run "$SKILL" record-baseline --finding-id 'quo"te' --retest-cmd "bash check.sh"
+	[ "$status" -eq 0 ] || return 1
+	touch fixed
+	run "$SKILL" record-fix --finding-id 'quo"te' --finding-text "q" \
+		--fix-summary "s" --retest-cmd "bash check.sh" --retest-rc 0 \
+		--source phase1 --confidence 5
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'before/after pair CONFIRMED'* ]]
+}
+
 @test "default finding-text derivation pairs capture and fix without an explicit id" {
 	cd "$TEST_TMP" || return 1
 	_write_flip_check
