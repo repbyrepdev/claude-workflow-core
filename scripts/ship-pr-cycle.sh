@@ -28,7 +28,11 @@ set -euo pipefail
 #   BASE_BRANCH    Comparison branch for "commits on branch" (default: main)
 #
 # Stages (state.stage):
-#   branch-ready      → ≥1 commit ahead of BASE_BRANCH
+#   branch-ready      → ≥1 commit ahead of BASE_BRANCH. On the FIRST pass
+#                       per branch, emits the one-time APPROACH-REVIEW
+#                       directive (#2651) — "should this code exist?" —
+#                       before any code review runs; a branch-keyed
+#                       marker keeps later commits from re-blocking it
 #   phase0.5          → Copilot prefilter pending
 #   phase1            → Claude Phase 1 rounds (cap from scaler tier)
 #   phase2            → CR-CLI loop (cap from scaler tier)
@@ -1996,6 +2000,22 @@ _cmd_next_once() {
 			[ -f "$REPO_ROOT/.git/shallow" ] && scm_warn "rev-list returned 0 vs $BASE_BRANCH but repo is shallow — base may be beyond fetch depth"
 			echo "ship-pr-cycle: no commits on branch (vs $BASE_BRANCH) — make a commit first"
 			return 1
+		fi
+		# (#2651) One-time APPROACH-REVIEW checkpoint, at the only edge
+		# that precedes every code review. BRANCH-keyed marker: state is
+		# per-sha, so branch-ready re-enters on every commit — a per-sha
+		# emit would re-block the same question each commit. Marker write
+		# failure only risks a re-emit (advisory), never a deadlock. No
+		# second re-dispatch site; the _SHIP_NEXT_REDISPATCH cap is
+		# untouched.
+		local _appr_branch _appr_marker
+		_appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+		_appr_marker="$STATE_DIR/approach-reviewed.$(printf '%s' "$_appr_branch" | tr -c 'A-Za-z0-9._-\n' '_')"
+		if [ ! -f "$_appr_marker" ]; then
+			_emit_stage_directive approach-review
+			mkdir -p "$STATE_DIR" 2>/dev/null || true
+			: >"$_appr_marker" ||
+				scm_warn "approach-review marker write failed at $_appr_marker — the one-time directive may re-fire on the next commit"
 		fi
 		_set_stage "phase0.5"
 		echo "→ advanced to phase0.5"

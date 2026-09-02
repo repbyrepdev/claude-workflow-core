@@ -23,7 +23,7 @@ set -u
 # Bodies live here (one `case` arm each) so a directive is defined ONCE even
 # when emitted from multiple call sites. IMPLEMENTED arms:
 # push-to-pr, merge-conflict, merge-gate, pr-create-preread, phase2-preread,
-# cr-thread-reply.
+# cr-thread-reply, approach-review.
 # Add an arm per NEW stage/edge as #283 expands (round-complete, skill-usage,
 # efficiency-grouping, ...). KEEP THIS LIST IN SYNC — it drifted once already
 # (cr-thread-reply shipped without being listed), and the list is what a
@@ -98,6 +98,20 @@ _emit_stage_directive() {
 		body="PREREAD GATE — advanced INTO phase2 (local CR-CLI review loop). BEFORE running CR, Read the Phase 2 process so you apply the cap/cache/prove-yourself discipline correctly:
     1. Read the ship-pr-cycle SKILL.md — skills/ship-pr-cycle/SKILL.md in the plugin, or .claude/skills/ship-pr-cycle/SKILL.md in a consumer repo (← reading it clears the block below; see the [phase2] section + 'Phase 2 / CR findings' rule)
   Until you Read it, the next Bash/Edit/Write is BLOCKED (hook-ack pending). Phase 2 invokes the local CR-CLI via the cap from phase1-scaler; the content-hash cache short-circuits re-review of an unchanged surface (don't burn the 10/hr budget). On findings: apply OR reject-with-prove-yourself in-PR, commit, let post-commit resume re-fire — do NOT advance with open findings. Then re-run 'scripts/ship-pr-cycle.sh next'."
+		;;
+	approach-review)
+		# (#2651) The "should this code exist?" checkpoint, surfaced at
+		# branch-ready BEFORE any code review runs. Emitted once per
+		# BRANCH (the caller keeps a branch-keyed marker — branch-ready
+		# re-enters on every commit, and a per-commit re-block would turn
+		# a one-time question into a treadmill). Advisory hook-ack: the
+		# Read clears it and it never re-arms on this branch.
+		body="APPROACH REVIEW (one-time per branch, #2651) — before any code review runs, confirm the APPROACH itself:
+    - Does an upstream source already publish this? (a pin/consume beats a rebuild)
+    - Is there prior art in-repo for the same mechanism? (grep before inventing)
+    - Does the linked issue's acceptance actually require this shape, or a smaller one?
+  If the consumer's review-config.yml declares a top-level 'approach:' brief, weigh the change against it.
+  State the chosen approach and the strongest rejected alternative in the PR body. Then re-run 'scripts/ship-pr-cycle.sh next' — this directive fires once per branch and does not re-block after acknowledgement."
 		;;
 	cr-thread-reply)
 		body="CR THREAD REPLY — classify each UNADDRESSED thread, then reply with evidence. The rule is: never resolve a CR thread by hand; reply and let CR resolve. This stage is where that reply happens, and it is the step whose absence stalled #2540 and #2635 at merge-gate with non-zero threads and no defined action.

@@ -37,6 +37,17 @@ if ! yq -e '.agents' "$_tmp" >/dev/null 2>&1; then
 	errs=$((errs + 1))
 fi
 
+# (#2651) OPTIONAL top-level `approach:` — a consumer-declared brief the
+# ship-pr-cycle approach-review checkpoint surfaces at branch-ready.
+# Non-required (existing configs pass untouched); when present it must be
+# a non-empty string so the directive never renders an empty brief.
+if yq -e '.approach' "$_tmp" >/dev/null 2>&1; then
+	if ! yq -e '(.approach | tag) == "!!str" and (.approach | length > 0)' "$_tmp" >/dev/null 2>&1; then
+		echo "✗ review-config.yml approach: must be a non-empty string when present (#2651)" >&2
+		errs=$((errs + 1))
+	fi
+fi
+
 # Every agent must have scope + canonical_brief + output_shape.fields + dedup_key.
 # Skipping this check for agents that are purely skip-rule definitions would
 # allow downstream tools to consume a brief-less agent and emit a blank prompt.
