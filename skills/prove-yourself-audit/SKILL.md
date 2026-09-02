@@ -18,7 +18,7 @@ The 4 trigger points map to **subcommands** below — `--at <trigger>` is *not* 
 | Trigger point | When to invoke | Subcommand to call |
 |---|---|---|
 | At findings | After CR/agent/lint returns findings, before triaging | (Read findings + plan dogfood. No subcommand call yet.) |
-| At fixes | After applying a fix, dogfood-test it | `record-fix` with `--retest-cmd` and `--retest-rc` |
+| At fixes | BEFORE applying the fix, capture the failing run (`record-baseline`); after applying it, dogfood-test | `record-baseline` then `record-fix` — the pair proves *failed before, passes after* (#2652). `record-fix` alone stays valid where no pre-fix tree remains (the #2643 symptom flags cover before/after there) |
 | At rejection | Before labeling a finding "hallucination/false-positive/rejected" | `record-rejection` with all 6 required evidence fields |
 | At commit | Pre-commit gate (automatic via prove-yourself-gate.sh hook) | `check-commit` (gate calls this) |
 
@@ -84,6 +84,26 @@ and refuses the record unless the actual exit code equals `--retest-rc`
   Feed-pipes (`printf x | bash hooks/y.sh`) remain legal because every
   pipeline stage executes unconditionally; a pipe *after* the path still
   refuses (rc = pipe tail). One record per entry point.
+
+**The PRE-FIX BASELINE (#2652).** The cheapest before/after: while the tree
+is still broken, capture the failing run —
+
+```bash
+.claude/skills/prove-yourself-audit/run.sh record-baseline \
+  --finding-id <same-id-the-fix-will-use> \
+  --retest-cmd "<the command that demonstrates the bug>"
+```
+
+The command is re-executed under the same deadline machinery and **must
+fail** (a passing baseline demonstrates no symptom and is refused; a
+symptom whose failure mode is a *wrong success* needs the explicit rc pair
+of the symptom flags below). Evidence `{cmd, rc, output tail, tree sha}` is
+stored keyed by `--finding-id`. A later `record-fix` for that finding-id
+then **requires** the same `--retest-cmd`, a claimed `--retest-rc 0`, and
+stamps both halves into the record (`baseline_verified: true`,
+`baseline_rc`, `baseline_ts`, `baseline_sha`, `baseline_output_tail`) —
+*failed before, passes after*, both sides run live, no worktree needed.
+Without a captured baseline `record-fix` behaves exactly as before.
 
 **The SYMPTOM DIFFERENTIAL (#2643).** A passing retest proves the command
 runs, not that it would have FAILED before the fix — a hook that was already

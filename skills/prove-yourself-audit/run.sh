@@ -21,6 +21,11 @@ export SKILL_WRAPPER=1
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 STATE_DIR="$REPO_ROOT/.claude/.session-state/prove-yourself"
 mkdir -p "$STATE_DIR"
+# (#2652) Pre-fix baselines captured by record-baseline, consumed by
+# record-fix. Session-state like $STATE_DIR: a baseline is scoped to the
+# in-flight fix, not the durable audit trail (the consuming record stamps
+# the evidence into itself).
+BASELINE_DIR="$REPO_ROOT/.claude/.session-state/prove-yourself-baselines"
 # v4.28-W4 (#710): tracked audit log persists across PRs (gitignored
 # .session-state is per-session). One-line summary per record. Per-
 # record full JSON stays in $STATE_DIR for transient detail.
@@ -366,6 +371,19 @@ Usage:
                              # file makes the baseline exit "command not found",
                              # which looks like proof and is not; pass this only
                              # when 127 genuinely IS the reported symptom.
+  run.sh record-baseline --finding-id X --retest-cmd "..." [--note "..."]
+                             # (#2652) capture PRE-FIX evidence BEFORE applying
+                             # the fix: the command is RE-EXECUTED now and must
+                             # FAIL (nonzero rc) — a passing baseline shows no
+                             # symptom and is refused. Stored keyed by
+                             # finding-id; a later record-fix for the SAME
+                             # finding-id then requires the SAME command, a
+                             # claimed --retest-rc 0, and stamps both halves
+                             # into the record — before/after proven from two
+                             # live runs, no worktree needed. For a fix that is
+                             # already committed (no pre-fix tree left to run
+                             # in), use the #2643 symptom flags instead.
+                             # Timeout: PROVE_RETEST_TIMEOUT (default 120s).
   run.sh audit
   run.sh check-commit
   run.sh reset
@@ -1116,6 +1134,136 @@ _prove_symptom_run_baseline() {
 	return 0
 }
 
+# (#2652) PRE-FIX BASELINE — the missing half of #2562's "evidence is a
+# run". record-fix re-executes the retest AFTER the fix, which proves the
+# suite passes but not that the bug was ever present; the #2643 symptom
+# differential reconstructs "before" from a worktree, which works only
+# when a pre-fix commit exists to check out. This subcommand captures the
+# "before" LIVE, at the moment the operator still has the broken tree:
+# the command is re-executed under the same deadline machinery and must
+# FAIL — a passing baseline demonstrates no symptom and is refused
+# (a symptom whose failure mode is a WRONG rc-0 needs the symptom flags'
+# explicit rc pair instead; this path encodes the common fails→passes
+# contract). Evidence {cmd, rc, output tail, tree sha} is stored keyed by
+# finding-id; the later record-fix for that finding-id must run the SAME
+# command, claim rc 0, and stamps both halves into the record.
+cmd_record_baseline() {
+	local finding_id="" retest_cmd="" note=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--finding-id)
+			[ $# -lt 2 ] && {
+				echo "error: missing value for --finding-id" >&2
+				exit 2
+			}
+			finding_id=${2:-}
+			shift 2
+			;;
+		--retest-cmd)
+			[ $# -lt 2 ] && {
+				echo "error: missing value for --retest-cmd" >&2
+				exit 2
+			}
+			retest_cmd=${2:-}
+			shift 2
+			;;
+		--note)
+			[ $# -lt 2 ] && {
+				echo "error: missing value for --note" >&2
+				exit 2
+			}
+			note=${2:-}
+			shift 2
+			;;
+		*)
+			echo "error: unknown arg: $1" >&2
+			exit 2
+			;;
+		esac
+	done
+	[ -z "$finding_id" ] && {
+		echo "error: --finding-id is required (the later record-fix pairs on it)" >&2
+		exit 2
+	}
+	[ -z "$retest_cmd" ] && {
+		echo "error: --retest-cmd is required" >&2
+		exit 2
+	}
+	case "$finding_id" in
+	*/* | *..*)
+		# The id becomes a filename under BASELINE_DIR; a path-shaped id
+		# would escape the directory.
+		echo "error: --finding-id must not contain '/' or '..' (it names the baseline file)" >&2
+		exit 2
+		;;
+	esac
+
+	# Same re-execution contract as record-fix's retest (#2562): a real
+	# run, a real deadline, fail-closed when no timeout binary exists, and
+	# a deadline kill is never evidence.
+	local _bl_timeout="${PROVE_RETEST_TIMEOUT:-120}"
+	if ! [[ $_bl_timeout =~ ^[1-9][0-9]*$ ]]; then
+		echo "WARN: PROVE_RETEST_TIMEOUT='$_bl_timeout' is not a positive integer — using 120" >&2
+		_bl_timeout=120
+	fi
+	local _bl_out _bl_actual_rc=0 _bl_t0 _bl_elapsed
+	_bl_out=$(mktemp) || {
+		echo "error: mktemp failed for baseline output capture" >&2
+		exit 1
+	}
+	echo "record-baseline: re-executing pre-fix evidence (timeout ${_bl_timeout}s): $retest_cmd" >&2
+	_bl_t0=$SECONDS
+	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
+		(cd "$REPO_ROOT" && timeout "$_bl_timeout" bash -c "$retest_cmd") >"$_bl_out" 2>&1 || _bl_actual_rc=$?
+	elif [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
+		echo "WARN: PROVE_RETEST_NO_TIMEOUT=1 — the PROVE_RETEST_TIMEOUT deadline is UNENFORCED for this baseline (a hung run must be interrupted manually)" >&2
+		(cd "$REPO_ROOT" && bash -c "$retest_cmd") >"$_bl_out" 2>&1 || _bl_actual_rc=$?
+	else
+		echo "error: no timeout binary on PATH — refusing to run baseline evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2652)" >&2
+		rm -f "$_bl_out"
+		exit 1
+	fi
+	_bl_elapsed=$((SECONDS - _bl_t0))
+	if [ "$_bl_actual_rc" -eq 124 ] && [ "$_bl_elapsed" -ge "$_bl_timeout" ]; then
+		echo "error: baseline hit the PROVE_RETEST_TIMEOUT deadline (${_bl_elapsed}s >= ${_bl_timeout}s) — a deadline kill is never valid evidence; raise PROVE_RETEST_TIMEOUT if the run genuinely needs longer (#2652)" >&2
+		rm -f "$_bl_out"
+		exit 1
+	fi
+	if [ "$_bl_actual_rc" -eq 0 ]; then
+		echo "error: baseline run PASSED (rc 0) — no symptom demonstrated, so there is nothing for the fix to flip; a baseline must show the bug (#2652)." >&2
+		echo "  If the symptom is a WRONG success (the command should fail and does not), encode the expected rcs explicitly via record-fix's --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc instead." >&2
+		rm -f "$_bl_out"
+		exit 1
+	fi
+	local _bl_tail _bl_sha _bl_ts
+	_bl_tail=$(tail -c 800 "$_bl_out" 2>/dev/null || true)
+	rm -f "$_bl_out"
+	_bl_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+	_bl_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+	mkdir -p "$BASELINE_DIR" || {
+		echo "error: cannot create $BASELINE_DIR" >&2
+		exit 1
+	}
+	if ! jq -n \
+		--arg fid "$finding_id" \
+		--arg ts "$_bl_ts" \
+		--arg sha "$_bl_sha" \
+		--arg cmd "$retest_cmd" \
+		--argjson rc "$_bl_actual_rc" \
+		--arg tail "$_bl_tail" \
+		--arg note "$note" \
+		'{finding_id: $fid, ts: $ts, sha: $sha, retest_cmd: $cmd,
+		  baseline_rc: $rc, output_tail: $tail,
+		  note: (if $note == "" then null else $note end)}' \
+		>"$BASELINE_DIR/${finding_id}.json"; then
+		echo "error: failed writing baseline record for $finding_id" >&2
+		exit 1
+	fi
+	echo "✓ Captured pre-fix baseline for $finding_id: rc=$_bl_actual_rc (must be nonzero; record-fix will require the same command to exit 0)"
+	echo "  $BASELINE_DIR/${finding_id}.json"
+}
+
 cmd_record_fix() {
 	# v4.28-W4 #851 r1: ASYMMETRY DOCS — record-fix INTENTIONALLY
 	# differs from record-rejection in required flags:
@@ -1534,6 +1682,42 @@ cmd_record_fix() {
 			echo "error: cannot derive finding-id (no sha256sum/shasum) — pass --finding-id explicitly" >&2
 			exit 2
 		}
+	fi
+
+	# ---- (#2652) PRE-FIX BASELINE PAIRING -----------------------------
+	# A baseline captured by record-baseline for this finding-id upgrades
+	# the retest from "passes now" to "failed before, passes now". When
+	# one exists it is REQUIRED to match: same command (a different
+	# command is two unrelated observations, not a differential) and a
+	# claimed rc of 0 (the baseline already proved nonzero, so the pair
+	# encodes fails→passes; nonzero-target evidence belongs to the
+	# symptom flags). Absent a baseline, behavior is unchanged — the
+	# #2643 symptom differential remains the before/after path for
+	# already-committed fixes and cycle-critical citations.
+	local _bl_file="$BASELINE_DIR/${finding_id}.json"
+	local _bl_present=0 _bl_cmd="" _bl_rc="" _bl_ts="" _bl_sha="" _bl_tail=""
+	if [ -f "$_bl_file" ]; then
+		_bl_present=1
+		if ! _bl_cmd=$(jq -er '.retest_cmd' "$_bl_file" 2>/dev/null) ||
+			! _bl_rc=$(jq -er '.baseline_rc' "$_bl_file" 2>/dev/null); then
+			echo "error: baseline record $_bl_file is malformed — re-capture with record-baseline or remove it (#2652)" >&2
+			exit 2
+		fi
+		_bl_ts=$(jq -r '.ts // ""' "$_bl_file" 2>/dev/null || true)
+		_bl_sha=$(jq -r '.sha // ""' "$_bl_file" 2>/dev/null || true)
+		_bl_tail=$(jq -r '.output_tail // ""' "$_bl_file" 2>/dev/null || true)
+		if [ "$_bl_cmd" != "$retest_cmd" ]; then
+			echo "error: BASELINE MISMATCH — record-baseline for $finding_id captured:" >&2
+			echo "    $_bl_cmd" >&2
+			echo "  but --retest-cmd is:" >&2
+			echo "    $retest_cmd" >&2
+			echo "  The before/after pair must run the SAME command (#2652)." >&2
+			exit 2
+		fi
+		if [ "$retest_rc" -ne 0 ]; then
+			echo "error: a pre-fix baseline exists for $finding_id (baseline rc=$_bl_rc), so the post-fix retest must PASS — claim --retest-rc 0. Nonzero-target evidence uses --symptom-cmd/--symptom-baseline-rc/--symptom-fixed-rc instead (#2652)." >&2
+			exit 2
+		fi
 	fi
 
 	# #2562: EVIDENCE MUST BE A RUN, NOT A CLAIM. record-fix used to accept
@@ -2013,6 +2197,11 @@ cmd_record_fix() {
 		--arg src "${src:-}" \
 		--argjson actual "$_retest_actual_rc" \
 		--arg rtail "$_retest_tail" \
+		--argjson blpresent "$([ "$_bl_present" -eq 1 ] && echo true || echo false)" \
+		--argjson blrc "${_bl_rc:-null}" \
+		--arg blts "$_bl_ts" \
+		--arg blsha "$_bl_sha" \
+		--arg bltail "$_bl_tail" \
 		'{finding_id: $fid, kind: "fix", finding_text: $ftext, ts: $ts,
 		  covers_count: $covers, confidence: $conf,
 		  severity: (if $sev == "" then null else $sev end),
@@ -2021,12 +2210,20 @@ cmd_record_fix() {
 		  cited_files: $cited,
 		  decision_data: {fix_summary: $summary, retest_cmd: $cmd, retest_rc: $rc,
 		                  retest_verified: true, retest_actual_rc: $actual,
+		                  baseline_verified: $blpresent, baseline_rc: $blrc,
+		                  baseline_ts: (if $blts == "" then null else $blts end),
+		                  baseline_sha: (if $blsha == "" then null else $blsha end),
+		                  baseline_output_tail: (if $bltail == "" then null else $bltail end),
 		                  symptom_cmd: $symcmd, symptom_baseline_rc: $symbase,
 		                  symptom_fixed_rc: $symfixed, symptom_baseline_ref: $symref,
 		                  symptom_baseline_ref_effective: (if $symrefeff == "" then null else $symrefeff end),
 		                  symptom_allow_absence_baseline: $symabsence,
 		                  symptom_verified: ($symcmd != ""),
 		                  retest_output_tail: $rtail}}' >"$state_file"
+
+	if [ "$_bl_present" -eq 1 ]; then
+		echo "record-fix: before/after pair CONFIRMED — baseline rc=$_bl_rc (captured $_bl_ts at ${_bl_sha:0:7}), post-fix rc=$_retest_actual_rc" >&2
+	fi
 
 	# Record per-cited-file cache entries under reviewer "prove-yourself-fix".
 	_record_cite_cache "prove-yourself-fix" "$cited_files"
@@ -2535,6 +2732,7 @@ HELP
 case "$SUBCMD" in
 record-rejection) cmd_record_rejection "$@" ;;
 record-fix) cmd_record_fix "$@" ;;
+record-baseline) cmd_record_baseline "$@" ;;
 audit) cmd_audit ;;
 check-commit) cmd_check_commit ;;
 reset) cmd_reset ;;
@@ -2546,7 +2744,7 @@ search) cmd_search "$@" ;;
 	;;
 *)
 	echo "error: unknown subcommand: $SUBCMD" >&2
-	echo "Use one of: record-rejection, record-fix, audit, check-commit, reset, cluster-list, search" >&2
+	echo "Use one of: record-rejection, record-fix, record-baseline, audit, check-commit, reset, cluster-list, search" >&2
 	exit 2
 	;;
 esac

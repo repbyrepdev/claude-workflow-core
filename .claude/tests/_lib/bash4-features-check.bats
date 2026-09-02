@@ -307,3 +307,30 @@ _chk() {
 	[ "$status" -eq 1 ] || return 1
 	[[ $output == *"PARSE error"* ]]
 }
+
+# #2652 dogfood: run the check under the PRODUCTION shell contract —
+# both consuming gates set `set -euo pipefail`, and the SIGPIPE this
+# pins only exists under pipefail (the bats harness itself does not set
+# it, which is exactly how the bug hid from a plain _chk call).
+_chk_pipefail() {
+	run bash -c 'set -euo pipefail; . "$1"; bash4_features_check_content chk.sh "$2"' _ \
+		"${BATS_TEST_DIRNAME}/../../../_lib/bash4-features-check.sh" "$1"
+}
+
+@test "large content does not SIGPIPE shebang extraction into a spurious BLOCK" {
+	# `printf | head -1` under the callers' pipefail broke on blobs past
+	# the pipe buffer; a ~350KB safe-shebang file must pass.
+	local big
+	big=$(awk 'BEGIN{print "#!/usr/bin/env bash"; for (i = 0; i < 10000; i++) print "echo filler line for buffer pressure"}')
+	_chk_pipefail "$big"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'cannot extract shebang'* ]]
+}
+
+@test "large bin-bash content still detects its bash-4 feature at the tail" {
+	local big
+	big=$(awk 'BEGIN{print "#!/bin/bash"; for (i = 0; i < 10000; i++) print "echo filler line for buffer pressure"; print "declare -A m=()"}')
+	_chk_pipefail "$big"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *'declare -A'* ]]
+}
