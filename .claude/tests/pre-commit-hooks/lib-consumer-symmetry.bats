@@ -283,6 +283,22 @@ _stage_tweak() {
 	[[ $output == *'ledger'* ]]
 }
 
+@test "deleted content line starting with dashes is still scanned (header ambiguity)" {
+	# With default +/- indicators, deleting a line whose text begins `--`
+	# renders as `---…` and the header filter ate it — the removal of an
+	# owned-symbol use went unscanned (phase2 CR r2).
+	_seed_mylib
+	printf '%s\n' 'pre' '-- "$MY_MAX" --' 'end' >>alpha.sh
+	_commit_all dashes || return 1
+	grep -vF -- '-- "$MY_MAX" --' alpha.sh >alpha.tmp || return 1
+	mv alpha.tmp alpha.sh || return 1
+	git add alpha.sh || return 1
+	run bash "$HOOK"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *"touches 'MY_MAX'"* ]] || return 1
+	[[ $output == *'beta.sh'* ]]
+}
+
 @test "map drift fails closed: mapped lib gone but still referenced exits 2" {
 	_seed_mylib
 	printf '%s\n' '#!/bin/bash' '# migrated off _lib/issue-trailers.sh, ref lingers' >lingering.sh

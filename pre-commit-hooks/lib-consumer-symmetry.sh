@@ -206,6 +206,14 @@ _owned_of() {
 # become an option or widen an exclusion).
 _consumers_of() {
 	local _lib="$1" _owned_list="$2" _rc=0 _out _cand _cand_blob _sym
+	# Memoized like _owned_of (phase2 CR r2): both layers ask for the same
+	# lib's consumer set; the evidence pass re-reads every candidate blob.
+	# An existing (possibly empty) cache file IS the answer.
+	local _cache="${_OWNED_CACHE_DIR:?}/consumers_${_lib//\//_}"
+	if [ -f "$_cache" ]; then
+		cat "$_cache"
+		return 0
+	fi
 	_out=$(git grep --cached -l --fixed-strings -e "${_lib##*/}" -- \
 		'*.sh' ":(exclude,literal)$_lib" ":(exclude,literal)$SELF_PATH" \
 		':(exclude).claude/tests/*' 2>/dev/null) || _rc=$?
@@ -213,8 +221,10 @@ _consumers_of() {
 		echo "lib-consumer-symmetry: git grep --cached failed (rc $_rc) enumerating consumers of $_lib" >&2
 		exit 2
 	fi
-	[ -n "$_out" ] || return 0
-	[ -n "$_owned_list" ] || return 0
+	if [ -z "$_out" ] || [ -z "$_owned_list" ]; then
+		: >"$_cache"
+		return 0
+	fi
 	while IFS= read -r _cand; do
 		[ -n "$_cand" ] || continue
 		_cand_blob=$(_index_blob "$_cand")
@@ -225,7 +235,8 @@ _consumers_of() {
 				break
 			fi
 		done <<<"$_owned_list"
-	done <<<"$_out"
+	done <<<"$_out" >"$_cache"
+	cat "$_cache"
 	return 0
 }
 
@@ -309,16 +320,25 @@ for _c in "${STAGED[@]}"; do
 	_c_blob=$(_index_blob "$_c")
 	# The diff itself fails closed (phase0.5: `diff | grep || true` under
 	# pipefail swallowed a git failure identically to the benign no-match).
-	_diff_out=$(git diff --cached -U0 --no-renames -- "$_c") || {
+	# Custom output indicators (phase2 CR r2): with the default +/-, a
+	# DELETED content line whose text begins `--` renders as `---…`,
+	# indistinguishable from the file header the next grep strips — the
+	# change would be scanned as if that line never moved. O/N/C prefixes
+	# cannot collide with any header line. Unsupported flag = git error =
+	# exit 2 (visible), not a silent downgrade.
+	_diff_out=$(git diff --cached -U0 --no-renames \
+		--output-indicator-new=N --output-indicator-old=O \
+		--output-indicator-context=C -- "$_c") || {
 		echo "lib-consumer-symmetry: git diff --cached failed for $_c" >&2
 		exit 2
 	}
-	# +/- hunk lines of the staged change, context stripped. These greps
-	# read their whole input (no -q → no early-exit SIGPIPE); rc 1
-	# (no hunk lines) is the benign case, anything above is a tool error.
+	# O/N content lines of the staged change, indicator stripped so a
+	# symbol at column 0 keeps its word boundary. These commands read
+	# their whole input (no -q → no early-exit SIGPIPE); rc 1 (no hunk
+	# lines) is the benign case, anything above is a tool error.
 	_hunk_rc=0
 	_hunk=$(printf '%s\n' "$_diff_out" |
-		grep -E '^[+-]' | grep -Ev '^\+\+\+|^---') || _hunk_rc=$?
+		grep -E '^[ON]' | sed 's/^.//') || _hunk_rc=$?
 	if [ "$_hunk_rc" -ge 2 ]; then
 		echo "lib-consumer-symmetry: hunk extraction failed (rc $_hunk_rc) for $_c" >&2
 		exit 2
