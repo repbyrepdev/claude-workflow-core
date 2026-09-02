@@ -69,6 +69,11 @@ set -euo pipefail
 # ENFORCE=1 · 2 the gate could not run (not a git repo, unreadable index
 # blob, git/grep failure, unwritable ledger). 1-vs-2 per
 # bats-assertion-gate.sh:37-47.
+#
+# Requires git >= 2.19 (the `--output-indicator-*` diff options used for
+# unambiguous hunk prefixes). Older git rejects the flag, the diff call
+# fails, and the gate exits 2 with the git error visible — attributable,
+# never a silent downgrade.
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	echo "lib-consumer-symmetry: not in a git repo" >&2
@@ -391,21 +396,39 @@ while IFS= read -r _lib; do
 	if ! _lib_tracked "$_lib"; then
 		# Distinguish map drift from a tree that simply never had this
 		# library (phase2 CR): a mapped lib that is GONE while tracked
-		# scripts still mention its basename means the map references a
-		# removed/renamed library — silently skipping would produce a
-		# clean result forever. A layout with no such references (plain
-		# consumer install, unrelated _lib) legitimately no-ops.
+		# scripts still reference its basename in NON-COMMENT lines means
+		# the map references a removed/renamed library — silently skipping
+		# would produce a clean result forever. Comment-only mentions do
+		# not count (CR-in-CI r1: the gate's own positive-evidence rule;
+		# owned-symbol evidence is impossible for a removed lib, so a
+		# non-comment mention is the nearest honest proxy — a lingering
+		# comment after a legitimate removal must not wedge every commit).
+		# A layout with no such references legitimately no-ops.
 		if [ -n "$_libs" ]; then
 			_drift_rc=0
-			git grep --cached -l --fixed-strings -e "${_lib##*/}" -- '*.sh' \
-				":(exclude,literal)$SELF_PATH" ':(exclude).claude/tests/*' \
-				>/dev/null 2>&1 || _drift_rc=$?
-			if [ "$_drift_rc" -eq 0 ]; then
-				echo "lib-consumer-symmetry: mapped lib $_lib is not tracked but scripts still reference it — _LCS_TOKEN_LIBS references a removed/renamed library, fix the map" >&2
-				exit 2
-			fi
+			_drift_cands=$(git grep --cached -l --fixed-strings -e "${_lib##*/}" -- \
+				'*.sh' ":(exclude,literal)$SELF_PATH" \
+				':(exclude).claude/tests/*' 2>/dev/null) || _drift_rc=$?
 			if [ "$_drift_rc" -ge 2 ]; then
 				echo "lib-consumer-symmetry: git grep --cached failed (rc $_drift_rc) probing map drift for $_lib" >&2
+				exit 2
+			fi
+			_drift_hit=""
+			if [ "$_drift_rc" -eq 0 ]; then
+				while IFS= read -r _dc; do
+					[ -n "$_dc" ] || continue
+					_dc_stripped=$(_index_blob "$_dc" | sed '/^[[:space:]]*#/d') || {
+						echo "lib-consumer-symmetry: comment-strip failed for $_dc during drift probe" >&2
+						exit 2
+					}
+					if _blob_has "$_dc_stripped" "${_lib##*/}"; then
+						_drift_hit="$_dc"
+						break
+					fi
+				done <<<"$_drift_cands"
+			fi
+			if [ -n "$_drift_hit" ]; then
+				echo "lib-consumer-symmetry: mapped lib $_lib is not tracked but $_drift_hit still references it outside comments — _LCS_TOKEN_LIBS references a removed/renamed library, fix the map" >&2
 				exit 2
 			fi
 		fi

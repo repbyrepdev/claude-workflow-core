@@ -183,7 +183,8 @@ _stage_tweak() {
 	mkdir -p "$FIX/norepo" || return 1
 	cd "$FIX/norepo" || return 1
 	run env GIT_CEILING_DIRECTORIES="$FIX" bash "$HOOK"
-	[ "$status" -eq 2 ]
+	[ "$status" -eq 2 ] || return 1
+	[[ $output == *'not in a git repo'* ]]
 }
 
 @test "nothing staged exits 0 quietly" {
@@ -280,7 +281,7 @@ _stage_tweak() {
 	_stage_alpha_edit
 	run bash "$HOOK"
 	[ "$status" -eq 2 ] || return 1
-	[[ $output == *'ledger'* ]]
+	[[ $output == *'cannot create ledger dir'* ]]
 }
 
 @test "deleted content line starting with dashes is still scanned (header ambiguity)" {
@@ -299,14 +300,25 @@ _stage_tweak() {
 	[[ $output == *'beta.sh'* ]]
 }
 
-@test "map drift fails closed: mapped lib gone but still referenced exits 2" {
+@test "map drift fails closed: mapped lib gone but referenced in CODE exits 2" {
 	_seed_mylib
-	printf '%s\n' '#!/bin/bash' '# migrated off _lib/issue-trailers.sh, ref lingers' >lingering.sh
+	printf '%s\n' '#!/bin/bash' 'echo "loading _lib/issue-trailers.sh"' >lingering.sh
 	_commit_all lingering || return 1
 	_stage_alpha_edit
 	run bash "$HOOK"
 	[ "$status" -eq 2 ] || return 1
-	[[ $output == *'removed/renamed library'* ]]
+	[[ $output == *'removed/renamed library'* ]] || return 1
+	[[ $output == *'lingering.sh'* ]]
+}
+
+@test "map drift ignores COMMENT-only mentions of the removed lib" {
+	_seed_mylib
+	printf '%s\n' '#!/bin/bash' '# migrated off _lib/issue-trailers.sh, ref lingers' 'echo ok' >lingering.sh
+	_commit_all lingering || return 1
+	_stage_alpha_edit
+	run bash "$HOOK"
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'removed/renamed'* ]]
 }
 
 @test "unmapped _lib layout with NO reference to the mapped lib stays a no-op" {
