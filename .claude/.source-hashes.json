@@ -16,7 +16,7 @@
     ".markdownlint-cli2.jsonc": "41f3b00acdc544f0ee00d6354518e42ef9145b099dd7b8fef9f598e7e4d7ec14",
     ".semgrep/phase1.yml": "39f5c54c7853fc55e454acca942b6d60b4f2ec3db6d0cf4cf689b26ebe736aed",
     "_lib/bash-safety-check.sh": "8b02ff4595ef404ea2f33fa9f09ce5439cfb6e59e2df2e51a67334578327ed4a",
-    "_lib/bash4-features-check.sh": "c724e889b86eda518603af042367e16ef210450aab01a8c9f55d4b8ed3441832",
+    "_lib/bash4-features-check.sh": "867b4e7791e6e11b21b8fc5a3ba2136acc3faf9e05f15dd469cc36b4d76f4506",
     "_lib/bats-assertion-check.sh": "29932eb7cd7aee09134c14719b6248eb2d2e345392c5e046775dccc3037793b5",
     "_lib/bats-scope.sh": "bbbe95bf42116772b74de096bbd9171604899a01ed9b181be1cedd6c214f0c31",
     "_lib/board-paginate.sh": "76037fc15fd13b29a883a6de2d55ef1c1c4527d62b459faa7d9dfd1454c4c88b",

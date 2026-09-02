@@ -84,6 +84,24 @@ _chk() {
 	[[ $output == *"mapfile / readarray (bash 4.0)"* ]]
 }
 
+@test "assignment and redirection prefixes flag (#2649 r5)" {
+	run _chk $'#!/bin/bash\nB4_TEST=1 mapfile values < input'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile / readarray (bash 4.0)"* ]] || return 1
+	run _chk $'#!/bin/bash\nLC_ALL=C declare -A values'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]] || return 1
+	run _chk $'#!/bin/bash\na[0]=v declare -A m'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]] || return 1
+	run _chk $'#!/bin/bash\n< input mapfile values'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile / readarray (bash 4.0)"* ]] || return 1
+	run _chk $'#!/bin/bash\n2>log readarray values'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"readarray (bash 4.0)"* ]]
+}
+
 @test "negated commands flag: if ! mapfile ... and bare ! declare (#2649 r2)" {
 	run _chk $'#!/bin/bash\nif ! mapfile -d "" items < input; then :; fi'
 	[ "$status" -eq 1 ] || return 1

@@ -142,7 +142,12 @@ _b4_hit() {
 # `if ! mapfile -d '' x <f; then` (CR #2649 r2 fail-open). Chain words may
 # carry option tokens (`command -p readarray`, `time -p mapfile` — r4);
 # reserved words never take options, so the extra `(-opt)*` there is inert.
-_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until|!|builtin|command|time)([[:space:]]+-[A-Za-z][A-Za-z-]*)*[[:space:]]+)*'
+# r5 closes the remaining simple-command prefix grammar: ASSIGNMENT words
+# (`B4_TEST=1 mapfile x`, `a[0]=v declare -A m` — unquoted values; a
+# space inside a QUOTED value still breaks the chain, accepted as rare +
+# same-direction miss) and leading REDIRECTIONS (`< input mapfile x`,
+# `2>log readarray y`).
+_B4_PRE='(^|[;{()&|])[[:space:]]*(((if|then|elif|else|do|while|until|!|builtin|command|time)([[:space:]]+-[A-Za-z][A-Za-z-]*)*|[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?=[^[:space:]]*|[0-9]*[<>]{1,2}[[:space:]]*[^[:space:]]+)[[:space:]]+)*'
 
 bash4_features_check_content() {
 	local display="${1:-}" content="${2:-}" body shebang
