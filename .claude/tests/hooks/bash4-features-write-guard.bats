@@ -76,3 +76,40 @@ _run_edit() {
 	[ "$status" -eq 0 ] || return 1
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
+
+# _run_multiedit <target> <new_string> — pipe a MultiEdit payload whose
+# single edit creates content (empty old_string = new-file idiom).
+_run_multiedit() {
+	local payload
+	payload=$(jq -cn --arg fp "$1" --arg ns "$2" \
+		'{tool_name: "MultiEdit", tool_input: {file_path: $fp, edits: [{old_string: "", new_string: $ns}]}}')
+	run bash -c 'printf %s "$1" | bash "$2"' _ "$payload" "$HOOK"
+}
+
+@test "MultiEdit creating a NEW bin-bash file with a bash-4 feature DENIES (backup r2)" {
+	# MultiEdit content lives at edits[].new_string, not new_string; the
+	# old fallback queried Edit's key, got empty via //, and the
+	# zero-length short-circuit skipped the scan — new-file bypass.
+	_run_multiedit "$TEST_TMP/brandnew.sh" $'#!/bin/bash\nset -u\ndeclare -A m\n'
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "MultiEdit creating a NEW env-bash file with a bash-4 feature stays allowed" {
+	_run_multiedit "$TEST_TMP/brandnew-safe.sh" $'#!/usr/bin/env bash\nset -u\ndeclare -A m\n'
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}
+
+@test "unreadable EXEMPT file is allowed: exemptions precede reconstruction (backup r2)" {
+	# Before the reorder, the disk-read deny fired even for out-of-scope
+	# files; the exempt-path check must short-circuit first.
+	mkdir -p "$TEST_TMP/_lib" || return 1
+	local target="$TEST_TMP/_lib/bash4-features-check.sh"
+	printf '#!/bin/bash\ndeclare -A m\n' >"$target"
+	chmod 000 "$target" || return 1
+	_run_edit "$target" 'declare -A m' 'declare -A n'
+	chmod 644 "$target" || true
+	[ "$status" -eq 0 ] || return 1
+	[[ $output != *'"permissionDecision":"deny"'* ]]
+}

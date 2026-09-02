@@ -63,6 +63,20 @@ case "$FILE_PATH" in
 *) exit 0 ;;
 esac
 
+# Exemptions run BEFORE reconstruction (backup review r2, #2649): a
+# transient disk-read failure while editing an exempt file must not deny —
+# these files are out of scope entirely, matching the commit gate's own
+# check order.
+# `_*.sh` carve-out — shared predicate; rationale + caveats live with it
+# in the SSOT lib (#2645 r1).
+bash4_features_skip_basename "$FILE_PATH" && exit 0
+# Detector-lib self-exemption — the SHARED predicate from the SSOT lib
+# (#2645 r1): exactly one file wide, replacing the blanket `.claude/_lib/`
+# carve-out. Every other non-underscore-named lib is in scope; guarded use
+# goes through `# bash4-waiver:` instead. Shared with the commit-time gate
+# so the scope predicate cannot drift again (#609).
+bash4_features_exempt_path "$FILE_PATH" && exit 0
+
 # Edit/MultiEdit on an existing file: reconstruct the POST-EDIT content and
 # scan THAT (#2645 phase2 r2 — supersedes the r1 shebang+waiver graft). The
 # graft judged the fragment against the PRE-edit file, so an edit that
@@ -105,15 +119,6 @@ if [ -f "$FILE_PATH" ] && [ "$TOOL" != "Write" ]; then
 		fi
 	done <<<"$_edits"
 fi
-# `_*.sh` carve-out — shared predicate; rationale + caveats live with it
-# in the SSOT lib (#2645 r1).
-bash4_features_skip_basename "$FILE_PATH" && exit 0
-# Detector-lib self-exemption — the SHARED predicate from the SSOT lib
-# (#2645 r1): exactly one file wide, replacing the blanket `.claude/_lib/`
-# carve-out. Every other non-underscore-named lib is in scope; guarded use
-# goes through `# bash4-waiver:` instead. Shared with the commit-time gate
-# so the scope predicate cannot drift again (#609).
-bash4_features_exempt_path "$FILE_PATH" && exit 0
 
 CONTENT=""
 # Use `if ! CMD=...` form for jq extraction failures. (Precise semantics,
@@ -129,11 +134,21 @@ Write)
 	fi
 	;;
 Edit | MultiEdit)
-	# Full post-edit file, reconstructed above. A NEW file via Edit (no
-	# on-disk copy) degrades to the bare fragment — no shebang means the
-	# detector treats it as safe, and the commit gate scans the real blob.
+	# Full post-edit file, reconstructed above. A NEW file (no on-disk
+	# copy) degrades to the payload's own content — which lives at a
+	# DIFFERENT key per tool (backup review r2, #2649): Edit carries
+	# tool_input.new_string; MultiEdit carries tool_input.edits[].new_string
+	# (joined, matching sibling bash-safety-write-guard). Querying Edit's
+	# key on a MultiEdit payload "succeeds" as empty via // — the
+	# zero-length short-circuit below would then skip the scan entirely,
+	# letting a MultiEdit-created `#!/bin/bash` file with bash-4 features
+	# through unscanned.
 	if [ -n "$RECONSTRUCTED" ]; then
 		CONTENT="$RECONSTRUCTED"
+	elif [ "$TOOL" = "MultiEdit" ]; then
+		if ! CONTENT=$(printf '%s' "$PAYLOAD" | jq -r '[.tool_input.edits[]? | (.new_string // "")] | join("\n")' 2>/dev/null); then
+			hook_deny "bash4-features-write-guard" "jq failed to extract MultiEdit edits content"
+		fi
 	elif ! CONTENT=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.new_string // ""' 2>/dev/null); then
 		hook_deny "bash4-features-write-guard" "jq failed to extract Edit new_string"
 	fi

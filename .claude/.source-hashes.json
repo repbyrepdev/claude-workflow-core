@@ -67,7 +67,7 @@
     "hooks/agent-relevant-files.sh": "812bb921f4be08cc28cf26f0437eef77f03b65283a564869576cf323ee699bc3",
     "hooks/auto-close-parent.sh": "475c9160d73e7ff7d1439af318934af90b21521ef47ed2b44cacf8bc0c76fc91",
     "hooks/bash-safety-write-guard.sh": "698162faf4dcd8113804a282bc5a256bf720efe764b72f364586c57e9edb74a4",
-    "hooks/bash4-features-write-guard.sh": "63a9b3e9e0026700446e736fe722b33fa5ce9681c8575651b7960998d913b13d",
+    "hooks/bash4-features-write-guard.sh": "e7dee79f6a31e60a8d0513ea9fca62f93ed829ce8aa7f6ce63dfdbb33500fc16",
     "hooks/brainstorm-detect.sh": "3e3981af1eaca68c011ea994b8e45571582d83c87933dbebd065d3ffd06fb4ea",
     "hooks/capture-signal.sh": "00eebfcf498ba65470f8db9b65b516be3eb66746253b5ec7e50b3cebb1edb278",
     "hooks/check-gh-limits.sh": "6c0c7eade5ef551133e722130bc9d5cb2520b8c1e98c72dd85458bcdb8f8c0d6",
