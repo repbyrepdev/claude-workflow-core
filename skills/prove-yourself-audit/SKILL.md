@@ -85,6 +85,65 @@ and refuses the record unless the actual exit code equals `--retest-rc`
   pipeline stage executes unconditionally; a pipe *after* the path still
   refuses (rc = pipe tail). One record per entry point.
 
+**The SYMPTOM DIFFERENTIAL (#2643).** A passing retest proves the command
+runs, not that it would have FAILED before the fix — a hook that was already
+green satisfies it. So `record-fix` also takes three flags that describe a
+*difference*:
+
+```bash
+  --symptom-cmd "<command whose exit code the fix changes>" \
+  --symptom-baseline-rc <rc WITHOUT the fix> \
+  --symptom-fixed-rc <rc WITH the fix>      # must differ from baseline
+```
+
+They are **REQUIRED** when `--source=issue`, and when any `--cited-files`
+entry is cycle-critical (`hooks/`, `_lib/`, `pre-commit-hooks/`,
+`scripts/cr/local-review.sh`). Optional elsewhere — but still re-executed
+and verified if you supply them, so "optional" never means "free text".
+
+Both halves are run for real: the fixed half in the working tree, the
+baseline in a **detached worktree at `--baseline-ref`** (default `HEAD`,
+because the cycle order is fix → record-fix → commit, so at record time HEAD
+*is* the pre-fix tree). The branch's changed *and untracked* `.bats` files
+are copied into that worktree, so a brand-new test can detect the old bug.
+Timeout: `PROVE_BASELINE_TIMEOUT`, falling back to `PROVE_RETEST_TIMEOUT`,
+then 120s.
+
+Refusals you may hit, each with its remedy:
+
+- **already committed** — nothing cited differs from HEAD, so the baseline
+  would re-run the fixed code. Pass `--baseline-ref <sha-before-the-fix>`.
+  Naming `HEAD` explicitly does not dodge this; the check follows the commit
+  the ref resolves to, not how you spelled it.
+- **absence-shaped baseline (127)** — a fix that ADDS a file makes the
+  baseline exit "command not found", which looks like proof and is not. If
+  127 genuinely *is* the reported symptom, say so with
+  `--allow-absence-baseline` (recorded in the JSON, so it is auditable).
+- **deadline kill** — an rc of 124 at or past the timeout is *our* SIGTERM,
+  never evidence. Raise `PROVE_BASELINE_TIMEOUT` if the check needs longer.
+
+**What it does and does not prove.** It proves the exit code *depends on the
+diff*. It cannot prove the command is relevant to the fix, and an adversarial
+review confirmed three ways to satisfy it without proving anything:
+
+- **Observe the diff** — add a comment to a cited file and `grep -q` for it.
+  The rcs differ; the fix is a no-op.
+- **Live-cwd asymmetry** — the fixed half runs in your working tree, the
+  baseline in a pristine checkout, so `test -f <any untracked file>` differs
+  for free. Inherent: running the fixed half somewhere clean would throw away
+  the uncommitted fix being tested.
+- **Measure then revert** — nothing binds the record to the tree it was
+  measured on.
+
+The trigger is PARTLY self-selected: `--cited-files` is optional, so an author
+who cites nothing — and picks a `--source` other than `issue` — is never asked
+for a differential at all. `--source=issue` requires one regardless of what is
+cited.
+
+Treat it as a floor that makes the honest path the easy one, not a fence. The
+number `audit` prints is a signal for a human to read, not a proof — and it
+is not enforced at commit time.
+
 ### `audit`
 Read-only audit of all records under `.claude/.session-state/prove-yourself/`. Reports count of rejections / fixes / records with missing fields. Exits non-zero if any record is malformed.
 

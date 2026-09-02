@@ -339,6 +339,26 @@ _fixture() {
 	printf '#!/usr/bin/env bats\n# covers: .claude/hooks/covered.sh\n@test "c" { true; }\n' \
 		>"$w/.claude/tests/coverer.bats"
 
+	# (#2642) The fixture must be a real git repo with the files TRACKED.
+	# bats_scope_files enumerates via `git ls-files` and refuses to report an
+	# empty set when git errors, because an empty set reads as full coverage
+	# of nothing — the exact false-green that refusal exists to prevent. A
+	# bare mkdir tree made git exit 128 and tripped it. Tracking the files
+	# also makes the fixture match production, where every scanned script is
+	# committed; an untracked file is invisible to the inventory either way,
+	# so a loose directory was never representative.
+	# gpgsign/hooksPath overridden: a developer with commit signing or a
+	# global hooksPath configured would otherwise have this fixture commit
+	# fail or run their hooks, neither of which this test is about.
+	(cd "$w" && git init -q &&
+		git -c core.excludesFile=/dev/null add -A &&
+		git -c user.email=t@t -c user.name=t -c commit.gpgsign=false \
+			-c core.hooksPath=/dev/null -c core.excludesFile=/dev/null \
+			commit -qm fixture) || {
+		echo "could not make the coverage fixture a git repo"
+		return 1
+	}
+
 	run env TEST_REPO_ROOT="$w" "$REPO_ROOT/scripts/test.sh" --coverage
 	[ "$status" -eq 0 ] || {
 		echo "--coverage failed: $output"
