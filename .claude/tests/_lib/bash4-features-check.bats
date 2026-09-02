@@ -63,6 +63,18 @@ _chk() {
 	[ -z "$output" ]
 }
 
+@test "builtin/command/time prefixes flag; bare mapfile has a rule (#2649 r3)" {
+	run _chk $'#!/bin/bash\nbuiltin declare -A values'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]] || return 1
+	run _chk $'#!/bin/bash\ncommand readarray values'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"readarray (bash 4.0)"* ]] || return 1
+	run _chk $'#!/bin/bash\ntime mapfile values < input'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile / readarray (bash 4.0)"* ]]
+}
+
 @test "negated commands flag: if ! mapfile ... and bare ! declare (#2649 r2)" {
 	run _chk $'#!/bin/bash\nif ! mapfile -d "" items < input; then :; fi'
 	[ "$status" -eq 1 ] || return 1

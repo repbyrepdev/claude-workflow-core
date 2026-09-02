@@ -23,7 +23,7 @@ set -u
 #   declare -A, typeset -A           — bash 4.0 (assoc arrays)
 #   ${var^^}, ${var,,}, ${var^}, ${var,}  — bash 4.0 (case transforms)
 #   &>>                               — bash 4.0 (append both streams)
-#   `readarray` builtin              — bash 4.0
+#   mapfile / readarray builtins     — bash 4.0 (any form)
 #   ;& and ;;& case terminators      — bash 4.0 (PARSE error on 3.2)
 #   coproc                            — bash 4.0
 #   declare/typeset -g               — bash 4.2
@@ -39,9 +39,11 @@ set -u
 #
 # SCOPE (#2645 r1 security-review): this is a LEXICAL gate targeting
 # accidental/autofix regressions. Deliberate evasion — line-continuation
-# splits (`declare \` + `-A`), eval/indirection, `command declare`,
-# variable-built flags — is out of scope; no line-regex can hold that door,
-# and a deliberate attacker has strictly easier paths any such gate misses.
+# splits (`declare \` + `-A`), eval/indirection, variable-built flags — is
+# out of scope; no line-regex can hold that door, and a deliberate attacker
+# has strictly easier paths any such gate misses. (Common LEGITIMATE
+# prefixes are in scope: builtin/command/time joined the _B4_PRE chain in
+# CR round 3 — `builtin declare -A` is an accidental shape, not evasion.)
 #
 # Args: $1 = display-name, $2 = content.
 # Returns 0 if safe, 1 if refused (emits BLOCK message on stderr).
@@ -138,7 +140,7 @@ _b4_hit() {
 # `((word)[[:space:]]+)*` also covers `do while :; do ...` nesting, and
 # `!` (a reserved word in command position) covers negated commands like
 # `if ! mapfile -d '' x <f; then` (CR #2649 r2 fail-open).
-_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until|!)[[:space:]]+)*'
+_B4_PRE='(^|[;{()&|])[[:space:]]*((if|then|elif|else|do|while|until|!|builtin|command|time)[[:space:]]+)*'
 
 bash4_features_check_content() {
 	local display="${1:-}" content="${2:-}" body shebang
@@ -204,12 +206,13 @@ bash4_features_check_content() {
 		findings="${findings:+$findings
 }  - \${var^^}/\${var,,} case transforms (bash 4.0)"
 	fi
-	# readarray builtin (any form — bash 4.0). The -d sub-case is ALSO
-	# covered by the earlier mapfile|readarray -d rule (bash 4.4); the
-	# intentional double-match is fine because both point at the same fix.
-	if _b4_hit "$body" "${_B4_PRE}readarray\b" && ! _b4_waived "$content" readarray; then
+	# mapfile / readarray builtins (any form — bash 4.0; they are synonyms,
+	# and bare `mapfile` had NO rule until CR #2649 r3 — only the 4.4 -d
+	# sub-case was covered). The -d sub-case ALSO matches the earlier rule;
+	# the intentional double-match is fine, both point at the same fix.
+	if _b4_hit "$body" "${_B4_PRE}(mapfile|readarray)\b" && ! _b4_waived "$content" readarray; then
 		findings="${findings:+$findings
-}  - readarray (bash 4.0)"
+}  - mapfile / readarray (bash 4.0)"
 	fi
 	# &>> append-both-streams redirect (bash 4.0). v4.24-Q2 #609 gap fix.
 	# (Comment stripping now happens once, above, for every detector.)
