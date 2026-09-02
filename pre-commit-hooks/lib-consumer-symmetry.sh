@@ -419,7 +419,16 @@ while IFS= read -r _lib; do
 		if [ "$_drift_rc" -eq 0 ]; then
 			while IFS= read -r _dc; do
 				[ -n "$_dc" ] || continue
-				_dc_stripped=$(_index_blob "$_dc" | sed '/^[[:space:]]*#/d') || {
+				# Strip TRAILING comments (whitespace-then-# to EOL —
+				# shell only starts a comment at a word boundary) before
+				# the whole-line delete: an inline `code  # old ref`
+				# otherwise survives the strip and hard-blocks every
+				# commit, the exact availability bug the comment-only
+				# carve-out exists to avoid (backup review r1). A `#`
+				# inside quotes is over-stripped — that corner
+				# under-detects, never wedges.
+				_dc_stripped=$(_index_blob "$_dc" |
+					sed -E -e 's/[[:space:]]+#.*$//' -e '/^[[:space:]]*#/d') || {
 					echo "lib-consumer-symmetry: comment-strip failed for $_dc during drift probe" >&2
 					exit 2
 				}
