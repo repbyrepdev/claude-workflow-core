@@ -282,6 +282,7 @@ if [ -n "$DIFF_ALL_FILES" ]; then
 	# Helper: is every line in DIFF_ALL_FILES matching the glob(s)?
 	# Enables globstar so patterns like `docs/**` match recursively. Saves
 	# + restores the prior shopt so we don't leak state back to the caller.
+	# bash4-waiver: globstar — saved via `shopt -p` + `|| true`-guarded below; on bash 3.2 it degrades to literal (non-**) matching, documented as acceptable for this repo's shallow file sets (#2645)
 	_all_match() {
 		local pat1=$1 pat2=${2:-} f
 		local _prev_globstar

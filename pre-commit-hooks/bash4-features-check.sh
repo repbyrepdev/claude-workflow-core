@@ -23,11 +23,16 @@ _CCS="$(dirname "$0")/../_lib/canonical-consumer-skip.sh"
 # shellcheck source=../_lib/canonical-consumer-skip.sh
 [ -f "$_CCS" ] && . "$_CCS"
 
-# Only newly-added .sh files — existing scripts are grandfathered (same
-# semantic as bash-safety.sh's --diff-filter=A). `-z` emits NUL-delimited
-# filenames so the while-read loop below is safe for paths containing
-# spaces, tabs, or newlines (prior `for f in $STAGED` word-split + broke
-# on those).
+# Added AND modified .sh files (#2645 — was --diff-filter=A). The old
+# added-only grandfathering meant a bash-4 feature could be EDITED INTO a
+# tracked file forever unchecked; the anchor regression class (#2644's
+# `a788b2f`, the CR-autofix mapfile in phase1-launcher) enters exactly that
+# way. No flag day: with comment-line stripping hoisted into the SSOT
+# detector (see _lib/bash4-features-check.sh), a full-tree audit of all 226
+# tracked *.sh flags only the exempt detector lib itself. `-z` emits
+# NUL-delimited filenames so the while-read loop below is safe for paths
+# containing spaces, tabs, or newlines (prior `for f in $STAGED` word-split
+# + broke on those).
 errs=0
 while IFS= read -r -d '' f; do
 	[ -n "$f" ] || continue
@@ -42,11 +47,15 @@ while IFS= read -r -d '' f; do
 	case "$(basename "$f")" in
 	_*.sh) continue ;;
 	esac
+	# Any `_lib/` directory, in every layout: plugin-repo `_lib/`, consumer
+	# `.claude/_lib/`, and `skills/_lib/` (#2645 — the old patterns covered
+	# only the consumer layout, so under AM the detector would flag ITSELF
+	# when this repo stages _lib/bash4-features-check.sh).
 	case "$f" in
-	*/.claude/_lib/*.sh | .claude/_lib/*.sh) continue ;;
+	_lib/*.sh | */_lib/*.sh) continue ;;
 	esac
 	bash4_features_check_file "$f" || errs=$((errs + 1))
-done < <(git diff --cached --name-only --diff-filter=A -z 2>/dev/null)
+done < <(git diff --cached --name-only --diff-filter=AM -z 2>/dev/null)
 
 # Fail-closed (#2235 CR): exit 1 on ANY failure (not the raw count — a count
 # >255 would wrap to 0 = silent pass; codes 2+ also collide with usage-error

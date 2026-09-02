@@ -64,12 +64,14 @@ fi
 case "$(basename "$FILE_PATH")" in
 _*.sh) exit 0 ;;
 esac
-# Path-based exemption for .claude/_lib/*.sh — matches the sibling
+# Path-based exemption for any _lib/ directory — matches the sibling
 # commit-time gate's exemption. Ensures both guards align when a lib
 # file's basename doesn't start with `_` (e.g. `hook-deny.sh` under
-# .claude/_lib/). v4.24-Q2 #609 drift fix.
+# .claude/_lib/). v4.24-Q2 #609 drift fix; #2645 widened from the
+# consumer-only `.claude/_lib/` shape to every layout (plugin-repo
+# `_lib/`, `skills/_lib/`) so the detector lib can't flag itself.
 case "$FILE_PATH" in
-*/.claude/_lib/*.sh | .claude/_lib/*.sh) exit 0 ;;
+_lib/*.sh | */_lib/*.sh) exit 0 ;;
 esac
 
 CONTENT=""
@@ -98,7 +100,7 @@ esac
 
 if ! bash4_features_check_content "$FILE_PATH" "$CONTENT"; then
 	hook_deny "bash4-features-write-guard" \
-		"Write refused — .sh uses bash 4.0+ feature(s) with \`#!/bin/bash\` shebang. macOS /bin/bash is 3.2. Change shebang to \`#!/usr/bin/env bash\` or remove the bash-4 feature. See stderr for which feature."
+		'Write refused — .sh uses bash 4.0+ feature(s) with `#!/bin/bash` shebang. macOS /bin/bash is 3.2. Change shebang to `#!/usr/bin/env bash` or remove the bash-4 feature. See stderr for which feature.'
 fi
 
 exit 0
