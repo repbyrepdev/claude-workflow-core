@@ -1380,8 +1380,40 @@ JSON
 		return 1
 	}
 	run bash -c "cd '$WORK' && '$RUN' audit"
+	[ "$status" -eq 0 ] || {
+		echo "audit exited $status: $output"
+		return 1
+	}
 	[[ $output == *"unproven (no symptom differential): 0"* ]] || {
 		echo "a genuine, well-typed record was counted unproven: $output"
+		return 1
+	}
+}
+
+@test "#2643: an rc that no process can return is not evidence" {
+	# CR-in-CI: -1 and 0.5 are jq numbers. They differ from each other and
+	# from 0, so they sailed through the presence-and-inequality tests while
+	# describing something no process can ever exit with. An exit code is a
+	# non-negative integer, and the audit now requires that before counting
+	# a record as proven.
+	_make_fix
+	local sd="$WORK/.claude/.session-state/prove-yourself"
+	mkdir -p "$sd"
+	cat >"$sd/forged-rcs.json" <<'JSON'
+{"finding_id":"forgedrcs","kind":"fix","finding_text":"t","ts":"2026-01-01T00:00:00Z",
+ "covers_count":1,"cited_files":[],
+ "decision_data":{"fix_summary":"t","retest_cmd":"true","retest_rc":0,
+                  "retest_verified":true,"retest_actual_rc":0,
+                  "symptom_verified":true,"symptom_cmd":"false",
+                  "symptom_baseline_rc":-1,"symptom_fixed_rc":0.5}}
+JSON
+	run bash -c "cd '$WORK' && '$RUN' audit"
+	[ "$status" -eq 0 ] || {
+		echo "audit exited $status: $output"
+		return 1
+	}
+	[[ $output == *"unproven (no symptom differential): 1"* ]] || {
+		echo "a record claiming rc -1 and rc 0.5 counted as proven: $output"
 		return 1
 	}
 }

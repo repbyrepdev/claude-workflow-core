@@ -350,17 +350,32 @@ _load() {
 	# EXACT counts, not merely "not unknown". Rejecting only `unknown`
 	# accepts 0, and a regression that drops every matching row would pass
 	# — the same not-quite-an-assertion this suite exists to avoid.
+	# Status THEN output, every time. bats records the exit code in $status
+	# without failing the test, so a `run` followed only by an output check
+	# passes when the command failed outright.
 	run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' phase0.5 aaaa111"
+	[ "$status" -eq 0 ] || {
+		echo "phase0.5 exited $status under pipefail: $output"
+		return 1
+	}
 	[ "$output" = "3" ] || {
 		echo "phase0.5 under pipefail: expected 3, got '$output'"
 		return 1
 	}
 	run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' phase1 aaaa111"
+	[ "$status" -eq 0 ] || {
+		echo "phase1 exited $status under pipefail: $output"
+		return 1
+	}
 	[ "$output" = "4" ] || {
 		echo "phase1 under pipefail: expected 4, got '$output'"
 		return 1
 	}
 	run bash -c "set -euo pipefail; . '$LIB'; _stage_findings_count '$WORK' cr aaaa111"
+	[ "$status" -eq 0 ] || {
+		echo "cr exited $status under pipefail: $output"
+		return 1
+	}
 	[ "$output" = "2" ] || {
 		echo "cr under pipefail: expected 2, got '$output'"
 		return 1

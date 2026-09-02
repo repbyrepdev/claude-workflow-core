@@ -2159,7 +2159,10 @@ cmd_audit() {
 		# becomes "-"), and symptom_cmd is reduced to a BOOLEAN here since
 		# only its presence matters. That also removes the one field that
 		# could contain a tab or a newline of its own.
-		# TYPES ARE CHECKED IN JQ, not just presence. A forged record with
+		# TYPES AND RANGES ARE CHECKED IN JQ, not just presence. An exit
+		# code is a NON-NEGATIVE INTEGER: -1 and 0.5 are jq numbers, they
+		# differ from 0, and they sailed through the presence-and-inequality
+		# tests while describing something no process can return. A forged record with
 		# `"symptom_verified": "true"` (a string), a symptom_cmd that is an
 		# object, and rcs of "bad-a" / "bad-b" — which differ, so the
 		# not-equal test passed — counted as PROVEN. Each field is
@@ -2170,8 +2173,12 @@ cmd_audit() {
 			  (if (.decision_data.symptom_cmd | type) == "string"
 			      and ((.decision_data.symptom_cmd | length) > 0) then "true" else "-" end),
 			  (if (.decision_data.symptom_baseline_rc | type) == "number"
+			      and (.decision_data.symptom_baseline_rc >= 0)
+			      and ((.decision_data.symptom_baseline_rc | floor) == .decision_data.symptom_baseline_rc)
 			      then (.decision_data.symptom_baseline_rc | tostring) else "-" end),
 			  (if (.decision_data.symptom_fixed_rc | type) == "number"
+			      and (.decision_data.symptom_fixed_rc >= 0)
+			      and ((.decision_data.symptom_fixed_rc | floor) == .decision_data.symptom_fixed_rc)
 			      then (.decision_data.symptom_fixed_rc | tostring) else "-" end)
 			] | @tsv' "$_af" 2>/dev/null) || continue
 		IFS=$(printf '\t') read -r _kind _sv _scmd _sb _sf <<EOF
