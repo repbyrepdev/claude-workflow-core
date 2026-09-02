@@ -2317,13 +2317,6 @@ cmd_record_fix() {
 
 	if [ "$_bl_present" = true ]; then
 		echo "record-fix: before/after pair CONFIRMED — baseline rc=$_bl_rc (captured $_bl_ts at ${_bl_sha:0:7}), post-fix rc=$_retest_actual_rc" >&2
-		# Consume the baseline (phase1 lifecycle): its evidence now lives
-		# in the durable record; leaving the file re-stamps stale proof
-		# onto future records for a reused finding-id (or hard-refuses
-		# them on BASELINE MISMATCH). Removal failure is loud but not
-		# fatal — the record is already written and correct.
-		rm -f "$_bl_file" ||
-			echo "WARN: could not remove consumed baseline $_bl_file — a future record-fix for this finding-id will trip over it" >&2
 	fi
 
 	# Record per-cited-file cache entries under reviewer "prove-yourself-fix".
@@ -2336,6 +2329,16 @@ cmd_record_fix() {
 	if ! _append_tracked_audit "fix" "$finding_id" "${src:-}" "${severity:-}" "${confidence:-}" "$finding_text" "$state_file" "$cluster_id" "$covers_count" "$_cov_sha"; then
 		echo "ERROR: tracked audit append failed for $finding_id (state file at $state_file is intact, but audit log is missing this record)" >&2
 		exit 1
+	fi
+
+	# Consume the baseline only after EVERYTHING durable succeeded
+	# (phase2 CR: consuming before the tracked append meant a failed
+	# append exited with the baseline already gone, so the retry could
+	# never re-pair). Removal failure is loud but not fatal — the record
+	# and its ledger row are already written and correct.
+	if [ "$_bl_present" = true ]; then
+		rm -f "$_bl_file" ||
+			echo "WARN: could not remove consumed baseline $_bl_file — a future record-fix for this finding-id will trip over it" >&2
 	fi
 
 	echo "✓ Recorded fix: $finding_id"

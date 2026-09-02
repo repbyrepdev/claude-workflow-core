@@ -101,7 +101,7 @@
     "hooks/phase0.5-before-phase1.sh": "8272ae16350152ff19a382ca438deafa0925a906b74a35a5cfeb97e808cbd5e6",
     "hooks/phase0.5-codex-prefilter.sh": "fa976324550281e22a47234385f8a5d375337b64f2de7469d85992fdb8441d2b",
     "hooks/phase0.5-copilot-prefilter.sh": "e57945beefbe7ac3cb024f17a9626aa82bc7f4d1f8ae852c90724def3b951d2c",
-    "hooks/phase0.5-dedupe-against-audit.sh": "3dfb9cc4ed6627702506112fc1444b1df4dafb4b8d037ae6c2b06073f08a4ecd",
+    "hooks/phase0.5-dedupe-against-audit.sh": "fb5ec306ceaca61de9fac1c6e71ac6a643225ffcd75bcb02c59c33aaab50aa79",
     "hooks/phase0.5-gemini-prefilter.sh": "11d6e2c9a6b1a1a5707ce841a248139c59b5e7f370e0606dac93f7975e6b5dd2",
     "hooks/phase0.5-launchers-all.sh": "fedace0d5ce94106d55d5681fab1c53f26072a5f5303da5fac512baa50ee8a42",
     "hooks/phase0.5-post-commit-rerun.sh": "31a66095fb3a25d15e1dc0800bb7ab89bd101acf80fdaa263a8da363d06f6f16",

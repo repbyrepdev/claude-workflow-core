@@ -98,7 +98,11 @@ _jq_err=$(mktemp -t p05dd-jq-err.XXXXXX)
 # safety net.
 trap 'rm -f "$_jq_err"' EXIT
 _jq_rc=0
-KNOWN_TEXTS=$(jq -r 'select(.finding_text != null) | .finding_text' "$AUDIT_LOG" 2>"$_jq_err") || _jq_rc=$?
+# kind=baseline rows are capture CORROBORATION (#2652), not addressed
+# findings — their finding_text is "baseline_rc=N retest_cmd=...", which
+# must never suppress a prefilter finding that happens to mention the
+# same command.
+KNOWN_TEXTS=$(jq -r 'select(.finding_text != null) | select(.kind != "baseline") | .finding_text' "$AUDIT_LOG" 2>"$_jq_err") || _jq_rc=$?
 if [ "$_jq_rc" -ne 0 ]; then
 	echo "dedupe-against-audit: jq parse of audit log $AUDIT_LOG failed (rc=$_jq_rc) — refusing to dedup against partial data" >&2
 	head -c 500 "$_jq_err" >&2
