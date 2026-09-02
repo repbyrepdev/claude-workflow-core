@@ -350,9 +350,11 @@ _fixture() {
 	# gpgsign/hooksPath overridden: a developer with commit signing or a
 	# global hooksPath configured would otherwise have this fixture commit
 	# fail or run their hooks, neither of which this test is about.
-	(cd "$w" && git init -q && git add -A &&
+	(cd "$w" && git init -q &&
+		git -c core.excludesFile=/dev/null add -A &&
 		git -c user.email=t@t -c user.name=t -c commit.gpgsign=false \
-			-c core.hooksPath=/dev/null commit -qm fixture) || {
+			-c core.hooksPath=/dev/null -c core.excludesFile=/dev/null \
+			commit -qm fixture) || {
 		echo "could not make the coverage fixture a git repo"
 		return 1
 	}

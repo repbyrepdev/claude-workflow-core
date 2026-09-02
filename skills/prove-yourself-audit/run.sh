@@ -1082,14 +1082,18 @@ EOF
 	# deadline-kill discrimination that reads it.
 	local _t0 _elapsed=0
 	_t0=$SECONDS
-	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
+	# Same split as the fixed half: the explicit opt-out may run unbounded,
+	# a missing binary may not. `return 2` so the caller's existing
+	# baseline-failure handling runs and the worktree is cleaned up.
+	if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
+		echo "record-fix: WARN: the baseline symptom run is UNBOUNDED by explicit PROVE_RETEST_NO_TIMEOUT=1 — a hang will not be killed (#2643)" >&2
+		(cd "$wt" && bash -c "$cmd") >"$outf" 2>&1 || rc=$?
+	elif command -v timeout >/dev/null 2>&1; then
 		(cd "$wt" && timeout "$tmo" bash -c "$cmd") >"$outf" 2>&1 || rc=$?
 	else
-		# Match the fixed half and the retest path. An unenforced deadline
-		# must never be silent: the caller's rc-124 guard would otherwise
-		# be comparing elapsed time against a deadline that was never set.
-		echo "record-fix: WARN: the baseline symptom run is UNBOUNDED (no timeout binary, or PROVE_RETEST_NO_TIMEOUT=1) — a hang will not be killed (#2643)" >&2
-		(cd "$wt" && bash -c "$cmd") >"$outf" 2>&1 || rc=$?
+		echo "error: no timeout binary on PATH — refusing to run the baseline symptom evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2643)" >&2
+		_prove_symptom_wt_cleanup
+		return 2
 	fi
 	_elapsed=$((SECONDS - _t0))
 	_prove_symptom_wt_cleanup
@@ -1871,14 +1875,20 @@ cmd_record_fix() {
 			exit 1
 		}
 		_sym_ft0=$SECONDS
-		if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
+		# A MISSING `timeout` BINARY IS NOT A DECISION. The retest path
+		# refuses it and lets only the explicit opt-out run unbounded; this
+		# treated both the same and merely warned, so a machine without
+		# coreutils quietly lost the deadline the rc-124 guard compares
+		# against. Opt-out stays permitted, and says so.
+		if [ "${PROVE_RETEST_NO_TIMEOUT:-0}" = "1" ]; then
+			echo "record-fix: WARN: symptom runs are UNBOUNDED by explicit PROVE_RETEST_NO_TIMEOUT=1 — a hang will not be killed (#2643)" >&2
+			(cd "$REPO_ROOT" && bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
+		elif command -v timeout >/dev/null 2>&1; then
 			(cd "$REPO_ROOT" && timeout "$_sym_tmo" bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
 		else
-			# p1 conf 8: no deadline available. The retest path WARNs here
-			# rather than running unbounded in silence; match it, so an
-			# operator can tell a bounded run from an unbounded one.
-			echo "record-fix: WARN: symptom runs are UNBOUNDED (no timeout binary, or PROVE_RETEST_NO_TIMEOUT=1) — a hang will not be killed (#2643)" >&2
-			(cd "$REPO_ROOT" && bash -c "$symptom_cmd") >"$_sym_out" 2>&1 || _sym_fixed_actual=$?
+			rm -f "$_sym_out"
+			echo "error: no timeout binary on PATH — refusing to run symptom evidence UNBOUNDED (install coreutils, or set PROVE_RETEST_NO_TIMEOUT=1 to explicitly accept an unenforced deadline) (#2643)" >&2
+			exit 2
 		fi
 		_sym_fixed_elapsed=$((SECONDS - _sym_ft0))
 		# Same deadline-launder refusal as the baseline half below.

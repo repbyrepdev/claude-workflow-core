@@ -122,8 +122,7 @@ if [ "$COVERS_TOTAL" -lt "$ROUND_FINDINGS" ]; then
 	echo "" >&2
 	echo "  Per-finding:    $SKILL record-{fix,rejection}" >&2
 	echo "                    --finding-text ... [--covers-count N for bulk]" >&2
-	echo "                  A record-fix citing a CYCLE-CRITICAL file (hooks/, _lib/," >&2
-	echo "                  pre-commit-hooks/, scripts/cr/local-review.sh) also needs the" >&2
+	echo "                  A record-fix citing a CYCLE-CRITICAL file also needs the" >&2
 	echo "                  #2643 symptom differential, or it exits 2:" >&2
 	echo '                    --symptom-cmd "..." --symptom-baseline-rc N --symptom-fixed-rc M' >&2
 	echo "                  (N != M; both are re-executed. Already committed? add" >&2

@@ -1284,3 +1284,45 @@ JSON
 		return 1
 	}
 }
+
+@test "#2643: a MISSING timeout binary refuses the record outright" {
+	# CR p2r2/p2r3: a missing binary is not an operator decision. The
+	# retest path already refused it while both symptom halves merely
+	# warned — so a machine without coreutils quietly lost the deadline
+	# that the rc-124 laundering guard compares elapsed time against.
+	_make_fix
+	# A PATH with no `timeout`, built HERE and passed via env. Building it
+	# inside a `bash -c` string is how an earlier attempt in this branch
+	# turned the stub dir into the ENTIRE path and lost `uname`.
+	local stub="$WORK/nostub"
+	mkdir -p "$stub"
+	local p="$stub:/usr/bin:/bin:/usr/sbin:/sbin"
+
+	run env PATH="$p" bash -c "cd '$WORK' && '$RUN' record-fix --source issue \
+		--finding-id t --finding-text t --fix-summary t \
+		--cited-files scripts/thing.sh --retest-cmd 'bash scripts/thing.sh' --retest-rc 0 \
+		--symptom-cmd 'bash scripts/thing.sh' --symptom-baseline-rc 1 --symptom-fixed-rc 0"
+	# Guard the guard: if `timeout` is still reachable the refusal below
+	# would never fire and this test would pass having proved nothing.
+	if env PATH="$p" command -v timeout >/dev/null 2>&1; then
+		skip "pending #2643 — timeout resolves outside the stubbed PATH on this machine (e.g. /usr/bin), so the negative case cannot be produced here"
+	fi
+	[ "$status" -ne 0 ] || {
+		echo "a missing timeout binary ran the evidence unbounded: $output"
+		return 1
+	}
+	# The RETEST gate catches it first — it runs before the symptom block
+	# and already refused a missing binary (#2562). That is the reachable
+	# guarantee, and it is what this asserts. The matching refusals now in
+	# both symptom halves are defence in depth for a caller that reaches
+	# them directly; asserting on their wording here would have been
+	# vacuous, since the retest message is what actually appears.
+	[[ $output == *"no timeout binary on PATH"* ]] || {
+		echo "refused, but not for the missing binary: $output"
+		return 1
+	}
+	[[ $output != *"differential CONFIRMED"* ]] || {
+		echo "evidence was confirmed despite there being no enforceable deadline: $output"
+		return 1
+	}
+}
