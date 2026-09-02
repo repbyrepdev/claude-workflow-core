@@ -1,13 +1,13 @@
 #!/usr/bin/env bats
 # covers: hooks/bash4-features-write-guard.sh
 #
-# #2645 r1 — the Edit-fragment grafting is behavior unique to this hook
-# (never exercised through the SSOT lib's own tests) and its failure mode
-# is a silent ALLOW: if the graft regresses, the bare fragment carries no
-# shebang, the detector sees a safe file, and the anchor class (a bash-4
-# feature EDITED into a #!/bin/bash file) passes with no error anywhere.
-# hook_deny emits {"permissionDecision":"deny"} JSON on stdout and exits 0
-# — assert on stdout, never on exit code.
+# #2645 — the Edit path reconstructs the POST-EDIT file (disk content with
+# old_string -> new_string applied, Edit-tool semantics) and scans that
+# whole, so shebang downgrades, waiver deletions, and disk-context feature
+# joins are judged against the file that will actually exist. Failure mode
+# of a graft/reconstruction regression is silent ALLOW — these tests hold
+# the door. hook_deny emits {"permissionDecision":"deny"} JSON on stdout
+# and exits 0 — assert on stdout, never on exit code.
 
 setup() {
 	HOOK="${BATS_TEST_DIRNAME}/../../../hooks/bash4-features-write-guard.sh"
@@ -22,37 +22,57 @@ teardown() {
 	fi
 }
 
-# _run_edit <disk-shebang> <new_string> — create an on-disk .sh with the
-# given shebang, then pipe an Edit payload for it into the hook.
+# _run_edit <target> <old_string> <new_string> — pipe an Edit payload.
 _run_edit() {
-	local target="$TEST_TMP/target.sh"
-	printf '%s\nset -u\necho existing\n' "$1" >"$target"
 	local payload
-	payload=$(jq -cn --arg fp "$target" --arg ns "$2" \
-		'{tool_name: "Edit", tool_input: {file_path: $fp, new_string: $ns}}')
+	payload=$(jq -cn --arg fp "$1" --arg os "$2" --arg ns "$3" \
+		'{tool_name: "Edit", tool_input: {file_path: $fp, old_string: $os, new_string: $ns}}')
 	run bash -c 'printf %s "$1" | bash "$2"' _ "$payload" "$HOOK"
 }
 
-@test "Edit grafting denies a bash-4 fragment headed into a #!/bin/bash file (#2645 r1)" {
-	_run_edit '#!/bin/bash' 'mapfile -d "" arr <input'
+@test "Edit that swaps a clean line for a bash-4 feature in a bin-bash file DENIES (#2645)" {
+	local target="$TEST_TMP/target.sh"
+	printf '#!/bin/bash\nset -u\necho existing\n' >"$target"
+	_run_edit "$target" 'echo existing' 'mapfile -d "" arr <input'
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'"permissionDecision":"deny"'* ]]
 }
 
-@test "Edit fragment against an env-bash file is allowed (graft carries the safe shebang)" {
-	_run_edit '#!/usr/bin/env bash' 'mapfile -d "" arr <input'
+@test "same edit against an env-bash file is allowed (post-edit shebang is safe)" {
+	local target="$TEST_TMP/safe.sh"
+	printf '#!/usr/bin/env bash\nset -u\necho existing\n' >"$target"
+	_run_edit "$target" 'echo existing' 'mapfile -d "" arr <input'
 	[ "$status" -eq 0 ] || return 1
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }
 
-@test "Edit fragment honors the on-disk file's waiver (graft carries waiver lines)" {
+@test "shebang-DOWNGRADE edit is denied: post-edit file is scanned, not pre-edit (#2645 r2)" {
+	# Pre-edit the file is safe (env bash) and carries a bash-4 feature;
+	# the edit only swaps the shebang. The r1 graft judged the PRE-edit
+	# shebang and allowed this; reconstruction must deny.
+	local target="$TEST_TMP/downgrade.sh"
+	printf '#!/usr/bin/env bash\nset -u\ndeclare -A m\n' >"$target"
+	_run_edit "$target" '#!/usr/bin/env bash' '#!/bin/bash'
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "waiver-DELETING edit is denied at the guard, not just at commit (#2645 r2)" {
 	local target="$TEST_TMP/waived.sh"
-	printf '%s\n%s\nset -u\n' '#!/bin/bash' \
-		'# bash4-waiver: globstar — guarded use, degradation documented for this fixture' >"$target"
-	local payload
-	payload=$(jq -cn --arg fp "$target" \
-		'{tool_name: "Edit", tool_input: {file_path: $fp, new_string: "shopt -s globstar 2>/dev/null || true"}}')
-	run bash -c 'printf %s "$1" | bash "$2"' _ "$payload" "$HOOK"
+	printf '%s\n%s\n%s\n' '#!/bin/bash' \
+		'# bash4-waiver: globstar — guarded use, degradation documented for this fixture' \
+		'shopt -s globstar 2>/dev/null || true' >"$target"
+	_run_edit "$target" '# bash4-waiver: globstar — guarded use, degradation documented for this fixture' '# waiver removed'
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'"permissionDecision":"deny"'* ]]
+}
+
+@test "edit keeping a valid waiver stays allowed (post-edit waiver honored)" {
+	local target="$TEST_TMP/keep.sh"
+	printf '%s\n%s\n%s\n' '#!/bin/bash' \
+		'# bash4-waiver: globstar — guarded use, degradation documented for this fixture' \
+		'set -u' >"$target"
+	_run_edit "$target" 'set -u' $'set -u\nshopt -s globstar 2>/dev/null || true'
 	[ "$status" -eq 0 ] || return 1
 	[[ $output != *'"permissionDecision":"deny"'* ]]
 }

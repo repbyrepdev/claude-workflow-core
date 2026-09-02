@@ -3,12 +3,14 @@ set -u
 # event: PreToolUse
 # matcher: Edit|Write|MultiEdit
 # v4.24-P (#603) — PreToolUse Write/Edit/MultiEdit guard: refuse bash 4.0+
-# features headed for a `#!/bin/bash` (3.2) file. Two paths (#2645 r1):
+# features headed for a `#!/bin/bash` (3.2) file. Two paths (#2645):
 #   - Write: the full new content is scanned before the file lands.
-#   - Edit/MultiEdit on an EXISTING file: the edit fragment is scanned,
-#     grafted with the on-disk shebang + `# bash4-waiver:` lines (the
-#     fragment alone carries neither). The old wholesale grandfathering
-#     of existing files is gone — the anchor-case mapfile entered via an
+#   - Edit/MultiEdit on an EXISTING file: the POST-EDIT content is
+#     RECONSTRUCTED (disk content with each old->new applied, Edit-tool
+#     semantics) and scanned whole — so shebang downgrades, waiver
+#     deletions, and features formed jointly with disk context are all
+#     judged against the file that will actually exist. The old wholesale
+#     grandfathering is gone — the anchor-case mapfile entered via an
 #     edit, not a new-file Write.
 #
 # Anchor case: CR autofix introduced `mapfile -d ''` into phase1-launcher
@@ -61,33 +63,38 @@ case "$FILE_PATH" in
 *) exit 0 ;;
 esac
 
-# Edit/MultiEdit on an existing file used to be grandfathered wholesale
-# (the old commit-time --diff-filter=A semantic). #2645 r1: the commit gate
-# now covers modified files (AM), so this guard scans the EDIT FRAGMENT too
-# — otherwise the cheap early layer misses exactly the regression class the
-# gate exists for (features EDITED into tracked files, e.g. by CR autofix).
-# The fragment carries no shebang and no waiver comments, so both are
-# borrowed from the ON-DISK file: a safe on-disk shebang exits early, and
-# on-disk waiver lines are prepended so a waived feature stays waived.
-EDIT_PREFIX=""
+# Edit/MultiEdit on an existing file: reconstruct the POST-EDIT content and
+# scan THAT (#2645 phase2 r2 — supersedes the r1 shebang+waiver graft). The
+# graft judged the fragment against the PRE-edit file, so an edit that
+# downgrades the shebang to `#!/bin/bash`, deletes a waiver while keeping
+# its feature, or whose halves only form a feature joined with disk context
+# was judged against the wrong file. Reconstruction applies each
+# old_string -> new_string literally (first occurrence, or all when
+# replace_all), matching the Edit tool's own semantics; an old_string that
+# does not occur leaves content unchanged — that edit fails in the tool
+# anyway, and scanning disk-as-is stays fail-safe. Unreadable file or
+# un-enumerable edits = deny (r1 fail-closed standard).
+RECONSTRUCTED=""
 if [ -f "$FILE_PATH" ] && [ "$TOOL" != "Write" ]; then
-	# An UNREADABLE on-disk file must fail CLOSED, not read as "safe
-	# shebang" (#2645 r1 silent-failure: `|| printf ''` turned chmod-000 /
-	# EIO into a silent allow of the exact edit denied when readable).
-	# Matches this guard's stdin/jq fail-closed handling and the SSOT
-	# lib's unreadable-file BLOCK.
-	if ! DISK_HEAD=$(head -1 "$FILE_PATH" 2>/dev/null); then
-		hook_deny "bash4-features-write-guard" "cannot read on-disk $FILE_PATH to determine its shebang — failing closed"
+	if ! DISK_CONTENT=$(cat "$FILE_PATH" 2>/dev/null); then
+		hook_deny "bash4-features-write-guard" "cannot read on-disk $FILE_PATH to reconstruct the edit — failing closed"
 	fi
-	# Shared predicate — one definition with the lib's own scan (#2645 r1).
-	bash4_features_unsafe_shebang "$DISK_HEAD" ||
-		exit 0 # genuinely safe/absent shebang — fragment cannot regress 3.2
-	# grep rc 1 (no waiver lines) is normal; rc >= 2 is a read error on a
-	# file head just proved readable — treat as no-waivers, the detector
-	# then fails toward BLOCK (stricter), never toward allow.
-	DISK_WAIVERS=$(grep -E '^[[:space:]]*#[[:space:]]*bash4-waiver:' "$FILE_PATH" 2>/dev/null || true)
-	EDIT_PREFIX="$DISK_HEAD
-$DISK_WAIVERS"
+	if ! _edits=$(printf '%s' "$PAYLOAD" | jq -c 'if .tool_name == "MultiEdit" then (.tool_input.edits // [])[] else {old_string: (.tool_input.old_string // ""), new_string: (.tool_input.new_string // ""), replace_all: (.tool_input.replace_all // false)} end' 2>/dev/null); then
+		hook_deny "bash4-features-write-guard" "jq failed to enumerate edits for reconstruction — failing closed"
+	fi
+	RECONSTRUCTED="$DISK_CONTENT"
+	while IFS= read -r _edit; do
+		[ -n "$_edit" ] || continue
+		_old=$(printf '%s' "$_edit" | jq -r '.old_string // ""')
+		_new=$(printf '%s' "$_edit" | jq -r '.new_string // ""')
+		_all=$(printf '%s' "$_edit" | jq -r '.replace_all // false')
+		[ -n "$_old" ] || continue
+		if [ "$_all" = "true" ]; then
+			RECONSTRUCTED="${RECONSTRUCTED//"$_old"/$_new}"
+		else
+			RECONSTRUCTED="${RECONSTRUCTED/"$_old"/$_new}"
+		fi
+	done <<<"$_edits"
 fi
 # `_*.sh` carve-out — shared predicate; rationale + caveats live with it
 # in the SSOT lib (#2645 r1).
@@ -112,27 +119,23 @@ Write)
 		hook_deny "bash4-features-write-guard" "jq failed to extract Write content"
 	fi
 	;;
-Edit)
-	if ! CONTENT=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.new_string // ""' 2>/dev/null); then
+Edit | MultiEdit)
+	# Full post-edit file, reconstructed above. A NEW file via Edit (no
+	# on-disk copy) degrades to the bare fragment — no shebang means the
+	# detector treats it as safe, and the commit gate scans the real blob.
+	if [ -n "$RECONSTRUCTED" ]; then
+		CONTENT="$RECONSTRUCTED"
+	elif ! CONTENT=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.new_string // ""' 2>/dev/null); then
 		hook_deny "bash4-features-write-guard" "jq failed to extract Edit new_string"
-	fi
-	;;
-MultiEdit)
-	if ! CONTENT=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input.edits // []) | map(.new_string // "") | join("\n")' 2>/dev/null); then
-		hook_deny "bash4-features-write-guard" "jq failed to extract MultiEdit edits"
 	fi
 	;;
 esac
 
 [ -z "$CONTENT" ] && exit 0
-# Edit/MultiEdit fragment: graft the on-disk shebang + waiver lines so the
-# detector sees the file's real dialect declaration and honors its waivers.
-[ -n "$EDIT_PREFIX" ] && CONTENT="$EDIT_PREFIX
-$CONTENT"
 
 if ! bash4_features_check_content "$FILE_PATH" "$CONTENT"; then
 	hook_deny "bash4-features-write-guard" \
-		'Write refused — .sh uses bash 4.0+ feature(s) with `#!/bin/bash` shebang. macOS /bin/bash is 3.2. Change shebang to `#!/usr/bin/env bash` or remove the bash-4 feature. See stderr for which feature.'
+		'Write/Edit refused — the post-edit .sh would use bash 4.0+ feature(s) with `#!/bin/bash` shebang. macOS /bin/bash is 3.2. Change shebang to `#!/usr/bin/env bash` or remove the bash-4 feature. See stderr for which feature.'
 fi
 
 exit 0

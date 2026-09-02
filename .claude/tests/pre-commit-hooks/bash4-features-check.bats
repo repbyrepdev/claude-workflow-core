@@ -42,10 +42,25 @@ teardown() {
 	[[ $output == *"mapfile -d"* ]]
 }
 
-@test "clean staged blob passes (control)" {
+@test "clean staged blob passes with no output (control)" {
 	cd "$SANDBOX"
 	printf '#!/bin/bash\nset -u\necho ok\n' >ok.sh
 	git add ok.sh
 	run bash "$HOOK"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ]
+}
+
+@test "staged RENAME destination is scanned (git mv does not evade) (#2645 r2)" {
+	# With rename detection on, a staged rename is status R — outside the
+	# AM filter — and its destination lands unscanned; --no-renames
+	# surfaces it as a plain A.
+	cd "$SANDBOX"
+	printf '#!/bin/bash\nset -u\ndeclare -A m\n' >orig.sh
+	git add orig.sh
+	git -c user.email=t@t -c user.name=t commit -qm seed
+	git mv orig.sh renamed.sh
+	run bash "$HOOK"
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]]
 }

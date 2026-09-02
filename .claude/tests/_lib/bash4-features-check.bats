@@ -26,12 +26,14 @@ _chk() {
 
 @test "safe shebang (#!/usr/bin/env bash) exempts even declare -A" {
 	run _chk $'#!/usr/bin/env bash\ndeclare -A m=()'
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ]
 }
 
 @test "#!/bin/bash with clean 3.2 code passes" {
 	run _chk $'#!/bin/bash\nset -u\nfor f in a b; do echo "$f"; done'
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ]
 }
 
 @test "mapfile -d flags (bash 4.4)" {
@@ -209,5 +211,15 @@ _chk() {
 	/bin/bash --version 2>/dev/null | head -1 | grep -q ' 3\.' ||
 		skip "pending #2642 — /bin/bash here is not 3.x; the dual-version execution gate rides that issue"
 	run /bin/bash -n -c $'case x in\nx) echo a ;&\nesac'
-	[ "$status" -ne 0 ]
+	[ "$status" -ne 0 ] || return 1
+	[[ $output == *"syntax error"* ]]
+}
+
+@test "compact terminators flag: echo x;& and :;& without leading space (#2645 r2)" {
+	run _chk $'#!/bin/bash\ncase $x in\na) echo x;&\nb) echo b ;;\nesac'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"PARSE error"* ]] || return 1
+	run _chk $'#!/bin/bash\ncase $y in\na) :;&\nb) : ;;\nesac'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"PARSE error"* ]]
 }

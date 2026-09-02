@@ -210,9 +210,12 @@ bash4_features_check_content() {
 	# ;& and ;;& case-branch terminators (bash 4.0). On 3.2 these are PARSE
 	# errors — the whole script dies before running a single line, which is
 	# the worst failure mode this gate exists for (#2645; hit by hand in
-	# #2641). Delimiter-anchored so `cmd; & sleep` (legal 3.2: `;` then a
-	# background `&`) and `2>&1;` never match — the token must be contiguous.
-	if _b4_hit "$body" '(^|[[:space:]]);;?&([[:space:]]|$)' && ! _b4_waived "$content" fallthrough; then
+	# #2641). The token must be contiguous and end at space/EOL, but may be
+	# PRECEDED by any non-;& char (phase2 r2: compact `echo x;&` / `:;&`
+	# were missed by the old leading-space requirement). `[^;&]` before the
+	# alternation keeps the `;&` tail inside `;;&` from double-matching and
+	# keeps `cmd; & sleep` (legal 3.2) and `2>&1` unmatched.
+	if _b4_hit "$body" '(^|[^;&])(;;&|;&)([[:space:]]|$)' && ! _b4_waived "$content" fallthrough; then
 		findings="${findings:+$findings
 }  - ;& / ;;& case fall-through terminators (bash 4.0 — PARSE error on 3.2)"
 	fi

@@ -46,7 +46,11 @@ _b4_staged="$(mktemp "${TMPDIR:-/tmp}/bash4-staged.XXXXXX")" || {
 # stderr goes to its OWN file (#2645 r1 security): merged into the -z
 # stream, an rc-0 git warning (fsmonitor, .gitattributes) becomes part of
 # the first NUL record and silently unscans that file.
-if ! git diff --cached --name-only --diff-filter=AM -z >"$_b4_staged" 2>"$_b4_staged.err"; then
+# --no-renames (phase2 r2): with rename detection on, a staged rename is
+# status R — outside the AM filter — so `git mv bad.sh new.sh` (or a
+# delete+add git chooses to pair) would land its destination UNSCANNED.
+# Disabling detection surfaces the destination as a plain A.
+if ! git diff --cached --name-only --no-renames --diff-filter=AM -z >"$_b4_staged" 2>"$_b4_staged.err"; then
 	echo "BLOCK: git diff --cached failed — cannot enumerate staged files (failing closed):" >&2
 	cat "$_b4_staged.err" >&2
 	rm -f "$_b4_staged" "$_b4_staged.err"
