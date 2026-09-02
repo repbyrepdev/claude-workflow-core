@@ -280,20 +280,14 @@ SKIP_AGENTS=""
 DIFF_ALL_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null)
 if [ -n "$DIFF_ALL_FILES" ]; then
 	# Helper: is every line in DIFF_ALL_FILES matching the glob(s)?
-	# Enables globstar so patterns like `docs/**` match recursively. Saves
-	# + restores the prior shopt so we don't leak state back to the caller.
-	# bash4-waiver: globstar — saved via `shopt -p` + `|| true`-guarded below; on bash 3.2 it degrades to literal (non-**) matching, documented as acceptable for this repo's shallow file sets (#2645)
+	# Plain [[ == ]] pattern matching: `*` already crosses `/` here, because
+	# globstar governs PATHNAME EXPANSION only, never [[ ]] matching — so
+	# `docs/**` matches recursively on every bash, 3.2 included. (#2645 r1:
+	# the previous save/enable/restore globstar block was inert on all
+	# bashes and carried a wrong 3.2-degradation claim; removed along with
+	# its bash4-waiver.)
 	_all_match() {
 		local pat1=$1 pat2=${2:-} f
-		local _prev_globstar
-		# globstar is bash 4.0+. macOS /bin/bash is 3.2 — `shopt -s globstar`
-		# errors there. Capture current state + enable defensively; on bash-3
-		# the `shopt -s globstar` silently fails and the `$pat1` match degrades
-		# to literal matching (no recursive **). Acceptable because the patterns
-		# used here (*.bats, *.md, docs/**, *.yml) don't actually need recursive
-		# ** for the shallow file sets this repo produces.
-		_prev_globstar=$(shopt -p globstar 2>/dev/null || echo "")
-		shopt -s globstar 2>/dev/null || true
 		while IFS= read -r f; do
 			[ -z "$f" ] && continue
 			# shellcheck disable=SC2053
@@ -302,10 +296,8 @@ if [ -n "$DIFF_ALL_FILES" ]; then
 				# shellcheck disable=SC2053
 				[[ $f == $pat2 ]] && continue
 			fi
-			[ -n "$_prev_globstar" ] && eval "$_prev_globstar"
 			return 1
 		done <<<"$DIFF_ALL_FILES"
-		[ -n "$_prev_globstar" ] && eval "$_prev_globstar"
 		return 0
 	}
 	if _all_match '*.bats'; then

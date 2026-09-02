@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# covers: _lib/bash4-features-check.sh pre-commit-hooks/bash4-features-check.sh hooks/bash4-features-write-guard.sh
+# covers: _lib/bash4-features-check.sh
 #
 # #2645 — first behavioral coverage for the bash-3.2 portability SSOT (it was
 # pattern-matched, never executed, and had zero tests). Locks three contracts:
@@ -44,6 +44,12 @@ _chk() {
 	run _chk $'#!/bin/bash\ndeclare -A map'
 	[ "$status" -eq 1 ]
 	[[ $output == *"declare -A"* ]]
+}
+
+@test "bare readarray flags (bash 4.0)" {
+	run _chk $'#!/bin/bash\nreadarray -t arr < input.txt'
+	[ "$status" -eq 1 ]
+	[[ $output == *"readarray (bash 4.0)"* ]]
 }
 
 @test "case transform in CODE flags" {
@@ -148,6 +154,55 @@ _chk() {
 	run _chk $'#!/bin/bash\n# bash4-waiver: globbstar — typo key\necho ok'
 	[ "$status" -eq 1 ]
 	[[ $output == *"unknown bash4-waiver key"* ]]
+}
+
+@test "keyword-prefixed one-liners flag: do/then forms are not a blind spot (#2645 r1)" {
+	# Probed fail-open hole: do/then sat between the delimiter and the
+	# builtin, so `for ...; do readarray ...` sailed through both gates —
+	# the anchor regression class in its most common compact shape.
+	run _chk $'#!/bin/bash\nfor f in a b; do readarray -t x <"$f"; done'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"readarray"* ]] || return 1
+	run _chk $'#!/bin/bash\nwhile :; do mapfile -d "" x; done'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"mapfile -d"* ]] || return 1
+	run _chk $'#!/bin/bash\nif declare -A m; then :; fi'
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"declare -A"* ]]
+}
+
+@test "grep tool error is a BLOCK, not a clean bill (#2645 r1 fail-closed)" {
+	# A grep that errors (rc 2) must not read as "no features found". The
+	# override is visible to run's subshell; every detector then errors and
+	# the accumulated _B4_TOOL_ERR turns into a BLOCK.
+	# shellcheck disable=SC2317,SC2329  # invoked indirectly inside run subshell
+	grep() { return 2; }
+	run _chk $'#!/bin/bash\necho ok'
+	unset -f grep
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"detector errored; failing closed"* ]]
+}
+
+@test "sed comment-strip failure is a BLOCK (#2645 r1 fail-closed)" {
+	# sed failing would disable ALL detectors at once — the widest silent
+	# blast radius; must fail closed.
+	# shellcheck disable=SC2317,SC2329  # invoked indirectly inside run subshell
+	sed() { return 1; }
+	run _chk $'#!/bin/bash\necho ok'
+	unset -f sed
+	[ "$status" -eq 1 ] || return 1
+	[[ $output == *"comment-strip failed"* ]]
+}
+
+@test "exempt_path is exactly one file wide: the detector lib in any layout (#2645 r1)" {
+	run bash4_features_exempt_path "_lib/bash4-features-check.sh"
+	[ "$status" -eq 0 ]
+	run bash4_features_exempt_path ".claude/_lib/bash4-features-check.sh"
+	[ "$status" -eq 0 ]
+	run bash4_features_exempt_path "pre-commit-hooks/bash4-features-check.sh"
+	[ "$status" -eq 1 ]
+	run bash4_features_exempt_path "skills/_lib/skill-common.sh"
+	[ "$status" -eq 1 ]
 }
 
 @test "execution proof: ;& is a hard parse error under a real bash 3.2" {
