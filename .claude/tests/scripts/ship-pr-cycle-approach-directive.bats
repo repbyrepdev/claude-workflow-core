@@ -93,6 +93,28 @@ teardown() {
 	[ -f .claude/.session-state/ship-cycle/branch/feat/2651/slashy.approach-directive-emitted ]
 }
 
+@test "detached resume does NOT consume the checkpoint (marker only on live emission)" {
+	# Backup review on 3bc669e: the post-commit hook runs `resume`
+	# detached with SHIP_PR_IN_RESUME=1, whose emit is stdout-only (no
+	# ack) into a log nobody reads — persisting the marker there retires
+	# the question unanswered. The marker must survive only a LIVE pass.
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run env SHIP_PR_IN_RESUME=1 bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	[ ! -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ] || return 1
+	# The next LIVE pass re-fires and persists.
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m live || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ]
+}
+
 @test "recreated same-name branch on a foreign lineage RE-EMITS (marker sha not ancestor)" {
 	# phase2 r2: a bare sentinel would survive delete+recreate within a
 	# session and suppress the checkpoint on an unrelated lineage; the

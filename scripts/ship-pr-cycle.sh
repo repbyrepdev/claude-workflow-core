@@ -2064,7 +2064,16 @@ _cmd_next_once() {
 		fi
 		if [ "$_appr_seen" -eq 0 ]; then
 			_emit_stage_directive approach-review
-			if [ -n "$_appr_marker" ]; then
+			# The once-marker persists ONLY on a live emission (backup
+			# review on 3bc669e): under SHIP_PR_IN_RESUME=1 the emitter
+			# prints to stdout and registers NO ack — and the detached
+			# post-commit hook runs `resume` with output redirected to a
+			# log nobody reads, so marking the checkpoint consumed there
+			# would silently retire the question unanswered on the very
+			# first commit of every branch. Same class as cmd_resume's
+			# phase2-preread re-emit; leaving the marker unwritten lets
+			# the directive re-fire AND arm on the next live invocation.
+			if [ -n "$_appr_marker" ] && [ "${SHIP_PR_IN_RESUME:-0}" != "1" ]; then
 				mkdir -p "$(dirname "$_appr_marker")" 2>/dev/null || true
 				git rev-parse HEAD >"$_appr_marker" 2>/dev/null ||
 					scm_warn "approach-review marker write failed at $_appr_marker — the one-time directive may re-fire on the next commit"
