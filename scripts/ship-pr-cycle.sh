@@ -2037,11 +2037,24 @@ _cmd_next_once() {
 		else
 			scm_warn "approach-review: branch name unresolvable or unsafe — directive emitted without a once-marker (it may re-fire)"
 		fi
-		if [ -z "$_appr_marker" ] || [ ! -f "$_appr_marker" ]; then
+		# Suppress only when the marker's recorded sha is an ANCESTOR of
+		# HEAD (phase2 r2): a bare sentinel survives branch deletion +
+		# same-name recreation within a session, silently suppressing
+		# the checkpoint on an unrelated lineage. Unreadable/foreign
+		# marker = re-emit + rewrite (advisory, never a deadlock).
+		local _appr_seen=0 _appr_marker_sha=""
+		if [ -n "$_appr_marker" ] && [ -f "$_appr_marker" ]; then
+			_appr_marker_sha=$(head -n1 "$_appr_marker" 2>/dev/null || true)
+			if [ -n "$_appr_marker_sha" ] &&
+				git merge-base --is-ancestor "$_appr_marker_sha" HEAD 2>/dev/null; then
+				_appr_seen=1
+			fi
+		fi
+		if [ "$_appr_seen" -eq 0 ]; then
 			_emit_stage_directive approach-review
 			if [ -n "$_appr_marker" ]; then
 				mkdir -p "$(dirname "$_appr_marker")" 2>/dev/null || true
-				: >"$_appr_marker" ||
+				git rev-parse HEAD >"$_appr_marker" 2>/dev/null ||
 					scm_warn "approach-review marker write failed at $_appr_marker — the one-time directive may re-fire on the next commit"
 			fi
 		fi

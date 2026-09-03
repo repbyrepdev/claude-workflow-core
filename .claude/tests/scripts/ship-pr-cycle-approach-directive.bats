@@ -93,6 +93,29 @@ teardown() {
 	[ -f .claude/.session-state/ship-cycle/branch/feat/2651/slashy.approach-directive-emitted ]
 }
 
+@test "recreated same-name branch on a foreign lineage RE-EMITS (marker sha not ancestor)" {
+	# phase2 r2: a bare sentinel would survive delete+recreate within a
+	# session and suppress the checkpoint on an unrelated lineage; the
+	# marker's recorded sha must be an ancestor of HEAD to suppress.
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	# Recreate the branch from main: same name, different lineage
+	# (main has no commit from the old branch).
+	git checkout -q main || return 1
+	git branch -q -D feat-2651-approach || return 1
+	git checkout -q -b feat-2651-approach || return 1
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m recreated || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]]
+}
+
 @test "marker write failure warns, still advances, and may re-fire" {
 	cd "$TEST_TMP" || return 1
 	run bash "$SCRIPT" start
