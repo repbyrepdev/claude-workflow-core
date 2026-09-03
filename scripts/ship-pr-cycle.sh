@@ -212,19 +212,32 @@ _branch_pointer_file() {
 # real flow actually takes (post-commit resume usually returns on
 # phase0.5's not-yet-logged refusal, not at a stop stage).
 _resume_approach_compensate() {
-	local _rs_appr_branch _rs_appr_marker _rs_appr_sha
-	_rs_appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
-	_branch_name_safe_for_pointer "$_rs_appr_branch" || return 0
-	_rs_appr_marker=$(_branch_approach_marker_file "$_rs_appr_branch")
-	_rs_appr_sha=$(head -n1 "$_rs_appr_marker" 2>/dev/null || true)
-	if [ -n "$_rs_appr_sha" ] &&
-		git merge-base --is-ancestor "$_rs_appr_sha" HEAD 2>/dev/null; then
-		return 0
+	local _rs_appr_branch _rs_appr_marker="" _rs_appr_sha
+	# Fail CLOSED on a git failure (CR-in-CI r5): silently returning 0
+	# here let a resume that crossed branch-ready suppressed finish with
+	# neither an ack nor a marker — the checkpoint quietly unarmed.
+	if ! _rs_appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); then
+		scm_warn "approach-review compensation: cannot resolve HEAD branch (git failure) — the checkpoint could not be armed; failing closed"
+		return 2
+	fi
+	if _branch_name_safe_for_pointer "$_rs_appr_branch"; then
+		_rs_appr_marker=$(_branch_approach_marker_file "$_rs_appr_branch")
+		_rs_appr_sha=$(head -n1 "$_rs_appr_marker" 2>/dev/null || true)
+		if [ -n "$_rs_appr_sha" ] &&
+			git merge-base --is-ancestor "$_rs_appr_sha" HEAD 2>/dev/null; then
+			return 0
+		fi
+	else
+		# Detached HEAD / unsafe name: still ARM the question (the ack
+		# reaches the operator) — just without a once-marker.
+		scm_warn "approach-review compensation: branch name unsafe (detached HEAD?) — arming without a once-marker"
 	fi
 	SHIP_PR_IN_RESUME=0 _emit_stage_directive approach-review
-	mkdir -p "$(dirname "$_rs_appr_marker")" 2>/dev/null || true
-	git rev-parse HEAD >"$_rs_appr_marker" 2>/dev/null ||
-		scm_warn "approach-review marker write failed at $_rs_appr_marker — the directive may re-fire"
+	if [ -n "$_rs_appr_marker" ]; then
+		mkdir -p "$(dirname "$_rs_appr_marker")" 2>/dev/null || true
+		git rev-parse HEAD >"$_rs_appr_marker" 2>/dev/null ||
+			scm_warn "approach-review marker write failed at $_rs_appr_marker — the directive may re-fire"
+	fi
 	return 0
 }
 
@@ -3736,7 +3749,7 @@ cmd_resume() {
 				SHIP_PR_IN_RESUME=0 _emit_stage_directive phase2-preread
 			fi
 			if [ "$prev" != "merged" ]; then
-				_resume_approach_compensate
+				_resume_approach_compensate || return 2
 			fi
 			return 0
 			;;
@@ -3750,7 +3763,7 @@ cmd_resume() {
 			# where the REAL post-commit resume usually returns — e.g.
 			# phase0.5 not-yet-logged — so the approach compensation
 			# must fire here too, not only at the stop stages.)
-			_resume_approach_compensate
+			_resume_approach_compensate || return 2
 			return "$rc"
 		fi
 		current=$(_get_stage) || state_rc=$?
@@ -3760,7 +3773,7 @@ cmd_resume() {
 		fi
 		if [ "$current" = "$prev" ]; then
 			# No advance happened despite rc=0. Stop to avoid spinning.
-			_resume_approach_compensate
+			_resume_approach_compensate || return 2
 			return 0
 		fi
 		iter=$((iter + 1))

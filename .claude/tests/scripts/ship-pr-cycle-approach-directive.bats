@@ -103,12 +103,16 @@ teardown() {
 	run bash "$SCRIPT" start
 	[ "$status" -eq 0 ] || return 1
 	run bash "$SCRIPT" resume
+	# rc 1: the walk returns phase0.5's not-yet-logged refusal (the
+	# realistic sandbox stop) — compensation must have fired regardless.
+	[ "$status" -eq 1 ] || return 1
 	[[ $output == *'APPROACH REVIEW'* ]] || return 1
 	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ] || return 1
 	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m again || return 1
 	run bash "$SCRIPT" start
 	[ "$status" -eq 0 ] || return 1
 	run bash "$SCRIPT" resume
+	[ "$status" -eq 1 ] || return 1
 	[[ $output != *'APPROACH REVIEW'* ]]
 }
 
