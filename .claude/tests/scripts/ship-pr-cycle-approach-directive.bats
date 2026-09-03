@@ -129,5 +129,16 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'APPROACH REVIEW'* ]] || return 1
 	[[ $output == *'marker write failed'* ]] || return 1
-	[[ $output == *'advanced to phase0.5'* ]]
+	[[ $output == *'advanced to phase0.5'* ]] || return 1
+	# The promised re-fire is real: with the blocker removed and no
+	# marker recorded, the next branch-ready pass emits again (and this
+	# time persists the marker) — phase2 r3.
+	rm -f .claude/.session-state/ship-cycle/branch || return 1
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m refire || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" next
+	[ "$status" -eq 0 ] || return 1
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ]
 }
