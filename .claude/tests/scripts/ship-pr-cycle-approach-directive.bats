@@ -93,6 +93,25 @@ teardown() {
 	[ -f .claude/.session-state/ship-cycle/branch/feat/2651/slashy.approach-directive-emitted ]
 }
 
+@test "END-TO-END resume: compensation arms + persists at the return; second resume is quiet" {
+	# Backup r2: the DOCUMENTED flow is post-commit `resume`, which
+	# crosses branch-ready suppressed and (in real repos) returns on
+	# phase0.5's not-yet-logged refusal — never a stop stage. The
+	# compensation at every resume return must fire ONE live emission,
+	# persist the marker, and leave later resumes quiet.
+	cd "$TEST_TMP" || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" resume
+	[[ $output == *'APPROACH REVIEW'* ]] || return 1
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ] || return 1
+	git -c user.email=t@t -c user.name=t commit --allow-empty -q -m again || return 1
+	run bash "$SCRIPT" start
+	[ "$status" -eq 0 ] || return 1
+	run bash "$SCRIPT" resume
+	[[ $output != *'APPROACH REVIEW'* ]]
+}
+
 @test "detached resume does NOT consume the checkpoint (marker only on live emission)" {
 	# Backup review on 3bc669e: the post-commit hook runs `resume`
 	# detached with SHIP_PR_IN_RESUME=1, whose emit is stdout-only (no

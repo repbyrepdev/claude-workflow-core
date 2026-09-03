@@ -198,6 +198,36 @@ _branch_pointer_file() {
 	printf '%s/branch/%s.json\n' "$STATE_DIR" "$branch"
 }
 
+# (#2651 backup r2) cmd_resume's compensating live emission for the
+# approach checkpoint. The walk crosses branch-ready under
+# SHIP_PR_IN_RESUME=1 (print-only into the detach log, no ack, and —
+# deliberately — no marker: persisting there would retire the question
+# unanswered), and branch-ready is not a stop stage, so under the
+# DOCUMENTED resume-driven flow nothing would ever persist the marker
+# and the directive would reprint on every commit. Called at every
+# cmd_resume return (stop stage, gate refusal, no-advance): if this
+# branch has never had a LIVE emission, re-emit with suppression OFF so
+# the ack materializes in the invoking context and the marker persists —
+# the phase2-preread compensating pattern, generalized to the exits the
+# real flow actually takes (post-commit resume usually returns on
+# phase0.5's not-yet-logged refusal, not at a stop stage).
+_resume_approach_compensate() {
+	local _rs_appr_branch _rs_appr_marker _rs_appr_sha
+	_rs_appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
+	_branch_name_safe_for_pointer "$_rs_appr_branch" || return 0
+	_rs_appr_marker=$(_branch_approach_marker_file "$_rs_appr_branch")
+	_rs_appr_sha=$(head -n1 "$_rs_appr_marker" 2>/dev/null || true)
+	if [ -n "$_rs_appr_sha" ] &&
+		git merge-base --is-ancestor "$_rs_appr_sha" HEAD 2>/dev/null; then
+		return 0
+	fi
+	SHIP_PR_IN_RESUME=0 _emit_stage_directive approach-review
+	mkdir -p "$(dirname "$_rs_appr_marker")" 2>/dev/null || true
+	git rev-parse HEAD >"$_rs_appr_marker" 2>/dev/null ||
+		scm_warn "approach-review marker write failed at $_rs_appr_marker — the directive may re-fire"
+	return 0
+}
+
 _branch_approach_marker_file() {
 	# (#2651) Single source of truth for the approach-directive marker
 	# path (one-accessor-per-state-path convention, like the pointer and
@@ -3705,6 +3735,9 @@ cmd_resume() {
 			if [ "$prev" = "phase2" ]; then
 				SHIP_PR_IN_RESUME=0 _emit_stage_directive phase2-preread
 			fi
+			if [ "$prev" != "merged" ]; then
+				_resume_approach_compensate
+			fi
 			return 0
 			;;
 		esac
@@ -3713,7 +3746,11 @@ cmd_resume() {
 		if [ "$rc" -ne 0 ]; then
 			# Non-zero from cmd_next — gate refused, real error, or
 			# stage emitted an operator directive. Stop and let the
-			# caller see the message + decide.
+			# caller see the message + decide. (#2651 backup r2: this is
+			# where the REAL post-commit resume usually returns — e.g.
+			# phase0.5 not-yet-logged — so the approach compensation
+			# must fire here too, not only at the stop stages.)
+			_resume_approach_compensate
 			return "$rc"
 		fi
 		current=$(_get_stage) || state_rc=$?
@@ -3723,6 +3760,7 @@ cmd_resume() {
 		fi
 		if [ "$current" = "$prev" ]; then
 			# No advance happened despite rc=0. Stop to avoid spinning.
+			_resume_approach_compensate
 			return 0
 		fi
 		iter=$((iter + 1))
