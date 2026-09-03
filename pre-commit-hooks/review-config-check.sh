@@ -50,7 +50,10 @@ fi
 # weigh at branch-ready (advisory prose; nothing machine-embeds it).
 # Non-required (existing configs pass untouched); when present it must be
 # a non-empty string so a declared brief is never a silently-blank value.
-if yq -e '.approach' "$_tmp" >/dev/null 2>&1; then
+# has() not `.approach` truthiness: `yq -e '.approach'` returns nonzero
+# for a PRESENT null/false value, silently skipping validation for the
+# two wrong-typed values most likely to appear (phase2 CR).
+if yq -e 'has("approach")' "$_tmp" >/dev/null 2>&1; then
 	if ! yq -e '(.approach | tag) == "!!str" and (.approach | length > 0)' "$_tmp" >/dev/null 2>&1; then
 		echo "✗ review-config.yml approach: must be a non-empty string when present (#2651)" >&2
 		errs=$((errs + 1))

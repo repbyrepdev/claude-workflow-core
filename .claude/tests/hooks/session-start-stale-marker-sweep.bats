@@ -302,7 +302,9 @@ _run() {
 	_run
 	[ "$status" -eq 0 ] || return 1
 	[ -f "$MDIR/branch/appr-live.approach-directive-emitted" ] || return 1
-	[ ! -f "$MDIR/branch/appr-dead.approach-directive-emitted" ]
+	[ ! -f "$MDIR/branch/appr-dead.approach-directive-emitted" ] || return 1
+	# The removal is reported, not silent (phase2 CR).
+	[[ $output == *'cleared 1 stale marker(s)'* ]]
 }
 
 @test "approach marker for a slash-bearing live branch survives the sweep" {
@@ -312,5 +314,7 @@ _run() {
 	: >"$MDIR/branch/appr/nested/live.approach-directive-emitted" || return 1
 	_run
 	[ "$status" -eq 0 ] || return 1
-	[ -f "$MDIR/branch/appr/nested/live.approach-directive-emitted" ]
+	[ -f "$MDIR/branch/appr/nested/live.approach-directive-emitted" ] || return 1
+	# Nothing was stale, so nothing may be reported cleared (phase2 CR).
+	[[ $output != *'cleared'* ]]
 }

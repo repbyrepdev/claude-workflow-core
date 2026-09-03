@@ -46,11 +46,13 @@ _stage_config() {
 	git add .claude/review-config.yml || return 1
 }
 
-@test "valid config with required agent shape passes" {
+@test "valid config with required agent shape passes silently" {
 	_write_valid_config
 	_stage_config || return 1
 	run bash "$HOOK"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
+	# Success is silent — output would mean an unreported validation arm.
+	[ -z "$output" ]
 }
 
 @test "missing top-level agents fails" {
@@ -70,11 +72,31 @@ _stage_config() {
 	[[ $output != *'approach:'* ]]
 }
 
-@test "approach absent still passes (non-required, #2651)" {
+@test "approach absent still passes silently (non-required, #2651)" {
 	_write_valid_config
 	_stage_config || return 1
 	run bash "$HOOK"
-	[ "$status" -eq 0 ]
+	[ "$status" -eq 0 ] || return 1
+	[ -z "$output" ]
+}
+
+@test "approach present as NULL is rejected, not skipped (#2651)" {
+	# `yq -e '.approach'` is falsy for a present null — has() must gate.
+	_write_valid_config
+	printf '%s\n' 'approach: null' >>.claude/review-config.yml
+	_stage_config || return 1
+	run bash "$HOOK"
+	[ "$status" -ne 0 ] || return 1
+	[[ $output == *'approach: must be a non-empty string'* ]]
+}
+
+@test "approach present as FALSE is rejected, not skipped (#2651)" {
+	_write_valid_config
+	printf '%s\n' 'approach: false' >>.claude/review-config.yml
+	_stage_config || return 1
+	run bash "$HOOK"
+	[ "$status" -ne 0 ] || return 1
+	[[ $output == *'approach: must be a non-empty string'* ]]
 }
 
 @test "approach with a wrong-typed value fails (#2651)" {
