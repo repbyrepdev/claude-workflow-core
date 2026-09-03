@@ -55,7 +55,7 @@
     "_lib/resolve-plugin-identity.sh": "e59acb092e00573103930e5215d2ae83d1df82b5d97f3852ebe2c5fa92d54875",
     "_lib/resolve-plugin-pin.sh": "e69d69552d12d9bbf4891b594e3cb3f5e882f8c59d23acae480effb9fd5ca82a",
     "_lib/semantic-hash.sh": "bfbebf23bc9c62c19c0b270d7241d6915592a112b4f1d2f0053b91370c782632",
-    "_lib/ship-cycle-directives.sh": "e5b7ae1ce6cab7d354e63e8dcca6fe8eb6b8949dfb24c24387ed14382802506d",
+    "_lib/ship-cycle-directives.sh": "5f27876b8c8f8a354184e3ca4fb96f9682525d6e3b70bb370ecce8362708e771",
     "_lib/ship-cycle-protocol.sh": "dd166d5322ef4cbfb3a8d9088ce783ebdad3cd2051c241dfd234a1f1ac0c7c27",
     "_lib/stage-findings.sh": "8d418f3c9164994edc78187abe14b4acc8bb77ca5643eaab24cc78eaeed0c507",
     "_lib/task-queue.sh": "dbf8327e9560d9b9dafba29b579836b3fcd6e7efb764f5e0632ba42c2ec39202",

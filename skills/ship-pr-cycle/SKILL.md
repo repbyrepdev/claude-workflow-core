@@ -34,8 +34,10 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
                   (upstream already publishes it? in-repo prior art?
                   smaller shape satisfies the issue?) BEFORE any code
                   review; honors an optional consumer review-config.yml
-                  top-level `approach:` brief. Branch-keyed marker — it
-                  never re-blocks after acknowledgement.
+                  top-level `approach:` brief. Once the branch-keyed
+                  marker persists it never re-blocks after
+                  acknowledgement (a failed marker write warns and may
+                  re-emit on the next commit).
     ↓ next
 [phase0.5]        copilot prefilter logged for HEAD
     ↓ next (gate-checked: phase0.5-run.jsonl entry exists for sha)

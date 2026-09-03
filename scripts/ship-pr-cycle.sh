@@ -31,8 +31,10 @@ set -euo pipefail
 #   branch-ready      → ≥1 commit ahead of BASE_BRANCH. On the FIRST pass
 #                       per branch, emits the one-time APPROACH-REVIEW
 #                       directive (#2651) — "should this code exist?" —
-#                       before any code review runs; a branch-keyed
-#                       marker keeps later commits from re-blocking it
+#                       before any code review runs; once the
+#                       branch-keyed marker PERSISTS, later commits
+#                       never re-block it (a failed marker write warns
+#                       and may re-emit)
 #   phase0.5          → Copilot prefilter pending
 #   phase1            → Claude Phase 1 rounds (cap from scaler tier)
 #   phase2            → CR-CLI loop (cap from scaler tier)

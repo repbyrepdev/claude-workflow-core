@@ -111,7 +111,7 @@ _emit_stage_directive() {
     - Is there prior art in-repo for the same mechanism? (grep before inventing)
     - Does the linked issue's acceptance actually require this shape, or a smaller one?
   If the consumer's review-config.yml declares a top-level 'approach:' brief, weigh the change against it.
-  State the chosen approach and the strongest rejected alternative in the PR body. Then re-run 'scripts/ship-pr-cycle.sh next' — this directive fires once per branch and does not re-block after acknowledgement."
+  State the chosen approach and the strongest rejected alternative in the PR body. Then re-run 'scripts/ship-pr-cycle.sh next' — once the branch marker persists, this directive fires once per branch and does not re-block after acknowledgement (a failed marker write is warned and may re-emit on the next commit)."
 		;;
 	cr-thread-reply)
 		body="CR THREAD REPLY — classify each UNADDRESSED thread, then reply with evidence. The rule is: never resolve a CR thread by hand; reply and let CR resolve. This stage is where that reply happens, and it is the step whose absence stalled #2540 and #2635 at merge-gate with non-zero threads and no defined action.
