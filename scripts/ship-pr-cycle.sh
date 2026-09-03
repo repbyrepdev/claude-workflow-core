@@ -2044,12 +2044,22 @@ _cmd_next_once() {
 		# same-name recreation within a session, silently suppressing
 		# the checkpoint on an unrelated lineage. Unreadable/foreign
 		# marker = re-emit + rewrite (advisory, never a deadlock).
-		local _appr_seen=0 _appr_marker_sha=""
+		local _appr_seen=0 _appr_marker_sha="" _appr_mb_rc=0
 		if [ -n "$_appr_marker" ] && [ -f "$_appr_marker" ]; then
 			_appr_marker_sha=$(head -n1 "$_appr_marker" 2>/dev/null || true)
-			if [ -n "$_appr_marker_sha" ] &&
-				git merge-base --is-ancestor "$_appr_marker_sha" HEAD 2>/dev/null; then
-				_appr_seen=1
+			if [ -n "$_appr_marker_sha" ]; then
+				git merge-base --is-ancestor "$_appr_marker_sha" HEAD 2>/dev/null || _appr_mb_rc=$?
+				if [ "$_appr_mb_rc" -eq 0 ]; then
+					_appr_seen=1
+				elif [ "$_appr_mb_rc" -gt 1 ]; then
+					# rc 1 = genuinely not an ancestor (foreign lineage —
+					# re-emit is the intended behavior). Anything higher
+					# is a GIT error; say so instead of silently treating
+					# it as a foreign marker (CR-in-CI r2). The advisory
+					# direction stays emit-on-doubt: over-asking is safe,
+					# a skipped checkpoint is not.
+					scm_warn "approach-review: git merge-base errored (rc $_appr_mb_rc) probing marker ancestry — treating as unseen; the directive may re-fire until git recovers"
+				fi
 			fi
 		fi
 		if [ "$_appr_seen" -eq 0 ]; then
