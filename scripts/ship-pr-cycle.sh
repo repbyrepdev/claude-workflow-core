@@ -28,7 +28,13 @@ set -euo pipefail
 #   BASE_BRANCH    Comparison branch for "commits on branch" (default: main)
 #
 # Stages (state.stage):
-#   branch-ready      → ≥1 commit ahead of BASE_BRANCH
+#   branch-ready      → ≥1 commit ahead of BASE_BRANCH. On the FIRST pass
+#                       per branch, emits the one-time APPROACH-REVIEW
+#                       directive (#2651) — "should this code exist?" —
+#                       before any code review runs; once the
+#                       branch-keyed marker PERSISTS, later commits
+#                       never re-block it (a failed marker write warns
+#                       and may re-emit)
 #   phase0.5          → Copilot prefilter pending
 #   phase1            → Claude Phase 1 rounds (cap from scaler tier)
 #   phase2            → CR-CLI loop (cap from scaler tier)
@@ -190,6 +196,62 @@ _branch_pointer_file() {
 	# not containing newline / `..`).
 	local branch=$1
 	printf '%s/branch/%s.json\n' "$STATE_DIR" "$branch"
+}
+
+# (#2651 backup r2) cmd_resume's compensating live emission for the
+# approach checkpoint. The walk crosses branch-ready under
+# SHIP_PR_IN_RESUME=1 (print-only into the detach log, no ack, and —
+# deliberately — no marker: persisting there would retire the question
+# unanswered), and branch-ready is not a stop stage, so under the
+# DOCUMENTED resume-driven flow nothing would ever persist the marker
+# and the directive would reprint on every commit. Called at every
+# cmd_resume return (stop stage, gate refusal, no-advance): if this
+# branch has never had a LIVE emission, re-emit with suppression OFF so
+# the ack materializes in the invoking context and the marker persists —
+# the phase2-preread compensating pattern, generalized to the exits the
+# real flow actually takes (post-commit resume usually returns on
+# phase0.5's not-yet-logged refusal, not at a stop stage).
+_resume_approach_compensate() {
+	local _rs_appr_branch _rs_appr_marker="" _rs_appr_sha
+	# Fail CLOSED on a git failure (CR-in-CI r5): silently returning 0
+	# here let a resume that crossed branch-ready suppressed finish with
+	# neither an ack nor a marker — the checkpoint quietly unarmed.
+	if ! _rs_appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); then
+		scm_warn "approach-review compensation: cannot resolve HEAD branch (git failure) — the checkpoint could not be armed; failing closed"
+		return 2
+	fi
+	if _branch_name_safe_for_pointer "$_rs_appr_branch"; then
+		_rs_appr_marker=$(_branch_approach_marker_file "$_rs_appr_branch")
+		_rs_appr_sha=$(head -n1 "$_rs_appr_marker" 2>/dev/null || true)
+		if [ -n "$_rs_appr_sha" ] &&
+			git merge-base --is-ancestor "$_rs_appr_sha" HEAD 2>/dev/null; then
+			return 0
+		fi
+	else
+		# Detached HEAD / unsafe name: still ARM the question (the ack
+		# reaches the operator) — just without a once-marker.
+		scm_warn "approach-review compensation: branch name unsafe (detached HEAD?) — arming without a once-marker"
+	fi
+	SHIP_PR_IN_RESUME=0 _emit_stage_directive approach-review
+	if [ -n "$_rs_appr_marker" ]; then
+		mkdir -p "$(dirname "$_rs_appr_marker")" 2>/dev/null || true
+		git rev-parse HEAD >"$_rs_appr_marker" 2>/dev/null ||
+			scm_warn "approach-review marker write failed at $_rs_appr_marker — the directive may re-fire"
+	fi
+	return 0
+}
+
+_branch_approach_marker_file() {
+	# (#2651) Single source of truth for the approach-directive marker
+	# path (one-accessor-per-state-path convention, like the pointer and
+	# phase1-directive accessors around it — phase1 r1 flagged the inline
+	# path for making _branch_pointer_file's SSOT claim false). Named for
+	# what it RECORDS — the directive was EMITTED for this branch — not
+	# for the review it prompts (positive-evidence naming). Nested beside
+	# the branch pointer json; caller pre-validates the branch name via
+	# _branch_name_safe_for_pointer.
+	local branch=$1
+	printf '%s/branch/%s.approach-directive-emitted\n' "$STATE_DIR" "$branch"
 }
 
 _phase1_directive_marker_file() {
@@ -1997,6 +2059,69 @@ _cmd_next_once() {
 			echo "ship-pr-cycle: no commits on branch (vs $BASE_BRANCH) — make a commit first"
 			return 1
 		fi
+		# (#2651) One-time APPROACH-REVIEW checkpoint, at the only edge
+		# that precedes every code review. Branch-keyed via the SAME
+		# validated branch machinery the pointer files use
+		# (_branch_name_safe_for_pointer; phase0.5 r1 flagged the first
+		# version for reinventing it with divergent sanitization —
+		# the exact prior-art miss this directive exists to ask about):
+		# state is per-sha and branch-ready re-enters on every commit,
+		# so a per-sha emit would re-block the same question each
+		# commit. Unresolvable/unsafe branch name (detached HEAD, git
+		# failure): emit WITHOUT a marker and say so — an advisory
+		# re-fire on a rare state beats a skipped checkpoint or a
+		# shared marker. Marker-write failure only risks a re-emit,
+		# never a deadlock (the mkdir's own failure surfaces through
+		# the marker write's check — its stderr is quieted because
+		# already-exists is the common case). No second re-dispatch
+		# site; the _SHIP_NEXT_REDISPATCH cap is untouched.
+		local _appr_branch _appr_marker=""
+		if _appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) &&
+			_branch_name_safe_for_pointer "$_appr_branch"; then
+			_appr_marker=$(_branch_approach_marker_file "$_appr_branch")
+		else
+			scm_warn "approach-review: branch name unresolvable or unsafe — directive emitted without a once-marker (it may re-fire)"
+		fi
+		# Suppress only when the marker's recorded sha is an ANCESTOR of
+		# HEAD (phase2 r2): a bare sentinel survives branch deletion +
+		# same-name recreation within a session, silently suppressing
+		# the checkpoint on an unrelated lineage. Unreadable/foreign
+		# marker = re-emit + rewrite (advisory, never a deadlock).
+		local _appr_seen=0 _appr_marker_sha="" _appr_mb_rc=0
+		if [ -n "$_appr_marker" ] && [ -f "$_appr_marker" ]; then
+			_appr_marker_sha=$(head -n1 "$_appr_marker" 2>/dev/null || true)
+			if [ -n "$_appr_marker_sha" ]; then
+				git merge-base --is-ancestor "$_appr_marker_sha" HEAD 2>/dev/null || _appr_mb_rc=$?
+				if [ "$_appr_mb_rc" -eq 0 ]; then
+					_appr_seen=1
+				elif [ "$_appr_mb_rc" -gt 1 ]; then
+					# rc 1 = genuinely not an ancestor (foreign lineage —
+					# re-emit is the intended behavior). Anything higher
+					# is a GIT error; say so instead of silently treating
+					# it as a foreign marker (CR-in-CI r2). The advisory
+					# direction stays emit-on-doubt: over-asking is safe,
+					# a skipped checkpoint is not.
+					scm_warn "approach-review: git merge-base errored (rc $_appr_mb_rc) probing marker ancestry — treating as unseen; the directive may re-fire until git recovers"
+				fi
+			fi
+		fi
+		if [ "$_appr_seen" -eq 0 ]; then
+			_emit_stage_directive approach-review
+			# The once-marker persists ONLY on a live emission (backup
+			# review on 3bc669e): under SHIP_PR_IN_RESUME=1 the emitter
+			# prints to stdout and registers NO ack — and the detached
+			# post-commit hook runs `resume` with output redirected to a
+			# log nobody reads, so marking the checkpoint consumed there
+			# would silently retire the question unanswered on the very
+			# first commit of every branch. Same class as cmd_resume's
+			# phase2-preread re-emit; leaving the marker unwritten lets
+			# the directive re-fire AND arm on the next live invocation.
+			if [ -n "$_appr_marker" ] && [ "${SHIP_PR_IN_RESUME:-0}" != "1" ]; then
+				mkdir -p "$(dirname "$_appr_marker")" 2>/dev/null || true
+				git rev-parse HEAD >"$_appr_marker" 2>/dev/null ||
+					scm_warn "approach-review marker write failed at $_appr_marker — the one-time directive may re-fire on the next commit"
+			fi
+		fi
 		_set_stage "phase0.5"
 		echo "→ advanced to phase0.5"
 		;;
@@ -3623,6 +3748,9 @@ cmd_resume() {
 			if [ "$prev" = "phase2" ]; then
 				SHIP_PR_IN_RESUME=0 _emit_stage_directive phase2-preread
 			fi
+			if [ "$prev" != "merged" ]; then
+				_resume_approach_compensate || return 2
+			fi
 			return 0
 			;;
 		esac
@@ -3631,7 +3759,11 @@ cmd_resume() {
 		if [ "$rc" -ne 0 ]; then
 			# Non-zero from cmd_next — gate refused, real error, or
 			# stage emitted an operator directive. Stop and let the
-			# caller see the message + decide.
+			# caller see the message + decide. (#2651 backup r2: this is
+			# where the REAL post-commit resume usually returns — e.g.
+			# phase0.5 not-yet-logged — so the approach compensation
+			# must fire here too, not only at the stop stages.)
+			_resume_approach_compensate || return 2
 			return "$rc"
 		fi
 		current=$(_get_stage) || state_rc=$?
@@ -3641,6 +3773,7 @@ cmd_resume() {
 		fi
 		if [ "$current" = "$prev" ]; then
 			# No advance happened despite rc=0. Stop to avoid spinning.
+			_resume_approach_compensate || return 2
 			return 0
 		fi
 		iter=$((iter + 1))

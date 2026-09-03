@@ -287,3 +287,34 @@ _run() {
 	_has "$head"
 	[ ! -f "$MDIR/$orphan.phase1-directive.txt" ]
 }
+
+# ---- (#2651) approach-directive-emitted branch markers --------------------
+
+@test "approach marker for a LIVE branch is kept; deleted-branch marker is removed" {
+	cd "$TEST_TMP" || return 1
+	git checkout -q -b appr-live || return 1
+	git checkout -q -b appr-dead || return 1
+	git checkout -q appr-live || return 1
+	git branch -q -D appr-dead || return 1
+	mkdir -p "$MDIR/branch" || return 1
+	: >"$MDIR/branch/appr-live.approach-directive-emitted" || return 1
+	: >"$MDIR/branch/appr-dead.approach-directive-emitted" || return 1
+	_run
+	[ "$status" -eq 0 ] || return 1
+	[ -f "$MDIR/branch/appr-live.approach-directive-emitted" ] || return 1
+	[ ! -f "$MDIR/branch/appr-dead.approach-directive-emitted" ] || return 1
+	# The removal is reported, not silent (phase2 CR).
+	[[ $output == *'cleared 1 stale marker(s)'* ]]
+}
+
+@test "approach marker for a slash-bearing live branch survives the sweep" {
+	cd "$TEST_TMP" || return 1
+	git checkout -q -b appr/nested/live || return 1
+	mkdir -p "$MDIR/branch/appr/nested" || return 1
+	: >"$MDIR/branch/appr/nested/live.approach-directive-emitted" || return 1
+	_run
+	[ "$status" -eq 0 ] || return 1
+	[ -f "$MDIR/branch/appr/nested/live.approach-directive-emitted" ] || return 1
+	# Nothing was stale, so nothing may be reported cleared (phase2 CR).
+	[[ $output != *'cleared'* ]]
+}

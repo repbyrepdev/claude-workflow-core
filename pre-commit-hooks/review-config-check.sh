@@ -7,6 +7,14 @@
 # without required shape, downstream hooks fail opaquely. This guard
 # enforces the schema at commit time.
 #
+# Top-level schema (the keys this guard knows):
+#   agents:      REQUIRED — canonical 7-agent roster, each with scope +
+#                canonical_brief + dedup_key + output_shape.fields
+#   dedup_rules: optional — cross-agent dedup (validated below)
+#   approach:    optional (#2651) — non-empty string; an advisory brief
+#                the ship-pr-cycle approach-review checkpoint tells the
+#                operator/agent to weigh at branch-ready
+#
 # Fires only when .claude/review-config.yml is in the staged diff.
 
 set -u
@@ -35,6 +43,21 @@ errs=0
 if ! yq -e '.agents' "$_tmp" >/dev/null 2>&1; then
 	echo "✗ review-config.yml missing required top-level: agents" >&2
 	errs=$((errs + 1))
+fi
+
+# (#2651) OPTIONAL top-level `approach:` — a consumer-declared brief the
+# ship-pr-cycle approach-review checkpoint tells the operator/agent to
+# weigh at branch-ready (advisory prose; nothing machine-embeds it).
+# Non-required (existing configs pass untouched); when present it must be
+# a non-empty string so a declared brief is never a silently-blank value.
+# has() not `.approach` truthiness: `yq -e '.approach'` returns nonzero
+# for a PRESENT null/false value, silently skipping validation for the
+# two wrong-typed values most likely to appear (phase2 CR).
+if yq -e 'has("approach")' "$_tmp" >/dev/null 2>&1; then
+	if ! yq -e '(.approach | tag) == "!!str" and (.approach | length > 0)' "$_tmp" >/dev/null 2>&1; then
+		echo "✗ review-config.yml approach: must be a non-empty string when present (#2651)" >&2
+		errs=$((errs + 1))
+	fi
 fi
 
 # Every agent must have scope + canonical_brief + output_shape.fields + dedup_key.

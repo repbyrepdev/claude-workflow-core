@@ -28,7 +28,16 @@ Consumer repos that need domain-specific overlays (e.g. deferring a stage until 
 ## State machine
 
 ```text
-[branch-ready]    fresh branch, ≥1 commit ahead of base
+[branch-ready]    fresh branch, ≥1 commit ahead of base. First pass per
+                  branch emits the one-time APPROACH-REVIEW directive
+                  (#2651): confirm the approach against alternatives
+                  (upstream already publishes it? in-repo prior art?
+                  smaller shape satisfies the issue?) BEFORE any code
+                  review; honors an optional consumer review-config.yml
+                  top-level `approach:` brief. Once the branch-keyed
+                  marker persists it never re-blocks after
+                  acknowledgement (a failed marker write warns and may
+                  re-emit on the next commit).
     ↓ next
 [phase0.5]        copilot prefilter logged for HEAD
     ↓ next (gate-checked: phase0.5-run.jsonl entry exists for sha)
