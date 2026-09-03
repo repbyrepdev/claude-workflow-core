@@ -1,6 +1,10 @@
 ## Summary
 <!-- What changed and why -->
 
+## Approach
+<!-- Chosen approach + the strongest rejected alternative (the branch-ready
+     approach-review checkpoint asks for this, #2651) -->
+
 ## Changes
 <!-- Files / modules modified -->
 

@@ -7,6 +7,14 @@
 # without required shape, downstream hooks fail opaquely. This guard
 # enforces the schema at commit time.
 #
+# Top-level schema (the keys this guard knows):
+#   agents:      REQUIRED — canonical 7-agent roster, each with scope +
+#                canonical_brief + dedup_key + output_shape.fields
+#   dedup_rules: optional — cross-agent dedup (validated below)
+#   approach:    optional (#2651) — non-empty string; an advisory brief
+#                the ship-pr-cycle approach-review checkpoint tells the
+#                operator/agent to weigh at branch-ready
+#
 # Fires only when .claude/review-config.yml is in the staged diff.
 
 set -u

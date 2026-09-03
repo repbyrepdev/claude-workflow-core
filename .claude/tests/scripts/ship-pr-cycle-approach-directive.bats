@@ -42,7 +42,7 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'APPROACH REVIEW'* ]] || return 1
 	[[ $output == *'advanced to phase0.5'* ]] || return 1
-	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-reviewed ]
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ]
 }
 
 @test "a later commit on the SAME branch does not re-emit the directive" {
@@ -77,8 +77,8 @@ teardown() {
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'APPROACH REVIEW'* ]] || return 1
 	# Marker isolation: one file per branch, both present.
-	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-reviewed ] || return 1
-	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-other.approach-reviewed ]
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-approach.approach-directive-emitted ] || return 1
+	[ -f .claude/.session-state/ship-cycle/branch/feat-2651-other.approach-directive-emitted ]
 }
 
 @test "a slash-bearing branch name nests its marker like the branch pointers do" {
@@ -90,7 +90,7 @@ teardown() {
 	run bash "$SCRIPT" next
 	[ "$status" -eq 0 ] || return 1
 	[[ $output == *'APPROACH REVIEW'* ]] || return 1
-	[ -f .claude/.session-state/ship-cycle/branch/feat/2651/slashy.approach-reviewed ]
+	[ -f .claude/.session-state/ship-cycle/branch/feat/2651/slashy.approach-directive-emitted ]
 }
 
 @test "marker write failure warns, still advances, and may re-fire" {

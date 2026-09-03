@@ -60,6 +60,37 @@ _sweep_repo() {
 			fi
 		fi
 	done
+	# (#2651) Approach-directive markers are BRANCH-keyed (nested under
+	# branch/, suffix .approach-directive-emitted): one is stale when its
+	# branch no longer resolves to a local head — deleted after merge, or
+	# abandoned. Same fail-closed posture as the sha sweep above: a
+	# show-ref ERROR (rc >= 2) keeps the marker; only a clean "no such
+	# ref" (rc 1) clears it. Without this, markers accumulate per branch
+	# forever and a stale one silently suppresses the checkpoint if a
+	# branch name is ever recreated (phase1 r1).
+	local bdir="$marker_dir/branch"
+	if [ -d "$bdir" ]; then
+		local bf branch sr_rc
+		while IFS= read -r -d '' bf; do
+			branch=${bf#"$bdir"/}
+			branch=${branch%.approach-directive-emitted}
+			[ -n "$branch" ] || continue
+			sr_rc=0
+			git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || sr_rc=$?
+			if [ "$sr_rc" -eq 0 ]; then
+				continue
+			fi
+			if [ "$sr_rc" -ne 1 ]; then
+				echo "session-start-marker-sweep: WARN show-ref rc=$sr_rc for branch '$branch' in $repo — keeping approach marker" >&2
+				continue
+			fi
+			if rm -f "$bf" 2>/dev/null; then
+				cleaned=$((cleaned + 1))
+			else
+				echo "session-start-marker-sweep: WARN failed to rm $bf" >&2
+			fi
+		done < <(find "$bdir" -type f -name '*.approach-directive-emitted' -print0 2>/dev/null)
+	fi
 	[ "$cleaned" -gt 0 ] && echo "session-start-marker-sweep: cleared $cleaned stale marker(s) in $repo" >&2
 	return 0
 }

@@ -166,6 +166,19 @@ _directive_arms() {
 	grep -q 'merge-conflict' "$CALLS"
 }
 
+@test "approach-review directive prints + appends (#2651)" {
+	# The body-content assertions live HERE (covers-routing: this suite
+	# runs when the directives lib changes); the once-per-branch marker
+	# behavior lives in ship-pr-cycle-approach-directive.bats.
+	run _emit_stage_directive approach-review
+	[ "$status" -eq 0 ]
+	[[ $output == *"APPROACH REVIEW"* ]] || return 1
+	[[ $output == *"upstream source already publish"* ]] || return 1
+	[[ $output == *"once per branch"* ]] || return 1
+	[[ $output == *"approach:"* ]] || return 1 # the review-config brief hook
+	grep -q 'approach-review' "$CALLS"
+}
+
 @test "merge-gate directive prints + appends (APPROVE=1 only + merge!=deploy)" {
 	run _emit_stage_directive merge-gate
 	[ "$status" -eq 0 ]

@@ -196,6 +196,19 @@ _branch_pointer_file() {
 	printf '%s/branch/%s.json\n' "$STATE_DIR" "$branch"
 }
 
+_branch_approach_marker_file() {
+	# (#2651) Single source of truth for the approach-directive marker
+	# path (one-accessor-per-state-path convention, like the pointer and
+	# phase1-directive accessors around it — phase1 r1 flagged the inline
+	# path for making _branch_pointer_file's SSOT claim false). Named for
+	# what it RECORDS — the directive was EMITTED for this branch — not
+	# for the review it prompts (positive-evidence naming). Nested beside
+	# the branch pointer json; caller pre-validates the branch name via
+	# _branch_name_safe_for_pointer.
+	local branch=$1
+	printf '%s/branch/%s.approach-directive-emitted\n' "$STATE_DIR" "$branch"
+}
+
 _phase1_directive_marker_file() {
 	# v4.28-W4 (#732): marker file path for the phase1-directive
 	# Claude-side hand-off. Sibling to the per-SHA state JSON; lives at
@@ -2020,7 +2033,7 @@ _cmd_next_once() {
 		local _appr_branch _appr_marker=""
 		if _appr_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) &&
 			_branch_name_safe_for_pointer "$_appr_branch"; then
-			_appr_marker="$STATE_DIR/branch/$_appr_branch.approach-reviewed"
+			_appr_marker=$(_branch_approach_marker_file "$_appr_branch")
 		else
 			scm_warn "approach-review: branch name unresolvable or unsafe — directive emitted without a once-marker (it may re-fire)"
 		fi
